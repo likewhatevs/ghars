@@ -193,7 +193,7 @@ impl Action {
     /// Diagnostic label for this action — used by `apply` when wrapping
     /// failures in `GharsError::Apply { action, .. }`.
     ///
-    /// Load-bearing for `summary.recreates` JSON output (#469);
+    /// Load-bearing for `summary.recreates` JSON output;
     /// renames require schema_version bump. Format relies on
     /// entity names being paren-free per `IDENTIFIER_REGEX`
     /// (`^[a-z]([a-z0-9-]*[a-z0-9])?$`).
@@ -364,7 +364,7 @@ impl DriftCause {
     }
 }
 
-/// Typed value for a [`FieldChange`] before/after slot (#463).
+/// Typed value for a [`FieldChange`] before/after slot.
 ///
 /// Distinguishes scalar string fields (e.g. `url`, `runner_version`)
 /// from list-typed fields (`labels`, `caches`) so JSON consumers can
@@ -422,9 +422,9 @@ pub enum FieldValue {
     /// alphabetically per canonicalization — `merge_defaults`,
     /// `render_identity` defense-in-depth, and parse-time sort in
     /// `DiscoveredAnnotations::from_drop_in_body` all converge on
-    /// byte-order ascending), `caches` (sorted by classifier;
-    /// #353). Renderers MUST NOT re-sort — display order is
-    /// canonical at construction time.
+    /// byte-order ascending), `caches` (sorted by classifier).
+    /// Renderers MUST NOT re-sort — display order is canonical at
+    /// construction time.
     List(Vec<String>),
 }
 
@@ -475,7 +475,7 @@ impl FieldValue {
 ///
 /// `path` is a stable static identifier — see [`Self::path`] field
 /// doc for the full enumeration. `before` and `after` carry typed
-/// values (#463 schema v2) — see [`FieldValue`].
+/// values (schema v2) — see [`FieldValue`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldChange {
     /// Field path identifier. Stable across releases — operator
@@ -607,7 +607,7 @@ pub struct RunnerDelta {
     /// Why this update was emitted: SpecChanged (config edit),
     /// DriftDetected (on-disk drift only), or both. Drives the CLI
     /// renderer's drift-cause label so the operator can tell the two
-    /// apart at a glance (#260).
+    /// apart at a glance.
     pub drift_cause: DriftCause,
     /// Per-field before→after diff for fields the Stage 1 annotation
     /// classifier detected. CLI renderer prints one line per entry.
@@ -615,10 +615,10 @@ pub struct RunnerDelta {
     /// Populated for both recreate-class diffs (e.g. `url`,
     /// `runner_version`, `labels`, `arch`, `user`, `prefix`,
     /// `runner_sha256`, `runner_tarball`, `network`) and in-place
-    /// diffs that have an annotation source (`auth_name` per #306,
-    /// `trust_zone` per #290, `caches` per #271 — the apply-time
-    /// reconciliation runs supplementary-group diffs, not unit
-    /// rewrites). The presence of a FieldChange does NOT imply
+    /// diffs that have an annotation source (`auth_name`,
+    /// `trust_zone`, `caches` — the apply-time reconciliation runs
+    /// supplementary-group diffs, not unit rewrites). The presence
+    /// of a FieldChange does NOT imply
     /// `requires_recreate=true`; check `recreate_reasons` for that.
     ///
     /// Empty when:
@@ -640,7 +640,7 @@ pub struct RunnerDelta {
     /// supplementary-group reconciliation: apply diffs this against
     /// `delta.after.spec.caches` and calls
     /// `users.add_user_to_group` / `users.remove_user_from_group`
-    /// for added / removed pools (#271). `None` ⇒ the runner predates
+    /// for added / removed pools. `None` ⇒ the runner predates
     /// the unconditional `X-Ghars-Caches` emit; apply skips the
     /// group-diff to avoid spurious gpasswd churn (the next apply
     /// will land annotations and a future change can reconcile).
@@ -662,8 +662,7 @@ pub struct RunnerDelta {
     /// emits a `Removed` line for every basename in this Vec that is
     /// NOT present in `after.drop_ins`, so the operator sees their
     /// `99-custom.conf` (or any other unmanaged drop-in) is being
-    /// deleted by the recreate rather than vanishing silently
-    /// (#468).
+    /// deleted by the recreate rather than vanishing silently.
     ///
     /// Value semantics:
     /// - `Some(vec![..])` ⇒ discovered state was available at plan
@@ -685,9 +684,9 @@ pub struct RunnerDelta {
     /// The recreate-class `--diff` rendering of Removed entries is
     /// basename-only — bodies would be redundant ("rm PATH" doesn't
     /// need the file content) and would re-introduce the credential
-    /// leakage surface called out in #461 for any drop-in that
-    /// embedded `Environment=` lines (e.g. `60-proxy.conf` with an
-    /// authenticated proxy URL). The basename alone is the
+    /// leakage surface for any drop-in that embedded `Environment=`
+    /// lines (e.g. `60-proxy.conf` with an authenticated proxy URL).
+    /// The basename alone is the
     /// operator-actionable signal: they recognize their custom
     /// drop-in by name and decide whether to migrate the contents
     /// before applying.
@@ -856,7 +855,7 @@ fn validate_generated_identifier(name: &str, parent_prefix: &str) -> Result<()> 
         ),
         other => other,
     })?;
-    // #427: layer the runner-name length cap on top. Catches the case
+    // Layer the runner-name length cap on top. Catches the case
     // where the prefix passes validate_identifier on its own but the
     // generated `prefix-COUNT` overflows RUNNER_NAME_MAX_LEN. The cap
     // is unconditional on runner.name (independent of any explicit
@@ -1120,11 +1119,11 @@ fn merge_hardening(runner: &Hardening, defaults: &Hardening) -> Hardening {
         },
     };
 
-    // #384: Canonicalize set-semantic Vec fields by sorting AND deduping
+    // Canonicalize set-semantic Vec fields by sorting AND deduping
     // in place so a pure operator reorder (or accidental duplicate) in
     // TOML produces an identical EffectiveRunnerSpec → identical
     // spec_hash → NoOp instead of an unnecessary recreate. Mirrors the
-    // #371 caches canonicalization.
+    // caches canonicalization in `lower_to_effective`.
     //
     // Only canonicalized fields here are set-semantic (the operator's
     // intent is "use exactly this set"; order and duplicates do not
@@ -1152,7 +1151,7 @@ fn merge_hardening(runner: &Hardening, defaults: &Hardening) -> Hardening {
     //
     // Both classes of duplicates would otherwise survive into the
     // rendered drop-in body and the spec_hash, re-introducing the same
-    // spurious drift class the sort itself was added to fix.
+    // spurious drift class the sort prevents.
     //
     // Fields explicitly NOT sorted (mount-order-sensitive — see the
     // bind_readonly_paths and extra_bind_paths comments above).
@@ -1174,7 +1173,7 @@ fn pick_vec<T: Clone>(runner: &[T], defaults: &[T]) -> Vec<T> {
 }
 
 /// Compute the canonical-JSON sha256 of an [`EffectiveRunnerSpec`]
-/// (Part 3 spec-hash, F17 / Part 17 #18).
+/// (Part 3 spec-hash, F17 / Part 17).
 ///
 /// Canonicalization:
 /// - Round-trip through `serde_json::Value` whose `Object` map is
@@ -1250,7 +1249,7 @@ pub fn spec_hash(spec: &EffectiveRunnerSpec) -> String {
 /// (`ghars-runner@.service`); that file carries only the
 /// non-per-runner `X-Ghars-Managed=true` and
 /// `X-Ghars-Schema-Version=1` lines. Per-runner identity
-/// annotations live entirely in the drop-in (#347).
+/// annotations live entirely in the drop-in.
 ///
 /// State discovery doesn't carry the full `EffectiveRunnerSpec` of
 /// the discovered unit (only the spec_hash + raw text), so the plan
@@ -1264,9 +1263,9 @@ pub fn spec_hash(spec: &EffectiveRunnerSpec) -> String {
 /// `X-Ghars-Runner-Tarball-Hash` (when set; sha256 of operator
 /// path string, NOT the path), `X-Ghars-Trust-Zone`,
 /// `X-Ghars-Network-Mode`, `X-Ghars-Caches` (comma-joined cache
-/// pool names, sorted by `lower_to_effective` per #371; empty
-/// value parses as `Some(vec![])` to distinguish from missing
-/// annotation). Fields still NOT annotated
+/// pool names, sorted by `lower_to_effective`; empty value parses
+/// as `Some(vec![])` to distinguish from missing annotation).
+/// Fields still NOT annotated
 /// (memory_max, hardening, allowed_cpus, proxy, hooks) live in
 /// their own drop-ins; the in-place classification (Stage 2 in
 /// `classify_recreate_reasons_from_annotations`) detects them by
@@ -1296,7 +1295,7 @@ struct DiscoveredAnnotations {
     runner_tarball_hash: Option<String>,
     trust_zone: Option<String>,
     network_mode: Option<String>,
-    /// `X-Ghars-Caches` value (#271). Comma-split list of cache pool
+    /// `X-Ghars-Caches` value. Comma-split list of cache pool
     /// names the runner was registered against. Drives in-place
     /// supplementary-group reconciliation: apply diffs this against
     /// `delta.after.spec.caches` and calls `add_user_to_group` /
@@ -1369,7 +1368,7 @@ impl DiscoveredAnnotations {
                 "X-Ghars-User" => out.user = Some(v),
                 "X-Ghars-Prefix" => out.prefix = Some(v),
                 "X-Ghars-Runner-Sha256" => out.runner_sha256 = Some(v),
-                // #296: persist HASH of tarball path, not the path
+                // Persist HASH of tarball path, not the path
                 // itself. The on-disk operator path can leak
                 // environment fingerprints (mount points, usernames,
                 // kernel-private dirs); the hash is sufficient for
@@ -1379,7 +1378,7 @@ impl DiscoveredAnnotations {
                 "X-Ghars-Trust-Zone" => out.trust_zone = Some(v),
                 "X-Ghars-Network-Mode" => out.network_mode = Some(v),
                 "X-Ghars-Caches" => {
-                    // #271: distinguish "key present with empty value"
+                    // Distinguish "key present with empty value"
                     // (X-Ghars-Caches=) from "key absent" (line not
                     // emitted at all):
                     // - Present here ⇒ this arm runs ⇒ Some(parsed),
@@ -1454,7 +1453,7 @@ impl DiscoveredAnnotations {
 ///   visible diff surface `trust_zone: a → b` while keeping the
 ///   apply path in-place (no host-state migration).
 /// - `caches` — supplementary-group reconciliation is in-place
-///   per design Part 3 (#271). `apply::execute_update_runner`'s
+///   per design Part 3. `apply::execute_update_runner`'s
 ///   in-place path diffs `delta.before_caches` against the
 ///   desired list and calls `add_user_to_group` /
 ///   `remove_user_from_group` for added / removed pools — no
@@ -1463,7 +1462,7 @@ impl DiscoveredAnnotations {
 /// All three of these record FieldChanges WITHOUT pushing a
 /// recreate reason; the `uncovered` guard at the call site gates
 /// on `field_changes.is_empty()` so any one signal alone prevents
-/// the spurious recreate-class fallback (#306).
+/// the spurious recreate-class fallback.
 ///
 /// Missing-annotation handling: a field whose discovered annotation
 /// is `None` (older ghars-applied unit pre-BATCH-C, or operator-
@@ -1598,7 +1597,7 @@ fn classify_recreate_reasons_from_annotations(
             });
         }
     }
-    // #296: runner_sha256 change is recreate-class. Annotation is
+    // runner_sha256 change is recreate-class. Annotation is
     // emitted only when non-empty (systemd.rs::render_identity), so
     // a `None` here means either (a) the operator never pinned a
     // digest or (b) the runner predates the annotation. Either way
@@ -1617,7 +1616,7 @@ fn classify_recreate_reasons_from_annotations(
             });
         }
     }
-    // #296: runner_tarball change is recreate-class (operator-
+    // runner_tarball change is recreate-class (operator-
     // supplied binary swap). The on-disk annotation is the SHA256
     // of the tarball PATH STRING, not the path itself, to avoid
     // leaking operator environment fingerprints into the persisted
@@ -1645,7 +1644,7 @@ fn classify_recreate_reasons_from_annotations(
             });
         }
     }
-    // #308: network mode change MUST recreate. The in-place rewrite
+    // Network mode change MUST recreate. The in-place rewrite
     // path (apply.rs::execute_update_runner non-recreate branch)
     // does not call provision_netns_artifacts /
     // teardown_netns_artifacts. An Open→Netns transition routed
@@ -1656,8 +1655,7 @@ fn classify_recreate_reasons_from_annotations(
     // would orphan ghars-net@INSTANCE + nft rule files + the
     // /var/run/netns/ghars-INSTANCE iface. Stage 1 detection here
     // forces the recreate path, which DOES run both lifecycle
-    // helpers via execute_remove_runner + execute_create_runner
-    // (#311 collapsed into this fix).
+    // helpers via execute_remove_runner + execute_create_runner.
     //
     // Within-mode config changes (egress rule edits, DNS mode
     // toggles inside Netns) do NOT recreate — the 40-network.conf
@@ -1666,7 +1664,7 @@ fn classify_recreate_reasons_from_annotations(
     // (the `any_drop_in_modified` check that filters
     // MANAGED_DROP_IN_BASENAMES against Created|Modified|Removed).
     //
-    // Caveat (#350): within-Netns egress rule changes are NOT yet
+    // Caveat: within-Netns egress rule changes are NOT yet
     // detected by Stage 2 — `render_network` (systemd.rs) emits a
     // 40-network.conf that does NOT carry allowed_egress; the rules
     // flow into nft.d/ files written by apply, which Stage 2 doesn't
@@ -1689,11 +1687,12 @@ fn classify_recreate_reasons_from_annotations(
             });
         }
     }
-    // #306: auth_name change is in-place per design Part 3 — apply
+    // auth_name change is in-place per design Part 3 — apply
     // rebuilds the auth registry every run and re-mints tokens
-    // against whatever PAT/App/file source is referenced now, so
-    // there is no host-state migration to do. Without this branch
-    // an auth-name-only change had no Stage 1 reason and no Stage 2
+    // against whatever PAT/App/file source the spec currently
+    // references, so there is no host-state migration to do.
+    // Without this branch an auth-name-only change has no Stage 1
+    // reason and no Stage 2
     // managed-drop-in-body delta (since `00-ghars.conf` carries the
     // X-Ghars-Auth-Name annotation but is excluded from the in-
     // place filter), falling through to the `uncovered` recreate
@@ -1713,7 +1712,7 @@ fn classify_recreate_reasons_from_annotations(
             after: FieldValue::String(desired.auth_name.clone()),
         });
     }
-    // #290: trust_zone change is in-place per design Part 3. Once
+    // trust_zone change is in-place per design Part 3. Once
     // cache-pool cross-reference validation passes at
     // `lower_to_effective` time, the runner unit body has no
     // `trust_zone` dependency — the field exists only to enforce
@@ -1731,7 +1730,7 @@ fn classify_recreate_reasons_from_annotations(
             after: FieldValue::String(desired.trust_zone.clone()),
         });
     }
-    // #271: caches change is in-place per design Part 3 — apply.rs's
+    // caches change is in-place per design Part 3 — apply.rs's
     // execute_update_runner in-place path reconciles supplementary
     // group membership via add_user_to_group / remove_user_from_group
     // diffs against `delta.before_caches`. Recording a FieldChange here
@@ -1739,7 +1738,7 @@ fn classify_recreate_reasons_from_annotations(
     // plan output and gates the `uncovered` fallback the same way
     // auth_name / trust_zone do.
     //
-    // #353: cache pool membership is set-semantics (group memberships
+    // Cache pool membership is set-semantics (group memberships
     // are unordered; execute_update_runner's BTreeSet difference
     // block in apply.rs runs the actual gpasswd diff). The plan
     // classifier MUST mirror that contract or a pure reorder
@@ -1783,8 +1782,8 @@ fn classify_recreate_reasons_from_annotations(
 ///      hash mismatch with no identifiable Stage 1 reason and no
 ///      Stage 2 drop-in body diff falls back to a conservative
 ///      `"uncovered"` recreate reason (BATCH C / Part 2 item 8 — the
-///      reason was renamed from `spec_hash_mismatch` because the
-///      condition is broader than a hash mismatch alone).
+///      reason is named `uncovered` because the condition is broader
+///      than a hash mismatch alone).
 /// 7. Apply Part 3 `requires_recreate` policy — done in
 ///    [`classify_recreate_reasons_from_annotations`].
 /// 8. Cache-pool diffs against the discovered set. State discovery
@@ -1821,8 +1820,8 @@ fn classify_recreate_reasons_from_annotations(
 pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result<Plan> {
     let host_arch = host_arch();
     let config_source = paths.config_dir.join("ghars.toml").to_string();
-    // #345/#346 — defense-in-depth: reject control chars in
-    // `config_source` before any rendered drop-in body picks it up via
+    // Defense-in-depth: reject control chars in `config_source`
+    // before any rendered drop-in body picks it up via
     // `render_identity`'s X-Ghars-Config-Source line or
     // `render_cache_drop_in`'s same annotation.
     // Today `paths.config_dir` is hard-coded to `/etc/ghars` via
@@ -1852,7 +1851,6 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
     // /30 they would have gotten is simply unused. With 64 slots in
     // /24 this leaves headroom for typical deployments while keeping
     // the slot rule trivially deterministic across plan/apply runs.
-    // (#195.)
     let mut desired: BTreeMap<String, EffectiveRunnerSpec> = BTreeMap::new();
     let mut warnings: Vec<String> = Vec::new();
     for (slot_idx, runner) in expanded.iter().enumerate() {
@@ -1913,11 +1911,11 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                     actions.push(Action::NoOp(format!("{name}: in sync")));
                 } else {
                     let annotations = DiscoveredAnnotations::from_discovered(discovered);
-                    // BATCH C / Part 2 / phd1 fix #10: thread the
-                    // already-recorded X-Ghars-Runsvc-Sha256 from the
-                    // discovered drop-in body into after_spec BEFORE
+                    // Thread the already-recorded
+                    // X-Ghars-Runsvc-Sha256 from the discovered
+                    // drop-in body into after_spec BEFORE
                     // re-rendering. Without this, the plan-time
-                    // re-render (#216 fix below) emits a 00-ghars.conf
+                    // re-render emits a 00-ghars.conf
                     // with an empty/missing Runsvc-Sha256 line, the
                     // in-place rewrite path overwrites the drop-in,
                     // and runsvc-wrapper's annotation check fails on
@@ -1926,8 +1924,8 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                     // 00-ghars.conf body so an in-place update
                     // preserves the install-phase digest.
                     //
-                    // #289 (revised): if the discovered drop-in is
-                    // missing X-Ghars-Runsvc-Sha256 entirely (pre-BATCH-C
+                    // If the discovered drop-in is missing
+                    // X-Ghars-Runsvc-Sha256 entirely (pre-BATCH-C
                     // runner or operator-stripped 00-ghars.conf), we
                     // CANNOT silently emit an in-place update — the
                     // freshly-rendered drop-in would lack the annotation
@@ -1993,8 +1991,8 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                         &mut field_changes,
                     );
 
-                    // #289 (revised): if runsvc_sha256 recovery failed
-                    // above, force recreate. Pushed AFTER the
+                    // If runsvc_sha256 recovery failed above, force
+                    // recreate. Pushed AFTER the
                     // classifier so the typed reasons (url, labels, …)
                     // still appear when those fields ALSO changed; this
                     // entry just guarantees the recreate path runs
@@ -2041,9 +2039,9 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                         });
                     }
 
-                    // BATCH C / C-1 + C-6 + #295: classify as
-                    // in-place when ANY managed non-`00-ghars.conf`
-                    // drop-in shows a body change of one of three
+                    // BATCH C / C-1 + C-6: classify as in-place
+                    // when ANY managed non-`00-ghars.conf` drop-in
+                    // shows a body change of one of three
                     // positively-named shapes: Created, Modified, or
                     // Removed.
                     //
@@ -2058,8 +2056,8 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                     //      runner_tarball — both spec-hash inputs
                     //      that don't surface in any other drop-in
                     //      body).
-                    //   2. basename ∈ MANAGED_DROP_IN_BASENAMES (C-6
-                    //      / #297) — operator drop-ins (99-*.conf
+                    //   2. basename ∈ MANAGED_DROP_IN_BASENAMES
+                    //      (C-6) — operator drop-ins (99-*.conf
                     //      from `systemctl edit`, anything outside
                     //      the ghars-managed numbering) are NOT
                     //      in-place evidence. Without this gate, an
@@ -2078,9 +2076,9 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                     //      keeps unmanaged drop-ins out of the
                     //      classification signal where they don't
                     //      belong.
-                    //   3. matches Created | Modified | Removed
-                    //      (#295) — three real in-place signals
-                    //      named positively rather than `!Preserved`
+                    //   3. matches Created | Modified | Removed —
+                    //      three real in-place signals named
+                    //      positively rather than `!Preserved`
                     //      so a future variant added to
                     //      `DropInChangeKind` doesn't silently flip
                     //      classification semantics. Preserved bytes
@@ -2103,18 +2101,17 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                             )
                     });
 
-                    // BATCH C / Part 2 / item 8: rename
-                    // `spec_hash_mismatch` → `uncovered`. Fires only
+                    // The `uncovered` recreate reason fires only
                     // when hashes differ AND Stage 1 found neither
                     // a recreate reason NOR a non-recreate FieldChange
-                    // (e.g. auth_name; #306) AND Stage 2 found nothing
-                    // — which should be unreachable in a deterministic
+                    // (e.g. auth_name) AND Stage 2 found nothing —
+                    // which should be unreachable in a deterministic
                     // renderer. Log tracing::warn! so we surface
                     // coverage gaps.
                     //
-                    // #306 / item 3: gate on `field_changes.is_empty()`
-                    // alongside `recreate_reasons.is_empty()`.
-                    // classify_recreate_reasons_from_annotations now
+                    // Gate on `field_changes.is_empty()` alongside
+                    // `recreate_reasons.is_empty()`.
+                    // classify_recreate_reasons_from_annotations
                     // records a FieldChange for auth_name without
                     // pushing a recreate reason (auth-name change is
                     // in-place per design Part 3). Without the
@@ -2131,7 +2128,7 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                             runner = name.as_str(),
                             discovered_hash = discovered.spec_hash.as_str(),
                             desired_hash = after_spec.spec_hash.as_str(),
-                            "BATCH C uncovered fallback: spec_hash differs but neither Stage 1 \
+                            "uncovered fallback: spec_hash differs but neither Stage 1 \
                              (annotation diff) nor Stage 2 (drop-in body diff) detected the change. \
                              This indicates a coverage gap in classify_recreate_reasons or a non-\
                              deterministic renderer. Falling back to recreate."
@@ -2141,12 +2138,12 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
 
                     let requires_recreate = !recreate_reasons.is_empty();
 
-                    // #260: classify why this update fired.
+                    // Classify why this update fired.
                     //   - hashes differ → operator changed the config
                     //   - on-disk drift → out-of-band edit
                     //   - both → both signals fired
                     //
-                    // #333: the (false, false) arm is logically
+                    // The (false, false) arm is logically
                     // unreachable — the enclosing `if hashes_equal &&
                     // in_sync` short-circuit at the NoOp branch above
                     // ensures at least one of the two flags is false
@@ -2178,7 +2175,7 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                         }
                     };
 
-                    // BATCH C item 9 / fix #216: populate
+                    // BATCH C item 9: populate
                     // effective_unit_text + drop_ins on RunnerPlan
                     // from the rendered output we already computed
                     // above. apply.rs's in-place rewrite path consumes
@@ -2209,8 +2206,8 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                         drift_cause,
                         field_changes,
                         drop_in_changes: drop_in_changes_payload,
-                        // #271: thread the discovered caches list
-                        // through to apply.rs so it can compute the
+                        // Thread the discovered caches list through
+                        // to apply.rs so it can compute the
                         // group-membership diff. Source is the same
                         // 00-ghars.conf body the rest of Stage 1 reads
                         // from.
@@ -2233,8 +2230,8 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                             sorted.sort_unstable();
                             sorted
                         }),
-                        // #468: snapshot the discovered drop-in
-                        // basenames (BTreeMap keys, already
+                        // Snapshot the discovered drop-in basenames
+                        // (BTreeMap keys, already
                         // alphabetically ordered) so the recreate
                         // `--diff` path can show operator-visible
                         // drop-ins (e.g. `99-custom.conf`) that the
@@ -2249,16 +2246,16 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                 }
             }
             (false, false) => {
-                // #376 (symmetric with #333 and #369): logically
-                // unreachable — `union` is built as
-                // `actual.union(&desired)` so every name in the loop is
-                // in at least one set; `(false, false)` would mean a
-                // name appeared in the union but neither input, which
-                // contradicts BTreeSet semantics. debug_assert! pins
-                // the invariant in dev/CI; the release fallback emits
-                // no action and logs a tracing::warn so a coverage
-                // gap surfaces in operator logs without crashing the
-                // plan.
+                // Logically unreachable (symmetric with the
+                // drift-cause and cache-pool union arms below):
+                // `union` is built as `actual.union(&desired)` so
+                // every name in the loop is in at least one set;
+                // `(false, false)` would mean a name appeared in the
+                // union but neither input, which contradicts BTreeSet
+                // semantics. debug_assert! pins the invariant in
+                // dev/CI; the release fallback emits no action and
+                // logs a tracing::warn so a coverage gap surfaces in
+                // operator logs without crashing the plan.
                 debug_assert!(
                     false,
                     "runner '{name}' appeared in union but neither in_actual nor in_desired: \
@@ -2335,7 +2332,7 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                     .cache_pools
                     .get(pool_name)
                     .expect("name was in actual_pool_names");
-                // #299: also consult the discovered drift signal so
+                // Also consult the discovered drift signal so
                 // an operator-added unmanaged drop-in (e.g.
                 // `99-tuning.conf`) triggers UpdateCachePool even when
                 // the spec_hash matches. Mirrors the runner-side
@@ -2372,15 +2369,16 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                 actions.push(Action::RemoveCachePool(pool_name.to_owned()));
             }
             (false, false) => {
-                // #369 (symmetric with #333): logically unreachable —
-                // `pool_union` is built as `actual.union(desired)` so
-                // every name in the loop is in at least one set;
-                // `(false, false)` would mean a name appeared in the
-                // union but neither input, which contradicts BTreeSet
-                // semantics. debug_assert! pins the invariant in
-                // dev/CI; the release fallback emits no action and
-                // logs a tracing::warn so a coverage gap surfaces in
-                // operator logs without crashing the apply.
+                // Logically unreachable (symmetric with the
+                // runner-union arm above) — `pool_union` is built as
+                // `actual.union(desired)` so every name in the loop
+                // is in at least one set; `(false, false)` would mean
+                // a name appeared in the union but neither input,
+                // which contradicts BTreeSet semantics. debug_assert!
+                // pins the invariant in dev/CI; the release fallback
+                // emits no action and logs a tracing::warn so a
+                // coverage gap surfaces in operator logs without
+                // crashing the apply.
                 debug_assert!(
                     false,
                     "cache pool '{pool_name}' appeared in pool_union but neither in_desired \
@@ -2419,7 +2417,7 @@ fn strip_hash(mut spec: EffectiveRunnerSpec) -> EffectiveRunnerSpec {
 /// Pull `X-Ghars-Runsvc-Sha256` out of a `00-ghars.conf` body.
 /// Returns `None` if the drop-in or annotation is absent. Used by the
 /// in-place update path to preserve the install-phase digest across
-/// re-renders (BATCH C / phd1 finding #10).
+/// re-renders.
 ///
 /// The annotation lives in `[Service]` per design Part 17 — that's
 /// where `crate::systemd::render_identity` emits it (when
@@ -2435,7 +2433,7 @@ fn strip_hash(mut spec: EffectiveRunnerSpec) -> EffectiveRunnerSpec {
 /// trampoline at the next runner restart with ANNOTATION_MISSING.
 fn extract_runsvc_sha256(drop_ins: &BTreeMap<String, String>) -> Option<String> {
     let body = drop_ins.get("00-ghars.conf")?;
-    // #327: point-lookup via extract_x_ghars_value avoids the full
+    // Point-lookup via extract_x_ghars_value avoids the full
     // Vec<(String, String)> allocation we'd pay for the bulk
     // extract_x_ghars_in_section call followed by a single-key search.
     let v = crate::state::extract_x_ghars_value(
@@ -2447,9 +2445,9 @@ fn extract_runsvc_sha256(drop_ins: &BTreeMap<String, String>) -> Option<String> 
 }
 
 /// Build a RunnerPlan from an effective spec, computing the spec_hash
-/// (if not already set) and rendering the unit text + drop-ins. Closes
-/// #216 — RunnerPlan now carries the rendered bytes that apply.rs
-/// writes to disk verbatim, instead of re-rendering.
+/// (if not already set) and rendering the unit text + drop-ins.
+/// RunnerPlan carries the rendered bytes that apply.rs writes to
+/// disk verbatim, instead of re-rendering.
 fn into_runner_plan(spec: EffectiveRunnerSpec) -> Result<RunnerPlan> {
     let spec_with_hash = if spec.spec_hash.is_empty() {
         with_hash(spec)
@@ -2664,7 +2662,7 @@ fn lower_to_effective(
             trust_zone: pool.trust_zone.clone(),
         });
     }
-    // #371: caches form an unordered set (group memberships are
+    // Caches form an unordered set (group memberships are
     // unordered, cache pools provide isolated services, and apply.rs
     // reconciles via BTreeSet diff). Sort by name so every downstream
     // consumer — `spec_hash`, `render_identity`'s X-Ghars-Caches line,
@@ -2679,7 +2677,7 @@ fn lower_to_effective(
 
     // Network resolution. None ⇒ implicit Open. defaults.network is
     // the fallback; explicit `runner.network = "open"` is rejected by
-    // schema validation upstream (#20 — `open` is reserved).
+    // schema validation upstream — `open` is reserved.
     let network_ref = runner
         .network
         .clone()
@@ -2708,8 +2706,8 @@ fn lower_to_effective(
                 // simultaneous netns runners under v0.1's hardcoded
                 // pool. Open-mode runners still consume an index but
                 // don't get a binding, so the slot is wasted; that
-                // matches the team-lead's "use the runner's index in
-                // the expanded list" directive (#195). Persistent
+                // matches the "use the runner's index in the
+                // expanded list" directive. Persistent
                 // [defaults] netns_subnet config is design Part 9c
                 // future scope.
                 let subnet = netns_subnet_for_slot(slot_idx, &runner.name)?;
@@ -3007,14 +3005,14 @@ mod tests {
         assert!(msg.contains("identifier"), "got: {msg}");
     }
 
-    /// #427: generated names that pass `validate_identifier` (length
+    /// Generated names that pass `validate_identifier` (length
     /// ≤ IDENTIFIER_MAX_LEN) but exceed `RUNNER_NAME_MAX_LEN` after
     /// the `-COUNT` suffix is appended must reject at expand_counts
     /// time. Catches the gap where validate_runner_names at
     /// load_config saw only the prefix (≤ 25) but expansion produced
     /// an over-cap name (e.g. 24-char prefix + "-12" = 27 chars).
-    /// Pinned at plan-time per devadv-s5 finding (config-load can't
-    /// catch this without computing max-suffix from `count`).
+    /// Pinned at plan-time because config-load can't catch this
+    /// without computing max-suffix from `count`.
     #[test]
     fn expand_counts_rejects_generated_name_exceeding_runner_name_cap() {
         // 24-char prefix + "-10" (suffix length 3 since count >= 10)
@@ -3071,8 +3069,8 @@ mod tests {
 
     #[test]
     fn netns_subnet_for_slot_distinct_slots_get_distinct_subnets() {
-        // No two adjacent slots share addresses (#195: collision was
-        // the original bug).
+        // No two adjacent slots share addresses (collision is the
+        // bug class this guards against).
         let mut seen = std::collections::HashSet::new();
         for i in 0..NETNS_POOL_SLOTS {
             let s = netns_subnet_for_slot(i, "x").unwrap();
@@ -3754,7 +3752,7 @@ mod tests {
         assert!(updates[0].recreate_reasons.contains(&"runner_version"));
     }
 
-    /// #468 T6: end-to-end through `plan_from` — when discovered state
+    /// End-to-end through `plan_from` — when discovered state
     /// carries an operator drop-in (e.g. `99-custom.conf`) plus the
     /// managed `00-ghars.conf`, the recreate-class RunnerDelta must
     /// surface `before_drop_in_basenames = Some([..])` containing BOTH
@@ -3838,7 +3836,7 @@ mod tests {
         );
     }
 
-    // ---- #205: requires_recreate exhaustive field coverage ------------
+    // ---- requires_recreate exhaustive field coverage ------------------
     //
     // Per design Part 3 "requires_recreate field policy" table:
     //   recreate fields:  url, labels, runner_version, runner_sha256,
@@ -3848,7 +3846,7 @@ mod tests {
     //                     allowed_memory_nodes, proxy, hooks
     //   identity (Remove+Create): name
     //
-    // `classify_recreate_reasons_from_annotations` now detects every
+    // `classify_recreate_reasons_from_annotations` detects every
     // recreate-class field from its X-Ghars-* annotation directly:
     // url (X-Ghars-Runner-Url), runner_version
     // (X-Ghars-Effective-Version), labels (X-Ghars-Labels), arch
@@ -3953,10 +3951,10 @@ mod tests {
         assert!(reasons.contains(&"runner_version"), "got: {reasons:?}");
     }
 
-    /// labels change is RECREATE per design table. BATCH C added
-    /// X-Ghars-Labels annotation so labels are now Stage 1 detectable
-    /// — recreate fires with reason "labels" (not the old
-    /// "spec_hash_mismatch" / "uncovered" fallback).
+    /// labels change is RECREATE per design table. The
+    /// X-Ghars-Labels annotation makes labels Stage 1 detectable —
+    /// recreate fires with reason "labels" rather than falling
+    /// through to the "uncovered" fallback.
     #[test]
     fn plan_update_recreate_on_labels_change() {
         let cfg = config_with_runners(vec![{
@@ -4005,13 +4003,10 @@ mod tests {
         );
     }
 
-    /// memory_max change is IN-PLACE per design table. BATCH C added
-    /// Stage 2 drop-in body diff so the plan now correctly classifies
-    /// memory_max-only edits as in-place (no recreate). Replaces the
-    /// pre-BATCH-C "conservatively recreate" assertion which over-
-    /// recreated to avoid under-recreating; with the body-diff stage
-    /// we can localize the change to 10-memory.conf and skip the
-    /// recreate.
+    /// memory_max change is IN-PLACE per design table. Stage 2's
+    /// drop-in body diff localizes the change to 10-memory.conf so
+    /// the plan classifies a memory_max-only edit as in-place (no
+    /// recreate) instead of conservatively recreating.
     #[test]
     fn plan_update_in_place_on_memory_max_change() {
         let cfg = config_with_runners(vec![{
@@ -4118,11 +4113,12 @@ mod tests {
         assert_eq!(removes, vec!["original"]);
     }
 
-    /// runner_sha256 change is recreate-class per Part 3. #296 added
-    /// X-Ghars-Runner-Sha256 annotation so the change is now Stage 1
+    /// runner_sha256 change is recreate-class per Part 3. The
+    /// X-Ghars-Runner-Sha256 annotation makes the change Stage 1
     /// detectable — recreate fires with the typed `runner_sha256`
-    /// reason (not the older `uncovered` fallback that fired when
-    /// runner_sha256 had no annotation source).
+    /// reason rather than falling through to the `uncovered`
+    /// fallback that would otherwise apply for fields with no
+    /// annotation source.
     #[test]
     fn plan_update_recreate_on_runner_sha256_change() {
         let cfg = config_with_runners(vec![{
@@ -4181,10 +4177,10 @@ mod tests {
         );
     }
 
-    /// runner_tarball change is recreate-class per Part 3. #296 added
+    /// runner_tarball change is recreate-class per Part 3. The
     /// X-Ghars-Runner-Tarball-Hash annotation (sha256 of the path
-    /// string — NOT the path itself, to avoid env leakage) so the
-    /// change is now Stage 1 detectable — recreate fires with the
+    /// string — NOT the path itself, to avoid env leakage) makes
+    /// the change Stage 1 detectable — recreate fires with the
     /// typed `runner_tarball` reason.
     #[test]
     fn plan_update_recreate_on_runner_tarball_change() {
@@ -4244,10 +4240,10 @@ mod tests {
         );
     }
 
-    /// arch change is recreate-class per Part 3. BATCH C added
-    /// X-Ghars-Arch annotation so arch changes are now Stage 1
-    /// detectable — recreate fires with reason "arch" (not the old
-    /// "spec_hash_mismatch" / "uncovered" fallback).
+    /// arch change is recreate-class per Part 3. The X-Ghars-Arch
+    /// annotation makes arch changes Stage 1 detectable — recreate
+    /// fires with reason "arch" rather than falling through to the
+    /// "uncovered" fallback.
     ///
     /// We construct a desired spec on x86_64 against a discovered spec
     /// recorded as aarch64. Because `merge_defaults` resolves arch as
@@ -4256,7 +4252,7 @@ mod tests {
     /// runner.arch — otherwise the test machine's host_arch
     /// (typically x86_64) defeats the diff.
     ///
-    /// #274: a single flake of this test's prior form
+    /// A single flake of this test's prior form
     /// (`*_via_spec_hash`) was reported during full-suite nextest with
     /// `updates.len() == 0 expected 1` and never reproduced. Audit
     /// found no static mut / OnceLock / lazy_static / thread_local /
@@ -4289,7 +4285,7 @@ mod tests {
             cfg_source_default(),
         );
         old_spec.spec_hash = spec_hash(&old_spec);
-        // #274: pre-conditions, asserted explicitly so any regression
+        // Pre-conditions, asserted explicitly so any regression
         // pinpoints the failing layer.
         // (1) Discovered spec must pick up aarch64 from runner.arch
         // override (NOT host_arch fallback).
@@ -4304,7 +4300,7 @@ mod tests {
         // fallback fires instead of the typed "arch" reason. Note:
         // production state::discover puts the unit-template body in
         // on_disk_unit_text and the per-runner identity annotations
-        // in drop_ins["00-ghars.conf"] (#347 fix); the classifier
+        // in drop_ins["00-ghars.conf"]; the classifier
         // reads from the drop-in body via
         // DiscoveredAnnotations::from_discovered.
         let discovered = discovered_for("a", &old_spec, Drift::InSync);
@@ -4687,11 +4683,11 @@ mod tests {
         );
     }
 
-    /// #329: `runner.user = "ghars-{name}"` is per-runner-secure (the
+    /// `runner.user = "ghars-{name}"` is per-runner-secure (the
     /// operator pinning the SEC-27 default explicitly). Same UID-per-
     /// runner guarantee as the implicit default ⇒ MUST NOT warn.
-    /// Pre-fix the classifier emitted a false-positive warning naming
-    /// the operator's own pin.
+    /// Without this pin the classifier would emit a false-positive
+    /// warning naming the operator's own pin.
     #[test]
     fn plan_does_not_warn_on_per_runner_secure_user_pin() {
         let mut cfg = config_with_runners(vec![{
@@ -4709,9 +4705,9 @@ mod tests {
         );
     }
 
-    /// #329: `defaults.user` is inherently shared — one [defaults]
-    /// block applies to every [[runner]] that doesn't override it,
-    /// so any value there propagates as a shared UID. MUST warn.
+    /// `defaults.user` is inherently shared — one [defaults] block
+    /// applies to every [[runner]] that doesn't override it, so any
+    /// value there propagates as a shared UID. MUST warn.
     #[test]
     fn plan_warns_on_defaults_user() {
         let mut cfg = config_with_runners(vec![minimal_runner("a")]);
@@ -4734,7 +4730,7 @@ mod tests {
         );
     }
 
-    /// #329: even when an operator sets `runner.user` to ANOTHER
+    /// Even when an operator sets `runner.user` to ANOTHER
     /// runner's per-runner-secure name (e.g. runner "b" with
     /// `user = "ghars-a"`), the resulting UID is shared across the
     /// two runners (both end up running as the same UID) ⇒ MUST
@@ -4764,14 +4760,14 @@ mod tests {
         );
     }
 
-    /// #378 (regression for #329 fix): when `defaults.user` is set to
-    /// a shared value (e.g. `"legacy-gha"`) AND `runner.user` is set
-    /// to the per-runner-secure pin (`"ghars-{name}"`), the resolved
+    /// Regression: when `defaults.user` is set to a shared value
+    /// (e.g. `"legacy-gha"`) AND `runner.user` is set to the
+    /// per-runner-secure pin (`"ghars-{name}"`), the resolved
     /// effective user is the per-runner-secure pin (runner.user wins
     /// per merge_defaults precedence). Since the effective UID is
-    /// per-runner-unique, SEC-27 MUST NOT warn. Pre-fix, the
-    /// 3-arm classifier checked `defaults.user.is_some()` first and
-    /// emitted a false-positive warning naming the defaults-level
+    /// per-runner-unique, SEC-27 MUST NOT warn. Without this pin, a
+    /// 3-arm classifier that checks `defaults.user.is_some()` first
+    /// would emit a false-positive warning naming the defaults-level
     /// shared user even when runner.user overrode it. This test
     /// pins the override-precedence invariant so a future
     /// classifier rewrite cannot re-introduce the bug.
@@ -4946,7 +4942,7 @@ mod tests {
         assert_eq!(rm_pool.label(), "RemoveCachePool(build)");
     }
 
-    // --- spec_hash: serde-skip / config-source coverage (#207) ---------
+    // --- spec_hash: serde-skip / config-source coverage ----------------
 
     /// Helper used by the spec_hash + merge_defaults follow-up tests
     /// below to construct an `EffectiveRunnerSpec` with stable inputs
@@ -5008,7 +5004,7 @@ mod tests {
         );
     }
 
-    // --- spec_hash: proptest determinism + sensitivity (#207) ----------
+    // --- spec_hash: proptest determinism + sensitivity -----------------
 
     /// Apply a single property-driven mutation to a spec and return
     /// it. Each variant changes exactly one logical field; the test
@@ -5148,7 +5144,7 @@ mod tests {
         }
     }
 
-    // --- merge_defaults: scalar regression tests (#208) ----------------
+    // --- merge_defaults: scalar regression tests -----------------------
 
     /// Property: when only the runner side sets a scalar, the runner
     /// value wins regardless of what defaults say. Pinned scalar to
@@ -5181,8 +5177,8 @@ mod tests {
     }
 
     /// Property: when only the defaults side sets a Vec, the runner's
-    /// empty Vec inherits from defaults via `pick_vec`. (#208 calls
-    /// out: empty Vec on runner side = inherit defaults.)
+    /// empty Vec inherits from defaults via `pick_vec` — empty Vec
+    /// on runner side ≡ inherit defaults.
     #[test]
     fn merge_defaults_empty_runner_vec_inherits_defaults_for_pick_vec_fields() {
         let runner = minimal_runner("a");
@@ -5257,7 +5253,7 @@ mod tests {
         );
     }
 
-    // --- merge_defaults: proptest scalar-override semantics (#208) -----
+    // --- merge_defaults: proptest scalar-override semantics ------------
 
     fn defaults_strategy()
     -> impl proptest::strategy::Strategy<Value = (Option<String>, Option<String>, Option<String>)>
@@ -5325,7 +5321,7 @@ mod tests {
         }
 
         // labels = concat(defaults, runner) deduped (membership
-        // only — first-seen order is no longer meaningful) and then
+        // only — first-seen order is not load-bearing) and then
         // sorted alphabetically. If both are empty after dedup, falls
         // back to [name] (F34 Python parity). Set semantics — labels
         // are the GitHub Actions registration tag set, matched
@@ -5575,7 +5571,7 @@ mod tests {
             proptest::prop_assert_eq!(a, b);
         }
 
-        // #332: Round-trip property test pinning render → parse
+        // Round-trip property test pinning render → parse
         // symmetry. Renders an EffectiveRunnerSpec via
         // `crate::systemd::render_runner_unit`, extracts the
         // `00-ghars.conf` body from the rendered drop-ins, and feeds
@@ -5631,7 +5627,7 @@ mod tests {
             };
             // Build cache bindings to match the property-driven names
             // (caches arrive at the renderer pre-sorted by
-            // lower_to_effective per #371; pre-sort the names here so
+            // lower_to_effective; pre-sort the names here so
             // the round-trip parses to the same Vec<String>).
             let mut sorted_cache_names = cache_names.clone();
             sorted_cache_names.sort();
@@ -5704,7 +5700,7 @@ mod tests {
                 anns.trust_zone.as_deref(),
                 Some(spec.trust_zone.as_str()),
             );
-            // X-Ghars-Caches is unconditionally emitted (#271), so the
+            // X-Ghars-Caches is unconditionally emitted, so the
             // parsed Some-vec must equal the spec's name list.
             let expected_cache_names: Vec<String> =
                 spec.caches.iter().map(|b| b.name.clone()).collect();
@@ -5752,7 +5748,7 @@ mod tests {
     // --- merge_defaults: bind_readonly_paths Some(empty) semantics -----
 
     /// `bind_readonly_paths` is `Option<Vec<Utf8PathBuf>>` to encode
-    /// THREE semantically-distinct states (#208 case 7):
+    /// THREE semantically-distinct states:
     /// - `None` ⇒ inherit defaults (the `or_else` chain returns
     ///   `defaults.bind_readonly_paths`).
     /// - `Some(vec![])` ⇒ replace defaults with an empty list (the
@@ -5831,7 +5827,7 @@ mod tests {
         );
     }
 
-    // --- ParsedUnit comprehensive parser tests (#204) ------------------
+    // --- ParsedUnit comprehensive parser tests -------------------------
     //
     // The state.rs parser is private (`struct ParsedUnit`), so these
     // tests live there. This block deliberately stays empty — see
@@ -6030,7 +6026,7 @@ labels  = ["alpha", "beta"]
         );
     }
 
-    // ---- #291: runsvc_sha256 preserved across in-place update --------
+    // ---- runsvc_sha256 preserved across in-place update --------------
 
     /// SEC-02 trampoline contract: the X-Ghars-Runsvc-Sha256 annotation
     /// recorded into 00-ghars.conf at apply-time must survive a
@@ -6125,7 +6121,7 @@ labels  = ["alpha", "beta"]
         );
     }
 
-    // ---- #292: cache pool diff branches + drift_cause + recreate-empties-drop-in-changes -----
+    // ---- cache pool diff branches + drift_cause + recreate-empties-drop-in-changes -----
 
     /// Helper: insert a desired pool referenced by runner `a`. Mirrors
     /// the inline `cfg.cache_pools.insert(...)` pattern other pool
@@ -6238,7 +6234,7 @@ labels  = ["alpha", "beta"]
     }
 
     /// Branch 3: spec_hash matches but drift signals DropInsModified
-    /// ⇒ UpdateCachePool (the #299 fix gates UpdateCachePool on
+    /// ⇒ UpdateCachePool (the gate is
     /// `spec_hash != actual || !pool_in_sync`).
     #[test]
     fn plan_cache_pool_update_on_drift_only() {
@@ -6269,7 +6265,7 @@ labels  = ["alpha", "beta"]
         assert_eq!(
             updates.len(),
             1,
-            "operator drift on a hash-matched pool must trigger UpdateCachePool (#299)"
+            "operator drift on a hash-matched pool must trigger UpdateCachePool"
         );
     }
 
@@ -6534,8 +6530,8 @@ labels  = ["alpha", "beta"]
     /// Sets up a `Config` with the operator-supplied `auth_blocks`,
     /// points the lone runner at `desired_auth_name`, builds a
     /// `DiscoveredRunner` whose `EffectiveRunnerSpec.auth_name` is
-    /// `discovered_auth_name` (modeling a runner that was previously
-    /// registered against that auth ref), invokes `plan_from`, and
+    /// `discovered_auth_name` (modeling a runner registered against
+    /// that auth ref at a prior apply), invokes `plan_from`, and
     /// runs the seven invariants every direction must satisfy:
     ///
     /// 1. `recreate_reasons == vec![]` exactly. Any token pushed into
@@ -6941,7 +6937,7 @@ labels  = ["alpha", "beta"]
         );
     }
 
-    /// #371/#372: a pure caches reorder (operator rewrites
+    /// A pure caches reorder (operator rewrites
     /// `caches = ["pool-b", "pool-a"]` as `caches = ["pool-a", "pool-b"]`
     /// in TOML, no membership change) MUST end-to-end produce a
     /// `NoOp`, not an `UpdateRunner`. Without `lower_to_effective`
@@ -7506,12 +7502,13 @@ labels  = ["alpha", "beta"]
         );
     }
 
-    // ---- #384: hardening Vec canonicalization (3 set-semantic fields) -
+    // ---- hardening Vec canonicalization (3 set-semantic fields) ------
 
     /// `merge_hardening` sorts `restrict_address_families` in place so
     /// a pure operator reorder of the TOML list does not perturb the
-    /// rendered drop-in body or the spec_hash. Mirrors the #371 caches
-    /// canonicalization. Built directly on `merge_hardening` (the only
+    /// rendered drop-in body or the spec_hash. Mirrors the caches
+    /// canonicalization in `lower_to_effective`. Built directly on
+    /// `merge_hardening` (the only
     /// site that touches the post-sort spec) rather than going through
     /// `lower_to_effective` so the test pins the sort regardless of
     /// what other layers do downstream.
@@ -7850,7 +7847,7 @@ labels  = ["alpha", "beta"]
         );
     }
 
-    // ---- #359: caches classifier edge cases ---------------------------
+    // ---- caches classifier edge cases ---------------------------------
     //
     // These tests exercise the `caches` branch of
     // `classify_recreate_reasons_from_annotations` directly (no
@@ -7860,8 +7857,9 @@ labels  = ["alpha", "beta"]
     // Option<Vec<String>>` vs spec-side `desired.caches:
     // Vec<EffectiveCacheBinding>`.
     //
-    // #353 contract: the plan classifier sorts both sides before
-    // comparison so its FieldChange firing semantics match apply.rs's
+    // Set-semantic contract: the plan classifier sorts both sides
+    // before comparison so its FieldChange firing semantics match
+    // apply.rs's
     // BTreeSet diff at execute_update_runner. A pure reorder
     // (set-equal) is silent on both sides; any element add/remove
     // surfaces a FieldChange in plan output AND triggers gpasswd ops
@@ -7953,11 +7951,11 @@ labels  = ["alpha", "beta"]
         );
     }
 
-    /// Edge case 4 (#353 contract): same multi-element list in
-    /// DIFFERENT order (discovered = ["a", "b"], desired = ["b", "a"]).
-    /// Classifier MUST be silent — apply.rs uses BTreeSet semantics
-    /// and would do nothing, so plan output must agree. This pins the
-    /// sort-then-compare fix from #353.
+    /// Edge case 4 (set-semantic contract): same multi-element
+    /// list in DIFFERENT order (discovered = ["a", "b"], desired =
+    /// ["b", "a"]). Classifier MUST be silent — apply.rs uses
+    /// BTreeSet semantics and would do nothing, so plan output must
+    /// agree. This pins the sort-then-compare contract.
     #[test]
     fn classify_caches_reorder_is_silent() {
         let anns = anns_with_caches(Some(&["pool-a", "pool-b"]));
@@ -7967,7 +7965,7 @@ labels  = ["alpha", "beta"]
         assert!(reasons.is_empty(), "no recreate reason; got {reasons:?}");
         assert!(
             !changes.iter().any(|c| c.path == "caches"),
-            "reorder is set-equal ⇒ no FieldChange (#353); got {changes:?}"
+            "reorder is set-equal ⇒ no FieldChange; got {changes:?}"
         );
     }
 
@@ -8272,7 +8270,7 @@ labels  = ["alpha", "beta"]
         );
     }
 
-    // ---- #314: C-6 regression — operator 99-*.conf masks recreate -----
+    // ---- C-6 regression — operator 99-*.conf masks recreate -----------
 
     /// C-6 invariant: the `any_drop_in_modified` filter in
     /// `plan_from`'s intersection branch (the closure that filters
@@ -8284,7 +8282,7 @@ labels  = ["alpha", "beta"]
     /// Setup: discovered runner has 99-tuning.conf in drop_ins +
     /// `Drift::DropInsModified(["99-tuning.conf"])`. Desired spec
     /// changes runner_sha256. Result: recreate must fire with the typed
-    /// `runner_sha256` reason (#296 added Stage 1 annotation detection),
+    /// `runner_sha256` reason (Stage 1 annotation detection),
     /// NOT silently fall through to in-place.
     #[test]
     fn plan_recreate_on_runner_sha256_change_with_operator_drop_in() {
@@ -8340,14 +8338,14 @@ labels  = ["alpha", "beta"]
         );
         assert!(
             upd.recreate_reasons.contains(&"runner_sha256"),
-            "C-6 + #297 + #296 invariant: operator drop-in must NOT mask the \
-             recreate, AND runner_sha256 is now Stage 1 detectable; expected \
+            "C-6 invariant: operator drop-in must NOT mask the \
+             recreate, AND runner_sha256 is Stage 1 detectable; expected \
              typed `runner_sha256` reason, got {:?}",
             upd.recreate_reasons
         );
     }
 
-    // ---- #290: trust_zone in-place contract -------------------------
+    // ---- trust_zone in-place contract ---------------------------------
 
     /// trust_zone is in EffectiveRunnerSpec spec_hash but has no
     /// runner-unit body dependency once cache-pool cross-references
@@ -8399,7 +8397,7 @@ labels  = ["alpha", "beta"]
             .expect("trust_zone change must emit UpdateRunner");
         assert!(
             !upd.requires_recreate,
-            "trust_zone change must be in-place (#290); got reasons {:?}",
+            "trust_zone change must be in-place; got reasons {:?}",
             upd.recreate_reasons
         );
         assert!(
@@ -8416,10 +8414,10 @@ labels  = ["alpha", "beta"]
         assert_eq!(tz_change.after, FieldValue::String("audited".into()));
     }
 
-    /// T-290.4: pin that lower_to_effective still rejects a runner
-    /// whose declared trust_zone doesn't match a referenced
-    /// cache_pool's trust_zone, REGARDLESS of #290's annotation
-    /// in-place classification. The validation lives at
+    /// Pin that lower_to_effective still rejects a runner whose
+    /// declared trust_zone doesn't match a referenced
+    /// cache_pool's trust_zone, REGARDLESS of the trust_zone
+    /// annotation's in-place classification. The validation lives at
     /// plan.rs::lower_to_effective (around the cache resolution
     /// loop) and runs BEFORE the classifier ever sees the spec —
     /// so a cross-zone reference is a config-load error, not an
@@ -8448,7 +8446,7 @@ labels  = ["alpha", "beta"]
         assert!(msg.contains("default"), "got: {msg}");
     }
 
-    // ---- #308 (#311 collapsed): network mode recreate contract --------
+    // ---- network mode recreate contract -------------------------------
 
     /// Open→Netns transition MUST recreate. The in-place rewrite path
     /// would write 40-network.conf with NetworkNamespacePath= but
@@ -8642,8 +8640,9 @@ labels  = ["alpha", "beta"]
         );
     }
 
-    /// When the discovered unit predates #296 (no Runner-Sha256
-    /// annotation emitted) but the desired spec sets a value, Stage
+    /// When the discovered unit predates the X-Ghars-Runner-Sha256
+    /// annotation (no annotation emitted) but the desired spec sets
+    /// a value, Stage
     /// 1 SKIPS the comparison (annotation == None). The spec_hash
     /// mismatch propagates the change once via the recreate-class
     /// `runner_sha256` reason emitted on the next apply (after the
@@ -8855,7 +8854,7 @@ labels  = ["alpha", "beta"]
         );
     }
 
-    // ---- #331: empty-value vs absent-line annotation contract --------
+    // ---- empty-value vs absent-line annotation contract --------------
 
     /// Pin the contract `from_drop_in_body` honors for every
     /// annotation field whose semantics differ between
@@ -8886,7 +8885,8 @@ labels  = ["alpha", "beta"]
         // Body 1: BOTH lines present, BOTH empty values. This is the
         // shape `render_identity` emits for `spec.caches.is_empty()` /
         // `spec.labels.is_empty()` — the renderer always emits the
-        // line so absent indicates a pre-#296 runner.
+        // line so absent indicates a runner that predates the
+        // unconditional-emit change.
         let empty_value_body = "[Unit]\n\
                                 X-Ghars-Managed=true\n\
                                 X-Ghars-Caches=\n\
@@ -9054,7 +9054,7 @@ labels  = ["alpha", "beta"]
         );
     }
 
-    /// #575: pin that v1 consumers (which read
+    /// Pin that v1 consumers (which read
     /// `field_changes[].before` / `field_changes[].after` as bare
     /// scalar JSON values) fail predictably when reading the v2
     /// tagged-object shape from `FieldValue::to_json`. The v2 JSON

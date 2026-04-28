@@ -83,9 +83,9 @@ pub struct ApplyOptions {
 /// What happened when a single action ran. Lifted out of [`apply`]
 /// so cmd_apply can render a per-action
 /// `ok: LABEL [disruption] (detail)` line for every successful or
-/// skipped action (#340), AND a per-action
-/// `fail: LABEL [disruption] (error)` line for every failed action
-/// (#474). The full [`GharsError`] chain for failed actions is also
+/// skipped action, AND a per-action
+/// `fail: LABEL [disruption] (error)` line for every failed action.
+/// The full [`GharsError`] chain for failed actions is also
 /// preserved on [`ApplyResult::failed`] for programmatic consumers
 /// that need the typed error.
 ///
@@ -130,7 +130,7 @@ pub struct ApplyOptions {
 pub enum ApplyOutcome {
     /// `execute_update_runner` in-place branch took the
     /// `files_changed == 0 && pools_added.is_empty() &&
-    /// pools_removed.is_empty()` short-circuit (#337): no daemon-
+    /// pools_removed.is_empty()` short-circuit: no daemon-
     /// reload, no stop+start, no usermod. Equivalent to
     /// [`crate::plan::Disruption::None`] at apply time.
     InPlaceSkipped,
@@ -143,7 +143,7 @@ pub enum ApplyOutcome {
     /// the inputs to `cache_pool_group()`) whose membership was
     /// reconciled via `gpasswd -a` / `gpasswd -d` on the runner's
     /// system user. The struct field `group_ops: usize` was replaced
-    /// by `pools_added` + `pools_removed` (#473); [`Self::detail`]
+    /// by `pools_added` + `pools_removed`; [`Self::detail`]
     /// derives the count locally as `pools_added.len() +
     /// pools_removed.len()`. See [`Self::detail`] for the rendered
     /// string format.
@@ -158,7 +158,7 @@ pub enum ApplyOutcome {
         /// (apply.rs `execute_update_runner` in-place caches diff)
         /// so the rendered detail line is deterministic. Empty when
         /// the diff was a no-op or `delta.before_caches` was `None`
-        /// (pre-#271 runner — no annotation to diff against).
+        /// (pre-annotation runner — no annotation to diff against).
         pools_added: Vec<String>,
         /// Cache-pool names this apply removed the runner's user from
         /// via `gpasswd -d` (one entry per pool). Sorted; empty
@@ -199,7 +199,7 @@ pub enum ApplyOutcome {
     /// diff that DOES carry `pools_added` / `pools_removed`.)
     PoolUpdated,
     /// `execute_update_cache_pool` took the byte-equality short-circuit
-    /// (#466, symmetric with #337 / [`Self::InPlaceSkipped`]): the
+    /// (symmetric with [`Self::InPlaceSkipped`]): the
     /// per-pool drop-in directory already existed AND its
     /// 00-ghars.conf bytes already matched the rendered body
     /// byte-for-byte. Both conditions are required — a freshly
@@ -230,7 +230,7 @@ pub enum ApplyOutcome {
     DryRunSkipped,
     /// The action's `execute_*` handler returned `Err`. `apply`
     /// pushes one [`Self::Failed`] row to [`ApplyResult::details`]
-    /// per failed action (#474) so the per-action audit trail
+    /// per failed action so the per-action audit trail
     /// covers both success and failure in a single execution-order
     /// Vec. The full [`GharsError`] chain for the same action is
     /// preserved on [`ApplyResult::failed`] for callers that need
@@ -256,7 +256,6 @@ pub enum ApplyOutcome {
         /// corresponding [`ApplyResult::failed`] entry — `failed[i]`
         /// and the i-th `Failed` row in `details` carry the same
         /// label, so a programmatic consumer can join them by label.
-        /// #516, #595.
         error_summary: String,
         /// Plan-time worst-case [`crate::plan::Disruption`] for the
         /// failed action, plumbed through from `Action::disruption`
@@ -273,7 +272,7 @@ pub enum ApplyOutcome {
         /// flush of systemd's in-memory unit-file index with no
         /// operator-visible unit transitions, so the `[none]`
         /// bracket tag accurately reports its (zero) blast
-        /// radius. (#520)
+        /// radius.
         plan_disruption: crate::plan::Disruption,
     },
 }
@@ -295,7 +294,7 @@ impl ApplyOutcome {
                 let group_ops = pools_added.len() + pools_removed.len();
                 let mut s =
                     format!("in-place: {files_changed} file(s) changed, {group_ops} group op(s)");
-                // #473: surface pool names when the gpasswd diff was
+                // Surface pool names when the gpasswd diff was
                 // non-empty so the operator sees WHICH pools moved,
                 // not just how many. Suffix shape:
                 //   no group ops:                 (no parenthetical)
@@ -337,7 +336,7 @@ impl ApplyOutcome {
     /// Mirrors the plan-time mapping at
     /// [`crate::plan::Action::disruption`] so cmd_apply can render
     /// the same `[restart]` / `[recreate]` / `[none]` bracket tag
-    /// the plan output uses (#340 + #285). Operator grep on
+    /// the plan output uses. Operator grep on
     /// `[recreate]` in apply output now matches the same vocabulary
     /// as plan output.
     ///
@@ -434,18 +433,18 @@ pub struct ApplyResult {
     /// `(label, recorded_steps)` rows — one entry per failed action,
     /// carrying the [`UndoLog`]'s recorded mutations in insertion
     /// order (the per-action mutation manifest). cmd_apply walks
-    /// these to render the #478 rollback-state advisory on stderr,
+    /// these to render the rollback-state advisory on stderr,
     /// telling the operator what happened on disk before the action
     /// errored. Empty Vec for actions that errored before recording
     /// any step — and for the synthetic `daemon_reload` post-loop
     /// failure, which has no per-action UndoLog (the error is
     /// emitted after every action's UndoLog is dropped).
     ///
-    /// Additive alongside [`Self::failed`] so pre-#478 consumers
+    /// Additive alongside [`Self::failed`] so older consumers
     /// compile unchanged. The ordering invariant is preserved:
     /// `failed[i].0 == failed_undo_logs[i].0` for every `i`. The
     /// advisory rendering is policy-only — apply layer is data-only,
-    /// rendering lives in cli.rs cmd_apply per layering. (#478)
+    /// rendering lives in cli.rs cmd_apply per layering.
     pub failed_undo_logs: Vec<(String, Vec<UndoStep>)>,
 }
 
@@ -457,7 +456,7 @@ impl ApplyResult {
     }
 }
 
-// ---------- Undo log (BATCH D / #281) ----------------------------------
+// ---------- Undo log (BATCH D) ----------------------------------
 
 /// One mutating step recorded by an `execute_*` handler. On failure with
 /// `--rollback-on-failure`, [`undo`] walks the per-action log in reverse
@@ -617,7 +616,7 @@ impl UndoStep {
     }
 
     /// One-line operator-readable summary of the recorded mutation,
-    /// suitable for #478's rollback-state advisory in cmd_apply.
+    /// suitable for the rollback-state advisory in cmd_apply.
     /// Names the step's effect in past tense ("wrote …", "started …",
     /// "removed …") so the advisory reads as an audit trail of what
     /// happened on disk before the action errored. Byte-content fields
@@ -626,7 +625,7 @@ impl UndoStep {
     /// [`undo`], not advisory details, and would dominate the line
     /// length without operator-actionable signal.
     ///
-    /// #552: every interpolated `path`, `name`, and `url` field passes
+    /// Every interpolated `path`, `name`, and `url` field passes
     /// through [`crate::escape_control_chars`] before formatting.
     /// Drop-in paths and unit names are derived from operator-supplied
     /// config (runner names flow into
@@ -747,7 +746,7 @@ impl UndoLog {
     /// Consume the log, returning the recorded steps in insertion order.
     /// Used by [`apply`] on the Err path to plumb the per-action mutation
     /// manifest into [`ApplyResult::failed_undo_logs`] so cmd_apply's
-    /// rollback advisory (#478) can list what happened on disk before
+    /// rollback advisory can list what happened on disk before
     /// the action errored.
     #[must_use]
     pub fn into_steps(self) -> Vec<UndoStep> {
@@ -971,7 +970,7 @@ impl Drop for ApplyLock {
 ///   file cannot be opened/written.
 pub fn acquire_lock(paths: &Paths) -> Result<ApplyLock> {
     let runtime_dir = paths.runtime_dir.clone();
-    // #338: EACCES on the runtime-dir create or the lock-file open is
+    // EACCES on the runtime-dir create or the lock-file open is
     // almost always "non-root operator ran `ghars apply`" — the
     // runtime dir defaults under /run which is root-owned. Wrap the
     // raw io::Error with an actionable hint so the operator doesn't
@@ -987,7 +986,7 @@ pub fn acquire_lock(paths: &Paths) -> Result<ApplyLock> {
         .open(lock_path.as_std_path())
         .map_err(|e| eacces_hint(&e, &lock_path, "apply.lock"))?;
 
-    // #341: `OpenOptions::mode(0o600)` ONLY applies to newly created
+    // `OpenOptions::mode(0o600)` ONLY applies to newly created
     // files (per std::os::unix::fs::OpenOptionsExt — the bits feed
     // into O_CREAT's mode argument and have no effect on opening an
     // existing file). A pre-existing lock file from a previous ghars
@@ -1004,7 +1003,7 @@ pub fn acquire_lock(paths: &Paths) -> Result<ApplyLock> {
     if mode != 0o600 {
         let mut perms = meta.permissions();
         perms.set_mode(0o600);
-        // F2 (#341): the open() above already passed, which on a
+        // F2: the open() above already passed, which on a
         // root-owned `/run/ghars` means we're running as root. An
         // EACCES on chmod here is therefore NOT "you're not root";
         // it's a different problem (read-only mount, MAC policy like
@@ -1064,7 +1063,7 @@ pub fn acquire_lock(paths: &Paths) -> Result<ApplyLock> {
     })
 }
 
-/// #338: convert an `io::Error` from a runtime-dir create or
+/// Convert an `io::Error` from a runtime-dir create or
 /// apply.lock open into a friendly `GharsError::Validation` when the
 /// underlying kind is `PermissionDenied` (EACCES). The lock and its
 /// runtime dir live under root-owned paths (default `/run/ghars`),
@@ -1314,7 +1313,7 @@ pub trait Users {
     /// Idempotently remove `user` from supplementary group `group`. The
     /// inverse of [`add_user_to_group`] — used by
     /// `execute_update_runner` in-place when a runner's `caches` list
-    /// shrinks (#271/#272). gpasswd(1) exit code 3 ("user not a member
+    /// shrinks. gpasswd(1) exit code 3 ("user not a member
     /// of group", `E_NOT_A_MEMBER` in shadow-utils `src/gpasswd.c`) is
     /// treated as idempotent success: a runner that was never
     /// enrolled still ends up not-enrolled, which is what we want.
@@ -1474,7 +1473,7 @@ fn spawn_err(prog: &str, e: &std::io::Error) -> GharsError {
 /// Runner-self-config seam. Production wires a [`RealConfigShell`] that
 /// shells out to `<runner_home>/bin/config.sh`. Tests inject a fake.
 ///
-/// **SEC-05 (queue task #167)** — the registration / removal token is
+/// **SEC-05** — the registration / removal token is
 /// delivered to `config.sh` via the `ACTIONS_RUNNER_INPUT_TOKEN`
 /// environment variable rather than the `--token VALUE` CLI argument.
 /// `actions/runner` reads this env var per
@@ -1773,7 +1772,7 @@ fn gc_stale_temp_files(paths: &Paths) {
     }
 }
 
-/// #343: sweep stale staging directories under
+/// Sweep stale staging directories under
 /// `<state_dir>/.staging/<runner_name>-<version>-<pid>/` left behind
 /// when `extract::install_runner_binary` crashed between
 /// `fs::create_dir(&staging)` and the final atomic rename. Called from
@@ -1814,15 +1813,12 @@ fn gc_stale_temp_files(paths: &Paths) {
 ///   whose mtime exceeds the age gate is from a previous (now-
 ///   terminated) apply. Same 60s window as [`gc_stale_temp_files`].
 ///
-/// PID-LIVENESS IS DEPRECATED (#437 ADV-5 / pass-1 fix): the previous
-/// implementation gated on `pid_is_alive(embedded_pid)`. PIDs recycle
-/// — once the dead PID slot is reclaimed by an unrelated process,
-/// the staging dir would be permanently retained even though no
-/// current process has any claim to it. Under apply.lock the only
-/// stagedirs that exist are either ours (`embedded_pid == our_pid`
-/// skip) or belong to a previously-crashed apply; both are correctly
-/// handled by the own-PID + age gates alone. Removing the liveness
-/// check closes the leak.
+/// PID-liveness is intentionally not used: gating on
+/// `pid_is_alive(embedded_pid)` would leak staging trees once the
+/// dead PID slot is reclaimed by an unrelated process. Under
+/// apply.lock the only stagedirs that exist are either ours
+/// (`embedded_pid == our_pid` skip) or belong to a previously-crashed
+/// apply; both are correctly handled by the own-PID + age gates alone.
 ///
 /// Errors are swallowed and logged at info / warn — `apply()` MUST
 /// run regardless. Best-effort: a missing `.staging/` (the normal
@@ -1873,7 +1869,7 @@ fn gc_stale_staging_dirs(paths: &Paths) {
             // staging open in-process; don't rip it out.
             continue;
         }
-        // No pid_is_alive gate (#437 ADV-5): PIDs recycle, so a
+        // No pid_is_alive gate: PIDs recycle, so a
         // liveness probe permanently leaks the staging tree once the
         // dead slot is reclaimed by an unrelated process. Under
         // apply.lock the own-PID skip + age gate are sufficient.
@@ -1957,12 +1953,12 @@ fn parse_temp_file_suffix(name: &str) -> Option<(u32, u64)> {
 /// Apply a plan to the host.
 ///
 /// 1. Acquires `<paths.runtime_dir>/apply.lock` (POSIX advisory).
-/// 2a. GCs stale `.NAME.tmp.PID.COUNTER` temp files (#284) under
+/// 2a. GCs stale `.NAME.tmp.PID.COUNTER` temp files under
 ///     `paths.unit_dir` / drop-in subdirs / `paths.config_dir/nft.d` /
 ///     `paths.config_dir/netns.d` — leftovers from `write_root_owned`
 ///     calls that crashed between `create_new` and the final rename.
 /// 2b. GCs stale `<state_dir>/.staging/<name>-<version>-<pid>/`
-///     directories (#343) — leftovers from
+///     directories — leftovers from
 ///     `extract::install_runner_binary` calls that crashed past their
 ///     own cleanup branch. Filesystem subtree is disjoint from 2a's
 ///     (`.staging/` lives under `state_dir`, never under `unit_dir` or
@@ -1996,7 +1992,7 @@ pub fn apply(
     opts: &ApplyOptions,
 ) -> Result<ApplyResult> {
     let _lock = acquire_lock(paths)?;
-    // #284: GC half-written `.NAME.tmp.PID.COUNTER` files left behind
+    // GC half-written `.NAME.tmp.PID.COUNTER` files left behind
     // by previous applies that crashed between `write_root_owned`'s
     // create_new and the final rename. Best-effort — failures are
     // logged at warn level and never fail apply. Runs AFTER lock
@@ -2007,7 +2003,7 @@ pub fn apply(
     // (60s) is the concurrency guard; the lock makes the gate
     // sufficient (other applies are blocked).
     //
-    // #343: GC orphan `<state_dir>/.staging/<runner-name>-<version>-<pid>/`
+    // GC orphan `<state_dir>/.staging/<runner-name>-<version>-<pid>/`
     // staging directories left behind when extract::install_runner_binary
     // crashed past its own cleanup branch. Same own-PID + age gates
     // as gc_stale_temp_files (no PID-liveness probe — see ADV-5 doc on
@@ -2025,7 +2021,7 @@ pub fn apply(
         let label = action.label();
         if matches!(action, Action::NoOp(_)) {
             result.skipped.push(label.clone());
-            // #340: every action — including NoOp — gets a row in
+            // Every action — including NoOp — gets a row in
             // `details` so cmd_apply can render the per-action
             // detail line uniformly. NoOp emits the `noop (in sync)`
             // detail.
@@ -2034,19 +2030,19 @@ pub fn apply(
         }
         if opts.dry_run {
             result.skipped.push(label.clone());
-            // #340: dry-run-skipped actions also land in `details`
+            // Dry-run-skipped actions also land in `details`
             // so the operator sees what `apply` WOULD have done,
             // labeled as `dry-run (skipped)`.
             result.details.push((label, ApplyOutcome::DryRunSkipped));
             continue;
         }
-        // Per-action UndoLog (BATCH D / #281). Each execute_* pushes
+        // Per-action UndoLog (BATCH D). Each execute_* pushes
         // after every successful side effect; on Err we walk the log
         // in reverse via `undo` when --rollback-on-failure is set.
         // Scope is per-action — earlier successful actions are NOT
         // touched per design Part 8 line 2154.
         let mut log = UndoLog::new();
-        // #474: capture plan-time worst-case disruption BEFORE the
+        // Capture plan-time worst-case disruption BEFORE the
         // execute borrow / Err-path move so an `ApplyOutcome::Failed`
         // row can carry it through to cmd_apply rendering.
         // `Action::disruption` reads no state and is cheap.
@@ -2054,7 +2050,7 @@ pub fn apply(
         match execute(&action, deps, paths, &mut log) {
             Ok(outcome) => {
                 result.succeeded.push(label.clone());
-                // #340 + #473: real (non-skipped) outcomes carry their
+                // Real (non-skipped) outcomes carry their
                 // ApplyOutcome variant so cmd_apply can render the
                 // per-action detail (e.g. `in-place: 2 file(s)
                 // changed, 0 group op(s)` for a no-pool-diff restart,
@@ -2070,13 +2066,13 @@ pub fn apply(
                     // failure.
                     let _ = undo(&log, deps, paths);
                 }
-                // #474: capture the inner-error display BEFORE the
+                // Capture the inner-error display BEFORE the
                 // wrap, so the `ApplyOutcome::Failed` row carries
                 // only the cause (the wrapping `GharsError::Apply`
                 // would re-include the label that already appears
                 // in the `(label, ApplyOutcome)` tuple).
                 //
-                // #516: escape ASCII control characters in the
+                // Escape ASCII control characters in the
                 // captured display before storing. The Display impls
                 // for `GharsError` interpolate operator-supplied
                 // strings (config paths, auth names, hostnames) — a
@@ -2087,7 +2083,7 @@ pub fn apply(
                 // so every consumer of `ApplyOutcome::Failed` sees
                 // already-safe bytes (cli.rs render path, programmatic
                 // consumers, PartialEq comparisons in tests). Side
-                // effect: closes #519's per-render clone overhead by
+                // effect: avoids per-render clone overhead by
                 // making the stored string already terminal-safe
                 // (ANSI/C0/DEL escape only).
                 //
@@ -2120,13 +2116,13 @@ pub fn apply(
                 // accumulate-and-continue paths — the only difference
                 // is whether the loop short-circuits afterwards.
                 result.failed.push((label.clone(), wrapped));
-                // #478: per-action mutation manifest — consume the
+                // Per-action mutation manifest — consume the
                 // UndoLog to surface what landed on disk before the
                 // action errored. Pushed AFTER `result.failed` so the
                 // `failed[i].0 == failed_undo_logs[i].0` ordering
                 // invariant holds. cmd_apply walks this Vec to render
                 // the rollback-state advisory on stderr.
-                // E478-2 (#478 pass 1): the steps describe ATTEMPTED
+                // The steps describe ATTEMPTED
                 // mutations, not guaranteed-residual state. `undo` is
                 // best-effort regardless of mode:
                 // - `rollback_on_failure=true`: `undo` walked the log
@@ -2156,11 +2152,11 @@ pub fn apply(
         // every action failed early it is still safe — Manager.Reload
         // is a no-op when no unit files changed.
         if let Err(e) = deps.systemd.daemon_reload() {
-            // #474: also push to details so cmd_apply's
+            // Also push to details so cmd_apply's
             // details-only rendering loop emits a `fail:` line for
             // this synthetic post-loop step.
             //
-            // adv #520: "daemon_reload" is a SYNTHETIC label — it is
+            // "daemon_reload" is a SYNTHETIC label — it is
             // not derived from any `Action` and therefore has no
             // `Action::disruption()` to plumb through. We hand-set
             // `plan_disruption = Disruption::None` because
@@ -2170,12 +2166,12 @@ pub fn apply(
             // unit transitions; the bracket tag `[none]` accurately
             // reports the (zero) blast radius.
             let label = String::from("daemon_reload");
-            // #516: escape for the same reason as the per-action loop
+            // Escape for the same reason as the per-action loop
             // arm above — defense-in-depth scrub of terminal-manipulation
             // bytes from arbitrary `GharsError::to_string()` output
             // before it lands in `ApplyOutcome::Failed.error_summary`.
-            // See apply.rs:2087-2107 above for the terminal-safety scope
-            // and secret-leakage policy reference.
+            // See the per-action loop arm above for the terminal-safety
+            // scope and secret-leakage policy reference.
             let error_summary = escape_control_chars(&e.to_string()).into_owned();
             result.details.push((
                 label.clone(),
@@ -2191,7 +2187,7 @@ pub fn apply(
                     source: Box::new(e),
                 },
             ));
-            // #478: maintain the `failed[i].0 == failed_undo_logs[i].0`
+            // Maintain the `failed[i].0 == failed_undo_logs[i].0`
             // ordering invariant. The synthetic daemon_reload failure
             // is post-loop and has no per-action UndoLog (every
             // action's log was consumed at action-end above), so the
@@ -2334,7 +2330,7 @@ fn execute_create_runner(
     //     sccache UDS at /run/ghars/cache-POOL.sock. We always add
     //     even for ccache-only pools so the pool can grow into
     //     sccache without re-applying every runner. Part 9b
-    //     "DAC permissions on the socket file" / #34 cross-user UDS.
+    //     "DAC permissions on the socket file" cross-user UDS.
     //
     //     Note: `add_user_to_group` is idempotent and we don't record
     //     it as an undo step — gpasswd -d on rollback would leave the
@@ -2396,7 +2392,7 @@ fn execute_create_runner(
     // 4) Run config.sh --url ... --token ... — registers the runner
     //    with GitHub. SEC-05 mitigation note in trait doc; v0.1 still
     //    passes the token via argv pending the token-drop env-var
-    //    pattern's full design. #245: pass `&token.value` so `token`
+    //    pattern's full design. Pass `&token.value` so `token`
     //    stays owned in this frame and zeroizes on Drop at end of fn.
     deps.config_shell.run_register(&ConfigShellCtx {
         runner_home: &runner_home,
@@ -2422,7 +2418,7 @@ fn execute_create_runner(
 
     // 5) Tighten credential perms. config.sh writes
     //    `<runner_home>/.credentials` mode 0644 by default; drop it to
-    //    0600 owner=runner-user. (SEC-05 / SEC-25 residual.) #223:
+    //    0600 owner=runner-user. (SEC-05 / SEC-25 residual.)
     //    pass spec.user so fchown reattaches ownership to the current
     //    user when the operator changes `user=` on a runner.
     tighten_credential_perms(&runner_home, &spec.user)?;
@@ -2443,8 +2439,7 @@ fn execute_create_runner(
     //     The plan's `drop_ins` and `effective_unit_text` are
     //     placeholders (plan ran before install, so it could not
     //     compute the digest). We re-render here with the populated
-    //     spec; this also closes B3 review BLOCKER #216 (plan-emitted
-    //     unit text was empty).
+    //     spec.
     let runsvc_path = runner_home.join("runsvc.sh");
     let runsvc_sha = sha256_of_runsvc(&runsvc_path).map_err(|e| GharsError::Apply {
         action: format!("CreateRunner({}): hash runsvc.sh", spec.name),
@@ -2571,7 +2566,7 @@ fn execute_remove_runner(
         );
     } else {
         let token = mint_token(deps.auth, &identity.auth_name, &identity.url, true)?;
-        // #245: pass `&token.value` so `token` stays owned in this
+        // Pass `&token.value` so `token` stays owned in this
         // frame and zeroizes on Drop at end of else-branch.
         deps.config_shell.run_remove(&ConfigShellCtx {
             runner_home: &runner_home,
@@ -2649,7 +2644,7 @@ fn execute_update_runner(
         // state stays gone (genuinely lossy — re-running apply is the
         // recovery path). Documented at design Part 8 line 2154.
         //
-        // #340: collapse the inner Removed + Created outcomes into
+        // Collapse the inner Removed + Created outcomes into
         // a single `Recreated` — the user-facing contract is one row
         // per `Action`, and the inner remove+create are
         // implementation detail of the recreate path (coordinator
@@ -2667,11 +2662,11 @@ fn execute_update_runner(
     // stop + start when (a) every managed file's on-disk bytes match
     // what we would render and (b) the supplementary-group diff is a
     // no-op. The byte comparison reuses `read_prior` snapshots that
-    // were already needed for rollback (#337).
+    // were already needed for rollback.
     //
-    // #289: when delta.after.spec.runsvc_sha256 is empty here, plan was
+    // When delta.after.spec.runsvc_sha256 is empty here, plan was
     // unable to recover the digest from the discovered 00-ghars.conf
-    // (annotation missing → pre-BATCH-C runner or operator stripped
+    // (annotation missing → older-format runner or operator stripped
     // the line). Plan must have routed THIS update through the recreate
     // path with the `runsvc_integrity` reason rather than down here;
     // hashing runsvc.sh from disk in apply would weaken SEC-02 because
@@ -2698,12 +2693,12 @@ fn execute_update_runner(
             )),
         });
     }
-    // #340 + #473: track files_changed (count) and pool names
+    // Track files_changed (count) and pool names
     // (Vec) so the apply outcome row can carry both `files_changed`
     // and the WHICH-pools detail for cmd_apply's per-action line.
     // The `is_empty()` checks at the daemon-reload gate below
-    // preserve the pre-#340 short-circuit semantics (#337's "skip
-    // rewrite when bytes match"): the gate fires iff `files_changed
+    // preserve the short-circuit semantics ("skip rewrite when bytes
+    // match"): the gate fires iff `files_changed
     // == 0` AND both pool Vecs are empty. The total gpasswd
     // invocation count (`group_ops` in the public detail string) is
     // derived as `pools_added.len() + pools_removed.len()` at
@@ -2712,7 +2707,7 @@ fn execute_update_runner(
     let mut pools_added: Vec<String> = Vec::new();
     let mut pools_removed: Vec<String> = Vec::new();
 
-    // #352: reconcile supplementary-group memberships BEFORE the drop-in
+    // Reconcile supplementary-group memberships BEFORE the drop-in
     // rewrite. If `gpasswd -a` or `gpasswd -d` fails partway through the
     // diff, this function returns Err with the on-disk 00-ghars.conf
     // still carrying the OLD `X-Ghars-Caches=` annotation. The next
@@ -2724,15 +2719,15 @@ fn execute_update_runner(
     // plan would see no diff, skip the supplementary-group step, and
     // bake in the partial state until the next caches edit.
     //
-    // #271 / F79i step 3 still applies: the gpasswd ops must complete
-    // before stop+start so the freshly-restarted unit picks up the new
-    // group set on its next exec credentials. Both #271 and #352 land
-    // by running gpasswd FIRST in the in-place path.
+    // F79i step 3 still applies: the gpasswd ops must complete before
+    // stop+start so the freshly-restarted unit picks up the new group
+    // set on its next exec credentials. Both invariants land by
+    // running gpasswd FIRST in the in-place path.
     //
     // The diff is computed from the discovered `X-Ghars-Caches`
     // annotation (`delta.before_caches`) against the desired post-
     // update binding list (`delta.after.spec.caches`). When the
-    // discovered annotation is absent (`None`) — pre-#271 runner or
+    // discovered annotation is absent (`None`) — pre-annotation runner or
     // operator-stripped 00-ghars.conf — we skip the diff entirely
     // rather than guess at the prior membership; the next apply will
     // land annotations and a future caches-list edit can reconcile
@@ -2771,7 +2766,7 @@ fn execute_update_runner(
             let group = cache_pool_group(added);
             deps.users
                 .add_user_to_group(&delta.after.spec.user, &group)?;
-            // #473: capture the pool NAME (input to cache_pool_group),
+            // Capture the pool NAME (input to cache_pool_group),
             // not the group name — operator-facing detail surface.
             // BTreeSet::difference yields entries in sorted order so
             // the resulting Vec is already deterministic.
@@ -2841,7 +2836,7 @@ fn execute_update_runner(
     }
     // Write each desired drop-in. `read_then_write_if_changed` snapshots
     // the on-disk prior and short-circuits when the bytes already match
-    // (#337). The Preserved Stage 2 verdict is not used as an
+    // The Preserved Stage 2 verdict is not used as an
     // optimization here: it is plan-time, and on-disk bytes can drift
     // between plan and apply (e.g. operator edit landed after `ghars
     // plan` rendered output). Trusting Preserved would preserve that
@@ -2855,7 +2850,7 @@ fn execute_update_runner(
         }
     }
 
-    // #337: skip daemon-reload + stop + start when nothing on disk
+    // Skip daemon-reload + stop + start when nothing on disk
     // changed AND the supplementary-group set was a no-op. The next
     // exec credentials snapshot only changes when the unit restarts,
     // so a group-op MUST trigger a restart even if no file bytes
@@ -2905,7 +2900,7 @@ fn execute_update_runner(
 // - `read_then_write_if_changed`: in-place branch entry. Snapshots
 //   prior bytes, skips the write if they match, otherwise writes and
 //   pushes the undo step. Returns `Result<bool>` so the caller can
-//   drive `files_changed` (#337's "skip rewrite when bytes match"
+//   drive `files_changed` ("skip rewrite when bytes match"
 //   optimization gating daemon-reload + restart).
 // - `write_record_undo`: create-path entry. Snapshot + always-write +
 //   record undo. Returns `Result<()>` because create-path callers
@@ -2919,7 +2914,7 @@ fn execute_update_runner(
 // explicit "NOT recorded" comment blocks — undoing those would clobber
 // other live consumers. Per-pool drop-ins (00-ghars.conf at
 // `cache_drop_in_dir`) are NOT shared templates and DO go through the
-// helpers above (#466).
+// helpers above.
 
 /// Snapshot the on-disk content of `path`, then conditionally write
 /// `bytes` and append a rollback step to `log`. Returns `true` when a
@@ -2935,7 +2930,7 @@ fn execute_update_runner(
 ///
 /// The caller drives `files_changed` in `execute_update_runner` from
 /// this return so the daemon-reload + restart gate at the end of the
-/// function still fires correctly. This is the workhorse for #337's
+/// function still fires correctly. This is the workhorse for the
 /// "skip rewrite when bytes match" optimization.
 fn read_then_write_if_changed(path: &Utf8Path, bytes: &[u8], log: &mut UndoLog) -> Result<bool> {
     let prior = read_prior(path);
@@ -2953,7 +2948,7 @@ fn read_then_write_if_changed(path: &Utf8Path, bytes: &[u8], log: &mut UndoLog) 
 /// Per-pool group name. Runners that reference a pool join this group
 /// so the sccache UDS at `/run/ghars/cache-POOL.sock` (mode 0660,
 /// group=ghars-cache-POOL) is reachable through DAC. Part 9b
-/// "DAC permissions on the socket file" / cross-user access (#34).
+/// "DAC permissions on the socket file" / cross-user access.
 ///
 /// `pub(crate)` so `systemd::render_cache_drop_in` (the only other
 /// site that materializes the `ghars-cache-*` group name, in the
@@ -2962,7 +2957,7 @@ fn read_then_write_if_changed(path: &Utf8Path, bytes: &[u8], log: &mut UndoLog) 
 /// pattern means the fuzz invariant in `apply::cache_pool_group_props`
 /// (length cap + charset) covers both call sites.
 pub(crate) fn cache_pool_group(pool: &str) -> String {
-    // #408 contract: state.rs::discover() now INCLUDES oversize pool
+    // Contract: state.rs::discover() INCLUDES oversize pool
     // names in `actual.cache_pools` so the planner can emit
     // RemoveCachePool. That removal flows through
     // `execute_remove_cache_pool` → `cache_pool_group` to compute the
@@ -3235,7 +3230,7 @@ fn execute_update_cache_pool(
         files_changed += 1;
     }
 
-    // #202 resolution: pool-kind change is a membership no-op.
+    // Pool-kind change is a membership no-op.
     //
     // F79i invariant (design Part 17 ~line 5060): the per-pool group is
     // `ghars-cache-NAME`, parameterized by pool name only — NOT by kinds.
@@ -3249,10 +3244,10 @@ fn execute_update_cache_pool(
     // does require usermod per F79i step 3, but that's
     // execute_update_runner's responsibility, not execute_update_cache_pool.
 
-    // #466: skip daemon-reload + stop + start when nothing on disk
-    // changed. Mirror of #337's runner-side optimization. No
+    // Skip daemon-reload + stop + start when nothing on disk
+    // changed. Mirror of the runner-side optimization. No
     // pool-membership Vec here — pool-kind change is a membership
-    // no-op (per the #202 comment above) so the byte-equality check
+    // no-op (per the comment above) so the byte-equality check
     // on the 00-ghars.conf drop-in is the sole gate. Contrast with
     // the runner-side `pools_added`/`pools_removed` populated in
     // `execute_update_runner` for the cache-binding diff.
@@ -3302,7 +3297,7 @@ fn execute_remove_cache_pool(
 
     // Per-pool cache storage directory. systemd's CacheDirectory=
     // creates this at unit start; ghars removes it on RemoveCachePool
-    // so a config drop does not leave stale 200G on disk (#192). We do
+    // so a config drop does not leave stale 200G on disk. We do
     // NOT call guard_home_dir_rmrf — the path is fixed
     // `<cache_dir>/pools/<name>` and `name` already passed
     // IDENTIFIER_REGEX upstream (no `/` or `..` possible).
@@ -3329,7 +3324,7 @@ fn execute_remove_cache_pool(
 
 // ---------- Helpers ----------------------------------------------------
 
-// #245: returns the full `RegistrationToken` (not just `.value`) so the
+// Returns the full `RegistrationToken` (not just `.value`) so the
 // caller controls the lifetime. Moving `tok.value` out of `RegistrationToken`
 // would require `String: Drop` to opt out of the Drop guard, which Rust
 // forbids for types whose containing struct implements Drop. Returning
@@ -3482,7 +3477,7 @@ fn write_root_owned(path: &Utf8Path, bytes: &[u8]) -> Result<()> {
     // inode whose contents the kernel has not yet written through —
     // recovery would see the new name with old/zero data.
     f.sync_all()?;
-    // #187: chown the freshly-written fd to root:root. OpenOptions::mode
+    // Chown the freshly-written fd to root:root. OpenOptions::mode
     // sets the file mode, but ownership is inherited from the calling
     // process's effective UID/GID (and umask only affects mode bits).
     // The function name is a promise — root-owned end-to-end. Without
@@ -3533,7 +3528,7 @@ fn write_root_owned(path: &Utf8Path, bytes: &[u8]) -> Result<()> {
 /// state for a unit that does not yet have its enable/start side-
 /// effects applied). Use [`read_then_write_if_changed`] when the
 /// caller actually needs the byte-changed flag to gate a daemon-reload
-/// + restart (#337).
+/// + restart.
 ///
 /// The pattern was open-coded six times before this consolidation:
 /// `execute_create_runner` (unit file + drop-in loop),
@@ -3596,7 +3591,7 @@ fn tighten_credential_perms(runner_home: &Utf8Path, user_name: &str) -> Result<(
     // config.sh; tighten any that exist. Missing files are ignored —
     // not all auth modes write both.
     //
-    // SEC-NEW (#212): we MUST NOT use the path-based `fs::metadata` /
+    // SEC-NEW: we MUST NOT use the path-based `fs::metadata` /
     // `fs::set_permissions` pair here. Each is a separate syscall and
     // each follows symlinks. The runner user owns these files (config.sh
     // writes them under <runner_home>) so a malicious runner could
@@ -3612,7 +3607,7 @@ fn tighten_credential_perms(runner_home: &Utf8Path, user_name: &str) -> Result<(
     // `fchmod(fd, mode)` (std/sys/fs/unix.rs:1787-1788). This pins
     // the chmod target to the inode we opened.
     //
-    // #223: also fchown to the current runner user. config.sh writes
+    // Also fchown to the current runner user. config.sh writes
     // these files owned by whichever user ran config.sh (per
     // ConfigShellCtx.user). If the operator changes `user=` on a runner
     // between applies, leftover credentials keep their old ownership and
@@ -3824,7 +3819,7 @@ pub fn guard_home_dir_rmrf(
 /// back to the host network namespace and the action aborts (F79
 /// belt-and-suspenders).
 ///
-/// #225: the kernel-side netns join races MainPID's recording. systemd
+/// The kernel-side netns join races MainPID's recording. systemd
 /// calls service_set_main_pidref (service.c:2596) the moment exec_spawn
 /// returns the child PID — which is post-vfork-unblock, but BEFORE
 /// systemd-executor reaches the apply_namespace step that calls
@@ -3869,7 +3864,7 @@ fn verify_runner_netns(unit_name: &str, systemd: &dyn Systemd) -> Result<()> {
 /// (distinct symlink targets) and fail path (matching symlink targets)
 /// can be exercised quickly without running a real netns'd unit.
 /// Production calls always pass `/proc`, `NETNS_VERIFY_DEADLINE`, and
-/// `NETNS_VERIFY_BACKOFF` (#189, #225).
+/// `NETNS_VERIFY_BACKOFF`.
 fn verify_runner_netns_at(
     proc_root: &std::path::Path,
     unit_name: &str,
@@ -4022,14 +4017,14 @@ mod tests {
     struct MockSystemd {
         calls: Mutex<Vec<String>>,
         properties: Mutex<HashMap<(String, String), String>>,
-        // #221: optional fault-injection. When `fail_stop_unit` is
+        // Optional fault-injection. When `fail_stop_unit` is
         // Some(name), `stop_unit(name)` returns Err with a recognisable
         // message rather than recording the call. Used by recreate-path
         // tests that need execute_remove_runner to fail at its very
         // first systemd call so execute_create_runner is provably never
         // dispatched. Symmetric shape with MockUsers.fail_remove_group.
         fail_stop_unit: Mutex<Option<String>>,
-        // #516 wiring: when `fail_daemon_reload_message` is Some(msg),
+        // Wiring: when `fail_daemon_reload_message` is Some(msg),
         // `daemon_reload()` returns Err carrying `msg` verbatim inside
         // a `GharsError::Systemd` instead of recording the call. Used
         // by the post-loop daemon_reload escape-pin test to inject a
@@ -4233,11 +4228,11 @@ mod tests {
         groups_added: Mutex<Vec<String>>,
         groups_removed: Mutex<Vec<String>>,
         memberships: Mutex<Vec<(String, String)>>,
-        // #272: pairs (user, group) recorded by remove_user_from_group.
+        // Pairs (user, group) recorded by remove_user_from_group.
         // Disjoint from `memberships` so tests can independently assert
         // "added" and "removed" sequences.
         removed_memberships: Mutex<Vec<(String, String)>>,
-        // #352: fault-injection. When `fail_remove_group` is set to
+        // Fault-injection. When `fail_remove_group` is set to
         // Some(group), `remove_user_from_group(_, group)` returns Err
         // rather than recording the call. The Err mirrors a
         // production-time gpasswd failure (system-level error). The
@@ -4246,7 +4241,7 @@ mod tests {
         // log". Add-side has the same shape via `fail_add_group`.
         fail_remove_group: Mutex<Option<String>>,
         fail_add_group: Mutex<Option<String>>,
-        // #597: optional override for the injected add_user_to_group
+        // Optional override for the injected add_user_to_group
         // error message. When `Some(s)`, the Err returned by
         // `add_user_to_group` carries `s` verbatim inside its Io
         // source. Used by call-site sanitization wiring tests to
@@ -4376,7 +4371,7 @@ mod tests {
             allowed_cpus: None,
             allowed_memory_nodes: None,
             spec_hash: "sha256:dead".into(),
-            // #289: in-place delta paths in apply now refuse to write
+            // In-place delta paths in apply refuse to write
             // a 00-ghars.conf without X-Ghars-Runsvc-Sha256 (would
             // cause runsvc-wrapper to fail-stop on next start). Test
             // fixtures that drive UpdateRunner through the in-place
@@ -4461,7 +4456,7 @@ mod tests {
         );
     }
 
-    /// #338: synthetic PermissionDenied io::Error must be wrapped as
+    /// Synthetic PermissionDenied io::Error must be wrapped as
     /// `GharsError::Validation` with the "running as root" hint.
     /// Pinned because EACCES on the lock-file open is the most common
     /// non-root-operator failure mode and the cryptic raw EACCES from
@@ -4493,7 +4488,7 @@ mod tests {
         );
     }
 
-    /// #338: any non-PermissionDenied io::Error must pass through as
+    /// Any non-PermissionDenied io::Error must pass through as
     /// `GharsError::Io` (no Validation hint), preserving the original
     /// `ErrorKind` so callers can match on it. Pinned so a future
     /// refactor that widens the EACCES branch to "any io error" would
@@ -4522,7 +4517,7 @@ mod tests {
         }
     }
 
-    /// #341: a pre-existing apply.lock at a wider mode (operator
+    /// A pre-existing apply.lock at a wider mode (operator
     /// chmod, prior ghars version, umask drift) must be re-tightened
     /// to 0o600 by `acquire_lock`. `OpenOptions::mode(0o600)` only
     /// applies on O_CREAT, so opening an existing 0o644 file would
@@ -4712,7 +4707,7 @@ mod tests {
 
     #[test]
     fn guard_home_dir_rmrf_rejects_symlink_at_home_path() {
-        // SEC-NEW (#213): if an attacker plants a symlink at the
+        // SEC-NEW: if an attacker plants a symlink at the
         // runner home path pointing to (e.g.) /etc, the guard must
         // reject before rmrf runs. Std's modern remove_dir_all also
         // detects this and unlinks-the-symlink rather than following
@@ -4772,7 +4767,7 @@ mod tests {
 
     #[test]
     fn write_root_owned_creates_file_at_0644() {
-        // #187 + F-1: write_root_owned promises root:root + 0644
+        // F-1: write_root_owned promises root:root + 0644
         // ownership for the inode it wrote. The temp file is created
         // at 0o600 (create-restrictive) and widened to 0o644 via
         // fchmod on the open fd after chown_to_root succeeds. Tests
@@ -4851,7 +4846,7 @@ mod tests {
         // Pre-condition: dest already contains exactly the bytes we'd
         // write. read_prior returns Some(bytes), the byte-equality
         // check returns Ok(false) WITHOUT pushing an UndoStep — the
-        // #337 "skip rewrite" optimization. The mtime/inode are
+        // "skip rewrite" optimization. The mtime/inode are
         // preserved so systemd does not see a "changed" drop-in and
         // `files_changed` stays at 0 in the caller.
         let tmp = tempfile::tempdir().unwrap();
@@ -4902,7 +4897,7 @@ mod tests {
 
     #[test]
     fn write_record_undo_writes_even_when_bytes_match() {
-        // #416 always-write contract pin: write_record_undo MUST write
+        // Always-write contract pin: write_record_undo MUST write
         // and push UndoStep even when on-disk bytes already equal the
         // payload. This is the critical asymmetry with
         // read_then_write_if_changed: the create branch issues systemd
@@ -5073,7 +5068,7 @@ mod tests {
 
     #[test]
     fn tighten_credential_perms_refuses_chmod_through_symlink() {
-        // SEC-NEW (#212): config.sh writes .credentials at
+        // SEC-NEW: config.sh writes .credentials at
         // <runner_home>/.credentials owned by the runner user. Between
         // the write and apply's tighten_credential_perms call, a
         // malicious runner could swap the file for a symlink to (e.g.)
@@ -5165,12 +5160,12 @@ mod tests {
 
     #[test]
     fn tighten_credential_perms_handles_missing_user_without_error() {
-        // #223: when the operator names a user that does not yet exist
+        // When the operator names a user that does not yet exist
         // in /etc/passwd (e.g. apply is racing with useradd, or the
         // runner block was renamed mid-config), tighten_credential_perms
         // must NOT error. The fchmod path runs to drop credentials to
         // 0600 and the fchown step is skipped with a tracing::warn!.
-        // The end-state is the same as the pre-#223 behaviour for the
+        // The end-state is the same as the prior behaviour for the
         // mode check: 0600. Ownership is left untouched (whatever
         // config.sh wrote).
         let tmp = tempfile::tempdir().unwrap();
@@ -5204,7 +5199,7 @@ mod tests {
 
     #[test]
     fn remove_runner_orphan_skips_mint_token_and_config_remove() {
-        // #220: orphan RemoveRunner has empty url + auth_name (set
+        // Orphan RemoveRunner has empty url + auth_name (set
         // by the orphan synthesis loop in `plan_from` when
         // synthesising RemoveRunner from actual.orphans). With those
         // empty, mint_token would error
@@ -5341,7 +5336,7 @@ mod tests {
         );
     }
 
-    // -- #226 sort_into_phases properties -------------------------------
+    // -- sort_into_phases properties ------------------------------------
 
     fn make_update_delta(name: &str, prefix: &Utf8Path, requires_recreate: bool) -> RunnerDelta {
         let after = make_runner_plan(name, prefix);
@@ -5788,7 +5783,7 @@ mod tests {
         // fail_fast=true short-circuits.
         assert_eq!(result.failed.len(), 1);
         assert!(result.failed[0].0.contains("CreateCachePool(a)"));
-        // #474: failed action also lands in `details` as
+        // Failed action also lands in `details` as
         // `ApplyOutcome::Failed`. The label matches the failed
         // tuple's label exactly (single source of action labels).
         // `plan_disruption` mirrors `Action::CreateCachePool`'s
