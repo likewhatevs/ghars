@@ -4150,6 +4150,24 @@ mod tests {
     use super::*;
     use clap::Parser;
 
+    /// Placeholder runsvc.sh SHA-256 digest for discovered-runner
+    /// fixtures. Concrete value is irrelevant to assertions —
+    /// `execute_remove_runner` does not consult the digest, and the
+    /// runsvc_wrapper trampoline runs only at runner start time. What
+    /// matters is that the value is non-empty: a populated annotation
+    /// mirrors the post-install steady state (a prior
+    /// `apply.rs::execute_create_runner` would have computed the
+    /// runsvc.sh digest and written it into the X-Ghars-Runsvc-Sha256
+    /// annotation in `00-ghars.conf`), distinct from the empty-
+    /// fallback path that `DiscoveredAnnotations::default` produces
+    /// when the drop-in is missing entirely.
+    ///
+    /// 64 ones is a syntactically-valid 256-bit hex digest with no
+    /// collision risk against any real digest (no real runsvc.sh
+    /// hashes to all 1s).
+    const FIXTURE_RUNSVC_SHA256: &str =
+        "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+
     // ---- #275: err_to_exit_code variant mapping ---------------------
 
     /// `GharsError::Config` → exit code 6 (Part 5).
@@ -9858,6 +9876,120 @@ auth = \"pat\"
         );
     }
 
+    /// Inverse of `plan_from_count_with_explicit_collision_lists_each_name_once_in_recreates`:
+    /// the explicit ci-1 carries `memory_max = None` while the count
+    /// block carries `memory_max = Some("4G")`. expand_counts's
+    /// `if explicit_names.contains(...)` arm at plan.rs:813 still
+    /// auto-skips the count-expanded ci-1, so the explicit ci-1's
+    /// RunnerSpec — with its None memory_max — is what flows through
+    /// merge_defaults and into the resulting EffectiveRunnerSpec.
+    /// merge_defaults's `runner.memory_max OR defaults.memory_max`
+    /// chain at plan.rs:1048 then resolves to None (defaults left
+    /// None by `cfg_with_runner_trust_zone`).
+    ///
+    /// The forward-direction sibling proves the explicit block wins
+    /// when it carries MORE configuration than the count block (the
+    /// "richer-spec wins" hypothesis would also pass that test). This
+    /// inverse direction proves the explicit block wins when it
+    /// carries LESS configuration than the count block — falsifying
+    /// any "richer-spec wins" alternative. Together they pin the
+    /// invariant that explicit-block precedence is positional/identity
+    /// based, not field-density based.
+    #[test]
+    fn plan_from_count_with_explicit_collision_explicit_none_wins_over_count_some() {
+        // Build a config with a count=3 block carrying memory_max =
+        // Some("4G") AND an explicit ci-1 carrying memory_max = None.
+        // The explicit block must override the count-expanded ci-1
+        // even though the count block is "richer".
+        let mut cfg = cfg_with_runner_trust_zone("ci", "default".into());
+        cfg.runners[0].count = Some(3);
+        cfg.runners[0].memory_max = Some("4G".into());
+        let explicit = crate::config::RunnerSpec {
+            name: "ci-1".into(),
+            count: None,
+            url: "https://github.com/example/ci-1".into(),
+            auth: Some("pat".into()),
+            labels: Vec::new(),
+            memory_max: None,
+            runner_version: None,
+            runner_sha256: None,
+            runner_tarball: None,
+            arch: None,
+            user: None,
+            prefix: None,
+            caches: Vec::new(),
+            trust_zone: "default".into(),
+            network: None,
+            proxy: None,
+            hooks: None,
+            hardening: crate::config::Hardening::default(),
+            allowed_cpus: None,
+            allowed_memory_nodes: None,
+        };
+        cfg.runners.push(explicit);
+
+        let actual = state::ActualState::default();
+        let paths = Paths::default();
+
+        let plan = plan::plan_from(&cfg, &actual, &paths)
+            .expect("count+explicit (inverse) plan_from must succeed");
+
+        // 3 expanded names total (ci-1 from explicit, ci-2 + ci-3
+        // from count) — same shape as the forward-direction sibling.
+        let create_count = plan
+            .actions
+            .iter()
+            .filter(|a| matches!(a, Action::CreateRunner(_)))
+            .count();
+        assert_eq!(
+            create_count, 3,
+            "count=3 with explicit ci-1 collision must yield 3 CreateRunner actions \
+             (no duplicate ci-1); got {} actions: {:?}",
+            plan.actions.len(),
+            plan.actions
+                .iter()
+                .map(|a| format!("{a:?}"))
+                .collect::<Vec<_>>(),
+        );
+
+        // Discriminating-fixture guards. The forward-direction sibling
+        // pins `count.memory_max = None` and `defaults.memory_max =
+        // None` so its `Some("8G")` assertion is discriminating. This
+        // inverse test pins the symmetric setup: the count block
+        // carries `Some("4G")` (so the assertion below — that ci-1's
+        // memory_max resolves to None — proves the explicit block
+        // won, not that the count block's value happened to be None
+        // already), and the defaults must remain None (otherwise
+        // merge_defaults's `or_else(|| defaults.memory_max.clone())`
+        // would inject the defaults value into the explicit ci-1's
+        // EffectiveRunnerSpec, masking the "explicit wins" assertion
+        // through the defaults-inheritance path).
+        assert_eq!(
+            cfg.runners[0].memory_max,
+            Some("4G".into()),
+            "count block must carry memory_max=Some(\"4G\") for inverse \
+             precedence test to be discriminating",
+        );
+        assert!(
+            cfg.defaults.memory_max.is_none(),
+            "defaults must leave memory_max=None for inverse precedence test \
+             to be discriminating via merge_defaults or_else chain",
+        );
+        let ci1_plan = plan
+            .actions
+            .iter()
+            .find_map(|a| match a {
+                Action::CreateRunner(p) if p.spec.name == "ci-1" => Some(p),
+                _ => None,
+            })
+            .expect("CreateRunner(ci-1) must exist in actions");
+        assert_eq!(
+            ci1_plan.spec.memory_max, None,
+            "explicit-block precedence (inverse): ci-1's spec must carry the \
+             explicit None, not the count block's memory_max=\"4G\"",
+        );
+    }
+
     /// Count=0 → orphan RemoveRunner end-to-end shape: a `[[runner]]`
     /// block with `count = Some(0)` is dropped at expand_counts
     /// (`expand_counts`'s `matches!(spec.count, Some(0)) => continue`
@@ -10020,21 +10152,9 @@ auth = \"pat\"
             allowed_cpus: None,
             allowed_memory_nodes: None,
             spec_hash: "sha256:0".into(),
-            // Non-empty mirrors the post-install steady state: a
-            // prior `apply.rs::execute_create_runner` would have
-            // computed the runsvc.sh digest and written it into the
-            // X-Ghars-Runsvc-Sha256 annotation. The fixture
-            // simulates "this runner has been running since the last
-            // apply" rather than "first apply post-upgrade".
-            // An empty value would also work for this test —
-            // execute_remove_runner does not consult the digest, and
-            // the trampoline check is start-time only — but the
-            // populated-annotation path is the dominant production
-            // shape, and this test is specifically about the
-            // populated path.
-            runsvc_sha256:
-                "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-                    .into(),
+            // Non-empty digest mirrors post-install steady state. See
+            // `FIXTURE_RUNSVC_SHA256` doc-comment for rationale.
+            runsvc_sha256: FIXTURE_RUNSVC_SHA256.into(),
             config_source: "/etc/ghars/ghars.toml".into(),
         };
         let rendered = crate::systemd::render_runner_unit(&discovered_spec)
