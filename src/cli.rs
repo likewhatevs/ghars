@@ -2795,11 +2795,11 @@ pub(crate) fn render_apply_emission(
 }
 
 /// Build one `drop_in_changes[]` JSON entry. When `diff = false`,
-/// emits the pre-#285 shape (`basename` + `change_kind`). When
-/// `diff = true`, adds body content per variant: `after` for
-/// Created, `before` for Removed, `unified_diff` for Modified.
-/// Preserved adds nothing — the basename + `"preserved"`
-/// `change_kind` is the entire payload.
+/// emits the minimal shape (`basename` + `change_kind`) without
+/// body content. When `diff = true`, adds body content per
+/// variant: `after` for Created, `before` for Removed,
+/// `unified_diff` for Modified. Preserved adds nothing — the
+/// basename + `"preserved"` `change_kind` is the entire payload.
 fn drop_in_change_to_json(dc: &plan::DropInChange, diff: bool) -> serde_json::Value {
     let change_kind = match dc.change {
         plan::DropInChangeKind::Created { .. } => "created",
@@ -2808,14 +2808,15 @@ fn drop_in_change_to_json(dc: &plan::DropInChange, diff: bool) -> serde_json::Va
         plan::DropInChangeKind::Preserved => "preserved",
     };
     let mut obj = serde_json::Map::new();
-    // #567 (item 8): same defense-in-depth basename escape as the
-    // recreate-Removed JSON path at ~line 1763. `dc.basename` flows
-    // from `state::discover`'s filesystem walk, which has no
-    // charset gate (config-load validates operator-authored drop-in
-    // names but discovery-side basenames from the on-disk
-    // `<drop-in-dir>/` listing bypass that). Replacing the raw
-    // String with `escape_control_chars(...).into_owned()` keeps
-    // the JSON wire shape terminal-safe for downstream
+    // Defense-in-depth basename escape (parity with the
+    // recreate-Removed JSON path in `plan_to_json_value`).
+    // `dc.basename` flows from `state::discover`'s filesystem
+    // walk, which has no charset gate (config-load validates
+    // operator-authored drop-in names but discovery-side
+    // basenames from the on-disk `<drop-in-dir>/` listing bypass
+    // that). Replacing the raw String with
+    // `escape_control_chars(...).into_owned()` keeps the JSON
+    // wire shape terminal-safe for downstream
     // `jq | echo -e` / `printf '%b'` pipelines.
     obj.insert(
         "basename".into(),
@@ -2861,8 +2862,8 @@ fn render_plan_json(plan: &Plan, diff: bool) -> Result<()> {
     let mut stdout = io::stdout().lock();
     // serde_json encode failures here are internal encoder failures
     // (e.g. stdout closed, write returns short), NOT operator config
-    // errors — map to GharsError::Io so main.rs's #275 mapping
-    // doesn't surface exit code 6 (config) for an io fault.
+    // errors — map to GharsError::Io so main.rs's variant→exit-code
+    // mapping doesn't surface exit code 6 (config) for an io fault.
     serde_json::to_writer_pretty(&mut stdout, &body)
         .map_err(|e| GharsError::Io(io::Error::other(format!("encode plan json: {e}"))))?;
     writeln!(stdout).map_err(GharsError::Io)?;
@@ -2890,11 +2891,11 @@ fn cmd_apply(
     if args.dry_run {
         // `--dry-run` is documented as an alias for `ghars plan` (Part 5).
         // With `--detailed-exitcode`, `dry_run_exit_code` returns 2 when
-        // the plan has any non-NoOp action — terraform parity (#389).
+        // the plan has any non-NoOp action — terraform parity.
         // With `--detailed-exitcode-recreate`, returns 8 when the plan
-        // has any recreate-class action — recreate trumps detailed (#464).
+        // has any recreate-class action — recreate trumps detailed.
         // Threads `args.diff` so `apply --dry-run --diff` produces the
-        // same body output as `plan --diff` (#285).
+        // same body output as `plan --diff`.
         let plan = compute_plan(&cfg, paths, &args.only)?;
         render_plan(&plan, color, false, quiet, args.diff)?;
         return Ok(dry_run_exit_code(
@@ -2920,7 +2921,7 @@ fn cmd_apply(
         render_plan(&plan, color, false, false, args.diff)?;
     }
 
-    // #464: pre-confirm recreate gate. When `--detailed-exitcode-recreate`
+    // Pre-confirm recreate gate. When `--detailed-exitcode-recreate`
     // is set and the plan contains a recreate-class action, exit 8 BEFORE
     // prompting (or auto-approving) — lets a CI workflow short-circuit
     // on recreate plans without spending a human y/N or running the
@@ -2933,18 +2934,18 @@ fn cmd_apply(
 
     if !args.auto_approve && !confirm_apply()? {
         if !quiet {
-            // #393: status message goes to stderr so wrapping scripts
+            // Status message goes to stderr so wrapping scripts
             // that capture stdout (e.g. for plan output) don't see it
             // mixed in with structured output. Unix convention:
             // diagnostics on stderr, data on stdout.
             let _ = writeln!(io::stderr(), "apply cancelled");
         }
-        // #358: cancellation with --detailed-exitcode returns 2 ("changes
+        // Cancellation with --detailed-exitcode returns 2 ("changes
         // still pending" — terraform semantics), distinct from 0 ("plan
         // had no diff, no work needed"). Without --detailed-exitcode,
         // 0 preserves the established CLI convention that cancelling
         // an interactive prompt is a non-error.
-        // #464: cancellation with --detailed-exitcode-recreate returns
+        // Cancellation with --detailed-exitcode-recreate returns
         // 8 — but the pre-confirm gate above already short-circuits on
         // recreate plans, so this branch is effectively reached only
         // when the plan has no recreates. cancel_exit_code keeps the
@@ -2990,7 +2991,7 @@ fn cmd_apply(
     ))
 }
 
-/// #478: render the rollback-state advisory for a failed `apply` run,
+/// Render the rollback-state advisory for a failed `apply` run,
 /// or `None` when no action failed (success path emits no advisory).
 /// The advisory walks `result.failed_undo_logs` (populated by
 /// `apply()` on every Err path) and produces a multi-line block:
@@ -3037,22 +3038,22 @@ fn cmd_apply(
 /// Entries with empty step lists (synthetic `daemon_reload` post-loop
 /// failure; actions that errored before recording any side effect)
 /// are skipped from the per-label block. Header N counts ONLY entries
-/// with non-empty step lists (#618), so header count == body block
-/// count under the mixed case (some empty + some non-empty); empty-
-/// step failures still surface via the per-action `fail:` lines from
-/// the cmd_apply detail loop.
+/// with non-empty step lists, so header count == body block count
+/// under the mixed case (some empty + some non-empty); empty-step
+/// failures still surface via the per-action `fail:` lines from the
+/// cmd_apply detail loop.
 ///
-/// #553: invariant `result.failed.len() == result.failed_undo_logs.len()`.
+/// Invariant: `result.failed.len() == result.failed_undo_logs.len()`.
 /// `apply::apply` pushes both Vecs in lockstep on every Err arm
-/// (per-action arm at apply.rs:2123/2147-2149; synthetic
-/// daemon_reload arm at apply.rs:2188/2201). The lengths can only
-/// diverge in hand-constructed `ApplyResult` test fixtures.
-/// `debug_assert_eq!` pins the contract in dev/CI builds; release
-/// builds proceed because `n` (the header count) and the body loop
-/// both derive from `failed_undo_logs` independently of `failed`.
+/// (per-action arm and synthetic daemon_reload arm in apply.rs).
+/// The lengths can only diverge in hand-constructed `ApplyResult`
+/// test fixtures. `debug_assert_eq!` pins the contract in dev/CI
+/// builds; release builds proceed because `n` (the header count)
+/// and the body loop both derive from `failed_undo_logs`
+/// independently of `failed`.
 ///
-/// #551 / #618: returns `None` when no entry in `failed_undo_logs` has
-/// a non-empty step list. A single gate (`n == 0` after filtering)
+/// Returns `None` when no entry in `failed_undo_logs` has a
+/// non-empty step list. A single gate (`n == 0` after filtering)
 /// covers both the no-failures case (`result.failed.is_empty()` ⇒
 /// length-equal invariant ⇒ `failed_undo_logs.is_empty()` ⇒ `n == 0`)
 /// and the all-empty-steps case (synthetic `daemon_reload` post-loop
@@ -3072,8 +3073,8 @@ pub(crate) fn render_rollback_advisory(result: &apply::ApplyResult) -> Option<St
         result.failed_undo_logs.len(),
         "ApplyResult invariant: failed and failed_undo_logs must have equal length",
     );
-    // #618: header N counts ONLY entries with non-empty step lists so
-    // the printed count matches the body block count under the mixed
+    // Header N counts ONLY entries with non-empty step lists so the
+    // printed count matches the body block count under the mixed
     // case (some empty + some non-empty). This single count subsumes
     // both prior early-return paths: `result.failed.is_empty()` ⇒
     // (length-equal invariant) ⇒ `failed_undo_logs.is_empty()` ⇒
@@ -3091,7 +3092,7 @@ pub(crate) fn render_rollback_advisory(result: &apply::ApplyResult) -> Option<St
         if steps.is_empty() {
             continue;
         }
-        // #600: defense-in-depth escape of the per-failure label.
+        // Defense-in-depth escape of the per-failure label.
         // Labels flow from `Action::label()` → `result.failed_undo_logs`
         // keys, derived from operator-supplied runner names and pool
         // names. Upstream `IDENTIFIER_REGEX` rejects control chars at
@@ -3105,12 +3106,12 @@ pub(crate) fn render_rollback_advisory(result: &apply::ApplyResult) -> Option<St
         out.push_str("\n  ");
         out.push_str(&escape_control_chars(label));
         out.push(':');
-        // F-DA2 (#478 pass 1): walk steps in REVERSE (LIFO) to match
-        // apply::undo's `log.steps().iter().rev()` direction. The
-        // operator's manual-cleanup checklist reads top-to-bottom
-        // and undoes the most-recent mutation first.
+        // Walk steps in REVERSE (LIFO) to match apply::undo's
+        // `log.steps().iter().rev()` direction. The operator's
+        // manual-cleanup checklist reads top-to-bottom and undoes
+        // the most-recent mutation first.
         //
-        // #552: defense-in-depth escape of the per-step description
+        // Defense-in-depth escape of the per-step description
         // before stderr emission. `UndoStep::describe()` interpolates
         // operator-supplied paths (drop-in basenames built from runner
         // names) and unit/group/user names; upstream charset
@@ -3126,12 +3127,12 @@ pub(crate) fn render_rollback_advisory(result: &apply::ApplyResult) -> Option<St
     Some(out)
 }
 
-/// #611: single source of truth for the advisory header line in
+/// Single source of truth for the advisory header line in
 /// production code. Extracting the format string behind a named
 /// function means a future text change ("Rollback advisory:" /
 /// "Manual cleanup may be required:") happens in one place at the
 /// call site, not scattered across every renderer that used to
-/// inline the literal (mirrors the #471 pattern that lifted
+/// inline the literal (mirrors the pattern that lifted
 /// Disruption-label tokens behind `Disruption::label()`). Tests
 /// continue to hardcode the operator-visible substrings — that's
 /// correct for contract pinning: a test that calls this helper
@@ -3140,7 +3141,7 @@ pub(crate) fn render_rollback_advisory(result: &apply::ApplyResult) -> Option<St
 ///
 /// Naming follows the project's `format_*` precedent for pure
 /// string-building helpers (e.g. `format_disruption_tail` /
-/// peers in `render_plan_summary_line`); see #652.
+/// peers in `render_plan_summary_line`).
 fn format_rollback_advisory_header(n: usize) -> String {
     format!("Rollback advisory: {n} action(s) failed. Manual cleanup may be required:")
 }
@@ -16839,14 +16840,18 @@ auth = \"pat\"
         let mut stderr: Vec<u8> = Vec::new();
         render_apply_emission(&result, &mut stdout, &mut stderr).unwrap();
         let out = String::from_utf8(stdout).unwrap();
-        let err_s = String::from_utf8(stderr).unwrap();
+        let err = String::from_utf8(stderr).unwrap();
         assert!(
-            err_s.contains("Rollback advisory"),
-            "advisory missing from stderr: {err_s}",
+            err.contains("Rollback advisory"),
+            "advisory missing from stderr: {err}",
         );
         assert!(
-            err_s.contains("CreateCachePool(a)"),
-            "advisory must list failed-action label: {err_s}",
+            err.contains("CreateCachePool(a)"),
+            "advisory must list failed-action label: {err}",
+        );
+        assert!(
+            err.contains("created directory"),
+            "advisory body must include step description: {err}",
         );
         assert!(
             !out.contains("Rollback advisory"),
@@ -16859,7 +16864,7 @@ auth = \"pat\"
         );
         // Symmetric cross-stream negative pin: footer must NOT appear on stderr.
         assert!(
-            !err_s.contains("Apply:"),
+            !err.contains("Apply:"),
             "footer must NOT appear on stderr"
         );
     }
@@ -16881,6 +16886,31 @@ auth = \"pat\"
         assert!(
             !err.contains("Rollback advisory"),
             "no advisory expected on success: {err}",
+        );
+    }
+
+    /// Pins the `render_apply_summary_line` footer routes to stdout
+    /// (not stderr) for a single-Created fixture. `err.is_empty()` is
+    /// the strongest inverse pin: any leak — footer or otherwise —
+    /// fails.
+    #[test]
+    fn render_apply_emission_footer_routes_to_stdout() {
+        let result = apply::ApplyResult {
+            details: vec![("CreateRunner(a)".into(), apply::ApplyOutcome::Created)],
+            ..apply::ApplyResult::default()
+        };
+        let mut stdout: Vec<u8> = Vec::new();
+        let mut stderr: Vec<u8> = Vec::new();
+        render_apply_emission(&result, &mut stdout, &mut stderr).unwrap();
+        let out = String::from_utf8(stdout).unwrap();
+        let err = String::from_utf8(stderr).unwrap();
+        assert!(
+            out.contains("Apply: 1 applied"),
+            "summary footer missing from stdout: {out}",
+        );
+        assert!(
+            err.is_empty(),
+            "stderr must be empty for single-Created fixture: {err}",
         );
     }
 }
