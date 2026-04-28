@@ -202,6 +202,41 @@ pub(crate) fn prepend_validation_scope(scope: &str, err: GharsError) -> GharsErr
 /// covers any future wrapper additions).
 pub(crate) const FORMAT_ERROR_CHAIN_MAX_DEPTH: usize = 16;
 
+/// Format a byte count as a short human-readable string with the
+/// largest binary-prefix unit at which the value is at least 1.
+///
+/// Renders body-cap diagnostics in operator-friendly units so a
+/// 4-MiB cap surfaces as `"4.0 MiB"` rather than `"4194304 bytes"`,
+/// which an operator must mentally convert to triage. Units use
+/// binary prefixes (1024-based: B, KiB, MiB, GiB) because the
+/// underlying caps (`MAX_RELEASES_BODY_BYTES = 4 * 1024 * 1024`,
+/// `MAX_TARBALL_DOWNLOAD_BYTES = 512 * 1024 * 1024`) are themselves
+/// powers of 1024 — using SI (1000-based) units would produce
+/// awkward fractional values like `4.19 MB` for a binary-clean 4 MiB.
+///
+/// One decimal of precision for non-integer values keeps short cap
+/// values precise while not flooding the message. Sub-byte values
+/// are not possible (the `u64` count can't be negative); the helper
+/// emits `"0 B"` for zero and exact byte counts unchanged below
+/// 1024.
+#[must_use]
+pub(crate) fn human_bytes(n: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = KIB * 1024;
+    const GIB: u64 = MIB * 1024;
+    if n < KIB {
+        return format!("{n} B");
+    }
+    let (value, unit) = if n < MIB {
+        (n as f64 / KIB as f64, "KiB")
+    } else if n < GIB {
+        (n as f64 / MIB as f64, "MiB")
+    } else {
+        (n as f64 / GIB as f64, "GiB")
+    };
+    format!("{value:.1} {unit}")
+}
+
 /// Walk the `std::error::Error::source()` chain of an arbitrary error
 /// and concatenate each layer's Display with ": " separators. The
 /// outer Display of types like `std::io::Error` and `reqwest::Error`
@@ -546,5 +581,86 @@ mod tests {
             }
             other => panic!("expected Validation after empty-scope prepend; got: {other:?}"),
         }
+    }
+
+    // -------- human_bytes contract tests (#724) --------
+
+    #[test]
+    fn human_bytes_zero_is_zero_b() {
+        assert_eq!(human_bytes(0), "0 B");
+    }
+
+    #[test]
+    fn human_bytes_sub_kib_uses_b_with_no_decimal() {
+        // 0..1023 must render as integer bytes ("123 B"), not as
+        // "0.1 KiB" — the sub-KiB carve-out keeps small values
+        // precise and avoids the float artifact "0.0 KiB".
+        assert_eq!(human_bytes(1), "1 B");
+        assert_eq!(human_bytes(123), "123 B");
+        assert_eq!(human_bytes(1023), "1023 B");
+    }
+
+    #[test]
+    fn human_bytes_kib_boundary_renders_kib() {
+        // Exactly 1 KiB = 1024 must render as "1.0 KiB" (the boundary
+        // tips into KiB precision). Off-by-one regressions that use
+        // `<= KIB` instead of `< KIB` would render "1024 B" here.
+        assert_eq!(human_bytes(1024), "1.0 KiB");
+        assert_eq!(human_bytes(1536), "1.5 KiB");
+    }
+
+    #[test]
+    fn human_bytes_mib_boundary_renders_mib() {
+        // 1 MiB = 1048576. The Layer-1 / Layer-2 caps are
+        // 4 * 1024 * 1024 = 4 MiB, the canonical operator-facing case.
+        let mib: u64 = 1024 * 1024;
+        assert_eq!(human_bytes(mib), "1.0 MiB");
+        assert_eq!(human_bytes(4 * mib), "4.0 MiB");
+        // Non-integer MiB values render with one decimal — pin the
+        // "4.2 MiB" precedent from the #724 task description so a
+        // regression to two decimals or zero decimals would surface.
+        assert_eq!(human_bytes(4 * mib + (mib / 5)), "4.2 MiB");
+    }
+
+    #[test]
+    fn human_bytes_gib_boundary_renders_gib() {
+        // 1 GiB = 1073741824. The MAX_TARBALL_DOWNLOAD_BYTES cap is
+        // 512 * 1024 * 1024 = 512 MiB which is sub-GiB; this boundary
+        // pin guards the GiB arm against future cap raises.
+        let gib: u64 = 1024 * 1024 * 1024;
+        assert_eq!(human_bytes(gib), "1.0 GiB");
+        assert_eq!(human_bytes(2 * gib), "2.0 GiB");
+    }
+
+    #[test]
+    fn human_bytes_release_cap_renders_4_mib() {
+        // Pin against the production constant value so a regression
+        // changing MAX_RELEASES_BODY_BYTES surfaces as a divergence
+        // between the operator-visible cap rendering and the actual
+        // cap. 4 * 1024 * 1024 == 4 MiB.
+        let release_cap: u64 = 4 * 1024 * 1024;
+        assert_eq!(human_bytes(release_cap), "4.0 MiB");
+    }
+
+    #[test]
+    fn human_bytes_tarball_cap_renders_512_mib() {
+        // Pin against the production constant value so a regression
+        // changing MAX_TARBALL_DOWNLOAD_BYTES surfaces. 512 * 1024 *
+        // 1024 == 512 MiB.
+        let tarball_cap: u64 = 512 * 1024 * 1024;
+        assert_eq!(human_bytes(tarball_cap), "512.0 MiB");
+    }
+
+    #[test]
+    fn human_bytes_max_u64_renders_gib_without_overflow() {
+        // u64::MAX is 18446744073709551615 bytes ≈ 17179869184 GiB.
+        // The implementation casts to f64 which loses precision but
+        // must not panic or overflow on the maximum input. Pin
+        // robustness to the worst case.
+        let s = human_bytes(u64::MAX);
+        assert!(
+            s.ends_with(" GiB"),
+            "human_bytes(u64::MAX) must fall through to GiB unit; got: {s}"
+        );
     }
 }

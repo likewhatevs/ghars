@@ -20,7 +20,7 @@
 //!   at use time, refusing if it has become a symlink or non-regular file
 //!   between validation and use.
 
-use crate::error::format_error_chain;
+use crate::error::{format_error_chain, human_bytes};
 use crate::{GharsError, Result, USER_AGENT};
 use camino::{Utf8Path, Utf8PathBuf};
 use sha2::{Digest, Sha256};
@@ -167,12 +167,13 @@ fn http_download_with_cap(
                 );
             }
             return Err(GharsError::Tarball(format!(
-                "download failed: {url}: response body exceeds {max_bytes} bytes \
-                 post-decompression (possible compression bomb); the \
-                 post-decompression body is suspiciously large; verify network \
-                 path (compromised mirror, hostile proxy CA, or non-GitHub \
-                 origin); if the upstream payload is legitimately this large, \
-                 file a ghars issue to raise MAX_TARBALL_DOWNLOAD_BYTES"
+                "download failed: {url}: response body exceeds {max_h} ({max_bytes} bytes) \
+                 post-decompression; the post-decompression body is larger than expected; \
+                 this can indicate a deliberately-crafted payload OR a legitimately large \
+                 upstream response; verify network path (compromised mirror, hostile proxy \
+                 CA, or non-GitHub origin); if the upstream payload is legitimately this \
+                 large, file a ghars issue to raise MAX_TARBALL_DOWNLOAD_BYTES",
+                max_h = human_bytes(max_bytes)
             )));
         }
         out.write_all(&buf[..n]).map_err(|e| {
@@ -1886,17 +1887,20 @@ mod tests {
     /// #680 over-cap rejection + unlink pin: a body larger than the
     /// test cap (128 bytes vs cap of 64) triggers the cap-firing
     /// branch in `http_download_with_cap`. Asserts (a) the call
-    /// returns Err with the "exceeds ... compression bomb"
-    /// diagnostic, AND (b) the destination file does NOT exist
-    /// post-call — exercising the `drop(out); fs::remove_file(dest)`
-    /// cleanup path which had zero runtime coverage pre-#680. This
-    /// is the load-bearing security pin: a half-written file
-    /// surviving a cap-fire could be promoted by a later SHA256
-    /// check. Also pins format prefix ("download failed:"), URL
-    /// presence, "post-decompression" qualifier (parity with
-    /// github.rs Layer 2 framing), network-path triage hint,
-    /// MAX_TARBALL_DOWNLOAD_BYTES escape hatch, and anti-doubling
-    /// invariant (single occurrence of "response body exceeds").
+    /// returns Err with the "exceeds … post-decompression" diagnostic,
+    /// AND (b) the destination file does NOT exist post-call —
+    /// exercising the `drop(out); fs::remove_file(dest)` cleanup
+    /// path which had zero runtime coverage pre-#680. This is the
+    /// load-bearing security pin: a half-written file surviving a
+    /// cap-fire could be promoted by a later SHA256 check. Also
+    /// pins format prefix ("download failed:"), URL presence,
+    /// "post-decompression" qualifier (parity with github.rs Layer 2
+    /// framing), network-path triage hint, MAX_TARBALL_DOWNLOAD_BYTES
+    /// escape hatch, and anti-doubling invariant (single occurrence
+    /// of "response body exceeds"). #727 softens the alarming
+    /// "compression bomb" framing to neutral "larger than expected"
+    /// language; #724 adds human-readable byte sizes alongside the
+    /// raw cap value so operators don't have to mentally divide.
     #[test]
     fn http_download_with_cap_rejects_over_cap_and_unlinks_dest() {
         let mut server = mockito::Server::new();
@@ -1927,16 +1931,30 @@ mod tests {
                     msg.contains("exceeds") && msg.contains("64 bytes"),
                     "msg must surface cap value + 'exceeds'; got: {msg}"
                 );
-                assert!(
-                    msg.contains("compression bomb"),
-                    "msg must surface compression-bomb diagnostic; got: {msg}"
-                );
                 // Pin "post-decompression" parity with github.rs Layer 2
                 // framing — operators triaging across both surfaces see
                 // consistent on-wire vs post-decompression vocabulary.
                 assert!(
                     msg.contains("post-decompression"),
                     "msg must surface 'post-decompression' framing; got: {msg}"
+                );
+                // #727 — alarming "compression bomb" framing dropped
+                // in favor of neutral "larger than expected" wording
+                // that names both threat-model and legitimate-payload
+                // possibilities. Pin the new wording so a regression
+                // back to the alarming framing surfaces here.
+                assert!(
+                    msg.contains("larger than expected"),
+                    "msg must surface neutral 'larger than expected' framing per #727; got: {msg}"
+                );
+                assert!(
+                    msg.contains("deliberately-crafted")
+                        && msg.contains("legitimately large"),
+                    "msg must name both threat-model + legitimate-payload possibilities per #727; got: {msg}"
+                );
+                assert!(
+                    !msg.contains("compression bomb"),
+                    "msg MUST NOT surface alarming 'compression bomb' framing per #727; got: {msg}"
                 );
                 // Pin operator hint parity with github.rs cap-exceeded
                 // hint so a post-cap operator gets the same
@@ -1964,6 +1982,14 @@ mod tests {
                     msg.matches("response body exceeds").count(),
                     1,
                     "single occurrence of 'response body exceeds' required; got: {msg}"
+                );
+                // #724 — human-readable byte size for cap value (64 B
+                // for sub-KiB integer-byte path) alongside raw "64
+                // bytes" so an operator reads "64 B (64 bytes)"
+                // without mental conversion.
+                assert!(
+                    msg.contains("64 B (64 bytes)"),
+                    "msg must include human-readable byte size '64 B (64 bytes)' per #724; got: {msg}"
                 );
             }
             other => panic!("expected GharsError::Tarball, got {other:?}"),

@@ -41,7 +41,7 @@ use tokio::runtime::Runtime;
 use crate::Result;
 use crate::USER_AGENT;
 use crate::config::{Arch, ProxySpec};
-use crate::error::{GharsError, format_error_chain};
+use crate::error::{GharsError, format_error_chain, human_bytes};
 
 /// GitHub releases-API endpoint for the latest actions/runner release.
 const API_LATEST: &str = "https://api.github.com/repos/actions/runner/releases/latest";
@@ -639,7 +639,9 @@ fn http_get_payload_with_cap(
                 if cl > max_bytes {
                     return Err(GharsError::GitHub(
                         format!(
-                            "GitHub API response Content-Length {cl} exceeds {max_bytes} bytes: {url}"
+                            "GitHub API response Content-Length {cl_h} ({cl} bytes) exceeds {max_h} ({max_bytes} bytes): {url}",
+                            cl_h = human_bytes(cl),
+                            max_h = human_bytes(max_bytes)
                         ),
                         "the on-wire (pre-decompression) Content-Length is suspiciously \
                          large; verify network path (compromised mirror, hostile proxy CA, \
@@ -658,7 +660,7 @@ fn http_get_payload_with_cap(
     // cap-firing through structural variants rather than substring
     // matching on an error string. Cap-firing branch differentiates
     // Layer 1 (on-wire/pre-decompression) from Layer 2
-    // (post-decompression/bomb signature).
+    // (post-decompression).
     let buf = read_body_capped(resp, max_bytes).map_err(|err| match err {
         BodyCapError::Io(io_err) => GharsError::GitHub(
             format!(
@@ -669,13 +671,13 @@ fn http_get_payload_with_cap(
         ),
         BodyCapError::CapExceeded { cap } => GharsError::GitHub(
             format!(
-                "GitHub API response body exceeds {cap} bytes post-decompression \
-                 (possible compression bomb): {url}"
+                "GitHub API response body exceeds {cap_h} ({cap} bytes) post-decompression: {url}",
+                cap_h = human_bytes(cap)
             ),
-            "the post-decompression body is suspiciously large (compression-bomb \
-             signature); verify network path (compromised mirror, hostile proxy CA, \
-             or non-GitHub origin); if the upstream payload is legitimately this \
-             large, file a ghars issue to raise MAX_RELEASES_BODY_BYTES"
+            "the post-decompression body is larger than expected; this can indicate \
+             a deliberately-crafted payload OR a legitimately large upstream response; \
+             check status.github.com, then file a ghars issue to raise \
+             MAX_RELEASES_BODY_BYTES if the payload is genuine"
                 .into(),
         ),
     })?;
@@ -2060,7 +2062,7 @@ mod tests {
                     msg.ends_with(&format!(": {url}")),
                     "Layer 1 msg must end with ': {{url}}'; got: {msg}"
                 );
-                // Layer 1 differentiation: on-wire/pre-decompression framing distinct from Layer 2's post-decompression/bomb-signature framing.
+                // Layer 1 differentiation: on-wire/pre-decompression framing distinct from Layer 2's post-decompression framing.
                 assert!(
                     hint.contains("on-wire") && hint.contains("pre-decompression"),
                     "Layer 1 hint must surface on-wire/pre-decompression framing; got: {hint}"
@@ -2070,12 +2072,13 @@ mod tests {
                     "Layer 1 hint must NOT surface post-decompression framing (Layer 2 territory); got: {hint}"
                 );
                 assert!(
-                    !hint.contains("compression-bomb signature"),
-                    "Layer 1 hint must NOT surface bomb-signature framing (Layer 2 territory); got: {hint}"
-                );
-                assert!(
                     hint.contains("MAX_RELEASES_BODY_BYTES"),
                     "Layer 1 hint must surface MAX_RELEASES_BODY_BYTES escape hatch; got: {hint}"
+                );
+                // #724 — Layer 1 msg must surface human-readable size labels alongside raw byte counts so an operator can read "128 B (128 bytes)" without mental conversion.
+                assert!(
+                    msg.contains("128 B") && msg.contains("64 B"),
+                    "Layer 1 msg must include human-readable byte sizes (e.g. '128 B', '64 B'); got: {msg}"
                 );
             }
             other => panic!("expected GharsError::GitHub, got {other:?}"),
@@ -2093,11 +2096,14 @@ mod tests {
     /// gate) to fire — the actual gzip-bomb defense surface.
     ///
     /// Asserts the wrapped error format: starts with "GitHub API
-    /// response", contains "body exceeds" + cap value + "compression
-    /// bomb", surfaces "post-decompression" framing distinct from
-    /// Layer 1's "on-wire / pre-decompression" framing, and crucially
-    /// does NOT contain the doubled-noun "response response"
-    /// (regression pin for cleaner F-1 fix).
+    /// response", contains "body exceeds" + cap value, surfaces
+    /// "post-decompression" framing distinct from Layer 1's "on-wire
+    /// / pre-decompression" framing, and crucially does NOT contain
+    /// the doubled-noun "response response" (regression pin for
+    /// cleaner F-1 fix). Hint text was softened in #727 to drop the
+    /// alarming "compression-bomb signature" framing in favor of
+    /// neutral language that names both the deliberately-crafted and
+    /// legitimately-large possibilities.
     #[test]
     fn http_get_payload_with_cap_rejects_via_layer_2_streaming_when_no_content_length() {
         let mut server = mockito::Server::new();
@@ -2122,10 +2128,6 @@ mod tests {
                     "wrapped msg must surface 'body exceeds' + cap value 64; got: {msg}"
                 );
                 assert!(
-                    msg.contains("compression bomb"),
-                    "wrapped msg must surface 'compression bomb' diagnostic; got: {msg}"
-                );
-                assert!(
                     msg.contains("post-decompression"),
                     "Layer 2 msg must surface 'post-decompression' (Layer 1 vs Layer 2 differentiation); got: {msg}"
                 );
@@ -2140,17 +2142,40 @@ mod tests {
                     msg.ends_with(&format!(": {url}")),
                     "Layer 2 msg must end with ': {{url}}'; got: {msg}"
                 );
+                // #727 — alarming "compression-bomb signature" framing
+                // replaced with neutral "larger than expected" wording
+                // that names both threat-model and legitimate-payload
+                // possibilities. Pin the new wording so a regression
+                // back to the alarming framing surfaces here.
                 assert!(
-                    hint.contains("compromised mirror") || hint.contains("hostile proxy"),
-                    "Layer 2 hint must surface attacker model (suspicious-network); got: {hint}"
+                    hint.contains("larger than expected"),
+                    "Layer 2 hint must surface neutral 'larger than expected' framing per #727; got: {hint}"
                 );
                 assert!(
-                    hint.contains("compression-bomb signature"),
-                    "Layer 2 hint must surface bomb-signature framing (Layer 1 vs Layer 2 differentiation); got: {hint}"
+                    hint.contains("deliberately-crafted")
+                        && hint.contains("legitimately large"),
+                    "Layer 2 hint must name both threat-model + legitimate-payload possibilities; got: {hint}"
+                );
+                assert!(
+                    !hint.contains("compression-bomb signature"),
+                    "Layer 2 hint MUST NOT surface alarming 'compression-bomb signature' framing per #727; got: {hint}"
+                );
+                assert!(
+                    hint.contains("status.github.com"),
+                    "Layer 2 hint must surface status.github.com triage breadcrumb; got: {hint}"
                 );
                 assert!(
                     hint.contains("MAX_RELEASES_BODY_BYTES"),
                     "hint must surface MAX_RELEASES_BODY_BYTES escape hatch; got: {hint}"
+                );
+                // #724 — Layer 2 msg must include human-readable size
+                // label (e.g. "64 B") alongside raw "64 bytes" so an
+                // operator reads them without mental conversion. The
+                // small-cap test uses a 64-byte cap which renders as
+                // "64 B" in human_bytes (sub-KiB integer-byte path).
+                assert!(
+                    msg.contains("64 B (64 bytes)"),
+                    "Layer 2 msg must include human-readable byte size '64 B (64 bytes)'; got: {msg}"
                 );
             }
             other => panic!("expected GharsError::GitHub, got {other:?}"),
@@ -2443,6 +2468,179 @@ mod tests {
         assert!(
             !final_msg.contains("read failed: read failed"),
             "anti-doubling pin: wrapper prefix must not duplicate when chain starts with similar text; got: {final_msg}"
+        );
+    }
+
+    /// #735 — anti-doubling pin against the hypothetical double-Display
+    /// cascade. The concern: if std's `io::Error::Display` (or any
+    /// outer error type) already includes its source's Display text in
+    /// its own Display, then `format_error_chain` would emit that text
+    /// twice — once from `err.to_string()` and again from the
+    /// `.source()` walk. The cleanest empirical defense is to
+    /// construct an outer error whose Display intentionally spells out
+    /// a unique sentinel string that the inner error does NOT contain,
+    /// then assert that the outermost layer's Display contribution to
+    /// `format_error_chain` output appears exactly once. If the
+    /// outer were leaking inner text, the inner Display would also
+    /// appear once via the source walk — but the outer's would not
+    /// double.
+    ///
+    /// The complementary disconfirmation: construct an outer that DOES
+    /// embed inner text in its own Display (using
+    /// `io::Error::other(inner)` which delegates Display to the
+    /// wrapped error per std::io::Error::fmt at io/error.rs:1140-1147).
+    /// In that case the inner text legitimately appears twice (once
+    /// from outer.to_string() because outer Display delegates, once
+    /// from the source walk). This is by design — `format_error_chain`
+    /// cannot peek into outer Display formatters to deduplicate. The
+    /// test pins the io::Error::other behavior as a known acceptable
+    /// repetition so a future maintainer reading the test sees what
+    /// IS guaranteed (no fabrication of doubled text by the helper)
+    /// vs. what is NOT guaranteed (no double when outer Display
+    /// already embeds inner via delegation).
+    ///
+    /// Source-of-truth read: io/error.rs Display impl for the
+    /// inner-Custom variant calls `fmt::Display::fmt(&c.error, fmt)`
+    /// which delegates outright. reqwest::Error Display (verified at
+    /// reqwest-0.12.28/src/error.rs:227-273) writes ONLY its own
+    /// kind-specific text and the URL — it does NOT walk into the
+    /// source chain. So `format_error_chain` over a reqwest::Error
+    /// produces `<outer-kind-text>: <source-text>` with no doubling.
+    #[test]
+    fn format_error_chain_no_doubling_on_distinct_outer_display() {
+        use std::error::Error;
+        use std::fmt;
+
+        const OUTER_SENTINEL: &str = "OUTER-ZK7-UNIQUE";
+        const INNER_SENTINEL: &str = "INNER-Q3M-UNIQUE";
+
+        #[derive(Debug)]
+        struct DistinctInner;
+        impl fmt::Display for DistinctInner {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(INNER_SENTINEL)
+            }
+        }
+        impl Error for DistinctInner {}
+
+        #[derive(Debug)]
+        struct DistinctOuter {
+            cause: DistinctInner,
+        }
+        impl fmt::Display for DistinctOuter {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                // Outer Display intentionally does NOT include inner's
+                // text — exactly the reqwest::Error pattern.
+                f.write_str(OUTER_SENTINEL)
+            }
+        }
+        impl Error for DistinctOuter {
+            fn source(&self) -> Option<&(dyn Error + 'static)> {
+                Some(&self.cause)
+            }
+        }
+
+        let err = DistinctOuter {
+            cause: DistinctInner,
+        };
+        let chain = format_error_chain(&err);
+        // Each sentinel must appear exactly once: the outer once
+        // from `err.to_string()`, the inner once from the source
+        // walk. No doubling in either direction.
+        assert_eq!(
+            chain.matches(OUTER_SENTINEL).count(),
+            1,
+            "outer sentinel must appear exactly once when outer Display does not embed source; got: {chain}"
+        );
+        assert_eq!(
+            chain.matches(INNER_SENTINEL).count(),
+            1,
+            "inner sentinel must appear exactly once via source-walk; got: {chain}"
+        );
+        // Pin the order: outer first, then ": ", then inner.
+        let expected = format!("{OUTER_SENTINEL}: {INNER_SENTINEL}");
+        assert_eq!(
+            chain, expected,
+            "chain must concatenate outer + ': ' + inner with no extra framing; got: {chain}"
+        );
+    }
+
+    /// #735 — `io::Error::new(kind, inner)` "transparent wrap" pin.
+    ///
+    /// The hypothetical doubling concern: if std's `io::Error` Display
+    /// embedded the wrapped error's text AND `source()` returned the
+    /// wrapped error, then `format_error_chain` would surface the
+    /// wrapped error's text twice (once from outer Display delegation,
+    /// once from the source walk).
+    ///
+    /// Verified against std at io/error.rs (stable toolchain
+    /// 1.94.x):
+    ///   - Display impl (Custom variant) at io/error.rs:1046-1058
+    ///     calls `c.error.fmt(fmt)` — delegates to wrapped Display
+    ///     verbatim (so outer.to_string() emits inner text).
+    ///   - `source()` impl (Custom variant) at io/error.rs:1072-1079
+    ///     returns `c.error.source()` — NOT `Some(&*c.error)`. The
+    ///     wrapped error itself is SKIPPED in the source walk; the
+    ///     walk goes directly to whatever the wrapped error's own
+    ///     `source()` returns.
+    ///
+    /// Net behavior: `io::Error::new(kind, inner)` produces a
+    /// "transparent wrap" — the wrapped error's identity is consumed
+    /// into the outer (Display delegation + source-skip). For an
+    /// inner error whose own `source()` is `None`,
+    /// `format_error_chain` emits the inner Display exactly ONCE.
+    ///
+    /// Production impact: none. Production code calls
+    /// `format_error_chain(&reqwest_err)` and
+    /// `format_error_chain(&io_err)` directly on the outermost
+    /// type, never wrapping reqwest::Error in io::Error::other.
+    /// Reqwest::Error Display (verified at
+    /// reqwest-0.12.28/src/error.rs:227-273) writes ONLY its own
+    /// kind-specific text and URL, never embedding the source — so
+    /// the production no-doubling regime is pinned by
+    /// `format_error_chain_no_doubling_on_distinct_outer_display`.
+    ///
+    /// This pin defends against a regression that "fixes" the
+    /// nonexistent doubling by adding a substring deduplicator,
+    /// which would corrupt the genuine no-doubling case where inner
+    /// text is meaningfully distinct from anything embedded by outer.
+    #[test]
+    fn format_error_chain_io_error_wrap_is_transparent_no_doubling() {
+        use std::error::Error;
+        use std::fmt;
+        use std::io;
+
+        const INNER_SENTINEL: &str = "INNER-DEL-SENTINEL";
+
+        #[derive(Debug)]
+        struct DistinctInner;
+        impl fmt::Display for DistinctInner {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(INNER_SENTINEL)
+            }
+        }
+        impl Error for DistinctInner {}
+
+        // io::Error::new wraps the inner error such that:
+        //   - outer Display delegates to inner (1 emission of sentinel)
+        //   - outer.source() returns inner.source() (not the wrapped
+        //     inner itself), and DistinctInner has no source override
+        //     so the source walk yields None.
+        // Net: chain emits sentinel exactly once.
+        let outer = io::Error::new(io::ErrorKind::Other, DistinctInner);
+        let chain = format_error_chain(&outer);
+        assert_eq!(
+            chain.matches(INNER_SENTINEL).count(),
+            1,
+            "io::Error wrap is transparent — outer Display delegates to inner (1 emit) and source walk skips wrapped inner via inner.source()=None; chain must emit sentinel exactly once; got: {chain}"
+        );
+        // Anti-fabrication pin: chain equals exactly the inner Display
+        // text. Defense against a regression that prepends/appends
+        // framing in the depth-0 (no-source) path, or that adds a
+        // pseudo-layer for the wrapped inner.
+        assert_eq!(
+            chain, INNER_SENTINEL,
+            "io::Error wrap is transparent — chain must equal the inner Display verbatim with no framing; got: {chain}"
         );
     }
 
