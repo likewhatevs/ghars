@@ -1349,6 +1349,48 @@ impl DiscoveredAnnotations {
 /// For each detected change, the function ALSO emits a `FieldChange`
 /// into `out_changes` with the before/after values rendered as
 /// strings. CLI consumers display this as `field: before → after`.
+
+/// Compare two set-semantic string fields and return a `FieldChange`
+/// when the sets differ. Used by both the labels and caches branches
+/// of `classify_recreate_reasons_from_annotations` — both fields are
+/// set-semantic (GitHub Actions matches labels order-independently;
+/// supplementary-group membership is unordered) and must use the same
+/// sort-then-compare contract that apply enforces.
+///
+/// `before`: the discovered annotation Vec, or `None` for the
+/// post-upgrade fixture (skips the comparison entirely).
+/// `after`: an iterator over the desired set's string values. Caller
+/// extracts `.name` for caches or hands `String::as_str` for labels.
+///
+/// Both sides are sorted via `sort_unstable` (byte-wise Ord; matches
+/// the validator-enforced ASCII charset). When the sets differ, the
+/// returned `FieldChange.before/after` carry the SORTED Vecs so
+/// operator-facing surfaces (plan JSON, --diff) see the canonical
+/// ordering GitHub / apply will use.
+///
+/// Returns `None` when discovered is `None` (skip) or the sorted sets
+/// match (no-op). The caller decides whether to push a recreate
+/// reason — labels does, caches does not (in-place per design Part 3).
+fn sorted_set_field_diff<'a>(
+    path: &'static str,
+    before: Option<&'a [String]>,
+    after: impl Iterator<Item = &'a str>,
+) -> Option<FieldChange> {
+    let before = before?;
+    let mut before_sorted: Vec<&str> = before.iter().map(String::as_str).collect();
+    before_sorted.sort_unstable();
+    let mut after_sorted: Vec<&str> = after.collect();
+    after_sorted.sort_unstable();
+    if before_sorted == after_sorted {
+        return None;
+    }
+    Some(FieldChange {
+        path,
+        before: FieldValue::List(before_sorted.iter().map(|s| (*s).to_owned()).collect()),
+        after: FieldValue::List(after_sorted.iter().map(|s| (*s).to_owned()).collect()),
+    })
+}
+
 fn classify_recreate_reasons_from_annotations(
     discovered: &DiscoveredAnnotations,
     desired: &EffectiveRunnerSpec,
@@ -1383,33 +1425,15 @@ fn classify_recreate_reasons_from_annotations(
     // `X-Ghars-Labels=beta,alpha` then operator reorders TOML to
     // `[alpha, beta]`) does not record a misleading `labels` recreate
     // reason / FieldChange even though GitHub's view of the
-    // registration is identical. `merge_defaults` already sorts
-    // `desired.labels` (so `after_sorted` is a no-op for any spec
-    // coming through `plan_from`); kept here for defense-in-depth so a
-    // direct caller that builds an `EffectiveRunnerSpec` without going
-    // through `merge_defaults` inherits canonical comparison
-    // semantics. `before_sorted` still matters in production — the
-    // discovered `00-ghars.conf` may have been written by an older
-    // ghars or operator-edited and may not be canonical.
-    //
-    // FieldChange.before/after are emitted in sorted form so
-    // operator-facing surfaces (--diff output, plan JSON) see the
-    // canonical order GitHub will see at registration time.
-    if let Some(before) = discovered.labels.as_ref() {
-        let mut before_sorted: Vec<&str> = before.iter().map(String::as_str).collect();
-        before_sorted.sort_unstable();
-        let mut after_sorted: Vec<&str> = desired.labels.iter().map(String::as_str).collect();
-        after_sorted.sort_unstable();
-        if before_sorted != after_sorted {
-            reasons.push("labels");
-            out_changes.push(FieldChange {
-                path: "labels",
-                before: FieldValue::List(
-                    before_sorted.iter().map(|s| (*s).to_owned()).collect(),
-                ),
-                after: FieldValue::List(after_sorted.iter().map(|s| (*s).to_owned()).collect()),
-            });
-        }
+    // registration is identical. Recreate-class: a labels diff must
+    // re-register the runner with GitHub.
+    if let Some(change) = sorted_set_field_diff(
+        "labels",
+        discovered.labels.as_deref(),
+        desired.labels.iter().map(String::as_str),
+    ) {
+        reasons.push("labels");
+        out_changes.push(change);
     }
     if let Some(arch) = discovered.arch.as_deref() {
         let desired_arch = match desired.arch {
@@ -1592,37 +1616,17 @@ fn classify_recreate_reasons_from_annotations(
     // block in apply.rs runs the actual gpasswd diff). The plan
     // classifier MUST mirror that contract or a pure reorder
     // ["a","b"] → ["b","a"] would record a misleading FieldChange in
-    // plan output even though apply does no group ops. Sort BOTH
-    // sides before comparison and use sorted vectors for the rendered
-    // before/after strings so operators see the same canonical
-    // ordering apply will use.
+    // plan output even though apply does no group ops.
     //
-    // #371: `lower_to_effective` now sorts `desired.caches` by name
-    // before this function ever runs, so the `after_sorted` sort below
-    // is a no-op for any spec coming through plan_from. Kept as
-    // defense-in-depth: any future caller that builds an
-    // `EffectiveRunnerSpec` directly (rather than going through
-    // `lower_to_effective`) inherits canonical comparison semantics
-    // here without needing to know about the upstream sort.
-    // `before_sorted` still matters in production — the discovered
-    // `00-ghars.conf` was written by an older ghars or an
-    // operator-edited unit and may not be canonical.
-    if let Some(before) = discovered.caches.as_ref() {
-        let mut before_sorted: Vec<&str> = before.iter().map(String::as_str).collect();
-        before_sorted.sort_unstable();
-        let mut after_sorted: Vec<&str> = desired.caches.iter().map(|c| c.name.as_str()).collect();
-        after_sorted.sort_unstable();
-        if before_sorted != after_sorted {
-            out_changes.push(FieldChange {
-                path: "caches",
-                before: FieldValue::List(
-                    before_sorted.iter().map(|s| (*s).to_owned()).collect(),
-                ),
-                after: FieldValue::List(
-                    after_sorted.iter().map(|s| (*s).to_owned()).collect(),
-                ),
-            });
-        }
+    // In-place class: emit the FieldChange but DO NOT push a recreate
+    // reason. Apply reconciles the membership delta in-place via
+    // gpasswd ops; the runner identity is unchanged.
+    if let Some(change) = sorted_set_field_diff(
+        "caches",
+        discovered.caches.as_deref(),
+        desired.caches.iter().map(|c| c.name.as_str()),
+    ) {
+        out_changes.push(change);
     }
 
     reasons

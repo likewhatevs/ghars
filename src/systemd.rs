@@ -1346,17 +1346,27 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
     // emitting an opaque "spec_hash_mismatch" reason.
     let _ = writeln!(s, "X-Ghars-User={}", spec.user);
     let _ = writeln!(s, "X-Ghars-Prefix={}", spec.prefix);
-    // #271: emit X-Ghars-Caches unconditionally (matches the
-    // X-Ghars-Labels pattern at render_identity above) so the planner
-    // can detect caches-list shrinks. Without an unconditional emit,
-    // a runner whose caches list goes from `["a"]` → `[]` would have
-    // no on-disk record of the prior membership, so the in-place
-    // path could not compute a set diff to drive
+    // emit X-Ghars-Caches unconditionally (matches the X-Ghars-Labels
+    // pattern at render_identity above) so the planner can detect
+    // caches-list shrinks. Without an unconditional emit, a runner
+    // whose caches list goes from `["a"]` → `[]` would have no
+    // on-disk record of the prior membership, so the in-place path
+    // could not compute a set diff to drive
     // `users.remove_user_from_group`. Empty value is parsed as
     // `Some(vec![])` by the classifier (see DiscoveredAnnotations
     // labels handling).
-    // caches arrive pre-sorted by lower_to_effective (#371)
-    let cache_names: Vec<&str> = spec.caches.iter().map(|c| c.name.as_str()).collect();
+    //
+    // caches arrive pre-sorted by lower_to_effective. The defensive
+    // sort here mirrors the labels emission above: any future caller
+    // that builds an `EffectiveRunnerSpec` directly bypasses
+    // `lower_to_effective`'s sort, so re-sorting at the emission site
+    // keeps the on-disk `X-Ghars-Caches=` annotation canonical
+    // regardless. Without this, an unsorted-Vec direct-construct
+    // caller would emit a non-canonical annotation and the plan
+    // classifier's sorted comparison would silently mask the
+    // divergence.
+    let mut cache_names: Vec<&str> = spec.caches.iter().map(|c| c.name.as_str()).collect();
+    cache_names.sort_unstable();
     let _ = writeln!(s, "X-Ghars-Caches={}", cache_names.join(","));
     let _ = writeln!(s, "X-Ghars-Config-Source={}", spec.config_source);
     let _ = writeln!(
