@@ -290,6 +290,18 @@ pub(crate) fn human_bytes(n: u64) -> String {
 /// where `io::Error` is wrapped via `From<io::Error> for GharsError`
 /// — `reqwest::Error` is not an `io::Error`, so a separate walker
 /// would be required otherwise.
+///
+/// # Log-parsing note
+///
+/// Chain layers are joined with `": "`, but the same separator appears
+/// inside individual layer Display text (e.g. `"rustls: cert expired"`),
+/// so it is not an unambiguous layer boundary. The network-fetch paths
+/// in `extract.rs::http_download_with_cap` and
+/// `github.rs::http_get_payload_with_cap` emit `"...: {url}"` as the
+/// trailing segment on most arms, so anchoring on `https://` (or the
+/// known origin host) is a coarse but workable separator. Exception:
+/// the cap-fire arm in `http_download_with_cap` emits the URL
+/// mid-message.
 #[must_use]
 pub(crate) fn format_error_chain(err: &(dyn std::error::Error + 'static)) -> String {
     let mut out = err.to_string();

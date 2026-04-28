@@ -643,11 +643,14 @@ fn http_get_payload_with_cap(
                             cl_h = human_bytes(cl),
                             max_h = human_bytes(max_bytes)
                         ),
-                        "the on-wire (pre-decompression) Content-Length is suspiciously \
-                         large; verify network path (compromised mirror, hostile proxy CA, \
-                         or non-GitHub origin); if the upstream payload is legitimately \
-                         this large, file a ghars issue to raise MAX_RELEASES_BODY_BYTES"
-                            .into(),
+                        format!(
+                            "the on-wire (pre-decompression) Content-Length is suspiciously \
+                             large; verify network path (compromised mirror, hostile proxy CA, \
+                             or non-GitHub origin); if the upstream payload is legitimately \
+                             this large, file a ghars issue to raise MAX_RELEASES_BODY_BYTES \
+                             (current limit: {max_h} ({max_bytes} bytes))",
+                            max_h = human_bytes(max_bytes)
+                        ),
                     ));
                 }
             }
@@ -674,11 +677,14 @@ fn http_get_payload_with_cap(
                 "GitHub API response body exceeds {cap_h} ({cap} bytes) post-decompression: {url}",
                 cap_h = human_bytes(cap)
             ),
-            "the post-decompression body is larger than expected; this can indicate \
-             a deliberately-crafted payload OR a legitimately large upstream response; \
-             check status.github.com, then file a ghars issue to raise \
-             MAX_RELEASES_BODY_BYTES if the payload is genuine"
-                .into(),
+            format!(
+                "the post-decompression body is larger than expected; this can indicate \
+                 a deliberately-crafted payload OR a legitimately large upstream response; \
+                 check status.github.com, then file a ghars issue to raise \
+                 MAX_RELEASES_BODY_BYTES if the payload is genuine \
+                 (current limit: {cap_h} ({cap} bytes))",
+                cap_h = human_bytes(cap)
+            ),
         ),
     })?;
     serde_json::from_slice::<ReleaseApiPayload>(&buf).map_err(|e| {
@@ -2080,6 +2086,15 @@ mod tests {
                     msg.contains("128 B") && msg.contains("64 B"),
                     "Layer 1 msg must include human-readable byte sizes (e.g. '128 B', '64 B'); got: {msg}"
                 );
+                assert!(
+                    hint.contains("current limit:") && hint.contains("64 B (64 bytes)"),
+                    "Layer 1 hint must surface 'current limit: <human> (<bytes>)' so operator self-screens; got: {hint}"
+                );
+                assert_eq!(
+                    hint.matches("current limit:").count(),
+                    1,
+                    "Layer 1 hint must contain exactly one 'current limit:'; got: {hint}"
+                );
             }
             other => panic!("expected GharsError::GitHub, got {other:?}"),
         }
@@ -2176,6 +2191,15 @@ mod tests {
                 assert!(
                     msg.contains("64 B (64 bytes)"),
                     "Layer 2 msg must include human-readable byte size '64 B (64 bytes)'; got: {msg}"
+                );
+                assert!(
+                    hint.contains("current limit:") && hint.contains("64 B (64 bytes)"),
+                    "Layer 2 hint must surface 'current limit: <human> (<bytes>)' so operator self-screens; got: {hint}"
+                );
+                assert_eq!(
+                    hint.matches("current limit:").count(),
+                    1,
+                    "Layer 2 hint must contain exactly one 'current limit:'; got: {hint}"
                 );
             }
             other => panic!("expected GharsError::GitHub, got {other:?}"),

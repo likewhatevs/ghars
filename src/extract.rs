@@ -117,19 +117,13 @@ fn http_download_with_cap(
         )
     })?;
 
-    let resp = resp
-        .error_for_status_ref()
-        .map(|_| ())
-        .map_err(|e| {
-            GharsError::Tarball(
-                format!(
-                    "download failed: HTTP {chain}: {url}",
-                    chain = format_error_chain(&e)
-                ),
-                None,
-            )
-        })
-        .map(|()| &mut resp)?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        return Err(GharsError::Tarball(
+            format!("download failed ({status}): {url}"),
+            None,
+        ));
+    }
 
     let mut out = File::create(dest).map_err(|e| {
         GharsError::Tarball(
@@ -188,7 +182,8 @@ fn http_download_with_cap(
                      this can indicate a deliberately-crafted payload OR a legitimately large \
                      upstream response; verify network path (compromised mirror, hostile proxy \
                      CA, or non-GitHub origin); if the upstream payload is legitimately this \
-                     large, file a ghars issue to raise MAX_TARBALL_DOWNLOAD_BYTES",
+                     large, file a ghars issue to raise MAX_TARBALL_DOWNLOAD_BYTES \
+                     (current limit: {max_h} ({max_bytes} bytes))",
                     max_h = human_bytes(max_bytes)
                 ),
                 None,
@@ -1081,6 +1076,14 @@ mod tests {
                 assert!(
                     hint.is_none(),
                     "http_download Tarball variants must keep hint=None; got: {hint:?}"
+                );
+                assert!(
+                    msg.contains("download failed (404 Not Found)"),
+                    "msg must use parenthetical `({{status}}):` format with full StatusCode Display (parity with github.rs); got: {msg}"
+                );
+                assert!(
+                    msg.ends_with(&format!(": {url}")),
+                    "msg must end with ': {{url}}' for log-parser parity; got: {msg}"
                 );
             }
             other => panic!("expected Tarball, got {other:?}"),
@@ -2048,6 +2051,15 @@ mod tests {
                 assert!(
                     msg.contains("64 B (64 bytes)"),
                     "msg must include human-readable byte size '64 B (64 bytes)' per #724; got: {msg}"
+                );
+                assert!(
+                    msg.contains("current limit:") && msg.contains("64 B (64 bytes)"),
+                    "msg must surface 'current limit: <human> (<bytes>)' so operator self-screens; got: {msg}"
+                );
+                assert_eq!(
+                    msg.matches("current limit:").count(),
+                    1,
+                    "single occurrence of 'current limit:' required; got: {msg}"
                 );
             }
             other => panic!("expected GharsError::Tarball, got {other:?}"),
