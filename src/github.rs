@@ -511,13 +511,11 @@ fn release_from_api(payload: &ReleaseApiPayload, arch: Arch) -> Result<Release> 
     })
 }
 
-/// #680: typed error for `read_body_capped`. Two structurally distinct
-/// failure modes — transient I/O failure during read vs the cap-firing
-/// post-read check — that the caller wrapper at
-/// `http_get_payload_with_cap` routes to different `GharsError::GitHub`
-/// hints. A typed enum eliminates the prior string-discrimination
-/// (`msg.contains("exceeded")`) which was fragile against an
-/// `io::Error` Display containing the substring "exceeded".
+/// Typed error for `read_body_capped`. Variants distinguish transient
+/// I/O failure from the cap-firing post-read check, so the caller can
+/// route each mode to a different `GharsError::GitHub` hint without
+/// substring-matching an error string (which would misroute any
+/// `io::Error` Display that happens to contain "exceeded").
 #[derive(Debug)]
 enum BodyCapError {
     /// `Read::read_to_end` returned an I/O error before the cap could
@@ -534,32 +532,32 @@ enum BodyCapError {
 
 /// Walk the `std::error::Error::source()` chain of an `io::Error` and
 /// concatenate each layer's Display with ": " separators. `io::Error`'s
-/// own Display only formats the outermost layer (std/io/error.rs:Display
-/// for Error matches `ErrorData::Custom(c) => c.error.fmt(fmt)`), so
-/// nested causes (e.g. reqwest::Error wrapping hyper::Error wrapping a
-/// rustls error) are dropped if the operator only sees `format!("{io_err}")`.
-/// This helper preserves the full chain so an operator triaging a
+/// own Display only formats the outermost layer, so nested causes (e.g.
+/// reqwest::Error wrapping hyper::Error wrapping a rustls error) are
+/// dropped if the operator only sees `format!("{io_err}")`. This helper
+/// preserves the full chain so an operator triaging a
 /// connection-reset-during-TLS-handshake sees both the outer "request
-/// failed" framing and the inner rustls reason code.
+/// failed" framing and the inner rustls reason code. A depth cap of 16
+/// defends against cyclic source chains.
 fn format_io_chain(io_err: &std::io::Error) -> String {
     use std::error::Error;
     let mut out = io_err.to_string();
     let mut source: Option<&(dyn Error + 'static)> = io_err.source();
+    let mut depth = 0;
     while let Some(cause) = source {
+        if depth >= 16 {
+            break;
+        }
         out.push_str(": ");
         out.push_str(&cause.to_string());
+        depth += 1;
         source = cause.source();
     }
     out
 }
 
-/// #680: bounded read helper — `take(cap + 1)` then `read_to_end`,
-/// returning `BodyCapError::CapExceeded` if the reader had more than
-/// `cap` bytes, or `BodyCapError::Io` if the underlying read failed.
-/// Extracted from `http_get_payload_with_cap`'s Layer 2 so the
-/// cap-firing branch is unit-testable with a synthetic
-/// `Cursor<Vec<u8>>` reader and a small cap (e.g. 64 bytes), rather
-/// than requiring a 4 MiB+ mockito body for every test.
+/// Bounded read helper. Exists so unit tests can inject a small cap
+/// (e.g. 64 bytes) without HTTP plumbing.
 ///
 /// `cap` is the maximum allowed body size in bytes. Reads up to
 /// `cap + 1` bytes via `Read::take`; if the resulting buffer length
@@ -586,7 +584,7 @@ fn read_body_capped<R: Read>(reader: R, cap: u64) -> std::result::Result<Vec<u8>
 /// Issue an HTTP GET for a GitHub releases-API URL and deserialize
 /// the JSON body into `ReleaseApiPayload`.
 ///
-/// #666: defense-in-depth body-size cap. Two layers:
+/// Defense-in-depth body-size cap. Two layers:
 /// 1. Raw `Content-Length` HTTP header check — fast pre-read rejection
 ///    for oversize compressed bodies. The header carries the on-wire
 ///    (pre-decompression) size, so a `Content-Length > MAX` is enough
@@ -596,16 +594,11 @@ fn read_body_capped<R: Read>(reader: R, cap: u64) -> std::result::Result<Vec<u8>
 ///    The reader sits AFTER reqwest's gzip decoder, so bytes counted
 ///    are post-decompression — this is the actual bomb defense. If
 ///    the buffer length exceeds the cap, reject.
-///
-/// #680: production wraps `http_get_payload_with_cap` with
-/// `MAX_RELEASES_BODY_BYTES`. Tests can call the cap-injecting helper
-/// directly with a small cap (e.g. 64 bytes) to exercise both Layer
-/// 1 and Layer 2 branches without authoring a 4 MiB mockito body.
 fn http_get_payload(client: &reqwest::blocking::Client, url: &str) -> Result<ReleaseApiPayload> {
     http_get_payload_with_cap(client, url, MAX_RELEASES_BODY_BYTES)
 }
 
-/// #680: cap-injection seam for `http_get_payload`. Tests call this
+/// Cap-injection seam for `http_get_payload`. Tests call this
 /// directly with a small `max_bytes` to exercise both Layer 1
 /// (Content-Length pre-check) and Layer 2 (streaming `read_body_capped`)
 /// without authoring a 4 MiB+ mockito body. Production callers go
@@ -681,9 +674,8 @@ fn http_get_payload_with_cap(
     // stream via the `read_body_capped` helper. The helper returns a
     // typed `BodyCapError` so the wrapper routes I/O-failure vs
     // cap-firing through structural variants rather than substring
-    // matching on an error string. Read-failure branch drops the
-    // helper's redundant "read:" prefix; cap-firing branch
-    // differentiates Layer 1 (on-wire/pre-decompression) from Layer 2
+    // matching on an error string. Cap-firing branch differentiates
+    // Layer 1 (on-wire/pre-decompression) from Layer 2
     // (post-decompression/bomb signature).
     let buf = read_body_capped(resp, max_bytes).map_err(|err| match err {
         BodyCapError::Io(io_err) => GharsError::GitHub(
@@ -707,7 +699,7 @@ fn http_get_payload_with_cap(
     })?;
     serde_json::from_slice::<ReleaseApiPayload>(&buf).map_err(|e| {
         GharsError::GitHub(
-            format!("GitHub API response not valid JSON: {url}: {e}"),
+            format!("GitHub API response not valid JSON: {e}: {url}"),
             "the upstream contract returns JSON; transient corruption may resolve on retry".into(),
         )
     })
@@ -2240,10 +2232,11 @@ mod tests {
     /// `format_io_chain` walks an io::Error's `.source()` chain so
     /// nested causes (e.g. reqwest::Error wrapping hyper::Error
     /// wrapping rustls) survive into the operator-visible message.
-    /// Synthesize a 3-level chain: outer io::Error wraps a custom
-    /// error that wraps another custom error. The outer Display alone
-    /// shows only the outermost layer; format_io_chain joins all
-    /// three with ": " separators.
+    /// Synthesize: outer io::Error wraps a custom mid error that
+    /// wraps an inner error via source(). io::Error Custom Display
+    /// delegates to the wrapped error, so outer.to_string() emits
+    /// mid's text; format_io_chain walks source chain to append
+    /// inner's Display. Output has 2 text segments joined by ": ".
     #[test]
     fn format_io_chain_walks_nested_sources() {
         use std::error::Error;
@@ -2296,9 +2289,8 @@ mod tests {
         );
         // Adversarial: io_err.to_string() alone surfaces only the
         // outermost layer's Display (the mid Display, since io::Error
-        // Display formats the inner Custom error directly per
-        // std/io/error.rs). Verify format_io_chain produces strictly
-        // more than that.
+        // Display formats the inner Custom error directly). Verify
+        // format_io_chain produces strictly more than that.
         assert!(
             chain.len() > outer.to_string().len(),
             "chain must add inner-layer text beyond the outer Display; chain={chain}, outer={}",
