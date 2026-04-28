@@ -1690,7 +1690,7 @@ fn recreate_removed_basenames(d: &plan::RunnerDelta) -> Option<impl Iterator<Ite
     })
 }
 
-/// #612: human-readable gloss for opaque
+/// human-readable gloss for opaque
 /// [`plan::RunnerDelta::recreate_reasons`] tokens. Returns `Some` only
 /// for the two tokens that don't name a config field — `uncovered` and
 /// `runsvc_integrity` — both of which look meaningless in the
@@ -1862,7 +1862,7 @@ fn render_action_line(action: &Action, color: ColorMode, diff: bool) -> String {
                 fc.after.render_text(),
             ));
         }
-        // #612: under-header gloss for opaque recreate-reason tokens.
+        // under-header gloss for opaque recreate-reason tokens.
         // The header line shows
         // `! runner NAME (… recreate (uncovered,runsvc_integrity)) …`
         // verbatim from `recreate_reasons.join(",")` so operator grep
@@ -8189,6 +8189,75 @@ auth = \"pat\"
         );
     }
 
+    /// 3-element transitivity sibling: extends the 2-bullet pin with
+    /// a third path so the prefix relationship is transitive
+    /// (`a` ⊂ `ab` ⊂ `abc` as path prefixes). The 2-element variant
+    /// proves only that `a` doesn't fold into `ab`; the 3-element
+    /// variant additionally proves that `a` doesn't fold into `abc`
+    /// AND `ab` doesn't fold into `abc` AND `a` is independent of
+    /// `abc`.
+    ///
+    /// This catches a future renderer regression that shortens or
+    /// drops the trailing `.service.d` suffix from `describe()`'s
+    /// `format!("created directory {}")` arm: in the 2-element
+    /// variant a single drop only collapses `a` into `ab`; in the
+    /// 3-element variant the same drop produces 3 collapses
+    /// (`a` ⊂ `ab`, `a` ⊂ `abc`, `ab` ⊂ `abc`), so any of three
+    /// independent `count == 1` assertions falsifies. The wider
+    /// falsification surface tightens the pin against partial
+    /// regressions where only one collapse path lands.
+    ///
+    /// Exact-line equality remains the resolution mechanism — each
+    /// of the three full bullet lines must appear exactly once in
+    /// the rendered advisory.
+    #[test]
+    fn render_rollback_advisory_step_bullets_disambiguate_three_transitive_prefix_paths() {
+        let mut result = apply::ApplyResult::default();
+        push_failed(
+            &mut result,
+            "CreateCachePool(a)",
+            vec![
+                apply::UndoStep::CreateDir {
+                    path: camino::Utf8PathBuf::from(
+                        "/etc/systemd/system/ghars-cache@a.service.d",
+                    ),
+                },
+                apply::UndoStep::CreateDir {
+                    path: camino::Utf8PathBuf::from(
+                        "/etc/systemd/system/ghars-cache@ab.service.d",
+                    ),
+                },
+                apply::UndoStep::CreateDir {
+                    path: camino::Utf8PathBuf::from(
+                        "/etc/systemd/system/ghars-cache@abc.service.d",
+                    ),
+                },
+            ],
+        );
+        let advisory = render_rollback_advisory(&result).unwrap();
+        let bullet_a =
+            "    - created directory /etc/systemd/system/ghars-cache@a.service.d";
+        let bullet_ab =
+            "    - created directory /etc/systemd/system/ghars-cache@ab.service.d";
+        let bullet_abc =
+            "    - created directory /etc/systemd/system/ghars-cache@abc.service.d";
+        let count_a = advisory.lines().filter(|l| *l == bullet_a).count();
+        let count_ab = advisory.lines().filter(|l| *l == bullet_ab).count();
+        let count_abc = advisory.lines().filter(|l| *l == bullet_abc).count();
+        assert_eq!(
+            count_a, 1,
+            "shortest-path bullet (a) must appear exactly once; got: {advisory}",
+        );
+        assert_eq!(
+            count_ab, 1,
+            "middle-path bullet (ab) must appear exactly once; got: {advisory}",
+        );
+        assert_eq!(
+            count_abc, 1,
+            "longest-path bullet (abc) must appear exactly once; got: {advisory}",
+        );
+    }
+
     /// #476: only-skipped path (dry-run). Every action skipped via
     /// `DryRunSkipped`; applied=0, failed=0, skipped=N, all in `none`
     /// disruption bucket.
@@ -9693,6 +9762,84 @@ auth = \"pat\"
             "by_disruption.recreate count must equal recreates.len() — \
              plan_summary_value sources both fields from the same Vec",
         );
+        assert_eq!(body["summary"]["any_recreate"], true);
+    }
+
+    /// Count >= 10 sibling pin: byte-wise lex-sort produces
+    /// `ci-1, ci-10, ci-11, ci-12, ci-2, ...` rather than natural-order
+    /// `ci-1, ci-2, ..., ci-9, ci-10, ci-11, ci-12`. This is the
+    /// contractually-correct behavior of `Vec::<String>::sort_unstable`
+    /// (a byte-wise lex comparison defined by `<str as Ord>`); the
+    /// count=3 sibling above only exercises the digit-coincident regime
+    /// where lex order matches natural order. This test pins the
+    /// regime where they DIVERGE so a future change that introduces
+    /// natural-order sorting (e.g. `recreates.sort_by_key(|s|
+    /// natural_key(s))`) must update this expectation explicitly
+    /// rather than landing as a silent operator-visible reorder.
+    ///
+    /// **Byte-wise derivation**: every label has the common prefix
+    /// `CreateRunner(ci-`. The first divergent byte across the 12
+    /// labels is at offset 16 (the first character of the index). For
+    /// names whose index begins with `1` (`ci-1`, `ci-10`, `ci-11`,
+    /// `ci-12`), the next position decides the ordering: `)` (0x29) <
+    /// `0` (0x30) < `1` (0x31) < `2` (0x32), giving
+    /// `ci-1` < `ci-10` < `ci-11` < `ci-12`. Names with first byte
+    /// `2..=9` (`ci-2` through `ci-9`) all sort AFTER the `1`-prefix
+    /// cluster because `2` (0x32) > `1` (0x31).
+    ///
+    /// **Choice of count=12**: smallest count that exercises BOTH the
+    /// `1?`-prefix cluster (ci-10, ci-11, ci-12) AND single-digit
+    /// names that sort after it (ci-2..ci-9), proving the divergence
+    /// across the full 1-prefix vs 2-prefix boundary rather than just
+    /// the ci-1/ci-10 transition.
+    #[test]
+    fn plan_from_count_expanded_double_digit_summary_recreates_byte_wise_lex_sorted() {
+        let mut cfg = cfg_with_runner_trust_zone("ci", "default".into());
+        cfg.runners[0].count = Some(12);
+
+        let actual = state::ActualState::default();
+        let paths = Paths::default();
+
+        let plan = plan::plan_from(&cfg, &actual, &paths)
+            .expect("count=12 plan_from must succeed");
+
+        let create_count = plan
+            .actions
+            .iter()
+            .filter(|a| matches!(a, Action::CreateRunner(_)))
+            .count();
+        assert_eq!(
+            create_count, 12,
+            "count = 12 with no discovered must emit 12 CreateRunner actions",
+        );
+
+        let body = plan_to_json_value(&plan, false);
+        assert_eq!(body["summary"]["total_actions"], 12);
+        let recreates = body["summary"]["recreates"].as_array().unwrap();
+        let actual_labels: Vec<&str> = recreates.iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(
+            actual_labels,
+            vec![
+                "CreateRunner(ci-1)",
+                "CreateRunner(ci-10)",
+                "CreateRunner(ci-11)",
+                "CreateRunner(ci-12)",
+                "CreateRunner(ci-2)",
+                "CreateRunner(ci-3)",
+                "CreateRunner(ci-4)",
+                "CreateRunner(ci-5)",
+                "CreateRunner(ci-6)",
+                "CreateRunner(ci-7)",
+                "CreateRunner(ci-8)",
+                "CreateRunner(ci-9)",
+            ],
+            "summary.recreates must use byte-wise lex order — \
+             ci-10/11/12 sort BETWEEN ci-1 and ci-2, NOT after ci-9 \
+             (natural-order would put ci-10..ci-12 at the end). A \
+             future change to natural-order sorting must update this \
+             expected Vec explicitly.",
+        );
+        assert_eq!(body["summary"]["by_disruption"]["recreate"], 12);
         assert_eq!(body["summary"]["any_recreate"], true);
     }
 
@@ -14528,7 +14675,7 @@ auth = \"pat\"
         );
     }
 
-    // ---------- #491: sigil tests ---------------------------------------
+    // ---------- sigil tests ---------------------------------------------
 
     /// pin the `!` sigil contract for recreate-class UpdateRunner
     /// against an EMPTY `recreate_reasons` Vec. Adds new coverage axes
@@ -15887,7 +16034,7 @@ auth = \"pat\"
 
     // ---------- opaque recreate-reason gloss ----------------------------
 
-    /// #612: `recreate_reason_note` returns `Some` for the two opaque
+    /// `recreate_reason_note` returns `Some` for the two opaque
     /// classifier tokens (`uncovered`, `runsvc_integrity`). These are
     /// internal triggers — `uncovered` fires for spec-hash-mismatch
     /// fallback, `runsvc_integrity` for missing/stale runsvc.sh
@@ -15923,7 +16070,7 @@ auth = \"pat\"
         );
     }
 
-    /// #612: `recreate_reason_note` returns `None` for self-explanatory
+    /// `recreate_reason_note` returns `None` for self-explanatory
     /// field-name tokens. The full vocabulary the classifier emits comes
     /// from `RunnerDelta::recreate_reasons` field doc (plan.rs); this
     /// test pins every named-field token to the no-gloss branch so a
@@ -15954,7 +16101,7 @@ auth = \"pat\"
         }
     }
 
-    /// #612: `recreate_reason_note` returns `None` for unknown tokens.
+    /// `recreate_reason_note` returns `None` for unknown tokens.
     /// Defense for future classifier additions: a new token that lands
     /// here without an explicit gloss falls through silently rather
     /// than hard-erroring, but the test pins the no-gloss-by-default
@@ -15965,7 +16112,7 @@ auth = \"pat\"
         assert!(recreate_reason_note("some_future_token").is_none());
     }
 
-    /// #612: `render_action_line` emits an indented
+    /// `render_action_line` emits an indented
     /// `note: uncovered — …` line beneath the header for the
     /// `uncovered` token. Header line is unchanged (operator grep
     /// `recreate (uncovered)` keeps working — pinned by the existing
@@ -15997,7 +16144,7 @@ auth = \"pat\"
         );
     }
 
-    /// #612: same contract as the uncovered test, for the
+    /// same contract as the uncovered test, for the
     /// `runsvc_integrity` token. Pins both opaque tokens so a future
     /// change to one but not the other is caught.
     #[test]
@@ -16021,7 +16168,7 @@ auth = \"pat\"
         );
     }
 
-    /// #612: field-name tokens (`url`, `runner_version`, …) MUST NOT
+    /// field-name tokens (`url`, `runner_version`, …) MUST NOT
     /// emit a `note:` line — the field_changes loop renders the
     /// before→after pair already, and a redundant gloss would clutter
     /// the brief view. Pin the no-note guarantee for all
@@ -16037,7 +16184,7 @@ auth = \"pat\"
         );
     }
 
-    /// #612: mixed reasons render the gloss for ONLY the opaque tokens,
+    /// mixed reasons render the gloss for ONLY the opaque tokens,
     /// and emit one note per opaque token in the order they appear in
     /// `recreate_reasons`. Header line carries the full
     /// `recreate_reasons.join(",")` regardless. Pin the per-token
@@ -16077,7 +16224,7 @@ auth = \"pat\"
         );
     }
 
-    /// #612: in-place UpdateRunner (no recreate) MUST NOT emit any
+    /// in-place UpdateRunner (no recreate) MUST NOT emit any
     /// `note:` lines even when `recreate_reasons` somehow contains an
     /// opaque token (which `plan::plan_from` never produces — the
     /// `requires_recreate = !recreate_reasons.is_empty()` invariant
