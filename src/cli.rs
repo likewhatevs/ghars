@@ -9638,7 +9638,7 @@ auth = \"pat\"
         assert_eq!(body["summary"]["any_recreate"], true);
     }
 
-    /// Count=0 orphan-removal shape (T774-B): a managed runner exists
+    /// Count=0 orphan-removal shape: a managed runner exists
     /// on disk (surfaced via `actual.orphans`) with no matching
     /// `[[runner]]` block, so plan_from emits one `RemoveRunner` action.
     /// `RemoveRunner` is recreate-class, so its label appears in
@@ -9688,7 +9688,7 @@ auth = \"pat\"
         assert_eq!(body["summary"]["any_recreate"], true);
     }
 
-    /// Empty plan shape (T774-C): no runners in config, no discovered
+    /// Empty plan shape: no runners in config, no discovered
     /// state. plan_from emits zero actions; `summary.recreates` is the
     /// empty array `[]` (stable JSON shape so CI consumers can `jq
     /// '.summary.recreates | length'` without conditional key checks).
@@ -9728,7 +9728,7 @@ auth = \"pat\"
         assert_eq!(body["summary"]["any_recreate"], false);
     }
 
-    /// Count expansion with explicit collision (T774-D): a count block
+    /// Count expansion with explicit collision: a count block
     /// `name = "ci" count = 3` plus an explicit `[[runner]] name =
     /// "ci-1"` produces 3 distinct expanded names — the explicit ci-1
     /// pre-empts the count-block ci-1, so the plan has CreateRunner
@@ -9806,6 +9806,106 @@ auth = \"pat\"
         );
         assert_eq!(body["summary"]["by_disruption"]["recreate"], 3);
         assert_eq!(body["summary"]["any_recreate"], true);
+    }
+
+    /// Count=0 → orphan RemoveRunner end-to-end shape: a `[[runner]]`
+    /// block with `count = Some(0)` is dropped at expand_counts
+    /// (`expand_counts`'s `matches!(spec.count, Some(0)) => continue`
+    /// arm — the explicit early-return for the count=0 case keeps
+    /// count=Some(1) and count=None passing through unchanged), so
+    /// the desired-set has zero runners after expansion. A managed
+    /// runner discovered on disk (`actual.runners["ci-1"]`, populated
+    /// by `state::discover` in production) has no matching desired
+    /// entry — `plan_from`'s `(false, true)` arm fires, emitting
+    /// `RemoveRunner(ci-1)`. `RemoveRunner` is recreate-class
+    /// (`Disruption::Recreate` per `Action::disruption()`), so its
+    /// label appears in `summary.recreates`.
+    ///
+    /// Distinct from the sibling test
+    /// `plan_from_orphan_remove_runner_lists_label_in_summary_recreates`
+    /// — that fixture uses `cfg.runners.clear()` plus an
+    /// `actual.orphans` push, exercising step 9's
+    /// `for orphan in &actual.orphans` arm in `plan_from`. This test
+    /// instead routes through expand_counts's count=0 skip + the
+    /// `(false, true)` discovery branch (the shape `state::discover`
+    /// + `actual.runners` produces in production, since
+    /// `state::discover` itself never populates orphans). Together
+    /// they pin both surfaces.
+    #[test]
+    fn plan_from_count_zero_with_discovered_runner_emits_remove_in_summary_recreates() {
+        // [[runner]] name = "ci" count = 0. expand_counts skips the
+        // block entirely (count=0 → continue), so desired_names is
+        // empty after expansion.
+        let mut cfg = cfg_with_runner_trust_zone("ci", "default".into());
+        cfg.runners[0].count = Some(0);
+
+        // Discovered "ci-1" on disk with no matching desired entry.
+        // Minimal DiscoveredRunner is sufficient — reconstruct_identity
+        // tolerates empty on_disk_unit_text via unwrap_or_else fallbacks
+        // for User= and WorkingDirectory= parsing, and the assertion
+        // here only reads RemoveRunner's name field via Action::label
+        // ("RemoveRunner(ci-1)"). InSync drift is the canonical
+        // "no drift" classification — the (false, true) branch in
+        // plan_from doesn't gate on drift, so any value works; InSync
+        // is the simplest.
+        let mut actual = state::ActualState::default();
+        actual.runners.insert(
+            "ci-1".into(),
+            state::DiscoveredRunner {
+                name: "ci-1".into(),
+                spec_hash: String::new(),
+                on_disk_unit_text: String::new(),
+                drop_ins: std::collections::BTreeMap::new(),
+                running: false,
+                enabled: false,
+                drift: state::Drift::InSync,
+            },
+        );
+        let paths = Paths::default();
+
+        let plan = plan::plan_from(&cfg, &actual, &paths)
+            .expect("count=0 + discovered plan_from must succeed");
+
+        // Sanity: exactly one RemoveRunner action, no Create/Update.
+        let remove_count = plan
+            .actions
+            .iter()
+            .filter(|a| matches!(a, Action::RemoveRunner(_)))
+            .count();
+        assert_eq!(
+            remove_count, 1,
+            "count=0 + one discovered runner must yield one RemoveRunner; \
+             got {} actions: {:?}",
+            plan.actions.len(),
+            plan.actions
+                .iter()
+                .map(|a| format!("{a:?}"))
+                .collect::<Vec<_>>(),
+        );
+        assert!(
+            !plan
+                .actions
+                .iter()
+                .any(|a| matches!(a, Action::CreateRunner(_) | Action::UpdateRunner(_))),
+            "count=0 must NOT emit Create/Update; got: {:?}",
+            plan.actions
+                .iter()
+                .map(|a| format!("{a:?}"))
+                .collect::<Vec<_>>(),
+        );
+
+        let body = plan_to_json_value(&plan, false);
+        let recreates = body["summary"]["recreates"].as_array().unwrap();
+        let labels: Vec<&str> = recreates.iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(
+            labels,
+            vec!["RemoveRunner(ci-1)"],
+            "summary.recreates must contain the count=0 → orphan \
+             RemoveRunner label",
+        );
+        assert_eq!(body["summary"]["by_disruption"]["recreate"], 1);
+        assert_eq!(body["summary"]["any_recreate"], true);
+        assert_eq!(body["summary"]["total_actions"], 1);
     }
 
     // ---------- #285 addendum (D-13): colorized unified diff ------
@@ -14752,7 +14852,7 @@ auth = \"pat\"
     /// elsewhere) and drifts the label ordering apart.
     #[test]
     fn render_rollback_advisory_failed_and_failed_undo_logs_share_label_ordering() {
-        // Use push_failed (#646) to enforce the lockstep invariant
+        // Use push_failed to enforce the lockstep invariant
         // at fixture construction — each push pairs the failed entry
         // with its UndoLog so the lengths cannot drift.
         let mut result = apply::ApplyResult::default();
@@ -14988,9 +15088,9 @@ auth = \"pat\"
         let _ = render_rollback_advisory(&result);
     }
 
-    // ---------- #646: render_rollback_advisory test scaffolding ------------
+    // ---------- render_rollback_advisory test scaffolding ----------------
 
-    /// #646: shared helper for `render_rollback_advisory` test fixtures.
+    /// shared helper for `render_rollback_advisory` test fixtures.
     /// Every advisory test that drives the renderer with one or more
     /// failures must push to BOTH `failed` and `failed_undo_logs` in
     /// lockstep — the typed-error tuple and the per-action UndoLog
@@ -15007,6 +15107,40 @@ auth = \"pat\"
     /// negative-controls the assertion; this helper is the
     /// positive-control scaffold every other advisory test uses to
     /// stay on the equal-length path.
+    ///
+    /// **Error content drift (intentional)**: `result.failed[i].1`
+    /// always carries `validation_err("test")` here regardless of
+    /// what the caller wants to surface to operators. Tests that
+    /// need a specific error message (e.g. fail-row text on stderr)
+    /// independently populate `result.details[i]` with
+    /// `apply::ApplyOutcome::Failed { error_summary, plan_disruption }`
+    /// — that's the row source the renderer reads. The two Vecs
+    /// carry different content by design:
+    ///   - `details[i]`: per-action outcome the renderer reads to
+    ///     emit `fail: LABEL [disruption] (error_summary)` on
+    ///     stderr (per `render_apply_emission`'s contract);
+    ///   - `failed[i].1`: the typed `GharsError` chain the renderer
+    ///     does NOT read — it exists for the `apply_exit_code` mapper,
+    ///     which walks `result.failed.iter().any(|(_, e)| matches!(e,
+    ///     GharsError::Auth(_, _)))` to choose between exit codes 1
+    ///     (generic failure) and 5 (auth failure).
+    ///     `render_rollback_advisory` does not consult `failed[i].1`
+    ///     either — it reads only `failed_undo_logs` for both header
+    ///     count and body content.
+    ///   - `failed_undo_logs[i].1`: the rollback `UndoStep` list
+    ///     `render_rollback_advisory` body reads.
+    /// `validation_err("test")` is a type-level placeholder: it
+    /// satisfies `failed`'s `(String, GharsError)` shape so the
+    /// `debug_assert_eq!(failed.len(), failed_undo_logs.len())` gate
+    /// passes, and the renderer never reads it. **A future test that
+    /// reads `result.failed[i].1` content** (i.e. asserts on the
+    /// typed error rather than `details[i]`'s `error_summary`) must
+    /// either (a) replace `validation_err("test")` in this helper
+    /// with caller-supplied error content, or (b) bypass the helper
+    /// and push to `failed` / `failed_undo_logs` directly with the
+    /// specific `GharsError` it wants to assert on. Asserting on the
+    /// hardcoded `"test"` string would pin a placeholder, not the
+    /// production behavior.
     fn push_failed(result: &mut apply::ApplyResult, label: &str, steps: Vec<apply::UndoStep>) {
         result.failed.push((label.into(), validation_err("test")));
         result.failed_undo_logs.push((label.into(), steps));
@@ -16805,6 +16939,31 @@ auth = \"pat\"
     // to stderr. These are the smallest pinning tests for the
     // contract documented in the helper's doc comment.
 
+    /// Drive `render_apply_emission` against fresh stdout/stderr
+    /// capture buffers and return both as decoded UTF-8 strings.
+    /// Centralizes the 5-line scaffold (`Vec::new` × 2, render call,
+    /// `String::from_utf8` × 2) so each test reads as a fixture-build
+    /// + a single helper call + assertions, not as the same scaffold
+    /// boilerplate inlined N times. Both `unwrap()` calls are the
+    /// test contract: writes to a `Vec<u8>` are infallible, and
+    /// `render_apply_emission` only emits via `writeln!(...,
+    /// "literal {}", String_typed)` — the literal fragments are
+    /// ASCII and the interpolated values come from
+    /// `String`/`&str`-typed inputs (label, `Disruption::label()`,
+    /// `outcome.detail()`), so the byte stream is valid UTF-8 by
+    /// construction. A panic from either `unwrap()` is therefore a
+    /// real regression worth surfacing rather than a contract
+    /// violation the test should silently tolerate.
+    fn emit_capture(result: &apply::ApplyResult) -> (String, String) {
+        let mut stdout: Vec<u8> = Vec::new();
+        let mut stderr: Vec<u8> = Vec::new();
+        render_apply_emission(result, &mut stdout, &mut stderr).unwrap();
+        (
+            String::from_utf8(stdout).unwrap(),
+            String::from_utf8(stderr).unwrap(),
+        )
+    }
+
     /// Successful single-action plan (Created outcome) routes the
     /// `ok:` row plus the summary footer to stdout, with stderr
     /// completely empty. This is the success-path baseline:
@@ -16816,11 +16975,7 @@ auth = \"pat\"
             details: vec![("CreateRunner(a)".into(), apply::ApplyOutcome::Created)],
             ..apply::ApplyResult::default()
         };
-        let mut stdout: Vec<u8> = Vec::new();
-        let mut stderr: Vec<u8> = Vec::new();
-        render_apply_emission(&result, &mut stdout, &mut stderr).unwrap();
-        let out = String::from_utf8(stdout).unwrap();
-        let err = String::from_utf8(stderr).unwrap();
+        let (out, err) = emit_capture(&result);
         assert!(
             out.contains("ok: CreateRunner(a)"),
             "ok: row missing from stdout: {out}"
@@ -16852,11 +17007,7 @@ auth = \"pat\"
             )],
             ..apply::ApplyResult::default()
         };
-        let mut stdout: Vec<u8> = Vec::new();
-        let mut stderr: Vec<u8> = Vec::new();
-        render_apply_emission(&result, &mut stdout, &mut stderr).unwrap();
-        let out = String::from_utf8(stdout).unwrap();
-        let err = String::from_utf8(stderr).unwrap();
+        let (out, err) = emit_capture(&result);
         assert!(
             err.contains("fail: CreateRunner(a)"),
             "fail: row missing from stderr: {err}"
@@ -16883,11 +17034,7 @@ auth = \"pat\"
             details: vec![("NoOp(idempotent)".into(), apply::ApplyOutcome::NoOp)],
             ..apply::ApplyResult::default()
         };
-        let mut stdout: Vec<u8> = Vec::new();
-        let mut stderr: Vec<u8> = Vec::new();
-        render_apply_emission(&result, &mut stdout, &mut stderr).unwrap();
-        let out = String::from_utf8(stdout).unwrap();
-        let err = String::from_utf8(stderr).unwrap();
+        let (out, err) = emit_capture(&result);
         assert!(
             out.contains("noop: idempotent [none]"),
             "expected `noop: idempotent [none]` (label-strip applied); got: {out}",
@@ -16915,10 +17062,7 @@ auth = \"pat\"
             )],
             ..apply::ApplyResult::default()
         };
-        let mut stdout: Vec<u8> = Vec::new();
-        let mut stderr: Vec<u8> = Vec::new();
-        render_apply_emission(&result, &mut stdout, &mut stderr).unwrap();
-        let out = String::from_utf8(stdout).unwrap();
+        let (out, _err) = emit_capture(&result);
         assert!(
             out.contains("noop: literal-no-wrapper [none]"),
             "expected `noop: literal-no-wrapper [none]` (unwrap_or fallback applied); got: {out}",
@@ -16936,11 +17080,7 @@ auth = \"pat\"
             details: vec![("CreateRunner(a)".into(), apply::ApplyOutcome::DryRunSkipped)],
             ..apply::ApplyResult::default()
         };
-        let mut stdout: Vec<u8> = Vec::new();
-        let mut stderr: Vec<u8> = Vec::new();
-        render_apply_emission(&result, &mut stdout, &mut stderr).unwrap();
-        let out = String::from_utf8(stdout).unwrap();
-        let err = String::from_utf8(stderr).unwrap();
+        let (out, err) = emit_capture(&result);
         assert!(
             out.contains("ok: CreateRunner(a)"),
             "DryRunSkipped renders as `ok:` row on stdout; got: {out}",
@@ -16972,11 +17112,7 @@ auth = \"pat\"
             ],
             ..apply::ApplyResult::default()
         };
-        let mut stdout: Vec<u8> = Vec::new();
-        let mut stderr: Vec<u8> = Vec::new();
-        render_apply_emission(&result, &mut stdout, &mut stderr).unwrap();
-        let out = String::from_utf8(stdout).unwrap();
-        let err = String::from_utf8(stderr).unwrap();
+        let (out, err) = emit_capture(&result);
         // Stdout has the ok row + footer, NOT the fail row.
         assert!(out.contains("ok: CreateRunner(a)"), "ok row: {out}");
         assert!(out.contains("Apply: 1 applied, 1 failed"), "footer: {out}");
@@ -17020,11 +17156,7 @@ auth = \"pat\"
                 path: Utf8PathBuf::from("/etc/systemd/system/ghars-cache@a.service.d"),
             }],
         );
-        let mut stdout: Vec<u8> = Vec::new();
-        let mut stderr: Vec<u8> = Vec::new();
-        render_apply_emission(&result, &mut stdout, &mut stderr).unwrap();
-        let out = String::from_utf8(stdout).unwrap();
-        let err = String::from_utf8(stderr).unwrap();
+        let (out, err) = emit_capture(&result);
         assert!(
             err.contains("Rollback advisory"),
             "advisory missing from stderr: {err}",
@@ -17063,10 +17195,7 @@ auth = \"pat\"
             details: vec![("CreateRunner(a)".into(), apply::ApplyOutcome::Created)],
             ..apply::ApplyResult::default()
         };
-        let mut stdout: Vec<u8> = Vec::new();
-        let mut stderr: Vec<u8> = Vec::new();
-        render_apply_emission(&result, &mut stdout, &mut stderr).unwrap();
-        let err = String::from_utf8(stderr).unwrap();
+        let (_out, err) = emit_capture(&result);
         assert!(
             !err.contains("Rollback advisory"),
             "no advisory expected on success: {err}",
@@ -17083,11 +17212,7 @@ auth = \"pat\"
             details: vec![("CreateRunner(a)".into(), apply::ApplyOutcome::Created)],
             ..apply::ApplyResult::default()
         };
-        let mut stdout: Vec<u8> = Vec::new();
-        let mut stderr: Vec<u8> = Vec::new();
-        render_apply_emission(&result, &mut stdout, &mut stderr).unwrap();
-        let out = String::from_utf8(stdout).unwrap();
-        let err = String::from_utf8(stderr).unwrap();
+        let (out, err) = emit_capture(&result);
         assert!(
             out.contains("Apply: 1 applied"),
             "summary footer missing from stdout: {out}",
