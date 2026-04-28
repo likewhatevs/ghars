@@ -8017,18 +8017,9 @@ auth = \"pat\"
     #[test]
     fn render_rollback_advisory_renders_per_action_steps() {
         let mut result = apply::ApplyResult::default();
-        result.failed.push((
-            "CreateCachePool(build)".into(),
-            crate::error::GharsError::Apply {
-                action: "CreateCachePool(build)".into(),
-                source: Box::new(crate::error::GharsError::Systemd(
-                    "mock enable failure".into(),
-                    "test".into(),
-                )),
-            },
-        ));
-        result.failed_undo_logs.push((
-            "CreateCachePool(build)".into(),
+        push_failed(
+            &mut result,
+            "CreateCachePool(build)",
             vec![
                 apply::UndoStep::CreateDir {
                     path: camino::Utf8PathBuf::from(
@@ -8045,7 +8036,7 @@ auth = \"pat\"
                     name: "ghars-cache-build".into(),
                 },
             ],
-        ));
+        );
         let advisory = render_rollback_advisory(&result).unwrap();
         // Header: count of failed actions with cleanup steps,
         // "Manual cleanup may be required:" (#618).
@@ -8095,35 +8086,14 @@ auth = \"pat\"
     fn render_rollback_advisory_skips_empty_step_lists() {
         // Mixed: one daemon_reload (empty) + one real failure with steps.
         let mut result = apply::ApplyResult::default();
-        result.failed.push((
-            "daemon_reload".into(),
-            crate::error::GharsError::Apply {
-                action: "daemon_reload".into(),
-                source: Box::new(crate::error::GharsError::Systemd(
-                    "post-loop reload".into(),
-                    "test".into(),
-                )),
-            },
-        ));
-        result.failed.push((
-            "RemoveRunner(orphan)".into(),
-            crate::error::GharsError::Apply {
-                action: "RemoveRunner(orphan)".into(),
-                source: Box::new(crate::error::GharsError::Systemd(
-                    "stop failed".into(),
-                    "test".into(),
-                )),
-            },
-        ));
-        result
-            .failed_undo_logs
-            .push(("daemon_reload".into(), Vec::new()));
-        result.failed_undo_logs.push((
-            "RemoveRunner(orphan)".into(),
+        push_failed(&mut result, "daemon_reload", Vec::new());
+        push_failed(
+            &mut result,
+            "RemoveRunner(orphan)",
             vec![apply::UndoStep::StopUnit {
                 name: "ghars-runner@orphan.service".into(),
             }],
-        ));
+        );
         let advisory = render_rollback_advisory(&result).unwrap();
         // #618: header counts ONLY non-empty entries (1 here: the
         // RemoveRunner(orphan) failure). The empty-step daemon_reload
@@ -8147,6 +8117,75 @@ auth = \"pat\"
         assert!(
             advisory.contains("\n    - stopped ghars-runner@orphan.service"),
             "non-empty entry's step must render via describe(); got: {advisory}",
+        );
+    }
+
+    /// Prefix-collision pin: full-line exact-equality format
+    /// correctness across two `CreateDir` step bullets whose paths
+    /// share a common prefix (`ghars-cache@a` is a prefix of
+    /// `ghars-cache@ab`). The full bullet lines are NOT in a strict
+    /// substring relationship — the `.` after `a` in
+    /// `.service.d` diverges from the `b` at the same position in
+    /// the longer path — but the shared path prefix means any
+    /// substring-based check that gets applied to a renderer-derived
+    /// fragment (e.g. searching for `"    - created directory
+    /// /etc/systemd/system/ghars-cache@a"` if a future regression
+    /// drops or shortens the trailing `.service.d` suffix from the
+    /// describe() output) folds the shorter into the longer and
+    /// overcounts.
+    ///
+    /// Exact-line equality (`lines().filter(|l| *l ==
+    /// "...").count() == 1`) is strictly stronger than any
+    /// `contains()` or `matches().count()` shape: it resolves the
+    /// two bullets independently regardless of what punctuation the
+    /// surrounding format carries, because the full line bytes
+    /// (including the trailing `.service.d` suffix produced by
+    /// `describe()`'s `format!("created directory {}")` arm) must
+    /// match exactly.
+    ///
+    /// This test fails loudly if a future renderer change joins
+    /// bullets onto the same line, loses the `\n` separator, drops
+    /// the trailing path suffix, or duplicates a line — any of these
+    /// regressions shifts at least one exact-line count off 1.
+    #[test]
+    fn render_rollback_advisory_step_bullets_disambiguate_prefix_paths() {
+        let mut result = apply::ApplyResult::default();
+        push_failed(
+            &mut result,
+            "CreateCachePool(a)",
+            vec![
+                apply::UndoStep::CreateDir {
+                    path: camino::Utf8PathBuf::from(
+                        "/etc/systemd/system/ghars-cache@a.service.d",
+                    ),
+                },
+                apply::UndoStep::CreateDir {
+                    path: camino::Utf8PathBuf::from(
+                        "/etc/systemd/system/ghars-cache@ab.service.d",
+                    ),
+                },
+            ],
+        );
+        let advisory = render_rollback_advisory(&result).unwrap();
+        // Exact-line equality count for each bullet. Each filter
+        // matches the full rendered line bytes (4-space indent +
+        // `- created directory ` prefix + path + trailing
+        // `.service.d` suffix), so a future regression that
+        // shortens, joins, or duplicates a bullet shifts the count
+        // off 1.
+        let short_bullet =
+            "    - created directory /etc/systemd/system/ghars-cache@a.service.d";
+        let long_bullet =
+            "    - created directory /etc/systemd/system/ghars-cache@ab.service.d";
+        let short_count = advisory.lines().filter(|l| *l == short_bullet).count();
+        let long_count = advisory.lines().filter(|l| *l == long_bullet).count();
+        assert_eq!(
+            short_count, 1,
+            "short-path bullet must appear exactly once; got: {advisory}",
+        );
+        assert_eq!(
+            long_count, 1,
+            "long-path bullet must appear exactly once; got: {advisory}",
         );
     }
 
@@ -10273,7 +10312,7 @@ auth = \"pat\"
         );
     }
 
-    // ---------- #285 addendum (D-13): colorized unified diff ------
+    // ---------- colorized unified diff ----------------------------
 
     #[test]
     fn render_action_line_diff_modified_color_wraps_plus_lines_green() {
@@ -14076,15 +14115,16 @@ auth = \"bad key\"
         }
     }
 
-    // -------- #402: cache pool name length cap --------------------------
+    // -------- cache pool name length cap --------------------------------
 
     /// Pins (a) `validate_cache_pool_names` returns a Validation error
     /// scoped to the offending pool, (b) the error preserves the
     /// cache-pool-cap layer signature (`ghars-cache-` in the message),
     /// and (c) Validation maps to exit code 6 via `err_to_exit_code`.
     /// Wire-up at cmd_validate / cmd_plan / cmd_apply is structurally
-    /// verified by code review; end-to-end integration tests are
-    /// tracked by #239.
+    /// verified by code review; end-to-end integration coverage is
+    /// pending in the cmd_validate / cmd_plan / cmd_apply integration
+    /// suite.
     #[test]
     fn validate_cache_pool_names_rejects_oversize_pool_with_exit_code_six() {
         let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
@@ -14490,7 +14530,7 @@ auth = \"pat\"
 
     // ---------- #491: sigil tests ---------------------------------------
 
-    /// #491 / #535: pin the `!` sigil contract for recreate-class UpdateRunner
+    /// pin the `!` sigil contract for recreate-class UpdateRunner
     /// against an EMPTY `recreate_reasons` Vec. Adds new coverage axes
     /// over `render_action_line_update_runner_sigil_distinguishes_recreate_from_inplace`
     /// (which uses a single non-empty reason): the empty-reasons case
@@ -14499,7 +14539,7 @@ auth = \"pat\"
     /// bracket tag MUST hold even when reasons is empty — the sigil
     /// is the fast-scan signal and is independent of reasons content.
     ///
-    /// #535: the empty-reasons branch emits `update: recreate` with NO
+    /// The empty-reasons branch emits `update: recreate` with NO
     /// parenthetical (omit-parens, not `update: recreate ()`).
     /// `plan::plan_from` sets `requires_recreate =
     /// !recreate_reasons.is_empty()` post-classify, so this path is
@@ -14516,7 +14556,7 @@ auth = \"pat\"
              got: {line}",
         );
         assert!(line.contains("[recreate]"), "got: {line}");
-        // #535: empty-reasons path — `update: recreate` (no parens).
+        // empty-reasons path — `update: recreate` (no parens).
         // Pin the `; update: recreate)` shape so the cause-mode joiner
         // (`; ` between drift_cause label and mode) plus the closing
         // outer paren are pinned together — guards against a renderer
@@ -15511,9 +15551,9 @@ auth = \"pat\"
         result.failed_undo_logs.push((label.into(), steps));
     }
 
-    // ---------- #651: format_rollback_advisory_header unit tests ----------
+    // ---------- format_rollback_advisory_header unit tests ---------------
 
-    /// #651 / #611: direct unit test for `format_rollback_advisory_header`
+    /// direct unit test for `format_rollback_advisory_header`
     /// at the single-failure case. Pin the exact format string the
     /// helper produces — `Rollback advisory: 1 action(s) failed.
     /// Manual cleanup may be required:` — so a future text change
@@ -15845,7 +15885,7 @@ auth = \"pat\"
         );
     }
 
-    // ---------- #612: opaque recreate-reason gloss ----------------------
+    // ---------- opaque recreate-reason gloss ----------------------------
 
     /// #612: `recreate_reason_note` returns `Some` for the two opaque
     /// classifier tokens (`uncovered`, `runsvc_integrity`). These are
@@ -16886,16 +16926,6 @@ auth = \"pat\"
     #[test]
     fn render_rollback_advisory_escapes_hostile_undo_step() {
         let mut result = apply::ApplyResult::default();
-        result.failed.push((
-            "RemoveRunner(buckos)".into(),
-            crate::error::GharsError::Apply {
-                action: "RemoveRunner(buckos)".into(),
-                source: Box::new(crate::error::GharsError::Systemd(
-                    "mock stop failure".into(),
-                    "test".into(),
-                )),
-            },
-        ));
         // Hostile UndoStep::StartUnit. Note: describe() ALREADY runs
         // escape_control_chars on `name` (apply.rs:657-658). The
         // second pass at the step-bullet escape inside
@@ -16903,12 +16933,13 @@ auth = \"pat\"
         // (pinned in lib.rs). Together they guarantee a
         // future regression in EITHER layer cannot leak ESC bytes
         // to stderr.
-        result.failed_undo_logs.push((
-            "RemoveRunner(buckos)".into(),
+        push_failed(
+            &mut result,
+            "RemoveRunner(buckos)",
             vec![apply::UndoStep::StartUnit {
                 name: "ghars-runner@\x1b[31mevil.service".into(),
             }],
-        ));
+        );
         let advisory = render_rollback_advisory(&result).unwrap();
         // (a) raw ESC byte must not appear ANYWHERE in the advisory.
         // The layered defense (describe()-side escape + the second
@@ -16973,31 +17004,22 @@ auth = \"pat\"
     #[test]
     fn render_rollback_advisory_escapes_hostile_label() {
         let mut result = apply::ApplyResult::default();
-        // Hostile label embedded in the typed-error tuple AND the
-        // failed_undo_logs key (the renderer keys off the latter).
+        // Hostile label embedded in the failed_undo_logs key (the
+        // renderer keys off the latter).
         let hostile_label = "RemoveRunner(\x1b[31mevil)";
-        result.failed.push((
-            hostile_label.into(),
-            crate::error::GharsError::Apply {
-                action: hostile_label.into(),
-                source: Box::new(crate::error::GharsError::Systemd(
-                    "mock failure".into(),
-                    "test".into(),
-                )),
-            },
-        ));
         // Use a benign step so any ESC byte in the rendered output
         // can ONLY have come from the label render path. If the
         // step-bullet escape inside `render_rollback_advisory`'s
         // rev-walk loop were the only defense, this test would
         // still fail until the label escape (the per-failure
         // label-render path inside `render_rollback_advisory`) lands.
-        result.failed_undo_logs.push((
-            hostile_label.into(),
+        push_failed(
+            &mut result,
+            hostile_label,
             vec![apply::UndoStep::StopUnit {
                 name: "ghars-runner@a.service".into(),
             }],
-        ));
+        );
         let advisory = render_rollback_advisory(&result).unwrap();
         // (a) raw ESC byte must not survive — the label rendered
         // by `render_rollback_advisory`'s per-failure sub-block
@@ -17320,7 +17342,7 @@ auth = \"pat\"
     /// construction. A panic from either `unwrap()` is therefore a
     /// real regression worth surfacing rather than a contract
     /// violation the test should silently tolerate.
-    fn emit_capture(result: &apply::ApplyResult) -> (String, String) {
+    fn capture_apply_emission(result: &apply::ApplyResult) -> (String, String) {
         let mut stdout: Vec<u8> = Vec::new();
         let mut stderr: Vec<u8> = Vec::new();
         render_apply_emission(result, &mut stdout, &mut stderr).unwrap();
@@ -17341,7 +17363,7 @@ auth = \"pat\"
             details: vec![("CreateRunner(a)".into(), apply::ApplyOutcome::Created)],
             ..apply::ApplyResult::default()
         };
-        let (out, err) = emit_capture(&result);
+        let (out, err) = capture_apply_emission(&result);
         assert!(
             out.contains("ok: CreateRunner(a)"),
             "ok: row missing from stdout: {out}"
@@ -17373,7 +17395,7 @@ auth = \"pat\"
             )],
             ..apply::ApplyResult::default()
         };
-        let (out, err) = emit_capture(&result);
+        let (out, err) = capture_apply_emission(&result);
         assert!(
             err.contains("fail: CreateRunner(a)"),
             "fail: row missing from stderr: {err}"
@@ -17400,7 +17422,7 @@ auth = \"pat\"
             details: vec![("NoOp(idempotent)".into(), apply::ApplyOutcome::NoOp)],
             ..apply::ApplyResult::default()
         };
-        let (out, err) = emit_capture(&result);
+        let (out, err) = capture_apply_emission(&result);
         assert!(
             out.contains("noop: idempotent [none]"),
             "expected `noop: idempotent [none]` (label-strip applied); got: {out}",
@@ -17428,7 +17450,7 @@ auth = \"pat\"
             )],
             ..apply::ApplyResult::default()
         };
-        let (out, _err) = emit_capture(&result);
+        let (out, _err) = capture_apply_emission(&result);
         assert!(
             out.contains("noop: literal-no-wrapper [none]"),
             "expected `noop: literal-no-wrapper [none]` (unwrap_or fallback applied); got: {out}",
@@ -17446,7 +17468,7 @@ auth = \"pat\"
             details: vec![("CreateRunner(a)".into(), apply::ApplyOutcome::DryRunSkipped)],
             ..apply::ApplyResult::default()
         };
-        let (out, err) = emit_capture(&result);
+        let (out, err) = capture_apply_emission(&result);
         assert!(
             out.contains("ok: CreateRunner(a)"),
             "DryRunSkipped renders as `ok:` row on stdout; got: {out}",
@@ -17478,7 +17500,7 @@ auth = \"pat\"
             ],
             ..apply::ApplyResult::default()
         };
-        let (out, err) = emit_capture(&result);
+        let (out, err) = capture_apply_emission(&result);
         // Stdout has the ok row + footer, NOT the fail row.
         assert!(out.contains("ok: CreateRunner(a)"), "ok row: {out}");
         assert!(out.contains("Apply: 1 applied, 1 failed"), "footer: {out}");
@@ -17522,7 +17544,7 @@ auth = \"pat\"
                 path: Utf8PathBuf::from("/etc/systemd/system/ghars-cache@a.service.d"),
             }],
         );
-        let (out, err) = emit_capture(&result);
+        let (out, err) = capture_apply_emission(&result);
         assert!(
             err.contains("Rollback advisory"),
             "advisory missing from stderr: {err}",
@@ -17577,7 +17599,7 @@ auth = \"pat\"
             details: vec![("CreateRunner(a)".into(), apply::ApplyOutcome::Created)],
             ..apply::ApplyResult::default()
         };
-        let (_out, err) = emit_capture(&result);
+        let (_out, err) = capture_apply_emission(&result);
         assert!(
             !err.contains("Rollback advisory"),
             "no advisory expected on success: {err}",
@@ -17594,7 +17616,7 @@ auth = \"pat\"
             details: vec![("CreateRunner(a)".into(), apply::ApplyOutcome::Created)],
             ..apply::ApplyResult::default()
         };
-        let (out, err) = emit_capture(&result);
+        let (out, err) = capture_apply_emission(&result);
         assert!(
             out.contains("Apply: 1 applied"),
             "summary footer missing from stdout: {out}",
@@ -17634,7 +17656,7 @@ auth = \"pat\"
                 path: Utf8PathBuf::from("/etc/systemd/system/ghars-cache@a.service.d"),
             }],
         );
-        let (_out, err) = emit_capture(&result);
+        let (_out, err) = capture_apply_emission(&result);
         let lines: Vec<&str> = err.lines().collect();
         let fail_line_idx = lines
             .iter()
@@ -17720,7 +17742,7 @@ auth = \"pat\"
                 path: Utf8PathBuf::from("/etc/systemd/system/ghars-cache@ab.service.d"),
             }],
         );
-        let (_out, err) = emit_capture(&result);
+        let (_out, err) = capture_apply_emission(&result);
         let lines: Vec<&str> = err.lines().collect();
         assert_eq!(
             lines

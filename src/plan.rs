@@ -2294,8 +2294,9 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
         }));
     }
 
-    // Step 8: cache-pool diffs. #201 added actual.cache_pools so we
-    // can now diff desired vs actual instead of always emitting
+    // Step 8: cache-pool diffs. State discovery enumerates
+    // `ghars-cache@*.service` units into `actual.cache_pools`, so we
+    // diff desired vs actual instead of always emitting
     // CreateCachePool. Three branches:
     //   - desired ∧ ¬actual                      → CreateCachePool
     //   - desired ∧ actual ∧ spec_hash differs   → UpdateCachePool
@@ -6481,22 +6482,22 @@ labels  = ["alpha", "beta"]
     // ---- auth_name in-place contract --------------------------------
 
     /// Same-discriminant fixture for the auth-name in-place contract:
-    /// both `[auth.NAME]` blocks are `AuthSpec::Pat`, distinct auth-ref
-    /// names (`pat-old` → `pat-new`). Delegates to the shared
-    /// 7-invariant scaffold `assert_auth_name_change_is_in_place`,
-    /// which pins `recreate_reasons == vec![]`,
-    /// `requires_recreate == false`, exactly one `field_changes` entry
-    /// (`auth_name` with the expected before/after), `drift_cause ==
-    /// SpecChanged`, no `auth_kind` leakage, and a `Modified`
-    /// `00-ghars.conf` drop-in entry.
-    ///
-    /// Same-discriminant Pat→Pat with different auth-ref names is the
-    /// most common operator transition (token rotation: retire one
+    /// both `[auth.NAME]` blocks are `AuthSpec::Pat`, distinct
+    /// auth-ref names (`pat-old` → `pat-new`). Same-discriminant
+    /// Pat→Pat with different auth-ref names is the most common
+    /// operator transition (token rotation: retire one
     /// `[auth.pat-old]` block, point runners at `[auth.pat-new]`),
     /// distinct from the same-name `pat`→`github_app` sibling that
     /// also uses two `AuthSpec::Pat` blocks but exercises the
     /// auth-name strings the cross-discriminant siblings use as
     /// labels.
+    ///
+    /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`
+    /// (recreate_reasons empty, requires_recreate=false, single
+    /// auth_name field_change with expected before/after,
+    /// drift_cause=SpecChanged, no auth_kind leakage, Modified
+    /// 00-ghars.conf drop-in entry). See the helper docstring for
+    /// the contract.
     #[test]
     fn plan_update_in_place_on_auth_name_change_pat_old_to_pat_new_has_empty_recreate_reasons() {
         // Two `[auth.NAME]` blocks named `pat-old` and `pat-new`,
@@ -6537,8 +6538,7 @@ labels  = ["alpha", "beta"]
     /// registered against that auth ref), invokes `plan_from`, and
     /// runs the seven invariants every direction must satisfy:
     ///
-    /// 1. `recreate_reasons` is exactly `vec![]` — strictly tighter
-    ///    than `!contains(&"uncovered")`. Any token pushed into
+    /// 1. `recreate_reasons == vec![]` exactly. Any token pushed into
     ///    `recreate_reasons` (whether `uncovered`, `auth_name`, or a
     ///    new token) fails this pin.
     /// 2. `requires_recreate == false` — derived from
@@ -6723,18 +6723,23 @@ labels  = ["alpha", "beta"]
         auth_blocks
     }
 
-    /// Inverse pin for the auth-name in-place contract: when the
-    /// operator switches a runner from one auth ref to another (here
-    /// `pat` → `github_app` — an auth-name string change between two
-    /// `[auth.NAME]` blocks, both `AuthSpec::Pat` under the hood),
-    /// the planner must NOT trip the `uncovered` recreate fallback at
-    /// `plan_from`'s spec-hash-mismatch gate.
+    /// Naming-vs-discriminant pin for the auth-name in-place
+    /// contract: the two `[auth.NAME]` blocks have different names
+    /// (`pat` → `github_app`) but identical `AuthSpec::Pat`
+    /// discriminants — the auth-name string change must drive the
+    /// in-place classifier on its own, with the matching discriminant
+    /// providing no information to the planner. Confirms the
+    /// classifier reads `EffectiveRunnerSpec.auth_name` (the bare
+    /// string after `merge_defaults` lowering) and never the upstream
+    /// `AuthSpec` variant.
     ///
-    /// Body delegates to `assert_auth_name_change_is_in_place` for the
-    /// shared 7-invariant scaffold; this test contributes the
-    /// same-discriminant fixture (both `[auth.NAME]` blocks are
-    /// `AuthSpec::Pat`, exercising a pure auth-ref string change with
-    /// no underlying discriminant transition).
+    /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`
+    /// (recreate_reasons empty, requires_recreate=false, single
+    /// auth_name field_change with expected before/after,
+    /// drift_cause=SpecChanged, no auth_kind leakage, Modified
+    /// 00-ghars.conf drop-in entry). See the helper docstring for
+    /// the contract; this test contributes the same-discriminant
+    /// fixture.
     #[test]
     fn plan_update_in_place_on_auth_name_change_has_empty_recreate_reasons() {
         // Two `[auth.NAME]` blocks named `pat` and `github_app`. Both
@@ -6765,38 +6770,25 @@ labels  = ["alpha", "beta"]
         );
     }
 
-    /// Inverse-pin sibling extending the auth-name in-place contract
-    /// to a real cross-discriminant `AuthSpec` change: the desired
-    /// side is `AuthSpec::GithubApp`, the discovered side was
-    /// registered against an `AuthSpec::Pat` block. The sibling test
+    /// Cross-discriminant pin for the auth-name in-place contract:
+    /// the discovered side carries `AuthSpec::Pat`, the desired side
+    /// carries `AuthSpec::GithubApp`. Direction is `pat → github_app`
+    /// (the common operator transition: PAT for personal automation
+    /// → GitHub App for org-scale rollout). `merge_defaults` lowers
+    /// the `[auth.NAME]` block to a bare `auth_name` string, so the
+    /// classifier sees a pure auth_name string diff regardless of
+    /// which discriminants the two blocks carry. The same-discriminant
+    /// sibling test
     /// `plan_update_in_place_on_auth_name_change_has_empty_recreate_reasons`
-    /// uses two `AuthSpec::Pat` blocks (auth ref string change with
-    /// matching discriminant); this test exercises a real
-    /// kind-change between the two `AuthSpec` variants the operator
-    /// is most likely to switch between (PAT for personal automation
-    /// → GitHub App for org-scale rollout, or vice versa).
+    /// pins the matching-discriminant case; the
+    /// `github_app → pat` sibling pins the inverse direction.
     ///
-    /// The contract: `merge_defaults` produces an
-    /// `EffectiveRunnerSpec` that records only the auth-name string
-    /// (`auth_name`), not the `AuthSpec` discriminant. The classifier
-    /// at `plan_from`'s spec-hash-mismatch arm therefore sees a
-    /// pure auth_name string diff regardless of which discriminants
-    /// the two `[auth.NAME]` blocks carry. This test pins:
-    ///   - `requires_recreate == false` (unchanged from same-
-    ///     discriminant case);
-    ///   - `recreate_reasons` is empty (same exact-match pin as the
-    ///     sibling — no "uncovered", no "auth_name", no token);
-    ///   - `field_changes` includes an `auth_name` entry with the
-    ///     correct before/after values.
-    ///
-    /// Direction is `pat → github_app` (Pat on discovered side,
-    /// GithubApp on desired side). The auth-block declarations carry
-    /// real cross-discriminant content; the EffectiveRunnerSpec.auth_name
-    /// string the planner sees is "pat" on the before side and
-    /// "github_app" on the after side. PAT was deliberately chosen
-    /// for the discovered side because that's the more common
-    /// "first-deployed" shape — operators promote single-runner PAT
-    /// configs to GitHub Apps as their fleet grows.
+    /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`
+    /// (recreate_reasons empty, requires_recreate=false, single
+    /// auth_name field_change with expected before/after,
+    /// drift_cause=SpecChanged, no auth_kind leakage, Modified
+    /// 00-ghars.conf drop-in entry). See the helper docstring for
+    /// the contract.
     #[test]
     fn plan_update_in_place_on_auth_name_change_pat_to_github_app_has_empty_recreate_reasons() {
         // REAL cross-discriminant shape (Pat + GithubApp) shared with
@@ -6812,33 +6804,25 @@ labels  = ["alpha", "beta"]
         );
     }
 
-    /// Inverse of `plan_update_in_place_on_auth_name_change_pat_to_github_app_has_empty_recreate_reasons`:
-    /// discovered side was `AuthSpec::GithubApp`, desired side switches
-    /// to `AuthSpec::Pat`. Mirrors the same contract — `requires_recreate
-    /// == false`, empty `recreate_reasons`, single `field_changes` entry
-    /// with `auth_name` before/after — but exercises the
-    /// `github_app → pat` direction.
+    /// Inverse-direction cross-discriminant pin: discovered side
+    /// carries `AuthSpec::GithubApp`, desired side switches to
+    /// `AuthSpec::Pat`. Direction is `github_app → pat` — the
+    /// operator-rare but classifier-important rollback case
+    /// (App → PAT for break-glass debug or App credential rotation
+    /// hotfix). The forward `pat → github_app` sibling alone would
+    /// leave a coverage hole: a regression that inspects only one
+    /// direction's discriminant pair could pass forward and break
+    /// inverse. Pinning both directions enforces the classifier's
+    /// discriminant-stripping invariant symmetrically — `merge_defaults`
+    /// lowers the `[auth.NAME]` block to a bare `auth_name` string
+    /// regardless of `AuthSpec` variant.
     ///
-    /// The forward test alone leaves a coverage hole: a regression that
-    /// inspects only one direction's discriminant pair (e.g. matches
-    /// `AuthSpec::Pat → AuthSpec::GithubApp` to a special branch but
-    /// falls through on `GithubApp → Pat`) passes the forward test
-    /// while breaking this one. Pinning both directions ensures the
-    /// classifier's discriminant-stripping invariant holds symmetrically:
-    /// `merge_defaults` lowers the `[auth.NAME]` block to a bare
-    /// `auth_name` string regardless of which `AuthSpec` variant the
-    /// block carries, so the classifier never observes the discriminant
-    /// transition direction.
-    ///
-    /// This direction (`github_app → pat`) is the operator-rare but
-    /// classifier-important case: most production transitions promote
-    /// PAT → GitHub App (organic fleet growth), but the rollback
-    /// direction (App → PAT) must be classifier-symmetric — operators
-    /// occasionally revert App-based runners to PAT for break-glass
-    /// debug or as a hotfix during App credential rotation outages.
-    /// A classifier asymmetry here would make the rollback path emit
-    /// surprise recreates — exactly the wrong moment for an operator
-    /// to discover the asymmetry.
+    /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`
+    /// (recreate_reasons empty, requires_recreate=false, single
+    /// auth_name field_change with expected before/after,
+    /// drift_cause=SpecChanged, no auth_kind leakage, Modified
+    /// 00-ghars.conf drop-in entry). See the helper docstring for
+    /// the contract.
     #[test]
     fn plan_update_in_place_on_auth_name_change_github_app_to_pat_has_empty_recreate_reasons() {
         // REAL cross-discriminant shape (Pat + GithubApp) shared with
