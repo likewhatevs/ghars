@@ -838,14 +838,26 @@ fn validate_generated_identifier(name: &str, parent_prefix: &str) -> Result<()> 
 /// hash domain (canonical_json of the spec) and the spec construction
 /// orthogonal.
 ///
-/// `merge_defaults` does NOT canonicalize the `caches` Vec (#371) —
-/// it threads the caller-supplied bindings verbatim. Callers that
-/// want the reorder-invariant spec_hash contract must go through
-/// [`lower_to_effective`], which sorts `caches` by name before
-/// returning. Direct `merge_defaults` callers (test fixtures,
-/// future synthetic spec builders) are responsible for sorting
-/// their caches Vec if they care about hash stability across
-/// operator-supplied orderings.
+/// Canonicalization asymmetry between `caches` and `labels`:
+///
+/// - `caches`: `merge_defaults` threads the caller-supplied bindings
+///   verbatim. Reorder-invariant spec_hash for caches requires going
+///   through [`lower_to_effective`], which sorts `caches` by name as
+///   part of cache-pool resolution. Direct `merge_defaults` callers
+///   (test fixtures, future synthetic spec builders) must sort their
+///   caches Vec themselves if they care about hash stability across
+///   operator-supplied orderings.
+///
+/// - `labels`: `merge_defaults` DOES canonicalize labels. After
+///   concat-and-dedup of `defaults.labels` and `runner.labels`,
+///   `merge_defaults` sorts the resulting Vec alphabetically (and
+///   applies `dedup` as defense-in-depth). Direct callers therefore
+///   inherit reorder-invariant spec_hash for labels without going
+///   through `lower_to_effective`. Labels are set-semantic for
+///   GitHub Actions runner registration, so canonicalization at
+///   merge time keeps the on-disk `X-Ghars-Labels=` annotation,
+///   `spec_hash`, and the Stage 1 classifier's annotation diff all
+///   consistent regardless of operator-supplied ordering.
 #[allow(clippy::too_many_arguments)]
 #[must_use]
 pub fn merge_defaults(
@@ -892,8 +904,9 @@ pub fn merge_defaults(
     // Labels form an unordered set for GitHub Actions runner matching:
     // a workflow `runs-on: [linux, gpu]` matches a runner registered
     // with `[gpu, linux]` identically. The `--labels CSV` argv passed
-    // to `config.sh` at runner-registration time is interpreted
-    // server-side as a set, so local order-sensitivity would cause
+    // to `config.sh` at runner-registration time produces a runner
+    // whose behavior is order-independent for matching workflow
+    // `runs-on:` selectors, so local order-sensitivity would cause
     // spurious recreate-class plans on cosmetic TOML reorders.
     //
     // Sort + dedup so every downstream consumer — `spec_hash`,
@@ -2941,9 +2954,10 @@ mod tests {
     /// labels concat + dedup + sort. defaults.labels first, then
     /// runner.labels, dedup, then sorted alphabetically (set-semantic
     /// for GitHub Actions registration). The contract is canonical
-    /// sort because labels are matched as a set server-side; local
-    /// order-sensitivity would cause spurious recreate-class plans
-    /// on cosmetic TOML reorders.
+    /// sort because the runner's behavior is order-independent for
+    /// matching workflow `runs-on:` selectors; local order-sensitivity
+    /// would cause spurious recreate-class plans on cosmetic TOML
+    /// reorders.
     #[test]
     fn merge_defaults_label_concat_dedup_sorted() {
         let runner = {
@@ -5666,8 +5680,9 @@ mod tests {
     /// Property: shuffling `labels` MUST NOT change the hash. Labels
     /// are set-semantic for GitHub Actions runner registration —
     /// workflow `runs-on: [linux, gpu]` matches a runner registered
-    /// with `[gpu, linux]` identically because GitHub deduplicates
-    /// and matches the joined `--labels CSV` argv server-side.
+    /// with `[gpu, linux]` identically because the runner's behavior
+    /// is order-independent for matching workflow `runs-on:` selectors
+    /// once the `--labels CSV` argv is passed at registration.
     /// Locally flipping `spec_hash` on a cosmetic operator reorder
     /// would drive a recreate-class `UpdateRunner` (registration is
     /// labels-bound, so a hash mismatch with no Stage 1 typed reason

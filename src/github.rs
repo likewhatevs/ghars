@@ -106,6 +106,13 @@ const MAX_RELEASES_BODY_BYTES: u64 = 4 * 1024 * 1024;
 /// allocation at the cap so it never over-allocates.
 const INITIAL_BODY_CAPACITY: u64 = 64 * 1024;
 
+/// Depth cap for `format_error_chain` traversal. Defends against
+/// pathological cyclic source chains that would otherwise loop
+/// forever. 16 layers exceeds any realistic nesting (reqwest →
+/// hyper → rustls → io::Error is 4 layers; doubling that again
+/// covers any future wrapper additions).
+const FORMAT_IO_CHAIN_MAX_DEPTH: usize = 16;
+
 /// URL scope: a runner URL points either at a single repo or at an org.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scope {
@@ -521,7 +528,7 @@ enum BodyCapError {
     /// `Read::read_to_end` returned an I/O error before the cap could
     /// fire. The wrapped `io::Error` is preserved so the caller can
     /// surface its Display text and walk its `.source()` chain via
-    /// `format_io_chain` for nested-cause errors (TLS, hyper).
+    /// `format_error_chain` for nested-cause errors (TLS, hyper).
     Io(std::io::Error),
     /// Post-read check observed `buf.len() > cap`, meaning the reader
     /// had more bytes available than the cap allows. `cap` is the
@@ -530,22 +537,28 @@ enum BodyCapError {
     CapExceeded { cap: u64 },
 }
 
-/// Walk the `std::error::Error::source()` chain of an `io::Error` and
-/// concatenate each layer's Display with ": " separators. `io::Error`'s
-/// own Display only formats the outermost layer, so nested causes (e.g.
-/// reqwest::Error wrapping hyper::Error wrapping a rustls error) are
-/// dropped if the operator only sees `format!("{io_err}")`. This helper
-/// preserves the full chain so an operator triaging a
+/// Walk the `std::error::Error::source()` chain of an arbitrary error
+/// and concatenate each layer's Display with ": " separators. The
+/// outer Display of types like `std::io::Error` and `reqwest::Error`
+/// only formats the outermost layer, so nested causes (e.g.
+/// reqwest::Error wrapping hyper::Error wrapping a rustls error, or
+/// reqwest::Error wrapping a TLS/DNS error) are dropped if the
+/// operator only sees `format!("{err}")`. This helper preserves the
+/// full chain so an operator triaging a
 /// connection-reset-during-TLS-handshake sees both the outer "request
-/// failed" framing and the inner rustls reason code. A depth cap of 16
-/// defends against cyclic source chains.
-fn format_io_chain(io_err: &std::io::Error) -> String {
-    use std::error::Error;
-    let mut out = io_err.to_string();
-    let mut source: Option<&(dyn Error + 'static)> = io_err.source();
+/// failed" framing and the inner rustls reason code. The depth cap
+/// `FORMAT_IO_CHAIN_MAX_DEPTH` defends against cyclic source chains.
+///
+/// Accepts `&dyn std::error::Error` so the same helper covers both the
+/// `io::Error` post-decompression path (`read_body_capped`) and the
+/// `reqwest::Error` send-failure path — `reqwest::Error` is not an
+/// `io::Error`, so a separate walker would be required otherwise.
+fn format_error_chain(err: &(dyn std::error::Error + 'static)) -> String {
+    let mut out = err.to_string();
+    let mut source = err.source();
     let mut depth = 0;
     while let Some(cause) = source {
-        if depth >= 16 {
+        if depth >= FORMAT_IO_CHAIN_MAX_DEPTH {
             break;
         }
         out.push_str(": ");
@@ -615,8 +628,15 @@ fn http_get_payload_with_cap(
         .header("X-GitHub-Api-Version", "2022-11-28")
         .send()
         .map_err(|e| {
+            // Walk the reqwest::Error source chain so an operator
+            // triaging a TLS/DNS/connection failure sees the inner
+            // cause (e.g. rustls reason code, hyper transport reason)
+            // and not just reqwest's outer Display layer.
             GharsError::GitHub(
-                format!("GitHub API request failed: {e}: {url}"),
+                format!(
+                    "GitHub API request failed: {chain}: {url}",
+                    chain = format_error_chain(&e)
+                ),
                 "check network connectivity and proxy configuration".into(),
             )
         })?;
@@ -651,6 +671,7 @@ fn http_get_payload_with_cap(
     // blocking/response.rs:193-208), so we read the header directly to
     // get the on-wire size before reqwest's gzip decoder mangles the
     // size hint.
+    // Malformed Content-Length silently falls through to Layer 2 streaming backstop.
     if let Some(cl_header) = resp.headers().get(reqwest::header::CONTENT_LENGTH) {
         if let Ok(cl_str) = cl_header.to_str() {
             if let Ok(cl) = cl_str.parse::<u64>() {
@@ -681,9 +702,9 @@ fn http_get_payload_with_cap(
         BodyCapError::Io(io_err) => GharsError::GitHub(
             format!(
                 "GitHub API response read failed: {chain}: {url}",
-                chain = format_io_chain(&io_err)
+                chain = format_error_chain(&io_err)
             ),
-            "transient I/O failure; retry the operation".into(),
+            "if connection-reset or timeout, retry; if TLS/certificate error, check the system trust store and proxy CA configuration".into(),
         ),
         BodyCapError::CapExceeded { cap } => GharsError::GitHub(
             format!(
@@ -700,7 +721,7 @@ fn http_get_payload_with_cap(
     serde_json::from_slice::<ReleaseApiPayload>(&buf).map_err(|e| {
         GharsError::GitHub(
             format!("GitHub API response not valid JSON: {e}: {url}"),
-            "the upstream contract returns JSON; transient corruption may resolve on retry".into(),
+            "if the response is HTML instead of JSON, check for captive portal or proxy interception; verify the URL with curl -v; check status.github.com for incidents".into(),
         )
     })
 }
@@ -2160,8 +2181,8 @@ mod tests {
     ///
     /// The wrapper at `http_get_payload_with_cap` dispatches on the
     /// typed enum variants to choose between the suspicious-network
-    /// hint (cap-fired) and the retry-the-operation hint (transient
-    /// I/O). This test pins the load-bearing invariant: an I/O
+    /// hint (cap-fired) and the connection/TLS-triage hint (I/O
+    /// failure). This test pins the load-bearing invariant: an I/O
     /// failure must produce `BodyCapError::Io`, never
     /// `BodyCapError::CapExceeded` — otherwise the wrapper would
     /// mis-route the operator hint. The pin also verifies the
@@ -2229,16 +2250,16 @@ mod tests {
         }
     }
 
-    /// `format_io_chain` walks an io::Error's `.source()` chain so
+    /// `format_error_chain` walks an io::Error's `.source()` chain so
     /// nested causes (e.g. reqwest::Error wrapping hyper::Error
     /// wrapping rustls) survive into the operator-visible message.
     /// Synthesize: outer io::Error wraps a custom mid error that
     /// wraps an inner error via source(). io::Error Custom Display
     /// delegates to the wrapped error, so outer.to_string() emits
-    /// mid's text; format_io_chain walks source chain to append
+    /// mid's text; format_error_chain walks source chain to append
     /// inner's Display. Output has 2 text segments joined by ": ".
     #[test]
-    fn format_io_chain_walks_nested_sources() {
+    fn format_error_chain_walks_nested_sources() {
         use std::error::Error;
         use std::fmt;
         use std::io;
@@ -2274,7 +2295,7 @@ mod tests {
         };
         let outer = io::Error::new(io::ErrorKind::ConnectionAborted, mid);
 
-        let chain = format_io_chain(&outer);
+        let chain = format_error_chain(&outer);
         assert!(
             chain.contains("tls handshake failure"),
             "chain must surface the mid-layer Display; got: {chain}"
@@ -2290,7 +2311,7 @@ mod tests {
         // Adversarial: io_err.to_string() alone surfaces only the
         // outermost layer's Display (the mid Display, since io::Error
         // Display formats the inner Custom error directly). Verify
-        // format_io_chain produces strictly more than that.
+        // format_error_chain produces strictly more than that.
         assert!(
             chain.len() > outer.to_string().len(),
             "chain must add inner-layer text beyond the outer Display; chain={chain}, outer={}",
@@ -2298,14 +2319,14 @@ mod tests {
         );
     }
 
-    /// `format_io_chain` on an io::Error with no source returns just
+    /// `format_error_chain` on an io::Error with no source returns just
     /// the outer Display (no trailing ": "). Pinned to defend against
     /// a regression that always appends a separator.
     #[test]
-    fn format_io_chain_handles_no_source() {
+    fn format_error_chain_handles_no_source() {
         use std::io;
         let err = io::Error::new(io::ErrorKind::TimedOut, "operation timed out");
-        let chain = format_io_chain(&err);
+        let chain = format_error_chain(&err);
         assert!(
             chain.contains("operation timed out"),
             "chain must surface the io::Error Display; got: {chain}"
