@@ -376,6 +376,28 @@ impl DriftCause {
 /// - `String("x")` ⇒ `{"type": "string", "value": "x"}`
 /// - `List(["a","b"])` ⇒ `{"type": "list", "values": ["a","b"]}`
 ///
+/// Consumer-side branching on the `type` tag picks the matching
+/// payload key (`value` for `string`, `values` for `list`):
+///
+/// ```text
+/// jq:
+/// .actions[].field_changes[]?
+///   | if .before.type == "string"
+///     then .before.value
+///     else (.before.values | join(","))
+///     end
+/// ```
+///
+/// ```text
+/// python:
+/// fc = ...  # one .actions[*].field_changes[*] element
+/// before = (
+///     fc["before"]["value"]
+///     if fc["before"]["type"] == "string"
+///     else fc["before"]["values"]
+/// )
+/// ```
+///
 /// Text rendering preserves the v1 operator-visible format:
 /// String → `value`, List → `a,b` (comma-joined), so existing
 /// `grep "labels:.*gpu"` operator pipelines keep working.
@@ -384,17 +406,25 @@ impl DriftCause {
 /// `classify_recreate_reasons_from_annotations` emits either a
 /// scalar string (10 paths) or a list of strings (2 paths).
 /// Adding `Number` now would be premature — bump schema and add
-/// the variant when a numeric field appears.
+/// the variant when a numeric field appears. Likely v0.2
+/// candidates: `count` (pre-expansion runner count),
+/// `keep_versions` (retention prune count). `memory_max` is NOT
+/// a candidate — stays `Option<String>` with `bytesize` parsing
+/// at validate time, so the wire shape is the existing
+/// `String` variant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldValue {
     /// Scalar string. Used for: `url`, `runner_version`, `arch`,
     /// `user`, `prefix`, `runner_sha256`, `runner_tarball`,
     /// `network`, `auth_name`, `trust_zone`.
     String(String),
-    /// Ordered list of strings. Used for: `labels` (operator
-    /// authoring order), `caches` (sorted by classifier; #353).
-    /// Renderers MUST NOT re-sort — display order is canonical
-    /// at construction time.
+    /// Ordered list of strings. Used for: `labels` (sorted
+    /// alphabetically per canonicalization — `merge_defaults`,
+    /// `render_identity` defense-in-depth, and parse-time sort in
+    /// `DiscoveredAnnotations::from_drop_in_body` all converge on
+    /// byte-order ascending), `caches` (sorted by classifier;
+    /// #353). Renderers MUST NOT re-sort — display order is
+    /// canonical at construction time.
     List(Vec<String>),
 }
 
@@ -410,6 +440,16 @@ impl FieldValue {
     }
 
     /// Tagged JSON rendering for schema v2.
+    ///
+    /// This manual constructor IS the wire-format contract — the
+    /// shape is NOT serde-derived from the `FieldValue` enum, so
+    /// a `#[serde(rename)]` or variant rename would not propagate
+    /// here. Any change to the emitted `{"type": ..., "value":
+    /// ...}` / `{"type": ..., "values": ...}` keys, the tag
+    /// vocabulary, or the per-variant payload field names is
+    /// wire-breaking and requires a `schema_version` bump in
+    /// `cli::plan_to_json_value`, even when the in-memory enum
+    /// shape is preserved.
     pub fn to_json(&self) -> serde_json::Value {
         match self {
             FieldValue::String(s) => serde_json::json!({
@@ -451,8 +491,11 @@ pub struct FieldChange {
     pub path: &'static str,
     /// Typed before-value, parsed from the discovered unit's
     /// `X-Ghars-*` annotation. List variants carry the items in
-    /// the order the classifier read them (sorted for `caches`,
-    /// authoring order for `labels`).
+    /// the order the classifier read them — both `caches` and
+    /// `labels` are sorted alphabetically (renderer emits sorted,
+    /// parser preserves on-disk order; the parse-time sort in
+    /// `DiscoveredAnnotations::from_drop_in_body` keeps the
+    /// invariant when the on-disk bytes were ever non-canonical).
     pub before: FieldValue,
     /// Typed after-value from the desired effective spec. Same
     /// ordering contract as `before`.

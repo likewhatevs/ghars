@@ -2238,6 +2238,26 @@ fn push_indented_unified_diff(out: &mut String, body: &str, color: ColorMode) {
 /// pastebins, ticket attachments) without redaction. Tracked as
 /// task #461 (SEC-NEW: --diff body output may expose proxy
 /// credentials from 60-proxy.conf).
+///
+/// # Schema v1 → v2 migration
+///
+/// v1 emitted `FieldChange.before` / `.after` as bare strings;
+/// v2 emits them as tagged objects keyed on `type`. v1 consumers
+/// reading `.before` as a string should switch to `.before.value`
+/// when `.before.type == "string"` or to `.before.values` (a JSON
+/// array) when `.before.type == "list"`.
+///
+/// ```text
+/// // v1 (schema_version "1"):
+/// {"path": "labels", "before": "gpu,linux", "after": "gpu,linux,fast"}
+///
+/// // v2 (schema_version "2"):
+/// {
+///   "path": "labels",
+///   "before": {"type": "list", "values": ["gpu", "linux"]},
+///   "after":  {"type": "list", "values": ["gpu", "linux", "fast"]}
+/// }
+/// ```
 #[must_use]
 pub(crate) fn plan_to_json_value(plan: &Plan, diff: bool) -> serde_json::Value {
     let actions: Vec<serde_json::Value> = plan
@@ -2408,6 +2428,10 @@ pub(crate) fn plan_to_json_value(plan: &Plan, diff: bool) -> serde_json::Value {
     // changes in this JSON shape. Bump this string when the shape
     // changes in a way that existing consumers cannot transparently
     // ignore (added keys are NOT a bump; renamed/removed keys are).
+    // Adding a new variant to a tagged enum surface (e.g. a new
+    // `FieldValue.type` value beyond `string` / `list`) IS a bump —
+    // consumers that branch on the existing variant set must opt in
+    // (their fallback arm would silently misroute the new shape).
     // Stays a string so we can use semver-flavored values like
     // "2.0" without restructuring downstream parsers.
     //
