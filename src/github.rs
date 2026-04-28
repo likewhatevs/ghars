@@ -643,9 +643,15 @@ fn http_get_payload_with_cap(
         let hint: String = match code {
             429 => "GitHub secondary rate limit; wait the `Retry-After` interval and retry"
                 .into(),
-            401 | 403 => "this endpoint is normally public; if a proxy or GHE mirror is in \
-                          use, check token/PAT validity and repo permissions"
-                .into(),
+            401 | 403 => format!(
+                "GitHub returned {code} — typically (a) the auth principal lacks the \
+                 required permissions / scopes for this endpoint or the credential \
+                 has been revoked (PAT scopes / token validity, App installation \
+                 grants, or fine-grained PAT permissions, depending on the source); \
+                 or (b) the releases endpoint is normally public, so a proxy or GHE \
+                 mirror in the path is intercepting and demanding token/PAT \
+                 credentials from an intermediate"
+            ),
             404 => "verify the runner version (if specified) and the owner/repo exist, and the API endpoint is reachable".into(),
             500..=599 => {
                 "GitHub upstream is degraded; retry later, check status.github.com".into()

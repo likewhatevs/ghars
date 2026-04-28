@@ -775,11 +775,13 @@ fn octocrab_to_auth(name: &str, op: &str, err: &octocrab::Error) -> GharsError {
             let code = source.status_code.as_u16();
             match code {
                 401 | 403 => format!(
-                    "GitHub returned {code} — verify the auth principal still has \
-                     the required permissions / scopes for the runner-token \
-                     endpoint (PAT scopes, App installation grants, or fine-grained \
-                     PAT permissions, depending on the source) and the credential \
-                     has not been revoked"
+                    "GitHub returned {code} — typically (a) the auth principal lacks the \
+                     required permissions / scopes for this endpoint or the credential \
+                     has been revoked (PAT scopes / token validity, App installation \
+                     grants, or fine-grained PAT permissions, depending on the source); \
+                     or (b) the releases endpoint is normally public, so a proxy or GHE \
+                     mirror in the path is intercepting and demanding token/PAT \
+                     credentials from an intermediate"
                 ),
                 404 => format!(
                     "GitHub returned {code} — verify the owner/repo in the runner \

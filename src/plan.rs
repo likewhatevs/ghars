@@ -1005,7 +1005,30 @@ pub fn merge_defaults(
     // Sort is unstable because label strings are unique by
     // construction so stable order between equal elements is
     // irrelevant; byte-wise `Ord` agrees with operator intent for
-    // the ASCII subset enforced by `validate_label`.
+    // the ASCII subset enforced by `validate_labels`.
+    //
+    // TRIPLE-SORT COUPLING (defense-in-depth): three independent sort
+    // sites must all agree on byte-order ascending sort to keep label
+    // canonicalization consistent across the produce/render/parse
+    // pipeline. Removing or weakening any one of them silently breaks
+    // the round-trip identity that drives reorder-invariant plans.
+    //
+    //   1. `merge_defaults` (HERE) — produces canonical labels Vec on
+    //      EffectiveRunnerSpec; feeds spec_hash and the renderer.
+    //   2. `crate::systemd::render_identity` — defensive re-sort at
+    //      `X-Ghars-Labels=` emission for direct EffectiveRunnerSpec
+    //      callers that bypass merge_defaults.
+    //   3. `DiscoveredAnnotations::from_drop_in_body` — defensive
+    //      re-sort at parse boundary so every consumer of `out.labels`
+    //      sees canonical order regardless of on-disk byte order.
+    //
+    // All three must use the same comparator (byte-order, ascending)
+    // and the same sort discipline (sort the Vec, not the iter-derived
+    // copy). A divergence — for example, switching one site to
+    // case-insensitive or locale-aware sort — would produce a
+    // canonical-spec_hash ↔ on-disk-annotation drift undetectable by
+    // the Stage 1 classifier and silently re-trigger spurious
+    // recreates.
     labels.sort_unstable();
     labels.dedup();
 
@@ -7027,6 +7050,172 @@ labels  = ["alpha", "beta"]
             upd.after.spec_hash, new_hash,
             "delta.after.spec_hash must carry the canonical NEW hash"
         );
+        assert_eq!(
+            actual.runners.get("a").expect("runner present").spec_hash,
+            old_hash,
+            "discovered.spec_hash fixture must carry the pre-canonical OLD hash"
+        );
+    }
+
+    /// Combined transition: a runner whose on-disk `X-Ghars-Spec-Hash`
+    /// was computed by a pre-canonicalization `merge_defaults` (no
+    /// labels sort) AND whose operator simultaneously edited an
+    /// in-place-class field (`memory_max`) must produce an in-place
+    /// `UpdateRunner` (NOT an `uncovered` recreate). The coincident
+    /// in-place change makes Stage 2 detect a non-`00-ghars.conf`
+    /// modified drop-in (`10-memory.conf`), which flips
+    /// `any_drop_in_modified` and bypasses the uncovered fallback gate.
+    ///
+    /// Routing distinction vs the pure-labels-reorder transition above:
+    ///   - Pure reorder: only `00-ghars.conf` is Modified (carries the
+    ///     stale `X-Ghars-Spec-Hash`); basename filter strips it; gate
+    ///     fires → `uncovered` recreate.
+    ///   - Combined (HERE): `10-memory.conf` is Modified (memory_max
+    ///     edit) AND survives the basename filter (in
+    ///     MANAGED_DROP_IN_BASENAMES, not `00-ghars.conf`). Gate sees
+    ///     `any_drop_in_modified=true` and skips the uncovered push.
+    ///
+    /// The classifier still records NO `labels` recreate reason
+    /// (set-equal after sort) and NO labels FieldChange. The detected
+    /// change is the memory_max drop-in body, surfaced via the Stage 2
+    /// drop-in diff. The resulting plan uses the canonical NEW
+    /// spec_hash (sorted labels + new memory_max), so apply re-renders
+    /// the canonical 00-ghars.conf and the next plan returns to NoOp.
+    ///
+    /// Why this case matters: an operator upgrading ghars across the
+    /// canonicalization boundary while ALSO editing an unrelated
+    /// in-place field exercises the interaction between the labels-
+    /// canonicalization transition and the Stage 2 in-place classifier.
+    /// A regression that conflated the two paths — for example, marking
+    /// the runner for recreate because the spec_hash flipped without
+    /// checking whether Stage 2 found a real in-place edit — would
+    /// surface as `requires_recreate=true` here. The combined case is
+    /// the narrowest fixture that catches such a regression.
+    #[test]
+    fn plan_combined_labels_canonicalization_with_inplace_edit_is_inplace_update() {
+        // Desired: operator edits both labels (any order — merge_defaults
+        // canonicalizes) and memory_max. After merge_defaults, labels
+        // sort to ["alpha","beta","middle"] and the spec_hash captures
+        // the NEW memory_max value too.
+        let cfg = config_with_runners(vec![{
+            let mut r = minimal_runner("a");
+            r.labels = vec!["middle".into(), "alpha".into(), "beta".into()];
+            r.memory_max = Some("16G".into());
+            r
+        }]);
+        let desired_spec = merge_defaults(
+            &cfg.runners[0],
+            &cfg.defaults,
+            "pat".into(),
+            vec![],
+            None,
+            None,
+            None,
+            Arch::X86_64,
+            cfg_source_default(),
+        );
+        // Canonical contract pin on labels sort, parity with the
+        // pure-reorder transition test above.
+        assert_eq!(
+            desired_spec.labels,
+            vec![
+                "alpha".to_string(),
+                "beta".to_string(),
+                "middle".to_string()
+            ],
+            "merge_defaults must sort labels for desired spec; got: {:?}",
+            desired_spec.labels
+        );
+        let new_hash = spec_hash(&desired_spec);
+
+        // Pre-canonical (OLD) discovered spec: labels in non-canonical
+        // permutation AND the prior memory_max value ("8G"). Recompute
+        // spec_hash from this state — both the unsorted-labels and the
+        // old-memory_max contribute to the hash, so the two changes
+        // accumulate on the same OLD↔NEW mismatch.
+        let mut pre_canonical_spec = desired_spec.clone();
+        pre_canonical_spec.labels = vec!["middle".into(), "alpha".into(), "beta".into()];
+        pre_canonical_spec.memory_max = Some("8G".into());
+        pre_canonical_spec.spec_hash = spec_hash(&pre_canonical_spec);
+        let old_hash = pre_canonical_spec.spec_hash.clone();
+        // Hash-mismatch precondition. Either the labels permutation OR
+        // the memory_max edit is sufficient on its own; the combined
+        // fixture captures both contributing to the same mismatch.
+        assert_ne!(
+            old_hash, new_hash,
+            "pre-canonical (unsorted-labels + old memory_max) spec_hash must differ from canonical \
+             (sorted-labels + new memory_max) spec_hash; got old={old_hash} new={new_hash}"
+        );
+
+        // Discovered fixture: spec_hash field carries OLD; drop-ins are
+        // rendered from `pre_canonical_spec` so:
+        //   - 00-ghars.conf carries OLD spec_hash + sorted labels (the
+        //     defense-in-depth sort at render_identity), which is
+        //     basename-filtered out of `any_drop_in_modified`.
+        //   - 10-memory.conf carries `MemoryMax=8G` (the OLD memory_max
+        //     value), which differs from the desired `MemoryMax=16G`
+        //     body and IS in MANAGED_DROP_IN_BASENAMES — Stage 2
+        //     detects this as Modified.
+        let mut actual = empty_actual();
+        actual.runners.insert(
+            "a".into(),
+            discovered_for("a", &pre_canonical_spec, Drift::InSync),
+        );
+
+        let plan = plan_from(&cfg, &actual, &empty_paths())
+            .expect("plan_from must succeed for combined transition fixture");
+
+        // Single UpdateRunner action: routed in-place, NOT recreate.
+        let updates: Vec<&RunnerDelta> = plan
+            .actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::UpdateRunner(d) => Some(d),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            updates.len(),
+            1,
+            "combined transition must produce exactly one UpdateRunner; got plan: {:?}",
+            plan.actions
+        );
+        let upd = updates[0];
+        // Core contract: the coincident in-place edit prevents the
+        // uncovered-recreate fallback. A regression here would surface
+        // as `requires_recreate=true` with `recreate_reasons=["uncovered"]`.
+        assert!(
+            !upd.requires_recreate,
+            "combined transition must route in-place (Stage 2 detected memory_max diff in \
+             10-memory.conf); got reasons {:?} field_changes {:?}",
+            upd.recreate_reasons, upd.field_changes
+        );
+        assert!(
+            upd.recreate_reasons.is_empty(),
+            "combined transition must record NO recreate reasons; got: {:?}",
+            upd.recreate_reasons
+        );
+        // Defense-in-depth: labels are set-equal after sort (sorted
+        // before-side ⇄ sorted after-side) so the classifier records
+        // NO labels FieldChange. A FieldChange here would mean the
+        // labels classifier diverged from the spec_hash hash classifier
+        // on this transition (canonical mismatch) and the test would
+        // be exercising the wrong path.
+        assert!(
+            !upd.field_changes.iter().any(|c| c.path == "labels"),
+            "labels must be set-equal after sort, no labels FieldChange expected; got: {:?}",
+            upd.field_changes
+        );
+        // The new canonical spec_hash lands on the delta — apply will
+        // re-render the canonical 00-ghars.conf with NEW hash, so the
+        // next plan returns to NoOp.
+        assert_eq!(
+            upd.after.spec_hash, new_hash,
+            "delta.after.spec_hash must carry the canonical NEW hash"
+        );
+        // Sibling pin: the discovered runner still carries the pre-
+        // canonical OLD hash on the input. Mirrors the pure-reorder
+        // transition test's symmetric assertion.
         assert_eq!(
             actual.runners.get("a").expect("runner present").spec_hash,
             old_hash,
