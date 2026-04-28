@@ -98,9 +98,8 @@ const _: () = assert!(SYSTEMD_GROUP_NAME_MAX > RUNNER_USER_PREFIX.len());
 /// stores network device names in a fixed-width array of this size,
 /// where the last byte is reserved for the trailing NUL — so a NAME's
 /// usable byte length is `IFNAMSIZ - 1` (15 chars). `dev_valid_name`
-/// in `net/core/dev.c` enforces this on every netlink RTM_NEWLINK
-/// (verified against ~/opensource/linux). #432: ghars's per-runner
-/// veth interface naming inherits this hard cap.
+/// in `net/core/dev.c` enforces this on every netlink RTM_NEWLINK.
+/// ghars's per-runner veth interface naming inherits this hard cap.
 pub const IFNAMSIZ: usize = 16;
 
 /// Suffix `netns::host_veth_name` / `netns::runner_veth_name` append
@@ -233,7 +232,7 @@ pub fn validate_identifier(s: &str) -> Result<()> {
 /// `RUNNER_NAME_MAX_LEN` cap so the derived per-runner user name
 /// `"{RUNNER_USER_PREFIX}{name}"` (produced by `plan::merge_defaults`)
 /// fits inside systemd's `SYSTEMD_GROUP_NAME_MAX`-char name limit. The
-/// same length-cap pattern as `validate_cache_pool_name` (#427/#402).
+/// same length-cap pattern as `validate_cache_pool_name`.
 ///
 /// # Errors
 ///
@@ -820,7 +819,7 @@ pub fn normalize_prefix(p: &str) -> String {
 ///   pivot_root, ptrace any task, ioctl on block devices, set hostname,
 ///   ...).
 /// - `CAP_SYS_PTRACE` — ptrace any process the runner UID can reach,
-///   undermining cross-runner isolation (#91 SEC-28) and per-runner UID
+///   undermining cross-runner isolation (SEC-28) and per-runner UID
 ///   separation (SEC-27).
 /// - `CAP_SYS_MODULE` — load arbitrary kernel modules; full kernel
 ///   compromise from the runner.
@@ -829,10 +828,10 @@ pub fn normalize_prefix(p: &str) -> String {
 /// - `CAP_NET_RAW` — craft raw L2/L3 packets, bypassing the netns
 ///   egress allowlist (R1) and reaching the host's neighbor cache.
 ///
-/// SEC-01 (queue task #170, design Part 17 SEC-01). Tokens are matched
-/// case-insensitively against the input — operators write either
-/// `CAP_SYS_ADMIN` or `cap_sys_admin`, both reject. The check trims
-/// whitespace before comparison so `" CAP_SYS_ADMIN "` is also caught.
+/// SEC-01. Tokens are matched case-insensitively against the input —
+/// operators write either `CAP_SYS_ADMIN` or `cap_sys_admin`, both
+/// reject. The check trims whitespace before comparison so
+/// `" CAP_SYS_ADMIN "` is also caught.
 const DENY_EXTRA_CAPABILITIES: &[&str] = &[
     "CAP_SYS_ADMIN",
     "CAP_SYS_PTRACE",
@@ -1176,8 +1175,9 @@ mod tests {
     #[test]
     fn runner_name_rejects_too_long() {
         // Past `IDENTIFIER_MAX_LEN` always rejects (was the only cap
-        // pre-#427); pinned here so a future loosening of the identifier
-        // layer doesn't silently re-introduce 65+ char names.
+        // before the runner-cap was introduced); pinned here so a future
+        // loosening of the identifier layer doesn't silently re-introduce
+        // 65+ char names.
         let s = "a".repeat(IDENTIFIER_MAX_LEN + 1);
         assert!(validate_runner_name(&s).is_err());
     }
@@ -1186,7 +1186,7 @@ mod tests {
     /// `RUNNER_NAME_MAX_LEN` chars + "ghars-" 6-char prefix =
     /// `SYSTEMD_GROUP_NAME_MAX` (31), the systemd strict-mode user-name
     /// limit. This pin catches off-by-one shrinks of
-    /// `RUNNER_NAME_MAX_LEN` (#427).
+    /// `RUNNER_NAME_MAX_LEN`.
     #[test]
     fn runner_name_accepts_max_len() {
         let s = "a".repeat(RUNNER_NAME_MAX_LEN);
@@ -1195,7 +1195,7 @@ mod tests {
 
     /// `validate_runner_name` must reject one char past the cap. The
     /// error message must mention the limit and the derived user name
-    /// so the operator can act without guessing (#427).
+    /// so the operator can act without guessing.
     #[test]
     fn runner_name_rejects_one_past_max_len() {
         let s = "a".repeat(RUNNER_NAME_MAX_LEN + 1);
@@ -1461,7 +1461,7 @@ mod tests {
     /// Every entry of `TOP_LEVEL_RESERVED` must be rejected by
     /// `validate_prefix`. Iterating the slice (rather than enumerating
     /// each path as a separate `#[case]`) guarantees the test stays in
-    /// sync if entries are added or removed (#131).
+    /// sync if entries are added or removed.
     #[test]
     fn prefix_rejects_every_top_level_reserved_entry() {
         for entry in TOP_LEVEL_RESERVED {
@@ -1525,14 +1525,14 @@ mod tests {
         assert!(validate_user(u).is_err(), "must reject {u:?}");
     }
 
-    /// Coarse rejection of clearly-oversize input. Post-#434 the
-    /// authoritative boundary is pinned by `user_accepts_at_max_len` /
+    /// Coarse rejection of clearly-oversize input. The authoritative
+    /// boundary is pinned by `user_accepts_at_max_len` /
     /// `user_rejects_one_past_max_len` (USER_MAX_LEN = 31 vs 32). This
     /// test stays as a cheap regression smoke: a far-above-cap length
-    /// must still reject. `33` is no longer "the" boundary — it is just
-    /// a value comfortably past either cap if the constants ever drift,
-    /// catching a bulk regression that disabled the length gate
-    /// entirely without depending on the precise threshold.
+    /// must still reject. `33` is not the authoritative boundary — it
+    /// is just a value comfortably past either cap if the constants
+    /// ever drift, catching a bulk regression that disabled the length
+    /// gate entirely without depending on the precise threshold.
     #[test]
     fn user_rejects_well_above_max() {
         let s = "a".repeat(33);
@@ -1541,8 +1541,8 @@ mod tests {
 
     /// Boundary pair: at `USER_MAX_LEN` (= 31) `validate_user` accepts;
     /// at `USER_MAX_LEN + 1` (= 32) it rejects via the explicit length
-    /// gate. The 32-char rejection is the bug fix for #434 — the
-    /// pre-fix regex `{0,31}` accepted 32-char names but systemd's
+    /// gate. The 32-char rejection is required because the regex alone
+    /// (formerly `{0,31}`) accepted 32-char names but systemd's
     /// strict-mode `valid_user_group_name` would refuse them at
     /// unit-load time. Pinning both endpoints catches an off-by-one
     /// drift in either USER_RE or USER_MAX_LEN.
@@ -1722,15 +1722,15 @@ mod tests {
         assert!(format!("{err}").contains("regular file"));
     }
 
-    /// #439: a regular file whose first bytes are not the gzip magic
+    /// A regular file whose first bytes are not the gzip magic
     /// (`1f 8b`) MUST reject. Operators occasionally point
     /// `--runner-tarball` at a saved HTML error page or a JPEG; the
     /// validator surfaces an actionable error at config-load time so
     /// they don't get a cryptic `extract_tarball` failure deep
     /// inside `apply`.
     ///
-    /// #452 format pin: the rejection MUST embed the actual bytes
-    /// seen as `got: XX YY`. Operators can attribute the file format
+    /// Format pin: the rejection MUST embed the actual bytes seen
+    /// as `got: XX YY`. Operators can attribute the file format
     /// from the error message alone (no `xxd` trip required) — the
     /// HTML fixture starts with `<!` which is `0x3c 0x21`.
     #[test]
@@ -1759,10 +1759,10 @@ mod tests {
         );
     }
 
-    /// #439: a file shorter than 2 bytes (cannot contain a valid
-    /// gzip header) MUST reject. Pins the partial-read branch.
+    /// A file shorter than 2 bytes (cannot contain a valid gzip
+    /// header) MUST reject. Pins the partial-read branch.
     ///
-    /// #452 format pin: 1-byte read MUST surface as `got: XX (1 byte)`
+    /// Format pin: 1-byte read MUST surface as `got: XX (1 byte)`
     /// so the operator sees both the byte they have AND the
     /// short-read class.
     #[test]
@@ -1785,7 +1785,7 @@ mod tests {
         );
     }
 
-    /// #452: empty file MUST surface as `got: <empty file>`. Pins the
+    /// Empty file MUST surface as `got: <empty file>`. Pins the
     /// `n == 0` branch of the format helper. Without this, a
     /// regression that dropped the empty-file branch would silently
     /// emit `got: 00 00` (zero-init `magic`) and confuse operators
@@ -1805,7 +1805,7 @@ mod tests {
         );
     }
 
-    /// #440: a relative path MUST reject — relative paths resolve
+    /// A relative path MUST reject — relative paths resolve
     /// against process CWD which varies between invocations
     /// (operator shell vs. root-via-sudo apply).
     #[test]
@@ -1824,8 +1824,8 @@ mod tests {
         );
     }
 
-    /// #440 positive pin: an absolute path with valid gzip magic
-    /// MUST accept. Pins both gates passing in lockstep.
+    /// Positive pin: an absolute path with valid gzip magic MUST
+    /// accept. Pins both gates passing in lockstep.
     #[test]
     fn runner_tarball_accepts_absolute_path_with_gzip_magic() {
         let dir = TempDir::new().unwrap();
@@ -2464,7 +2464,7 @@ mod tests {
         validate_hook_script(&p).expect("root + 0700 + non-symlink must pass");
     }
 
-    // ---- expanded SEC-01 path denylist (#170 follow-up) --------------
+    // ---- expanded SEC-01 path denylist -------------------------------
 
     #[rstest]
     #[case::kmsg("/dev/kmsg")]

@@ -30,7 +30,7 @@ pub struct Paths {
     /// per-runner DNS-forward configuration. Field exists so tests
     /// (and operators with custom systemd installations) can redirect
     /// the path under an alternate root rather than hitting the live
-    /// host `/etc` (#169).
+    /// host `/etc`.
     pub resolved_conf_d: Utf8PathBuf,
 }
 
@@ -113,7 +113,7 @@ impl Paths {
     /// `<cache_dir>/pools/<pool>` — per-pool cache storage directory
     /// (Part 9b: `CacheDirectory=ghars/pools/%i`). systemd creates and
     /// owns this at runtime; ghars removes it on `RemoveCachePool` so
-    /// stale pool state does not survive a config drop (#192).
+    /// stale pool state does not survive a config drop.
     #[must_use]
     pub fn cache_pool_dir(&self, pool: &str) -> Utf8PathBuf {
         self.cache_dir.join("pools").join(pool)
@@ -150,7 +150,7 @@ impl Paths {
     /// `<resolved_conf_d>/ghars-<name>.conf` — systemd-resolved drop-in for
     /// netns DNS forwarding (`dns = "forward"` mode). Path resolves under the
     /// configurable `resolved_conf_d` root so tests can redirect away from the
-    /// live host `/etc` (#169).
+    /// live host `/etc`.
     #[must_use]
     pub fn resolved_drop_in(&self, name: &str) -> Utf8PathBuf {
         self.resolved_conf_d.join(format!("ghars-{name}.conf"))

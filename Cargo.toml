@@ -61,7 +61,7 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 # but zbus 5 requires either `async-io` (default) or `tokio` as the executor
 # backend — `blocking-api` wraps it. We re-enable defaults so async-io is the
 # backend (matches the design's "zbus uses its own executor, NOT tokio"
-# rationale; #46 coexistence verification stands).
+# rationale; both runtimes coexist via independent executors).
 zbus = { version = "5", features = ["blocking-api"] }
 # octocrab 0.42's `rustls` feature pulls hyper-rustls and (per
 # octocrab-0.42.1/src/lib.rs:684-687) calls `with_native_roots()`,
@@ -110,10 +110,10 @@ nix = { version = "0.29", features = ["fs", "user", "process"] }
 # chrono is used for RegistrationToken.expires_at (DateTime<Utc>),
 # matching octocrab's SelfHostedRunnerToken.expires_at type so the
 # token round-trip preserves UTC instant precision without
-# SystemTime / nanosecond conversion artifacts. (#269)
+# SystemTime / nanosecond conversion artifacts.
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 env = "1"
-# Zeroize-on-drop for `auth::RegistrationToken.value` (#245). The runner
+# Zeroize-on-drop for `auth::RegistrationToken.value`. The runner
 # registration / removal token is short-lived but plaintext: a panic
 # between mint and consume would leave the value on unwound stack /
 # heap frames in cleartext until the OS reclaims pages. zeroize scrubs
@@ -124,7 +124,7 @@ env = "1"
 # `RegistrationToken` (with `#[zeroize(skip)]` on the non-secret
 # `source` / `expires_at` fields).
 zeroize = { version = "1", features = ["derive"] }
-# #678 Mn-class rejection: `is_disallowed_hidden_char` rejects all
+# Mn-class rejection: `is_disallowed_hidden_char` rejects all
 # Unicode NonspacingMark (Mn) code points uniformly so combining
 # diacriticals (e.g. U+0300 COMBINING GRAVE ACCENT) cannot overlay
 # ASCII characters in token_file paths. unicode-general-category
@@ -141,9 +141,9 @@ rstest = "0.23"
 assert_fs = "1"
 predicates = "3"
 assert_cmd = "2"
-# Captures `tracing` events into per-test buffers so #428's
-# `discover_warns_on_oversize_cache_pool_name` can assert that
-# `state::discover()` emits a structured warning when an oversize
+# Captures `tracing` events into per-test buffers so
+# `discover_warns_on_oversize_cache_pool_name` (state.rs) can assert
+# that `state::discover()` emits a structured warning when an oversize
 # cache pool name is found on disk.
 tracing-test = "0.2"
 

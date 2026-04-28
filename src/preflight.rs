@@ -279,7 +279,7 @@ pub fn preflight_kvm() -> CheckResult {
 }
 
 /// Parse the major version from a systemd `Manager.Version` D-Bus
-/// property string. (#136)
+/// property string.
 ///
 /// systemd's `org.freedesktop.systemd1.Manager.Version` property is
 /// documented as a free-form string by systemd's D-Bus API; the actual
@@ -646,13 +646,11 @@ pub fn run_all(apply_mode: bool) -> Vec<CheckResult> {
 /// (`Outcome::Fail`) — not just the first. Warnings are non-blocking
 /// and dropped silently here; the CLI surfaces them via `ghars status`.
 ///
-/// #135: changed from first-fail short-circuit to collect-all so the
-/// operator sees every problem at once. Apply has a high cost
-/// (download, extract, register with GitHub, restart units); making
-/// the operator iterate one missing dependency at a time pads that
-/// cost with a re-run per problem. Surfacing the full failure set
-/// in a single error message lets them resolve everything before
-/// retrying.
+/// Apply has a high cost (download, extract, register with GitHub,
+/// restart units); making the operator iterate one missing dependency
+/// at a time pads that cost with a re-run per problem. Surfacing the
+/// full failure set in a single error message lets them resolve
+/// everything before retrying.
 ///
 /// # Errors
 ///
@@ -705,7 +703,7 @@ mod tests {
         assert_eq!(parse_version_major("rolling"), None);
     }
 
-    // ---- #136: parse_systemd_version_major ---------------------------
+    // ---- parse_systemd_version_major ---------------------------------
 
     /// Bare numeric (upstream tarball, Fedora <40 era): `"254"`.
     #[test]
@@ -777,7 +775,7 @@ mod tests {
         );
     }
 
-    // ---- #137: preflight_os_with_path integration tests --------------
+    // ---- preflight_os_with_path integration tests -------------------
 
     /// Helper: write a synthesized `os-release` body to a tempfile
     /// and return the path. Tempdir is owned by the caller so the
@@ -965,7 +963,7 @@ mod tests {
     /// Helper that mirrors `run_preflight`'s collect-all behavior on
     /// an arbitrary `Vec<CheckResult>`. Mocking every system probe in
     /// `run_all` is impractical; the aggregation logic is the
-    /// load-bearing piece for #135 and is testable in isolation.
+    /// load-bearing piece and is testable in isolation.
     fn aggregate_failures(results: Vec<CheckResult>) -> Result<()> {
         let failures: Vec<CheckResult> = results
             .into_iter()
@@ -1005,11 +1003,10 @@ mod tests {
 
     #[test]
     fn aggregate_failures_collects_every_failure_not_just_first() {
-        // #135: the original behavior short-circuited on the FIRST
-        // failed check. The new behavior must surface all 3 failures
-        // here, not just the first. The message body must list every
-        // failing check on its own line so the operator can fix them
-        // in one pass.
+        // Collect-all aggregation: surface every failure rather than
+        // short-circuiting on the first, so the operator sees all 3
+        // in one pass. The message body must list every failing check
+        // on its own line so each can be fixed without a re-run.
         let results = vec![
             CheckResult::fail("os", "Debian 11 unsupported", "upgrade to 12+"),
             CheckResult::pass("systemd", "255"),

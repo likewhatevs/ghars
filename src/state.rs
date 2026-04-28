@@ -75,11 +75,11 @@ pub struct ActualState {
     pub external: Vec<String>,
     /// Discovered ghars-managed cache-pool template instances
     /// (`ghars-cache@POOL.service`). Populated by the same on-disk
-    /// scan that finds runners (#201). Keyed by pool name (the `%i`
-    /// portion). Plan-time pool diffing reads this map; pre-#201
-    /// behavior was that the planner always emitted `CreateCachePool`
-    /// for every referenced pool because no actual state existed,
-    /// making `UpdateCachePool` / `RemoveCachePool` unreachable.
+    /// scan that finds runners. Keyed by pool name (the `%i` portion).
+    /// Plan-time pool diffing reads this map; previously the planner
+    /// always emitted `CreateCachePool` for every referenced pool
+    /// because no actual state existed, making `UpdateCachePool` /
+    /// `RemoveCachePool` unreachable.
     pub cache_pools: BTreeMap<String, DiscoveredCachePool>,
 }
 
@@ -261,19 +261,19 @@ pub fn discover(systemd: &dyn Systemd, paths: &Paths) -> Result<ActualState> {
         );
     }
 
-    // #201: enumerate cache-pool template instances by globbing the
+    // Enumerate cache-pool template instances by globbing the
     // per-pool drop-in directories `ghars-cache@*.service.d/`.
     // Per-pool unit files don't exist on disk — systemd template
     // instantiation produces virtual units at load time from
     // `ghars-cache@.service` + the per-instance drop-in directory.
     // The drop-in directory is the on-disk evidence that the pool
     // exists from ghars's POV. See list_cache_pool_drop_in_dirs for
-    // the full rationale. Pre-#201 the planner emitted CreateCachePool
-    // unconditionally because no actual state existed; with this scan
-    // the planner can diff against a real picture.
+    // the full rationale. Previously the planner emitted
+    // CreateCachePool unconditionally because no actual state existed;
+    // with this scan the planner can diff against a real picture.
     let pool_entries = list_cache_pool_drop_in_dirs(unit_dir).map_err(GharsError::Io)?;
     for (pool_name, drop_in_dir_path) in pool_entries {
-        // #408: defense-in-depth length cap. Config-load already rejects
+        // Defense-in-depth length cap. Config-load already rejects
         // oversize pool names via `validators::validate_cache_pool_name`,
         // but a manually-created `ghars-cache@LONG.service.d/` directory
         // (operator-installed, partial-apply crash, or a downgrade from
@@ -396,7 +396,6 @@ fn parse_runner_unit_name(file_name: &str) -> Option<String> {
 /// which is in `not-found`/`failed` state still has a drop-in dir on
 /// disk and so still needs to be reconciled. The filesystem is the
 /// configuration source of truth; D-Bus is the runtime status source.
-/// (#201 design ruling)
 fn list_cache_pool_drop_in_dirs(
     unit_dir: &Utf8Path,
 ) -> std::io::Result<Vec<(String, Utf8PathBuf)>> {
@@ -434,7 +433,7 @@ fn list_cache_pool_drop_in_dirs(
 /// Extract the `%i` pool name from `ghars-cache@POOL.service.d`. The
 /// shared template's drop-in dir would be `ghars-cache@.service.d`
 /// (empty instance) — not currently emitted by apply, but rejected
-/// here defensively. (#201)
+/// here defensively.
 fn parse_cache_pool_drop_in_dir_name(file_name: &str) -> Option<String> {
     let rest = file_name.strip_prefix("ghars-cache@")?;
     let pool = rest.strip_suffix(".service.d")?;
@@ -1344,7 +1343,7 @@ mod tests {
         assert_eq!(p.first("Service", "Real"), Some("here"));
     }
 
-    // --- ParsedUnit comprehensive parser tests (#204) ------------------
+    // --- ParsedUnit comprehensive parser tests -------------------------
 
     #[test]
     fn parser_same_key_in_two_sections_is_kept_per_section() {
@@ -1686,7 +1685,7 @@ mod tests {
         );
     }
 
-    /// #373: a key appearing TWICE in the same section yields the
+    /// A key appearing TWICE in the same section yields the
     /// FIRST value, not the last. Pins `ParsedUnit::first` semantics
     /// (state.rs:629-631) — `first` calls `self.values(...).next()`,
     /// and `values` (state.rs:634-641) preserves source order via the
@@ -1804,7 +1803,7 @@ mod tests {
         assert!(!has_unescaped_trailing_backslash(""));
     }
 
-    // ---- #203: discover() error path coverage -------------------------
+    // ---- discover() error path coverage -------------------------------
 
     /// EACCES on the unit dir: `read_dir` returns PermissionDenied,
     /// which is NOT NotFound, so `discover` propagates it as
@@ -2050,9 +2049,9 @@ mod tests {
 
     #[test]
     fn discover_finds_cache_pool_via_drop_in_dir_with_no_unit_file() {
-        // #201: cache pool template instances are virtual — apply.rs
-        // writes only the shared template `ghars-cache@.service` (no
-        // instance) and the per-pool drop-in directory
+        // Cache pool template instances are virtual — apply.rs writes
+        // only the shared template `ghars-cache@.service` (no instance)
+        // and the per-pool drop-in directory
         // `ghars-cache@POOL.service.d/`. Per-pool unit FILES never
         // exist on disk. Discovery MUST find the pool by globbing the
         // drop-in directories, not by globbing unit files. This test
@@ -2092,7 +2091,7 @@ mod tests {
         let pool = actual
             .cache_pools
             .get("build")
-            .expect("discovery must find pool 'build' via the drop-in dir glob (#201)");
+            .expect("discovery must find pool 'build' via the drop-in dir glob");
         assert_eq!(pool.name, "build");
         assert_eq!(pool.spec_hash, "sha256:cafebabe");
         assert!(pool.drop_ins.contains_key("00-ghars.conf"));
@@ -2136,7 +2135,7 @@ mod tests {
     /// must surface `Drift::DropInsModified` carrying the unmanaged
     /// basenames. Mirrors the runner-side payload contract; without
     /// this signal the planner couldn't fire UpdateCachePool on
-    /// drift-only changes (#299).
+    /// drift-only changes.
     #[test]
     fn discover_classifies_cache_pool_drift_drop_ins_modified() {
         let tmp = TempDir::new().unwrap();
@@ -2171,8 +2170,8 @@ mod tests {
         }
     }
 
-    /// #312: classify_cache_pool_drift must emit unmanaged basenames
-    /// in lexicographic order across a 3+ element set, even when the
+    /// classify_cache_pool_drift must emit unmanaged basenames in
+    /// lexicographic order across a 3+ element set, even when the
     /// insertion order into the source `BTreeMap` would suggest
     /// otherwise. The runner-side analogue is
     /// `classify_drift_emits_vec_sorted_lexicographically` (above);
@@ -2218,7 +2217,7 @@ mod tests {
         // apply.rs does not currently emit such a dir (only per-pool
         // drop-in dirs are created), but if one ever appears on disk
         // — operator hand-edit, partial migration — discovery MUST
-        // skip it: an empty-instance drop-in is not a pool. (#201)
+        // skip it: an empty-instance drop-in is not a pool.
         let tmp = TempDir::new().unwrap();
         let paths = paths_under(&tmp);
         // Plant an empty-instance dir.
@@ -2277,15 +2276,15 @@ mod tests {
         );
     }
 
-    /// #408: discovery must INCLUDE pool drop-in directories whose
-    /// `%i` instance name exceeds `CACHE_POOL_NAME_MAX_LEN` so the
-    /// planner can emit RemoveCachePool against the discovered-but-
-    /// undesired pool. (The desired-side `cfg.cache_pools` cannot
-    /// contain an oversize key — `validate_cache_pool_name` rejects
-    /// it at config load — so any oversize entry in actual is by
-    /// definition unreachable in desired and produces a removal in
-    /// the diff.) A `tracing::warn!` surfaces the offender to
-    /// operator output; the planner-level integration test in
+    /// Discovery must INCLUDE pool drop-in directories whose `%i`
+    /// instance name exceeds `CACHE_POOL_NAME_MAX_LEN` so the planner
+    /// can emit RemoveCachePool against the discovered-but-undesired
+    /// pool. (The desired-side `cfg.cache_pools` cannot contain an
+    /// oversize key — `validate_cache_pool_name` rejects it at config
+    /// load — so any oversize entry in actual is by definition
+    /// unreachable in desired and produces a removal in the diff.)
+    /// A `tracing::warn!` surfaces the offender to operator output;
+    /// the planner-level integration test in
     /// tests/plan_engine_integration.rs pins the RemoveCachePool
     /// emission end-to-end.
     #[test]
@@ -2334,7 +2333,7 @@ mod tests {
         );
     }
 
-    /// #428: `state::discover()` MUST emit a `tracing::warn!` when a
+    /// `state::discover()` MUST emit a `tracing::warn!` when a
     /// cache-pool drop-in dir on disk has an oversize `%i` instance
     /// name. The companion test above proves the entry surfaces in
     /// `actual.cache_pools`; this test pins that the warning channel
@@ -2364,7 +2363,7 @@ mod tests {
         .unwrap();
         let mock = MockSystemd::default();
         let _actual = discover(&mock, &paths).unwrap();
-        // Warning text from src/state.rs::discover (#408).
+        // Warning text from src/state.rs::discover.
         assert!(
             logs_contain("exceeds name length limit"),
             "expected discover() to warn on oversize cache pool name"

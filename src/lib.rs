@@ -26,7 +26,7 @@ pub use paths::Paths;
 
 /// Crate-wide HTTP User-Agent for outbound requests (GitHub API,
 /// tarball download, etc.). Versioned form `ghars/<crate-version>` per
-/// GitHub's API guidance and #181. Centralized here so github.rs and
+/// GitHub's API guidance. Centralized here so github.rs and
 /// extract.rs can't drift.
 pub const USER_AGENT: &str = concat!("ghars/", env!("CARGO_PKG_VERSION"));
 
@@ -67,9 +67,9 @@ pub const USER_AGENT: &str = concat!("ghars/", env!("CARGO_PKG_VERSION"));
 ///     risk on the rollback advisory.
 ///   - **per-step describe() output** — second pass over
 ///     `UndoStep::describe()`'s already-escaped output. Idempotent
-///     (#596 pin in lib.rs), so the redundancy costs only one byte
-///     scan; closes the seam if a future `describe()` arm forgets
-///     the per-field escape.
+///     (pinned by `escape_control_chars_is_idempotent` in lib.rs),
+///     so the redundancy costs only one byte scan; closes the seam
+///     if a future `describe()` arm forgets the per-field escape.
 /// - `cli::render_action_line` and `cli::plan_to_json_value` when
 ///   emitting drop-in basenames (defends against on-disk filesystem
 ///   entries that bypassed config-load validation). Two distinct call
@@ -247,7 +247,7 @@ mod tests {
         }
     }
 
-    /// #596: pin the second-pass-Borrowed property that follows from
+    /// Pin the second-pass-Borrowed property that follows from
     /// the helper's escape vocabulary. Several call sites re-feed
     /// already-escaped output through `escape_control_chars` as
     /// defense-in-depth (e.g. `cli::render_rollback_advisory`

@@ -5,16 +5,17 @@
 //! `OnceLock<Runtime>` + `block_on(...)` only.
 //!
 //! Exit-code mapping per Part 5: 0 success, 1 generic, 2
-//! detailed-exitcode (plan diff non-empty OR cancel-with-pending-changes
-//! per #358), 3 preflight, 4 partial apply, 5 auth (per-action OR
-//! top-level `GharsError::Auth` per #357), 6 config (`GharsError::Config`
-//! per #275 OR `GharsError::Validation` per #357), 7 interactive
-//! (`GharsError::Interactive` per #390), 8 detailed-exitcode-recreate
-//! (plan contains a recreate-class action per #464; CI gating signal
-//! independent of code 2; failure codes 4 and 5 still win over 8).
+//! detailed-exitcode (plan diff non-empty OR cancel-with-pending-changes),
+//! 3 preflight, 4 partial apply, 5 auth (per-action OR top-level
+//! `GharsError::Auth`), 6 config (`GharsError::Config` for parse/shape
+//! errors OR `GharsError::Validation` for cross-field constraint
+//! failures), 7 interactive (`GharsError::Interactive`), 8
+//! detailed-exitcode-recreate (plan contains a recreate-class action;
+//! CI gating signal independent of code 2; failure codes 4 and 5 still
+//! win over 8).
 //! The Err-variant → code mapping lives in `ghars::cli::err_to_exit_code`
 //! as an exhaustive `match` so future variant additions force compile-time
-//! review of the mapping (#357).
+//! review of the mapping.
 
 use clap::Parser;
 
@@ -25,12 +26,12 @@ fn main() {
     // is safe.
     let cli = ghars::cli::Cli::parse();
 
-    // #342: --verbose / --quiet drive a tracing level. RUST_LOG
-    // always wins when set so operators with existing log-routing
-    // setups keep their override; the verbose-derived level is the
-    // FALLBACK default. Write to stderr so `ghars status --json |
-    // jq` (and any other stdout-as-data pipe) isn't polluted by
-    // structured log lines.
+    // --verbose / --quiet drive a tracing level. RUST_LOG always
+    // wins when set so operators with existing log-routing setups
+    // keep their override; the verbose-derived level is the FALLBACK
+    // default. Write to stderr so `ghars status --json | jq` (and
+    // any other stdout-as-data pipe) isn't polluted by structured
+    // log lines.
     //
     // The (quiet, verbose) → level truth table lives in
     // `cli::verbose_to_filter_level` so it can be exhaustively

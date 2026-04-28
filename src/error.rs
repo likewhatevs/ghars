@@ -49,7 +49,7 @@
 //! NO exceptions for echoing token bytes — `auth.rs::validate_
 //! interactive_token_shape` emits a class label ("NUL byte",
 //! "whitespace", "control character") rather than the offending
-//! character itself (#273). Token bytes, env values, and PEM bytes
+//! character itself. Token bytes, env values, and PEM bytes
 //! must never appear via direct interpolation, derived encodings
 //! (base64, hex), or partial slices.
 //!
@@ -78,7 +78,7 @@ pub enum GharsError {
     /// operator-actionable answer is always "pass `--auto-approve`"
     /// or "run from a TTY"; mapping these to a separate variant lets
     /// shell wrappers and CI gating scripts branch on the cause
-    /// without parsing the error message. (#390)
+    /// without parsing the error message.
     #[error("interactive: {0}\n  hint: {hint}", hint = .1)]
     Interactive(String, String),
     /// Preflight checks failing (OS, KVM, systemd version, etc).
@@ -322,7 +322,7 @@ pub(crate) fn format_error_chain(err: &(dyn std::error::Error + 'static)) -> Str
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    //! #248: ApplyResult error rendering must not leak build-machine
+    //! ApplyResult error rendering must not leak build-machine
     //! paths or stack traces. The cli.rs cmd_apply at line 723 prints
     //! `{err}` per failed action — `err: &GharsError` resolves to
     //! Display, NOT Debug. These tests pin the Display contract: only
@@ -672,7 +672,7 @@ mod tests {
         }
     }
 
-    // -------- human_bytes contract tests (#724) --------
+    // -------- human_bytes contract tests --------
 
     #[test]
     fn human_bytes_zero_is_zero_b() {
@@ -706,8 +706,8 @@ mod tests {
         assert_eq!(human_bytes(mib), "1.0 MiB");
         assert_eq!(human_bytes(4 * mib), "4.0 MiB");
         // Non-integer MiB values render with one decimal — pin the
-        // "4.2 MiB" precedent from the #724 task description so a
-        // regression to two decimals or zero decimals would surface.
+        // "4.2 MiB" precedent so a regression to two decimals or zero
+        // decimals would surface.
         assert_eq!(human_bytes(4 * mib + (mib / 5)), "4.2 MiB");
     }
 
