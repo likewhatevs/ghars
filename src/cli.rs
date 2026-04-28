@@ -802,7 +802,7 @@ fn validate_cache_pool_names(cfg: &Config) -> Result<()> {
         validators::validate_cache_pool_name(name)
             .map_err(|e| crate::error::prepend_validation_scope(&scope, e))?;
     }
-    // #407: validate every runner.caches entry. The cross-reference
+    // Validate every runner.caches entry. The cross-reference
     // check in plan_from rejects unknown names ("unknown cache pool"),
     // but that error fires at plan time and is shape-agnostic — an
     // oversize entry that also happens to match a (hypothetical)
@@ -883,7 +883,7 @@ fn validate_user_overrides(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-/// #591: gate `defaults.prefix` and per-runner `prefix` overrides
+/// Gate `defaults.prefix` and per-runner `prefix` overrides
 /// through `validators::validate_prefix` at config-load time. The
 /// validator already exists (`validators::validate_prefix`) and
 /// rejects empty input, disallowed charset, `..` traversal segments,
@@ -948,7 +948,7 @@ const TOKEN_ENV_HINT: &str = "set token_env to the name of an environment variab
 const TOKEN_FILE_HINT: &str = "set token_file to the absolute path of a 0600 root-owned file holding \
      the PAT (e.g. token_file = \"/etc/ghars/pat\"), or remove the field";
 
-/// #659: returns true for characters disallowed inside non-empty
+/// Returns true for characters disallowed inside non-empty
 /// `token_env` / `token_file` values — characters that survive the
 /// trim/whitespace gate but break apply-time lookups (`std::env::var`
 /// returning `NotPresent` on a name with an embedded BOM, `open(2)`
@@ -1009,7 +1009,7 @@ fn is_disallowed_hidden_char(c: char) -> bool {
         || get_general_category(c) == GeneralCategory::NonspacingMark
 }
 
-/// #613: walk every `[auth.NAME]` entry and, for `AuthSpec::Pat`,
+/// Walk every `[auth.NAME]` entry and, for `AuthSpec::Pat`,
 /// reject configurations that violate the documented XOR invariant
 /// (config.rs:481, auth.rs:286): exactly one of `token_env` /
 /// `token_file` MUST be set. `PatToken::new` re-validates this at
@@ -1117,13 +1117,13 @@ fn validate_pat_xor(cfg: &Config) -> Result<()> {
                         ),
                     ));
                 }
-                // #659: hidden default-ignorable / control characters
+                // Hidden default-ignorable / control characters
                 // pass the trim/whitespace check but surface as
                 // confusing apply-time errors (env::var lookup
                 // mismatch, open(2) ENOENT on a path with embedded
                 // BOM, etc.). Surface byte offset + codepoint so the
                 // operator can locate the invisible char in their
-                // editor. #694: Mn-class combining marks (Unicode
+                // editor. Mn-class combining marks (Unicode
                 // NonspacingMark — U+0300 family + variation
                 // selectors + CGJ) get a dedicated diagnostic
                 // suggesting precomposed (NFC) forms instead of the
@@ -1172,10 +1172,10 @@ fn validate_pat_xor(cfg: &Config) -> Result<()> {
 
             if let Some(env) = token_env.as_deref() {
                 check_empty_or_hidden(env, "token_env", TOKEN_ENV_HINT)?;
-                // #669: leading / trailing whitespace on real content
+                // Leading / trailing whitespace on real content
                 // (e.g. `"X "`, `" X"`, `" X "`) rejects with a
                 // dedicated diagnostic before the POSIX charset gate.
-                // Pre-#669 these inputs fell through to the POSIX
+                // Pre-fix these inputs fell through to the POSIX
                 // gate, which surfaced "is not a valid POSIX
                 // environment variable name" — technically correct
                 // but misleading: the operator's intent was almost
@@ -1194,7 +1194,7 @@ fn validate_pat_xor(cfg: &Config) -> Result<()> {
                         ),
                     ));
                 }
-                // #658: POSIX env var name charset. Values that pass
+                // POSIX env var name charset. Values that pass
                 // the trim/hidden-char/edge-whitespace gates but
                 // contain dashes, dots, embedded whitespace, or
                 // other punctuation would either fail `std::env::var`
@@ -1217,7 +1217,7 @@ fn validate_pat_xor(cfg: &Config) -> Result<()> {
             if let Some(path) = token_file.as_ref() {
                 let path_str = path.as_str();
                 check_empty_or_hidden(path_str, "token_file", TOKEN_FILE_HINT)?;
-                // #660: leading / trailing whitespace on a real path
+                // Leading / trailing whitespace on a real path
                 // (e.g. `" /etc/ghars/pat"`, `"/etc/ghars/pat "`,
                 // `" /etc/ghars/pat "`) would surface as `open(2)`
                 // ENOENT on a literal-space basename. Reject here
@@ -1239,11 +1239,11 @@ fn validate_pat_xor(cfg: &Config) -> Result<()> {
                 }
             }
 
-            // #624: error messages omit the "kind = \"pat\":" prefix —
+            // Error messages omit the "kind = \"pat\":" prefix —
             // `prepend_validation_scope` already adds the
             // `auth "NAME"` scope which identifies the offending block,
             // and `AuthSpec::Pat` is the only variant the loop checks.
-            // #663: every hint arm names a concrete example value
+            // Every hint arm names a concrete example value
             // (GHARS_PAT / /etc/ghars/pat) so an operator reading the
             // (true,true) or (false,false) error gets the same
             // remediation breadcrumb the empty-string / charset arms
@@ -1281,7 +1281,7 @@ fn validate_pat_xor(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-/// #673: walk every `[auth.NAME]` key and gate it through
+/// Walk every `[auth.NAME]` key and gate it through
 /// `validators::validate_identifier` (config.rs:24-27 documents the
 /// regex as shared by runner names, auth keys, cache pool keys, and
 /// network keys). Auth keys are user-chosen identifiers that flow
@@ -1313,7 +1313,7 @@ fn validate_auth_keys(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-/// #349: walk every `[[runner]] runner_tarball = "..."` and gate the
+/// Walk every `[[runner]] runner_tarball = "..."` and gate the
 /// path through `validators::validate_runner_tarball`. The validator
 /// lstats the path, rejects symlinks, and rejects non-regular files —
 /// the same shape `extract::install_runner_binary` requires before
@@ -1349,7 +1349,7 @@ fn validate_runner_tarballs(cfg: &Config) -> Result<()> {
 
 // ---------- netns runner-name length cap (#432) -------------------------
 
-/// #432: reject runner names whose rendered veth interface name
+/// Reject runner names whose rendered veth interface name
 /// `"ghars-{name}-h"` would exceed the kernel's `IFNAMSIZ - 1 = 15`
 /// limit (`net/core/dev.c:dev_valid_name`). The hard cap on the
 /// operator-controlled `{name}` segment is
@@ -1748,11 +1748,11 @@ fn render_action_line(action: &Action, color: ColorMode, diff: bool) -> String {
     let (sigil, summary, ansi) = match action {
         Action::CreateRunner(p) => ('+', format!("runner {} (create)", p.spec.name), "\x1b[32m"),
         Action::UpdateRunner(d) => {
-            // #260: surface the drift cause so the operator can tell a
+            // Surface the drift cause so the operator can tell a
             // config edit (`spec_changed`) from out-of-band drift
             // (`drift_detected`) without re-running discovery.
             //
-            // #462: recreate-class UpdateRunner takes the `!` sigil to
+            // Recreate-class UpdateRunner takes the `!` sigil to
             // distinguish destructive updates (token re-mint + unit
             // teardown + reregister) from in-place updates that share
             // the `~` glyph. The `[recreate]` bracket tag at end-of-
@@ -1777,7 +1777,7 @@ fn render_action_line(action: &Action, color: ColorMode, diff: bool) -> String {
             // grep `[recreate]` (text) or use `summary.recreates`
             // (JSON).
             //
-            // #535: omit the parenthetical when `recreate_reasons` is
+            // Omit the parenthetical when `recreate_reasons` is
             // empty so the renderer never emits `recreate ()`.
             // `plan::plan_from` sets `requires_recreate =
             // !recreate_reasons.is_empty()` post-classify, so this
@@ -1816,7 +1816,7 @@ fn render_action_line(action: &Action, color: ColorMode, diff: bool) -> String {
         Action::RemoveCachePool(name) => ('-', format!("cache_pool {name} (remove)"), "\x1b[31m"),
         Action::NoOp(reason) => (' ', format!("noop ({reason})"), ""),
     };
-    // #285: append the worst-case disruption tag in square brackets
+    // Append the worst-case disruption tag in square brackets
     // after the per-action summary so operators see the blast radius
     // at a glance:
     //   + runner foo (create) [recreate]
@@ -1852,7 +1852,7 @@ fn render_action_line(action: &Action, color: ColorMode, diff: bool) -> String {
         let mut out = header;
         for fc in &d.field_changes {
             out.push('\n');
-            // #463: render_text() preserves the v1 comma-joined format
+            // render_text() preserves the v1 comma-joined format
             // for List-typed values so existing operator grep
             // pipelines (`grep "labels:.*gpu"`) keep working.
             out.push_str(&format!(
@@ -1915,13 +1915,13 @@ fn render_action_line(action: &Action, color: ColorMode, diff: bool) -> String {
                     out.push_str(&block);
                 }
             }
-            // #468: surface drop-ins the recreate will DELETE. For
+            // Surface drop-ins the recreate will DELETE. For
             // each basename present in the discovered pre-update set
             // (`d.before_drop_in_basenames`) but absent from the
             // post-recreate set (`d.after.drop_ins`), emit a `-
             // basename` line. Basename-only — no body block — to
-            // avoid the credential-leakage surface in #461 (e.g.
-            // operator's `99-custom.conf` may have referenced
+            // avoid the credential-leakage surface for proxy creds
+            // (e.g. operator's `99-custom.conf` may have referenced
             // sensitive Environment= values).
             //
             // `None` ⇒ "unknown pre-state" (test fixture or any
@@ -1933,7 +1933,7 @@ fn render_action_line(action: &Action, color: ColorMode, diff: bool) -> String {
             if let Some(removed) = recreate_removed_basenames(d) {
                 for basename in removed {
                     out.push('\n');
-                    // #567: defense-in-depth escape of ASCII control
+                    // Defense-in-depth escape of ASCII control
                     // bytes / ANSI escapes from the basename before
                     // stdout emission. Basenames are derived from
                     // on-disk filesystem entries discovered by
@@ -1951,7 +1951,7 @@ fn render_action_line(action: &Action, color: ColorMode, diff: bool) -> String {
             }
         } else {
             for dc in &d.drop_in_changes {
-                // #301: surface Created / Modified / Removed in the
+                // Surface Created / Modified / Removed in the
                 // brief view so toggling a drop-in family (enabling
                 // [proxy] → creates 60-proxy.conf, clearing
                 // memory_max → removes 10-memory.conf) is visible
@@ -1981,7 +1981,7 @@ fn render_action_line(action: &Action, color: ColorMode, diff: bool) -> String {
                 };
                 if let Some((sigil, basename)) = sigil_basename {
                     out.push('\n');
-                    // #567 (item 8): same defense-in-depth basename
+                    // Same defense-in-depth basename
                     // escape as the recreate-Removed path at line ~1396.
                     // Drop-in basenames originate from on-disk
                     // filesystem entries via state::discover; an
@@ -2093,7 +2093,7 @@ fn render_drop_in_body_block(kind: &plan::DropInChangeKind, color: ColorMode) ->
 /// `after:` block immediately after a `before:` block without
 /// inserting glue. Empty input ⇒ no output.
 ///
-/// #590: each line passes through `escape_control_chars` before
+/// Each line passes through `escape_control_chars` before
 /// emission. The body content originates from operator-authored
 /// drop-in files (`Created.after`, `Removed.before`); operator-
 /// supplied bodies could contain raw C0/DEL bytes that would
@@ -2153,7 +2153,7 @@ fn push_indented_unified_diff(out: &mut String, body: &str, color: ColorMode) {
             continue;
         }
         out.push_str("            ");
-        // #590: scrub control bytes from the diff line CONTENT
+        // Scrub control bytes from the diff line CONTENT
         // before any color wrapping. Diff lines are derived from
         // operator-authored drop-in bodies (the `before`/`after`
         // strings passed to `similar::udiff::unified_diff`); a
@@ -2262,7 +2262,7 @@ pub(crate) fn plan_to_json_value(plan: &Plan, diff: bool) -> serde_json::Value {
         .actions
         .iter()
         .map(|a| {
-            // #285: every action object carries a top-level
+            // Every action object carries a top-level
             // `disruption` field so JSON consumers (CI, dashboards)
             // can branch on the worst-case operational impact
             // without rederiving it from the per-variant fields. The
@@ -2277,12 +2277,12 @@ pub(crate) fn plan_to_json_value(plan: &Plan, diff: bool) -> serde_json::Value {
                     "disruption": disruption,
                 }),
                 Action::UpdateRunner(d) => {
-                    // BATCH C / PART 6: emit field_changes + drop_in_changes
+                    // Emit field_changes + drop_in_changes
                     // so JSON consumers (CI, dashboards) can render the same
                     // per-field deltas the text path renders, without
                     // re-running the planner. Drop-in bodies (`before`/
-                    // `after`/`unified_diff`) ride behind `--diff` (#285).
-                    // #463: schema v2 — `before`/`after` are tagged
+                    // `after`/`unified_diff`) ride behind `--diff`.
+                    // Schema v2 — `before`/`after` are tagged
                     // FieldValue objects (`{"type": "string", "value": "x"}`
                     // or `{"type": "list", "values": ["a", "b"]}`) so JSON
                     // consumers can programmatically detect List vs Scalar
@@ -2322,7 +2322,7 @@ pub(crate) fn plan_to_json_value(plan: &Plan, diff: bool) -> serde_json::Value {
                                 )
                             })
                             .collect();
-                        // #468: surface drop-ins the recreate will
+                        // Surface drop-ins the recreate will
                         // DELETE. Diverges intentionally from the
                         // in-place Removed JSON shape: no `before`
                         // body field — basename + change_kind +
@@ -2344,7 +2344,7 @@ pub(crate) fn plan_to_json_value(plan: &Plan, diff: bool) -> serde_json::Value {
                         // JSON consumers.
                         if let Some(removed) = recreate_removed_basenames(d) {
                             for basename in removed {
-                                // #567: same defense-in-depth escape as
+                                // Same defense-in-depth escape as
                                 // the text path. `serde_json` escapes
                                 // ESC on the JSON wire, which is safe
                                 // for parsers that honor JSON quoting;
@@ -2378,7 +2378,7 @@ pub(crate) fn plan_to_json_value(plan: &Plan, diff: bool) -> serde_json::Value {
                         "name": d.identity.name,
                         "requires_recreate": d.requires_recreate,
                         "recreate_reasons": d.recreate_reasons,
-                        // #260: cause label uses the same snake_case
+                        // Cause label uses the same snake_case
                         // vocabulary as the text path so `grep
                         // spec_changed` matches both.
                         "drift_cause": d.drift_cause.label(),
@@ -2421,7 +2421,7 @@ pub(crate) fn plan_to_json_value(plan: &Plan, diff: bool) -> serde_json::Value {
             }
         })
         .collect();
-    // #285 (devadv D-6): top-level `schema_version` is a forward-
+    // Top-level `schema_version` is a forward-
     // compat hook for CI consumers that need to detect breaking
     // changes in this JSON shape. Bump this string when the shape
     // changes in a way that existing consumers cannot transparently
@@ -2433,13 +2433,13 @@ pub(crate) fn plan_to_json_value(plan: &Plan, diff: bool) -> serde_json::Value {
     // Stays a string so we can use semver-flavored values like
     // "2.0" without restructuring downstream parsers.
     //
-    // #285 (devadv D-7): top-level `summary` rolls per-action
+    // Top-level `summary` rolls per-action
     // counts up so CI policy gates can branch on the plan
     // disposition without iterating the actions array.
     // `any_recreate` is the load-bearing field for "block this
     // plan if it would deregister any runner" guards.
     let summary = plan_summary_value(&plan.actions);
-    // #463: bumped from "1" → "2" because FieldChange.before/after
+    // Bumped from "1" → "2" because FieldChange.before/after
     // changed from raw String to tagged FieldValue objects
     // (`{"type": "string", "value"}` / `{"type": "list", "values"}`).
     // Existing v1 consumers parsing `before` as a String would
@@ -2595,7 +2595,7 @@ pub(crate) fn render_plan_summary_line(actions: &[Action]) -> String {
     )
 }
 
-/// CLN-2 (#476): build the shared `(N restart, N recreate, N none).
+/// CLN-2: build the shared `(N restart, N recreate, N none).
 /// any_recreate: bool` tail used by both `render_plan_summary_line`
 /// and `render_apply_summary_line`. Single source of truth for the
 /// disruption-parenthetical + `any_recreate` suffix format string,
@@ -3347,7 +3347,7 @@ pub(crate) fn apply_exit_code(
 }
 
 fn confirm_apply() -> Result<bool> {
-    // #253: detect a non-TTY stdin BEFORE blocking on read_line. When
+    // Detect a non-TTY stdin BEFORE blocking on read_line. When
     // ghars apply is launched from a script / cron / systemd one-shot
     // without --auto-approve, stdin is typically /dev/null or a pipe;
     // read_line then returns Ok(0) (EOF), the trim()=="" miss, and
@@ -3384,9 +3384,9 @@ fn cmd_status(
     let _ = color;
     let _ = quiet;
 
-    // #261 design ruling (Part 10 status section): cmd_status MUST load
-    // the config FIRST, before any other work. Two reasons make this
-    // non-negotiable:
+    // Per the Part 10 status-section design ruling: cmd_status MUST
+    // load the config FIRST, before any other work. Two reasons make
+    // this non-negotiable:
     //
     //   1. Orphan classification (the "ORPHAN — no [[runner]] in config;
     //      next apply will REMOVE" column at design line 3649) requires
@@ -3411,7 +3411,7 @@ fn cmd_status(
         let mut actual = match DbusSystemd::new() {
             Ok(s) => state::discover(&s, paths)?,
             Err(err) => {
-                // #262: surface the failure on stderr instead of returning
+                // Surface the failure on stderr instead of returning
                 // an empty default silently. State output that omits
                 // managed runners with no warning misleads operators into
                 // thinking nothing is installed when in fact the system
@@ -3423,7 +3423,7 @@ fn cmd_status(
                 state::ActualState::default()
             }
         };
-        // #261: populate `actual.orphans` here. state::discover always
+        // Populate `actual.orphans` here. state::discover always
         // returns an empty orphans Vec because at the discovery layer we
         // only know "managed" vs "external", not "in-config" vs "out-of-
         // config" — see the ActualState.orphans doc. cmd_status is the
@@ -3715,7 +3715,7 @@ fn cmd_add(
         .or_else(|| cfg.defaults.auth.clone())
         .unwrap_or_else(|| "interactive".into());
 
-    // #254: validate the constructed URL + auth ref BEFORE appending the
+    // Validate the constructed URL + auth ref BEFORE appending the
     // [[runner]] block. Catching a typo here avoids leaving a malformed
     // block in the user's config that the next `apply` would reject.
     validators::validate_url(&url)?;
@@ -3736,7 +3736,7 @@ fn cmd_add(
     }
     // The runner name is generated above (auto-numbered) when the
     // operator omits --name; either way it must satisfy
-    // IDENTIFIER_REGEX so apply downstream accepts it. (#243)
+    // IDENTIFIER_REGEX so apply downstream accepts it.
     validators::validate_runner_name(&name)?;
 
     // Build the [[runner]] TOML block manually. We avoid round-tripping
@@ -3794,7 +3794,7 @@ fn cmd_logs(paths: &Paths, args: &LogsArgs) -> Result<i32> {
                 .cloned()
                 .collect::<Vec<_>>(),
             Err(err) => {
-                // #262: do not silently substitute an empty discovery —
+                // Do not silently substitute an empty discovery —
                 // tail with no names returns a confusing "no runners to
                 // tail" error below; the operator deserves to know that
                 // the underlying cause was a D-Bus failure.
@@ -3805,7 +3805,7 @@ fn cmd_logs(paths: &Paths, args: &LogsArgs) -> Result<i32> {
             }
         }
     } else {
-        // #255: validate operator-supplied names against IDENTIFIER_REGEX
+        // Validate operator-supplied names against IDENTIFIER_REGEX
         // before constructing the journalctl query. journalctl `-u
         // ghars-runner@$NAME.service` would gleefully spawn for any
         // string; rejecting bad shapes early gives a clear error and
@@ -3875,7 +3875,7 @@ fn cmd_metrics(paths: &Paths, args: &MetricsArgs) -> Result<i32> {
                 .cloned()
                 .collect::<Vec<_>>(),
             Err(err) => {
-                // #262: surface the failure rather than returning an empty
+                // Surface the failure rather than returning an empty
                 // metrics table that hides why nothing is shown.
                 eprintln!(
                     "warning: systemd D-Bus connection failed: {err}; runner state unavailable."
@@ -3884,7 +3884,7 @@ fn cmd_metrics(paths: &Paths, args: &MetricsArgs) -> Result<i32> {
             }
         }
     } else {
-        // #255: validate operator-supplied names against IDENTIFIER_REGEX
+        // Validate operator-supplied names against IDENTIFIER_REGEX
         // before the D-Bus per-unit query (`Manager.GetUnit
         // ghars-runner@$NAME.service`) is constructed.
         for name in &args.names {
@@ -4104,7 +4104,7 @@ fn cmd_completions(shell: clap_complete::Shell) {
     cmd_completions_to(shell, &mut io::stdout());
 }
 
-/// `cmd_completions` with a caller-supplied writer (#252 helper). Tests
+/// `cmd_completions` with a caller-supplied writer. Tests
 /// pass a `Vec<u8>` to capture the generated shell-completion script
 /// and assert the per-shell preamble lands as expected. Production
 /// always passes `io::stdout()`.
@@ -4168,7 +4168,7 @@ mod tests {
     const FIXTURE_RUNSVC_SHA256: &str =
         "sha256:1111111111111111111111111111111111111111111111111111111111111111";
 
-    // ---- #275: err_to_exit_code variant mapping ---------------------
+    // ---- err_to_exit_code variant mapping ---------------------------
 
     /// `GharsError::Config` → exit code 6 (Part 5).
     #[test]
@@ -4315,7 +4315,7 @@ mod tests {
         assert_eq!(err_to_exit_code(&err), 1);
     }
 
-    // ---- #358: cancel_exit_code (cancel + --detailed-exitcode) -----
+    // ---- cancel_exit_code (cancel + --detailed-exitcode) -----------
 
     /// Cancellation without `--detailed-exitcode` → 0. Cancelling
     /// an interactive prompt is a non-error per established CLI
@@ -4338,7 +4338,7 @@ mod tests {
         assert_eq!(cancel_exit_code(true, false, &plan), 2);
     }
 
-    // ---- #389: dry_run_exit_code (apply --dry-run --detailed-exitcode)
+    // ---- dry_run_exit_code (apply --dry-run --detailed-exitcode) ----
 
     /// Dry-run without `--detailed-exitcode` → 0 regardless of plan
     /// contents. The terraform `plan -detailed-exitcode` semantic is
@@ -4389,7 +4389,7 @@ mod tests {
         assert_eq!(dry_run_exit_code(true, false, &plan), 0);
     }
 
-    // ---- #464: --detailed-exitcode-recreate (exit code 8) ------------
+    // ---- --detailed-exitcode-recreate (exit code 8) -----------------
 
     /// `Plan::has_recreate` returns `true` for any plan whose action set
     /// contains a recreate-class action. `CreateRunner` is recreate per
