@@ -12,7 +12,7 @@
 //! `block_on(...)`. zbus blocking-api MUST NEVER be invoked inside an
 //! async block passed to `block_on` (zbus uses its own executor; tokio
 //! parking it would deadlock). Verified safe to coexist when call sites
-//! are distinct (task #46).
+//! are distinct.
 //!
 //! ## Releases API
 //!
@@ -64,7 +64,7 @@ const TARBALL_URL_TEMPLATE: &str =
 /// `install_gha_runner.py:1021`.
 const HTTP_API_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// #666: hard cap on bytes read from a GitHub releases-API response.
+/// Hard cap on bytes read from a GitHub releases-API response.
 ///
 /// The releases endpoint returns a small JSON payload (observed ~50 KB for
 /// `actions/runner` releases; even verbose release notes run ~200 KB).
@@ -150,7 +150,7 @@ pub struct Release {
 /// Defers to `validators::validate_url` first so the case-sensitive
 /// regex (`https://github\.com/...`) rejects e.g. `GITHUB.com` —
 /// `url::Url` would otherwise lowercase the host per RFC 3986 and
-/// silently accept it (#175).
+/// silently accept it.
 ///
 /// # Errors
 ///
@@ -288,7 +288,7 @@ where
 /// because octocrab 0.42 exposes no client-injection point that
 /// accepts a pre-built `reqwest::Client` and uses hyper directly,
 /// not reqwest. Custom hyper-connector injection via
-/// `OctocrabBuilder::with_service` is v0.2 follow-up (task #145).
+/// `OctocrabBuilder::with_service` is a v0.2 follow-up.
 ///
 /// The argument is taken now so v0.2 can switch to `with_service`
 /// without changing the call sites in auth.rs.
@@ -332,15 +332,16 @@ pub fn build_blocking_client(proxy: Option<&ProxySpec>) -> Result<reqwest::block
     if let Some(p) = proxy {
         for cert in &p.ca_certs {
             let pem = std::fs::read(cert.path.as_std_path())?;
-            // SEC-08 / #144: from_pem_bundle parses every PEM-fenced
+            // SEC-08: from_pem_bundle parses every PEM-fenced
             // CERTIFICATE block in the file and returns the resulting
-            // Vec<Certificate>. from_pem (which we previously used)
-            // accepts files with zero PEM blocks under the rustls
-            // backend — it stores the raw bytes verbatim and downstream
-            // builds an empty roots set, silently degrading to system
-            // trust only. Fail closed instead: an operator-provided CA
-            // path that yields zero certificates is a misconfiguration,
-            // not a "fall back to defaults" signal.
+            // Vec<Certificate>. The alternative `from_pem` accepts
+            // files with zero PEM blocks under the rustls backend —
+            // it stores the raw bytes verbatim and downstream builds
+            // an empty roots set, silently degrading to system trust
+            // only. The from_pem_bundle + is_empty pair below fails
+            // closed: an operator-provided CA path that yields zero
+            // certificates is a misconfiguration, not a "fall back
+            // to defaults" signal.
             let parsed = reqwest::Certificate::from_pem_bundle(&pem).map_err(|e| {
                 GharsError::GitHub(
                     format!("invalid CA pem at {}: {e}", cert.path),
@@ -1067,9 +1068,8 @@ mod tests {
     /// Nested `block_on` inside a future already driven by `block_on`
     /// must panic. tokio's `current_thread` runtime detects the
     /// already-entered context and aborts with "Cannot start a runtime
-    /// from within a runtime" (verified empirically below). #168 pins
-    /// this contract: the production code in `auth.rs` (4 call sites
-    /// at auth.rs:178, 194, 306, 321 as of B6) MUST NOT call
+    /// from within a runtime" (verified empirically below). This pin
+    /// guards the contract: production code in `auth.rs` MUST NOT call
     /// `block_on` from inside a future passed to `block_on`. A `grep
     /// -rn block_on src/` audit + this panic test together gate the
     /// invariant.
@@ -1087,7 +1087,7 @@ mod tests {
     /// other reentrancy footgun: the spawned future runs on the same
     /// reactor thread (current_thread runtime), and its inner
     /// `block_on` hits the same already-entered guard. The panic
-    /// surfaces when the outer block_on awaits the JoinHandle. #168
+    /// surfaces when the outer block_on awaits the JoinHandle. This
     /// pins the contract so a future caller who refactors auth.rs to
     /// use spawn + block_on doesn't silently introduce a deadlock.
     #[test]
@@ -1169,7 +1169,7 @@ mod tests {
                 assert!(
                     depth_async == 0,
                     "{rel}:{} block_on call appears inside an async body \
-                     within the preceding 50 lines — violation of #168 \
+                     within the preceding 50 lines — violation of the \
                      reentrancy contract. Check that this call is at top \
                      level of a sync fn.",
                     lineno + 1
@@ -1203,7 +1203,7 @@ mod tests {
 
     #[test]
     fn build_blocking_client_rejects_empty_pem_file() {
-        // SEC-08 / #144: a CA cert file with no PEM CERTIFICATE blocks
+        // SEC-08: a CA cert file with no PEM CERTIFICATE blocks
         // (e.g. operator pointed at the wrong file, file holds only
         // comments, or the file was truncated) must be rejected at
         // build time. The previous reqwest::Certificate::from_pem call
@@ -1232,7 +1232,7 @@ mod tests {
 
     #[test]
     fn build_blocking_client_rejects_pem_with_only_unrelated_blocks() {
-        // SEC-08 / #144: a file that contains PEM blocks but NO
+        // SEC-08: a file that contains PEM blocks but NO
         // CERTIFICATE blocks (e.g. a bundle holding only DH parameters,
         // CRL entries, or a private key) must also be rejected — the
         // operator declared a CA path but provided no roots.
@@ -1335,7 +1335,7 @@ mod tests {
         // url::Url normalizes the host to lowercase per RFC 3986, so
         // without the validate_url() pre-check this would silently
         // succeed. validators::URL_REGEX is case-sensitive — these
-        // forms must reject (#175).
+        // forms must reject.
         assert!(parse_url("https://GITHUB.com/example/repo").is_err());
         assert!(parse_url("https://Github.com/example/repo").is_err());
         assert!(parse_url("https://GITHUB.COM/example/repo").is_err());
@@ -1343,14 +1343,14 @@ mod tests {
 
     #[test]
     fn user_agent_is_versioned() {
-        // #181: github.rs USER_AGENT must be `ghars/<version>` to match
+        // github.rs USER_AGENT must be `ghars/<version>` to match
         // extract.rs. The crate version comes from CARGO_PKG_VERSION at
         // build time, so the prefix is the stable assertion target.
         assert!(USER_AGENT.starts_with("ghars/"));
         assert!(USER_AGENT.len() > "ghars/".len());
     }
 
-    // ---- #164: parse_url Python-parity rejection cases ----------------
+    // ---- parse_url Python-parity rejection cases ----------------------
     //
     // validators.rs::tests::url_rejects already enumerates the full
     // Python `test_url_rejects` set against `validate_url`. These cases
@@ -1380,7 +1380,7 @@ mod tests {
         assert!(res.is_err(), "must reject {label}: {u:?}");
     }
 
-    // ---- #166: extract_sha256 body-format edge cases ------------------
+    // ---- extract_sha256 body-format edge cases ------------------------
 
     #[test]
     fn extract_sha256_asset_digest_preferred_over_body() {
@@ -1539,7 +1539,7 @@ mod tests {
         assert!(extract_sha256(&payload, "actions-runner-linux-x64-2.334.0.tar.gz").is_err());
     }
 
-    // ---- #165: fetch_latest_release / fetch_release end-to-end --------
+    // ---- fetch_latest_release / fetch_release end-to-end --------------
 
     /// Build the JSON body mockito serves for a mocked GitHub release.
     /// Captures the contract ghars depends on:
@@ -1713,8 +1713,8 @@ mod tests {
         mock.assert();
     }
 
-    /// devadv #679 supplemental: 429 rate-limit responses must surface
-    /// the operator-actionable Retry-After hint, mirroring the
+    /// 429 rate-limit responses must surface the operator-actionable
+    /// Retry-After hint, mirroring the
     /// "secondary rate limit" wording in `auth.rs::octocrab_to_auth`.
     /// "secondary" is the GitHub-specific term (vs primary rate
     /// limits which expose `X-RateLimit-Reset`); pinning it ensures
@@ -1837,8 +1837,8 @@ mod tests {
         mock.assert();
     }
 
-    /// devadv #679 supplemental: 5xx responses surface the
-    /// upstream-degraded hint with status.github.com pointer. Mirrors
+    /// 5xx responses surface the upstream-degraded hint with
+    /// status.github.com pointer. Mirrors
     /// the 5xx arm in `auth.rs::octocrab_to_auth`.
     #[test]
     fn fetch_latest_release_503_emits_upstream_degraded_hint() {
@@ -1874,8 +1874,8 @@ mod tests {
         mock.assert();
     }
 
-    /// devadv #679 supplemental: a status code outside the named arms
-    /// (e.g. 418 I'm a teapot) takes the catch-all generic hint —
+    /// A status code outside the named arms (e.g. 418 I'm a teapot)
+    /// takes the catch-all generic hint —
     /// distinct from any of the specific-class hints.
     #[test]
     fn fetch_latest_release_other_4xx_emits_generic_hint() {
@@ -1971,9 +1971,9 @@ mod tests {
         mock.assert();
     }
 
-    // ---- #666: response body size cap ---------------------------------
+    // ---- response body size cap ---------------------------------------
 
-    /// #666 normal-size body acceptance pin: a typical releases JSON
+    /// Normal-size body acceptance pin: a typical releases JSON
     /// (~50 KB) succeeds without hitting either body-size gate. Pinned
     /// alongside the rejection cases so a regression that drops the cap
     /// to a too-tight value (e.g. accidental switch to 1 KiB) is caught.
@@ -1996,7 +1996,7 @@ mod tests {
         mock.assert();
     }
 
-    /// #666 oversize body rejection pin: when the body exceeds
+    /// Oversize body rejection pin: when the body exceeds
     /// `MAX_RELEASES_BODY_BYTES`, http_get_payload rejects the
     /// response. Mockito sets Content-Length automatically from the
     /// served body, so this single test exercises the Layer-1
@@ -2046,10 +2046,10 @@ mod tests {
         mock.assert();
     }
 
-    // ---- #680: read_body_capped + http_get_payload_with_cap unit tests ---
+    // ---- read_body_capped + http_get_payload_with_cap unit tests --------
 
-    /// #680: `read_body_capped` returns Ok with the full buffer when
-    /// the reader has exactly `cap` bytes (the boundary case). Pinned
+    /// `read_body_capped` returns Ok with the full buffer when the
+    /// reader has exactly `cap` bytes (the boundary case). Pinned
     /// to defend against an off-by-one regression that uses `>=` in
     /// place of `>` on the buf-len check.
     #[test]
@@ -2060,7 +2060,7 @@ mod tests {
         assert_eq!(buf, body);
     }
 
-    /// #680: `read_body_capped` returns Ok with the buffer when the
+    /// `read_body_capped` returns Ok with the buffer when the
     /// reader has fewer than `cap` bytes (the under-cap case).
     #[test]
     fn read_body_capped_accepts_under_cap() {
@@ -2070,7 +2070,7 @@ mod tests {
         assert_eq!(buf, body);
     }
 
-    /// #680: `read_body_capped` returns `BodyCapError::CapExceeded`
+    /// `read_body_capped` returns `BodyCapError::CapExceeded`
     /// when the reader has more than `cap` bytes. Pinned to defend
     /// against a regression that drops the `take(cap+1)` guard and
     /// lets oversize bodies flow through. The cap value is propagated
@@ -2093,7 +2093,7 @@ mod tests {
         }
     }
 
-    /// #680: `http_get_payload_with_cap` end-to-end pin against
+    /// `http_get_payload_with_cap` end-to-end pin against
     /// mockito with a small cap (64 bytes). Body is 128 bytes, larger
     /// than the cap; production code path goes through Layer 1 (CL
     /// header check) and rejects with "Content-Length ... exceeds 64
@@ -2180,11 +2180,11 @@ mod tests {
     /// response", contains "body exceeds" + cap value, surfaces
     /// "post-decompression" framing distinct from Layer 1's "on-wire
     /// / pre-decompression" framing, and crucially does NOT contain
-    /// the doubled-noun "response response" (regression pin for
-    /// cleaner F-1 fix). Hint text was softened in #727 to drop the
-    /// alarming "compression-bomb signature" framing in favor of
-    /// neutral language that names both the deliberately-crafted and
-    /// legitimately-large possibilities.
+    /// the doubled-noun "response response" (regression pin for the
+    /// cleaner pass). Pins that the hint text uses neutral
+    /// "larger than expected" framing (naming both the deliberately-
+    /// crafted and legitimately-large possibilities) and avoids the
+    /// alarming "compression-bomb signature" framing.
     #[test]
     fn http_get_payload_with_cap_rejects_via_layer_2_streaming_when_no_content_length() {
         let mut server = mockito::Server::new();
@@ -2223,14 +2223,14 @@ mod tests {
                     msg.ends_with(&format!(": {url}")),
                     "Layer 2 msg must end with ': {{url}}'; got: {msg}"
                 );
-                // #727 — alarming "compression-bomb signature" framing
-                // replaced with neutral "larger than expected" wording
-                // that names both threat-model and legitimate-payload
-                // possibilities. Pin the new wording so a regression
-                // back to the alarming framing surfaces here.
+                // Layer 2 hint uses neutral "larger than expected"
+                // wording that names both threat-model and legitimate-
+                // payload possibilities, and avoids alarming
+                // "compression-bomb signature" framing. Pin both so
+                // a regression toward the alarming form surfaces here.
                 assert!(
                     hint.contains("larger than expected"),
-                    "Layer 2 hint must surface neutral 'larger than expected' framing per #727; got: {hint}"
+                    "Layer 2 hint must surface neutral 'larger than expected' framing; got: {hint}"
                 );
                 assert!(
                     hint.contains("deliberately-crafted") && hint.contains("legitimately large"),
@@ -2238,7 +2238,7 @@ mod tests {
                 );
                 assert!(
                     !hint.contains("compression-bomb signature"),
-                    "Layer 2 hint MUST NOT surface alarming 'compression-bomb signature' framing per #727; got: {hint}"
+                    "Layer 2 hint MUST NOT surface alarming 'compression-bomb signature' framing; got: {hint}"
                 );
                 assert!(
                     hint.contains("status.github.com"),
@@ -2710,7 +2710,7 @@ mod tests {
         );
     }
 
-    /// #735 — anti-doubling pin against the hypothetical double-Display
+    /// Anti-doubling pin against the hypothetical double-Display
     /// cascade. The concern: if std's `io::Error::Display` (or any
     /// outer error type) already includes its source's Display text in
     /// its own Display, then `format_error_chain` would emit that text
@@ -2804,7 +2804,7 @@ mod tests {
         );
     }
 
-    /// #735 — `io::Error::new(kind, inner)` "transparent wrap" pin.
+    /// `io::Error::new(kind, inner)` "transparent wrap" pin.
     ///
     /// The hypothetical doubling concern: if std's `io::Error` Display
     /// embedded the wrapped error's text AND `source()` returned the

@@ -1,10 +1,10 @@
-//! apply.rs integration tests for #219 + #224.
+//! apply.rs integration tests.
 //!
 //! Coverage focus (paths exercisable from integration-test layer with
 //! the public traits Tarball / Users / ConfigShell + a public Systemd
 //! mock):
 //!
-//! #219 — `execute_create_runner` branch coverage:
+//! `execute_create_runner` branch coverage:
 //!   - local tarball path: `spec.runner_tarball.is_some()` skips
 //!     fetch_or_verify, calls `verify_local`.
 //!   - no-release error: `runner_tarball.is_none()` and
@@ -13,7 +13,7 @@
 //!   - mint failure: auth registry missing key → `mint_token` errors.
 //!   - config_shell failure: `run_register` fails → propagated.
 //!
-//! #224 — `apply()` result accumulation:
+//! `apply()` result accumulation:
 //!   - `fail_fast=false` with multi-failure plan: every failure lands
 //!     in `result.failed`; `result.ok()` is false.
 //!   - `dry_run` skips daemon_reload (already covered in-tree via
@@ -204,7 +204,7 @@ impl Tarball for TestTarball {
 struct TestUsers {
     /// When set, `groupdel_if_present` returns Err if the requested
     /// group name matches. Mirrors the in-tree `fail_add_group` /
-    /// `fail_remove_group` fault-injection pattern; used by #429 to
+    /// `fail_remove_group` fault-injection pattern; used to
     /// pin that an oversize cache-pool group name surfaces a failure
     /// in `ApplyResult.failed` instead of silently succeeding.
     fail_groupdel: Mutex<Option<String>>,
@@ -386,7 +386,7 @@ fn deps<'a>(
     }
 }
 
-// --- #219: execute_create_runner branch coverage --------------------------
+// --- execute_create_runner branch coverage --------------------------------
 
 #[test]
 fn create_runner_errors_when_no_release_and_no_local_tarball() {
@@ -554,7 +554,7 @@ fn create_runner_errors_when_config_shell_register_fails() {
     assert!(format!("{err}").contains("register"));
 }
 
-// --- #224: apply() result accumulation ---------------------------------
+// --- apply() result accumulation ---------------------------------------
 
 #[test]
 fn apply_fail_fast_false_accumulates_multiple_failures() {
@@ -835,7 +835,7 @@ fn apply_remove_cache_pool_records_action_label_on_success() {
     );
 }
 
-/// #429: An oversize cache-pool name (state-discovered, exceeds
+/// An oversize cache-pool name (state-discovered, exceeds
 /// `CACHE_POOL_NAME_MAX_LEN`) flowing through `RemoveCachePool` MUST
 /// surface as a recorded failure in `ApplyResult.failed` — not be
 /// silently swallowed. apply.rs::cache_pool_group still produces the

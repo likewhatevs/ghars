@@ -1,6 +1,6 @@
 ---
 source: tests/python_parity_unit_snapshots.rs
-assertion_line: 112
+assertion_line: 117
 expression: cache_template_text()
 ---
 [Unit]
@@ -23,7 +23,7 @@ Type=simple
 # can resolve the path. Hardcoding `Group=gha` here would defeat the
 # per-pool ACL because every cache server would run with the same
 # primary group, and the UDS would be world-reachable for every
-# `gha`-group runner. (#200 / SEC-04 mitigation step 1.)
+# `gha`-group runner. (SEC-04 mitigation step 1.)
 #
 # `User=gha` stays in the template — every cache service runs as the
 # same uid so the cache directory's contents have a single owner; the
@@ -47,7 +47,7 @@ Slice=system.slice
 # can connect; non-members get EACCES. UMask= closes the mode at
 # bind() time atomically — unlike a chmod-after-bind shim, there is
 # no TOCTOU window between bind() returning and the chmod landing
-# during which a same-group attacker could connect. (#199 SEC-04
+# during which a same-group attacker could connect. (SEC-04
 # step 2.)
 UMask=0007
 

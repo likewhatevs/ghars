@@ -176,13 +176,13 @@ pub fn subnet_addresses(subnet: &IpNet) -> Result<(IpAddr, IpAddr)> {
 /// ([`setup`] / [`teardown`] / [`run_in_netns`]) gate via
 /// [`validate_instance_name`] so an adversarial form like `foo;rm`,
 /// whitespace, NUL bytes, or `..` segments cannot reach this
-/// `format!`. See #230 for the full adversarial test surface and
-/// #153 for the broader SEC-35 escaping work in the systemd / nft
-/// rule generator. The internal/private helpers below assume the
-/// gate has already run; do not call them with operator-supplied
-/// strings without re-running the gate.
+/// `format!`. The full adversarial test surface lives in this
+/// module's `tests` block; the broader SEC-35 escaping work spans
+/// the systemd / nft rule generator. The internal/private helpers
+/// below assume the gate has already run; do not call them with
+/// operator-supplied strings without re-running the gate.
 ///
-/// systemd `%i` mismatch note (cross-link #153): systemd unit
+/// systemd `%i` mismatch note: systemd unit
 /// instance names support backslash-`x` escapes (per
 /// `systemd.unit(5)`), but `ip netns add` does NOT speak that
 /// escape — the kernel uses the raw bytes. ghars dodges the issue
@@ -239,7 +239,7 @@ pub fn resolved_drop_in_path(paths: &Paths, instance: &str) -> Utf8PathBuf {
 /// runs the teardown sequence so a partial setup does not leak
 /// kernel resources.
 pub fn setup(paths: &Paths, instance: &str) -> Result<()> {
-    // #230: gate adversarial instance names against IDENTIFIER_REGEX
+    // Gate adversarial instance names against IDENTIFIER_REGEX
     // BEFORE any kernel work or root check. The instance name flows
     // through `format!()` into iproute2 / nftables / systemd unit
     // names; rejecting names like `foo;rm -rf /`, `foo bar`, `foo\0`,
@@ -259,7 +259,7 @@ pub fn setup(paths: &Paths, instance: &str) -> Result<()> {
 /// [`setup`]: cleanup verbs (`ip link del`, `ip netns del`,
 /// `systemctl reload`) all require root, and silently swallowing
 /// `EACCES` / `EPERM` from a non-root invocation would mask a real
-/// failure as success (B4 review #222).
+/// failure as success.
 ///
 /// # Errors
 ///
@@ -268,7 +268,7 @@ pub fn setup(paths: &Paths, instance: &str) -> Result<()> {
 /// Best-effort: every step runs regardless of whether earlier steps
 /// succeeded so a maximally-clean state is reached.
 pub fn teardown(paths: &Paths, instance: &str) -> Result<()> {
-    // #230: same as `setup()` — reject adversarial instance names
+    // Same as `setup()` — reject adversarial instance names
     // before issuing any kernel cleanup verbs.
     validate_instance_name(instance, "_netns-teardown")?;
     require_root("_netns-teardown")?;
@@ -277,9 +277,9 @@ pub fn teardown(paths: &Paths, instance: &str) -> Result<()> {
 
 /// Defense-in-depth: refuse to run setup/teardown when the effective
 /// UID is not 0. iproute2's `ip` returns `EPERM` for non-privileged
-/// callers — and the prior cleanup-verb runner swallowed any non-zero
-/// exit as "missing resource", which would mask a real
-/// permission-denied failure on every call.
+/// callers; surfacing a clear "requires root" error here is more
+/// actionable than letting every kernel verb fail individually with
+/// transport-level EPERM noise.
 fn require_root(label: &str) -> Result<()> {
     if nix::unistd::geteuid().is_root() {
         return Ok(());
@@ -292,7 +292,7 @@ fn require_root(label: &str) -> Result<()> {
     ))
 }
 
-/// #230: gate the instance name against IDENTIFIER_REGEX
+/// Gate the instance name against IDENTIFIER_REGEX
 /// (`^[a-z]([a-z0-9-]*[a-z0-9])?$`, ≤ IDENTIFIER_MAX_LEN). The
 /// instance flows through `format!()` into:
 /// - iproute2 args (`ghars-{instance}`, `ghars-{instance}-h/r`)
@@ -315,17 +315,16 @@ fn validate_instance_name(instance: &str, label: &str) -> Result<()> {
         ),
         other => other,
     })?;
-    // #432 defense-in-depth: every callsite of this helper goes on
-    // to construct `host_veth_name`/`runner_veth_name` (8-byte veth
+    // Defense-in-depth: every callsite of this helper goes on to
+    // construct `host_veth_name`/`runner_veth_name` (8-byte veth
     // overhead around `instance`) and hand the result to iproute2 /
     // nft, which inherit the kernel's IFNAMSIZ-1 limit on interface
-    // names. `cli::validate_netns_runner_name_lengths` (load_config
-    // validator #9) already gates this at config-load time, but
-    // these helper subcommands (`_netns-setup`, `_netns-teardown`,
-    // `_netns-veth`) are reachable directly via the CLI and could
-    // bypass the config path. Re-check the cap here so an oversize
-    // name produces a structured `Validation` error instead of an
-    // opaque iproute2 / nft failure.
+    // names. `cli::validate_netns_runner_name_lengths` already gates
+    // this at config-load time, but the helper subcommands
+    // (`_netns-setup`, `_netns-teardown`, `_netns-veth`) are reachable
+    // directly via the CLI and could bypass the config path. Re-check
+    // the cap here so an oversize name produces a structured
+    // `Validation` error instead of an opaque iproute2 / nft failure.
     if instance.len() > validators::NETNS_RUNNER_NAME_MAX_LEN {
         return Err(GharsError::Validation(
             format!(
@@ -356,7 +355,7 @@ fn validate_instance_name(instance: &str, label: &str) -> Result<()> {
 /// `GharsError::Io` on spawn failure;
 /// `GharsError::Validation` when `program` is empty.
 pub fn run_in_netns(instance: &str, program: &[String]) -> Result<i32> {
-    // #230: validate the instance name before constructing
+    // Validate the instance name before constructing
     // `ghars-{instance}` and passing it to `ip netns exec`. iproute2
     // would error confusingly on a name with spaces or shell metas;
     // surfacing the validator's IDENTIFIER_REGEX hint is clearer.
@@ -532,7 +531,7 @@ fn setup_steps(ops: &dyn NetnsOps, paths: &Paths, instance: &str, cfg: &NetnsCon
     //    less critical — but ICMP frag-needed handling depends on
     //    actually matching path MTU).
     //
-    //    #215: emit a tracing::warn! when detection fails. The 1500
+    //    Emit a tracing::warn! when detection fails. The 1500
     //    fallback is silent in the success path (no log line) but the
     //    failure path is operationally important: a runner on a host
     //    with a 9000-MTU bond or a 1450-MTU GRE tunnel that silently
@@ -679,8 +678,7 @@ fn teardown_inner(paths: &Paths, instance: &str, missing_config_ok: bool) -> Res
     // non-ENOENT error and continue. This preserves the design contract
     // (every cleanup step runs so a partial teardown reaches the
     // most-cleaned state) while surfacing real failures (EACCES, EPERM,
-    // EBUSY) instead of silently masking them as the prior `let _ =`
-    // swallow did (B4 review #222).
+    // EBUSY) instead of silently masking them.
     let mut first_err: Option<GharsError> = None;
 
     // 1) Remove the resolved drop-in if it exists. Even when
@@ -837,14 +835,10 @@ fn detect_host_mtu() -> Option<u32> {
 /// Run `cmd` and require it to succeed; otherwise wrap the exit
 /// state and stderr tail into `GharsError::Apply { action: label, ... }`.
 ///
-/// **#445**: this helper used to call `.status()`, which discards
-/// stderr — operators saw `exit ExitStatus(...)` with no clue why
-/// iproute2 / nft refused. Switching to `.output()` lets the error
-/// chain carry the first ~1KB of stderr so the operator can
-/// diagnose the actual cause (`Cannot find device`, `RTNETLINK
-/// answers: File exists`, `EBUSY`, etc). Mirrors the
-/// `run_cleanup_verb` pattern, which has captured stderr since the
-/// netns helper landed.
+/// `.output()` captures the first ~1KB of stderr so iproute2 / nft
+/// diagnostics reach the operator via the error chain (`Cannot find
+/// device`, `RTNETLINK answers: File exists`, `EBUSY`, etc). Mirrors
+/// the `run_cleanup_verb` pattern.
 ///
 /// On failure, the captured stderr is ALSO replayed to the parent
 /// process's stderr (best-effort, ignored on `Err`) so journalctl
@@ -900,11 +894,11 @@ const STDERR_PREVIEW_LEN: usize = 1024;
 /// - non-zero exit with stderr matching permission markers
 ///   (`Operation not permitted`, `Permission denied`) → returned as
 ///   `GharsError::Apply` so non-root invocations fail loudly
-///   instead of pretending the cleanup succeeded (B4 review #222).
-/// - any other non-zero exit → returned as `GharsError::Apply`. The
-///   prior implementation swallowed every non-zero exit, which
-///   masked EBUSY (link in use), EACCES, EPERM, and rtnetlink
-///   protocol errors.
+///   instead of pretending the cleanup succeeded.
+/// - any other non-zero exit → returned as `GharsError::Apply`. A
+///   blanket-swallow approach would mask EBUSY (link in use),
+///   EACCES, EPERM, and rtnetlink protocol errors; the explicit
+///   classification above is what prevents that.
 fn run_cleanup_verb(cmd: &mut Command, label: &str) -> Result<()> {
     let out = cmd.output().map_err(|e| spawn_io(label, &e))?;
     if out.status.success() {
@@ -1123,7 +1117,7 @@ mod tests {
         // we CAN verify the non-root rejection produces a clear error.
         if nix::unistd::geteuid().is_root() {
             // Skip when the test happens to run privileged; the
-            // negative path is what guards #222.
+            // negative path is what guards the require_root contract.
             return;
         }
         let err = require_root("_netns-test").unwrap_err();
@@ -1152,10 +1146,10 @@ mod tests {
 
     #[test]
     fn run_cleanup_verb_propagates_permission_denied_messages() {
-        // Simulate the EPERM/EACCES path. The prior implementation
-        // swallowed this as success — that is exactly what #222 is
-        // about. Verify the new helper surfaces a real error so an
-        // unprivileged caller does not get a silent "success".
+        // Simulate the EPERM/EACCES path. The helper must surface
+        // a real error so an unprivileged caller does not get a
+        // silent "success" — the absent-marker classifier must
+        // refuse to swallow permission-denied messages.
         let mut cmd = Command::new("/bin/sh");
         cmd.args([
             "-c",
@@ -1172,8 +1166,8 @@ mod tests {
     #[test]
     fn run_cleanup_verb_propagates_unknown_failures() {
         // Generic failure mode (e.g. EBUSY, rtnetlink protocol error,
-        // malformed argv). Pre-#222 these were swallowed as "missing
-        // resource" — clearly wrong.
+        // malformed argv). Must propagate as a real error rather than
+        // being swallowed as "missing resource".
         let mut cmd = Command::new("/bin/sh");
         cmd.args(["-c", "echo 'argument is invalid' >&2; exit 1"]);
         let err = run_cleanup_verb(&mut cmd, "ip netns del (test)").unwrap_err();
@@ -1184,12 +1178,12 @@ mod tests {
         );
     }
 
-    /// #450: pin that `run_required` actually surfaces stderr to the
-    /// operator. The .output() switch in #445 is load-bearing — without
-    /// stderr capture, iproute2 / nft diagnostics vanish and the
-    /// operator only sees "exit ExitStatus(...)" with no clue what
-    /// went wrong. Use /bin/sh as a stand-in for an iproute2 binary
-    /// that fails on bad argv.
+    /// Pin that `run_required` actually surfaces stderr to the
+    /// operator. Without `.output()` capture, iproute2 / nft
+    /// diagnostics would vanish and the operator would only see
+    /// "exit ExitStatus(...)" with no clue what went wrong. Use
+    /// /bin/sh as a stand-in for an iproute2 binary that fails on
+    /// bad argv.
     #[test]
     fn run_required_captures_stderr_into_error_chain() {
         let mut cmd = Command::new("/bin/sh");
@@ -1200,7 +1194,7 @@ mod tests {
         let msg = format!("{err}");
         assert!(
             msg.contains("simulated iproute2 error"),
-            "stderr text MUST appear in the error chain (#445); got: {msg}",
+            "stderr text MUST appear in the error chain (run_required captures stderr via .output()); got: {msg}",
         );
         assert!(
             msg.contains("ip link add"),
@@ -1208,7 +1202,7 @@ mod tests {
         );
     }
 
-    /// #450 truncation pin: stderr longer than `STDERR_PREVIEW_LEN`
+    /// Truncation pin: stderr longer than `STDERR_PREVIEW_LEN`
     /// (1 KiB) MUST be bounded so a pathological iproute2 / nft binary
     /// that floods stderr cannot unbound the error chain. The preview
     /// is `chars().take(N).collect()` — char-bounded, not byte-bounded —
@@ -1248,7 +1242,7 @@ mod tests {
         );
     }
 
-    // -------- #230: adversarial instance-name handling --------------------
+    // -------- adversarial instance-name handling --------------------------
 
     /// Every adversarial form the validate_runner_name gate must
     /// reject before any kernel work starts. Each entry exercises
@@ -1335,7 +1329,7 @@ mod tests {
         }
     }
 
-    // -------- #229: subnet_addresses property tests -----------------------
+    // -------- subnet_addresses property tests -----------------------------
 
     // proptest: every valid IPv4 /30 round-trips through
     // `subnet_addresses` and yields exactly the (network+1,
@@ -1409,8 +1403,8 @@ mod tests {
     }
 
     proptest::proptest! {
-        // #229 item #2: every non-/30 IPv4 prefix length must be
-        // rejected with `GharsError::Validation`. The allocator's
+        // Every non-/30 IPv4 prefix length must be rejected with
+        // `GharsError::Validation`. The allocator's
         // contract is "give me a /30, get back (host, runner)"; any
         // other prefix indicates a config-author mistake (likely
         // confusing the per-runner /30 with the [defaults] netns_subnet
@@ -1457,8 +1451,8 @@ mod tests {
 
     #[test]
     fn subnet_addresses_wrap_around_safety_uses_network_base() {
-        // #229 item #5: ipnet stores the literal `addr` from the input
-        // CIDR; `network()` derives the masked base on demand. Any
+        // ipnet stores the literal `addr` from the input CIDR;
+        // `network()` derives the masked base on demand. Any
         // address inside a /30 (e.g. `.255` in `255.255.255.255/30`)
         // resolves to the same /30 base (`255.255.255.252`), so
         // `subnet_addresses` returns the same (host, runner) pair
@@ -1507,10 +1501,10 @@ mod tests {
         }
     }
 
-    // -------- #230 item #5: cross-module name-prefix invariant -----------
+    // -------- cross-module name-prefix invariant -------------------------
     //
     // The nft generator in `systemd.rs` (its `render_nft_host` writes
-    // `iifname "ghars-{runner}-h"`, see #153) constructs interface names
+    // `iifname "ghars-{runner}-h"`) constructs interface names
     // independently of `host_veth_name` / `runner_veth_name` here.
     // A drift between these two formatters would point nft rules at a
     // non-existent interface, breaking fail-closed.
@@ -1544,7 +1538,7 @@ mod tests {
             let host = host_veth_name(&instance);
             let runner = runner_veth_name(&instance);
 
-            // Cross-module invariant #1: every helper formats on top
+            // Cross-module invariant 1: every helper formats on top
             // of the same `ghars-{instance}` prefix.
             proptest::prop_assert_eq!(&ns, &format!("ghars-{instance}"));
             proptest::prop_assert!(
@@ -1556,7 +1550,7 @@ mod tests {
                 "runner_veth_name {runner:?} must start with netns_name {ns:?}",
             );
 
-            // Cross-module invariant #2: the host/runner suffixes are
+            // Cross-module invariant 2: the host/runner suffixes are
             // exactly `-h` / `-r`. systemd.rs:render_nft_host emits
             // `iifname "ghars-{runner}-h"`; if these helpers ever
             // emit a different suffix, the nft rule and the actual
@@ -1570,7 +1564,7 @@ mod tests {
                 "runner_veth_name {runner:?} must end with -r",
             );
 
-            // Cross-module invariant #3: byte-for-byte equality with
+            // Cross-module invariant 3: byte-for-byte equality with
             // the literal format strings the nft generator uses.
             // (If render_nft_host ever changes its template, this
             // property fails immediately and points at the drift.)
@@ -1594,7 +1588,7 @@ mod tests {
         }
     }
 
-    // #446: every name within `NETNS_RUNNER_NAME_MAX_LEN` MUST
+    // Every name within `NETNS_RUNNER_NAME_MAX_LEN` MUST
     // produce a veth name that fits the kernel's IFNAMSIZ window
     // (`< IFNAMSIZ` bytes including the trailing NUL the kernel
     // reserves; usable len = `IFNAMSIZ - 1`). The cap derivation in
@@ -1648,7 +1642,7 @@ mod tests {
         }
     }
 
-    /// #446 negative pin: an instance name that exceeds
+    /// Negative pin: an instance name that exceeds
     /// `NETNS_RUNNER_NAME_MAX_LEN` MUST produce a veth name that
     /// overflows the IFNAMSIZ window. Documents the cap as the
     /// boundary, not just an internal constant. The
@@ -1687,7 +1681,7 @@ mod tests {
         );
     }
 
-    // -------- #228: per-step error path coverage --------------------------
+    // -------- per-step error path coverage --------------------------------
 
     use std::sync::Mutex;
 
@@ -1804,8 +1798,8 @@ mod tests {
 
     #[test]
     fn mock_setup_fails_at_each_step_independently() {
-        // The team-lead's #228 spec: "Test each of the setup steps
-        // failing independently." We iterate every label and confirm
+        // Per-step independent-failure spec: "Test each of the setup
+        // steps failing independently." We iterate every label and confirm
         // (a) setup_with_ops returns an Err whose action label
         // matches the failing step, (b) the recorded events show we
         // reached the failing step (no later step ran), (c)
@@ -1854,7 +1848,7 @@ mod tests {
         }
     }
 
-    // -------- #228 item #4: DnsMode::Static empty servers rejection ------
+    // -------- DnsMode::Static empty servers rejection --------------------
     //
     // setup_dns is module-private; the test calls it directly with a
     // throw-away tempdir. The Static branch's only failure mode is "no

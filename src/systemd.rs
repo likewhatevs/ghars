@@ -1035,7 +1035,7 @@ Type=simple
 # can resolve the path. Hardcoding `Group=gha` here would defeat the
 # per-pool ACL because every cache server would run with the same
 # primary group, and the UDS would be world-reachable for every
-# `gha`-group runner. (#200 / SEC-04 mitigation step 1.)
+# `gha`-group runner. (SEC-04 mitigation step 1.)
 #
 # `User=gha` stays in the template — every cache service runs as the
 # same uid so the cache directory's contents have a single owner; the
@@ -1059,7 +1059,7 @@ Slice=system.slice
 # can connect; non-members get EACCES. UMask= closes the mode at
 # bind() time atomically — unlike a chmod-after-bind shim, there is
 # no TOCTOU window between bind() returning and the chmod landing
-# during which a same-group attacker could connect. (#199 SEC-04
+# during which a same-group attacker could connect. (SEC-04
 # step 2.)
 UMask=0007
 
@@ -1138,13 +1138,12 @@ WantedBy=multi-user.target
 /// Returns `GharsError::Validation` when:
 /// - `render_identity` (via [`check_identity_field`]) finds a `\n`,
 ///   `\r`, `\0`, or other control character in any interpolated
-///   X-Ghars-* field — defense-in-depth against unit-text injection
-///   (#286). The error message names the offending field and the
+///   X-Ghars-* field — defense-in-depth against unit-text injection.
+///   The error message names the offending field and the
 ///   character class.
-/// - The F48 reset-on-empty validator finds any generated drop-in
-///   body about to emit a list-typed directive with a bare `=`.
-///   Such an output is a generator bug; the validator is a safety
-///   net.
+/// - The reset-on-empty validator finds any generated drop-in body
+///   about to emit a list-typed directive with a bare `=`. Such an
+///   output is a generator bug; the validator is a safety net.
 pub fn render_runner_unit(spec: &EffectiveRunnerSpec) -> Result<RenderedUnit> {
     let mut drop_ins: BTreeMap<String, String> = BTreeMap::new();
     let mut warnings: Vec<String> = Vec::new();
@@ -1205,7 +1204,7 @@ pub fn render_runner_unit(spec: &EffectiveRunnerSpec) -> Result<RenderedUnit> {
     })
 }
 
-/// Defense-in-depth (#286): reject any value about to be interpolated
+/// Defense-in-depth: reject any value about to be interpolated
 /// into a `00-ghars.conf` line that contains characters which would
 /// break out of the `Key=Value` boundary or corrupt the systemd unit
 /// parser. `\n` / `\r` would inject a new directive line; `\0` is a
@@ -1213,15 +1212,15 @@ pub fn render_runner_unit(spec: &EffectiveRunnerSpec) -> Result<RenderedUnit> {
 /// behavior in the X-Ghars-* annotation parser at
 /// `state::extract_x_ghars`.
 ///
-/// Called from three sites, none privileged:
-/// - `render_identity` (this file) — the LAST gate before bytes hit
-///   disk during plan render. Wraps the result with `render_identity:`
-///   so the message in stderr names the rejecting function (#286).
+/// Called from many render and validation sites (none privileged):
+/// - The `render_*` helpers in this file (memory, hardening, cache,
+///   network, numa, proxy, hooks, identity) gate every interpolated
+///   field before bytes hit disk.
 /// - `cli::validate_identity_fields` — config-load gate so the
 ///   operator sees the offending block name (`runner "NAME"` /
-///   `cache_pool "NAME"`) before the planner runs (#344/#346).
+///   `cache_pool "NAME"`) before the planner runs.
 /// - `plan::plan_from` — defense-in-depth on the synthesized
-///   `config_source` value (#345/#346).
+///   `config_source` value.
 ///
 /// The error message itself is bare (no caller-site prefix). The
 /// render_identity caller (this file, just below) wraps with
@@ -1231,8 +1230,7 @@ pub fn render_runner_unit(spec: &EffectiveRunnerSpec) -> Result<RenderedUnit> {
 /// plan.rs caller propagates the bare error (config_source is
 /// composed from paths.config_dir, no operator-meaningful scope to
 /// prepend). Hardcoding `"render_identity:"` here would mislead
-/// operators when the rejection actually fires at config-load time
-/// (#380).
+/// operators when the rejection actually fires at config-load time.
 pub(crate) fn check_identity_field(field: &str, value: &str) -> Result<()> {
     if let Some(bad) = value
         .chars()
@@ -1267,13 +1265,12 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
     // a partially-written buffer.
     //
     // `check` wraps `check_identity_field` so the resulting Validation
-    // error names "render_identity" as the rejecting site (#286).
+    // error names "render_identity" as the rejecting site.
     // `cli::validate_identity_fields` adds its own block-scoped
     // prepend (`runner "NAME":` / `cache_pool "NAME":`); `plan::plan_from`
     // propagates the bare error. By emitting the bare form from
     // `check_identity_field` itself, stderr only says "render_identity"
-    // when the rejection actually fires here at plan-render time
-    // (#380).
+    // when the rejection actually fires here at plan-render time.
     let check = |field: &str, value: &str| -> Result<()> {
         check_identity_field(field, value)
             .map_err(|e| crate::error::prepend_validation_scope("render_identity", e))
@@ -1312,13 +1309,13 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
     let _ = writeln!(s, "X-Ghars-Runner-Name={}", spec.name);
     let _ = writeln!(s, "X-Ghars-Runner-Url={}", spec.url);
     let _ = writeln!(s, "X-Ghars-Auth-Name={}", spec.auth_name);
-    // BATCH C / #11 + #12: emit Labels and Arch as annotations so the
-    // plan engine can reconstruct the recreate-bound subset of an
-    // already-applied EffectiveRunnerSpec from the on-disk unit text.
-    // Without these, a labels-only or arch-only edit fell through to
-    // the conservative `spec_hash_mismatch` recreate fallback, even
-    // though both fields are knowable at config-load time. Comma-
-    // joined labels mirrors the existing X-Ghars-Caches format.
+    // Emit Labels and Arch as annotations so the plan engine can
+    // reconstruct the recreate-bound subset of an already-applied
+    // EffectiveRunnerSpec from the on-disk unit text. Without these,
+    // a labels-only or arch-only edit falls through to the
+    // conservative `spec_hash_mismatch` recreate fallback, even
+    // though both fields are knowable at config-load time.
+    // Comma-joined labels mirrors the existing X-Ghars-Caches format.
     //
     // Labels arrive pre-sorted by `merge_defaults` (set semantics —
     // GitHub matches workflow `runs-on:` against the registered label
@@ -1338,8 +1335,8 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
         crate::config::Arch::Aarch64 => "aarch64",
     };
     let _ = writeln!(s, "X-Ghars-Arch={arch_str}");
-    // BATCH C / #11 + #12: emit User and Prefix so the plan engine can
-    // surface the operator's intent on update-runner (e.g. show a
+    // Emit User and Prefix so the plan engine can surface the
+    // operator's intent on update-runner (e.g. show a
     // "user: gha → ghars-buckos" line in the diff). Both are
     // identity-bound (changing either forces a recreate) but having
     // the before-value lets the renderer say what changed instead of
@@ -1374,7 +1371,7 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
         "X-Ghars-Effective-Version={}",
         spec.runner_version.as_deref().unwrap_or("")
     );
-    // #296: runner_sha256 is operator-supplied SHA256 of the runner
+    // runner_sha256 is operator-supplied SHA256 of the runner
     // tarball — recreate-class. Emitted only when set so a missing
     // line means "operator did not pin a digest" (resolves through
     // the releases API). An empty `=` would conflate "operator
@@ -1386,7 +1383,7 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
     {
         let _ = writeln!(s, "X-Ghars-Runner-Sha256={sha}");
     }
-    // #296: runner_tarball is an operator-supplied local path to a
+    // runner_tarball is an operator-supplied local path to a
     // pre-downloaded tarball. The PATH itself leaks operator
     // environment (mount points, usernames, kernel-private dirs) so
     // we emit a SHA256 of the path string instead. The hash is
@@ -1404,13 +1401,13 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
             hex::encode(h.finalize())
         );
     }
-    // #290: trust_zone is in EffectiveRunnerSpec spec_hash but has
+    // trust_zone is in EffectiveRunnerSpec spec_hash but has
     // no runner-unit body dependency once cache-pool cross-references
     // validate. Annotated so the classifier can detect an isolated
     // trust_zone change as in-place (FieldChange but no recreate
     // reason — see plan.rs::classify_recreate_reasons_from_annotations).
     let _ = writeln!(s, "X-Ghars-Trust-Zone={}", spec.trust_zone);
-    // #308 / #311: network mode (open|netns). Recreate-class — see
+    // network mode (open|netns). Recreate-class — see
     // classifier. Emitted unconditionally; "open" is the canonical
     // string for "no [network] block referenced or NetworkMode::Open".
     let net_mode = match spec.network.as_ref().map(|n| &n.spec.mode) {
@@ -1447,7 +1444,7 @@ fn render_memory(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
     if m.is_empty() {
         return Ok(None);
     }
-    // Defense-in-depth (#348): `memory_max` is an operator-supplied free-
+    // Defense-in-depth: `memory_max` is an operator-supplied free-
     // form String (config.rs `EffectiveRunnerSpec.memory_max:
     // Option<String>`) interpolated directly into `MemoryMax=`. A
     // newline would inject a new directive line; NUL/control chars would
@@ -1467,7 +1464,7 @@ fn render_hardening(
     let h = &spec.hardening;
     let profile = HardeningProfile::from(h);
 
-    // Defense-in-depth (#348): every operator-supplied string about to
+    // Defense-in-depth: every operator-supplied string about to
     // be interpolated into a 20-hardening.conf body must clear
     // check_identity_field BEFORE any bytes are written. The
     // hardening profile lets the operator append entries to systemd
@@ -1597,7 +1594,7 @@ fn render_hardening(
         // is in `h.extra_capabilities` verbatim, including duplicates
         // and operator-supplied order. `plan::merge_hardening` is
         // responsible for sorting AND deduping the merged Vec before
-        // the renderer sees it (#384) so a pure reorder or accidental
+        // the renderer sees it so a pure reorder or accidental
         // dup in TOML does not perturb the rendered drop-in body or
         // the spec_hash. The same upstream contract applies to
         // `extra_syscalls` (SystemCallFilter= line above) and
@@ -1659,7 +1656,7 @@ fn render_cache_pool(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
     if spec.caches.is_empty() {
         return Ok(None);
     }
-    // Defense-in-depth (#348): `binding.size` is an operator-supplied
+    // Defense-in-depth: `binding.size` is an operator-supplied
     // free-form String (config.rs `EffectiveCacheBinding.size: String`)
     // interpolated into `Environment=CCACHE_MAXSIZE=` and
     // `Environment=SCCACHE_CACHE_SIZE=` lines. A newline would terminate
@@ -1695,7 +1692,7 @@ fn render_cache_pool(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
                 c.name
             );
             // Pool-side server is the sole owner; runners are clients.
-            // SCCACHE_NO_DAEMON=1 prevents auto-spawn (#32).
+            // SCCACHE_NO_DAEMON=1 prevents auto-spawn.
             s.push_str("Environment=SCCACHE_NO_DAEMON=1\n");
             let _ = writeln!(s, "Environment=SCCACHE_CACHE_SIZE={}", c.size);
             needs_run_ghars = true;
@@ -1760,7 +1757,7 @@ fn render_network(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
     if !matches!(net.spec.mode, NetworkMode::Netns) {
         return Ok(None);
     }
-    // Defense-in-depth (#348): `address_families[]` is the only operator-
+    // Defense-in-depth: `address_families[]` is the only operator-
     // supplied free-form String surface in this renderer's body. It is
     // joined with `" "` and emitted on a `RestrictAddressFamilies=` line,
     // so a newline anywhere in an entry would inject a new directive.
@@ -1806,7 +1803,7 @@ fn render_numa(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
     if cpus.is_none() && mems.is_none() {
         return Ok(None);
     }
-    // Defense-in-depth (#348): both fields are operator-supplied
+    // Defense-in-depth: both fields are operator-supplied
     // strings interpolated into AllowedCPUs= / AllowedMemoryNodes=.
     // A newline anywhere would inject a new directive line.
     if let Some(c) = cpus {
@@ -1837,7 +1834,7 @@ fn render_proxy(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
     {
         return Ok(None);
     }
-    // Defense-in-depth (#348): every operator-supplied string about to
+    // Defense-in-depth: every operator-supplied string about to
     // be interpolated into a 60-proxy.conf body must clear
     // check_identity_field BEFORE bytes are written. The proxy fields
     // appear in `Environment=...` directives — a newline would
@@ -1860,7 +1857,7 @@ fn render_proxy(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
     s.push_str("[Service]\n");
     if let Some(http) = &proxy.http {
         // Both upper- and lower-case env vars so apps that read either
-        // find a value (R2 / #38).
+        // find a value (R2).
         let _ = writeln!(s, "Environment=HTTP_PROXY={http}");
         let _ = writeln!(s, "Environment=http_proxy={http}");
     }
@@ -1879,7 +1876,7 @@ fn render_proxy(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
         // No `-` prefix: a missing CA cert must FAIL the unit, not silently
         // tolerate absence. Tolerating absence here lets the runner connect
         // through the proxy with the system trust store as a fallback —
-        // that's MITM if the proxy is untrusted (SEC-08 / B2 review #173).
+        // that's MITM if the proxy is untrusted (SEC-08).
         bind_paths.push(binding.path.to_string());
     }
     if !bind_paths.is_empty() {
@@ -1895,7 +1892,7 @@ fn render_hooks(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
     if h.pre_job.is_none() && h.post_job.is_none() {
         return Ok(None);
     }
-    // Defense-in-depth (#348): `pre_job` / `post_job` are operator-supplied
+    // Defense-in-depth: `pre_job` / `post_job` are operator-supplied
     // host paths (config.rs `HooksSpec` fields are `Option<Utf8PathBuf>`)
     // interpolated into `Environment=ACTIONS_RUNNER_HOOK_JOB_*` and
     // `BindReadOnlyPaths=` lines. A newline embedded in the Utf8 path
@@ -1963,7 +1960,7 @@ pub fn render_cache_drop_in(
     config_source: &str,
     spec_hash: &str,
 ) -> Result<String> {
-    // Defense-in-depth (#348): three operator/composer-supplied
+    // Defense-in-depth: three operator/composer-supplied
     // strings interpolate into this drop-in body —
     //   * `binding.size` (operator-supplied, free-form String) →
     //     `Environment=SCCACHE_CACHE_SIZE=` / `Environment=CCACHE_MAXSIZE=`
@@ -2003,7 +2000,7 @@ pub fn render_cache_drop_in(
     s.push('\n');
 
     s.push_str("[Service]\n");
-    // #200 / SEC-04: per-pool group. The cache template intentionally
+    // SEC-04: per-pool group. The cache template intentionally
     // does NOT set `Group=`; the drop-in stamps it here so each pool's
     // sccache UDS belongs to the `ghars-cache-<pool>` primary group.
     // Runners join only the groups they reference in `caches = [...]`
@@ -2029,8 +2026,7 @@ pub fn render_cache_drop_in(
         s.push_str("Environment=SCCACHE_NO_DAEMON=1\n");
         // SCCACHE_IDLE_TIMEOUT=0 prevents the server from exiting
         // mid-shift. Mismatch between server idle timeout and runner
-        // restart cycles would force re-init of the on-disk cache (F33
-        // / #33).
+        // restart cycles would force re-init of the on-disk cache (F33).
         s.push_str("Environment=SCCACHE_IDLE_TIMEOUT=0\n");
     }
     if serves_ccache {
@@ -2044,7 +2040,7 @@ pub fn render_cache_drop_in(
 
     if serves_sccache {
         s.push_str("ExecStart=/usr/bin/sccache --start-server\n");
-        // #199 mode enforcement is in the cache template via UMask=0007,
+        // mode enforcement is in the cache template via UMask=0007,
         // not a per-pool ExecStartPost. Kernel-enforced at vfs_mknod
         // time (Linux net/unix/af_unix.c:unix_bind_bsd:1349) so there
         // is no TOCTOU window between bind() and a chmod shim. See the
@@ -2124,11 +2120,11 @@ pub fn render_nft_rules(runner_name: &str, binding: &EffectiveNetworkBinding) ->
         ),
         other => other,
     })?;
-    // #432 defense-in-depth: this generator emits `iifname
+    // Defense-in-depth: this generator emits `iifname
     // "ghars-{runner_name}-h"` and `oifname "ghars-{runner_name}-h"`
     // matchers that the kernel will refuse if the rendered interface
     // name exceeds IFNAMSIZ - 1. `cli::validate_netns_runner_name_lengths`
-    // (load_config validator #9) gates this at config-load, but
+    // gates this at config-load, but
     // direct callers of `render_nft_rules` (snapshot tests,
     // hypothetical future code paths) bypass that gate. Re-check the
     // cap alongside the existing IDENTIFIER_REGEX gate so a programming
@@ -2436,7 +2432,7 @@ mod tests {
         assert!(!id.contains("X-Ghars-Runsvc-Sha256"));
     }
 
-    // ---- #286: render_identity defense-in-depth rejection tests ------
+    // ---- render_identity defense-in-depth rejection tests ------------
     //
     // Each test mutates ONE interpolated field in `minimal_spec()`,
     // calls `render_runner_unit`, and asserts:
@@ -2565,7 +2561,7 @@ mod tests {
         assert!(id.contains("X-Ghars-Trust-Zone=default"));
     }
 
-    /// #271 / #371: empty `caches` MUST emit `X-Ghars-Caches=` with
+    /// Empty `caches` MUST emit `X-Ghars-Caches=` with
     /// an empty value, NOT skip the line. The classifier
     /// distinguishes `Some(vec![])` (line present, empty value) from
     /// `None` (line absent) — see DiscoveredAnnotations docstring.
@@ -2625,7 +2621,7 @@ mod tests {
         );
     }
 
-    /// #286 propagation: render_runner_unit must surface the
+    /// Propagation: render_runner_unit must surface the
     /// `check_identity_field` error verbatim (it's not swallowed
     /// or wrapped with a layer that obscures the offending field).
     /// The error must still name "render_identity" so an operator
@@ -2643,7 +2639,7 @@ mod tests {
         );
     }
 
-    /// #286 fail-fast ordering: when MULTIPLE fields are bad, the
+    /// Fail-fast ordering: when MULTIPLE fields are bad, the
     /// FIRST validated field surfaces — render_identity validates
     /// in order (spec_hash, name, url, auth_name, ...) and the `?`
     /// short-circuits on the first failure. Pin that order: a bad
@@ -2668,7 +2664,7 @@ mod tests {
         );
     }
 
-    // ---- #348: defense-in-depth across render_hardening / render_proxy / render_numa
+    // ---- defense-in-depth across render_hardening / render_proxy / render_numa
     //
     // Each test mutates ONE operator-controllable string in
     // `minimal_spec()`, calls `render_runner_unit`, and asserts:
@@ -2729,7 +2725,7 @@ mod tests {
         assert!(msg.contains("newline"), "msg must name class: {msg}");
     }
 
-    // ---- #348 (FIX 2): defense-in-depth across the remaining render_*
+    // ---- defense-in-depth across the remaining render_*
     // functions that interpolate operator-controllable strings into
     // drop-in bodies. Same pattern as the render_hardening / render_proxy
     // / render_numa tests above: mutate ONE field, call
@@ -2738,8 +2734,8 @@ mod tests {
 
     /// `render_memory`: `memory_max` is an operator-supplied free-form
     /// String interpolated into `MemoryMax=`. A newline would inject a
-    /// new directive line. Pinned because the field skipped #286/#348
-    /// gates pre-fix.
+    /// new directive line. The field is gated by the defense-in-depth
+    /// `check_identity_field` call inside `render_memory`.
     #[test]
     fn render_memory_rejects_newline_in_memory_max() {
         let mut spec = minimal_spec();
@@ -3024,7 +3020,7 @@ mod tests {
 
     #[test]
     fn render_hardening_kvm_false_resets_device_allow_and_warns() {
-        // The fix for #177: kvm=false must emit `DeviceAllow=` (empty
+        // kvm=false must emit `DeviceAllow=` (empty
         // reset) so the template's `DeviceAllow=/dev/kvm rw` is
         // revoked. Combined with the template's `DevicePolicy=closed`,
         // this denies all device access. The renderer surfaces a
@@ -3050,13 +3046,12 @@ mod tests {
 
     #[test]
     fn validate_drop_in_now_allows_device_allow_reset() {
-        // F48 was loosened for DeviceAllow specifically (see the
+        // F48 exempts DeviceAllow specifically (see the
         // RESET_ON_EMPTY_DIRECTIVES doc-comment for rationale). Verify
         // the validator does NOT reject a bare `DeviceAllow=` line.
-        // Other directives still trigger F48 — the validator's
-        // protection on SystemCallFilter, BindReadOnlyPaths, etc. is
-        // unchanged (covered by validate_drop_in_rejects_each_directive
-        // below).
+        // Other directives still trigger F48 — the validator continues
+        // to protect SystemCallFilter, BindReadOnlyPaths, etc. (covered
+        // by validate_drop_in_rejects_each_directive below).
         let body = "[Service]\nDeviceAllow=\n";
         validate_drop_in("20-hardening.conf", body).unwrap();
     }
@@ -3167,7 +3162,7 @@ mod tests {
         assert!(p.contains("Environment=http_proxy=http://192.168.2.84:3128"));
         assert!(p.contains("Environment=NO_PROXY=192.168.2.84"));
         assert!(p.contains("Environment=REQUESTS_CA_BUNDLE=/etc/pki/tls/certs/ca-bundle.crt"));
-        // SEC-08 / #173: no `-` prefix on proxy CA cert paths — missing CA
+        // SEC-08: no `-` prefix on proxy CA cert paths — missing CA
         // must fail the unit start, not silently fall back to system roots.
         assert!(p.contains("BindReadOnlyPaths=/etc/pki/tls/certs/ca-bundle.crt"));
         assert!(!p.contains("BindReadOnlyPaths=-/etc/pki/tls/certs/ca-bundle.crt"));
@@ -3188,7 +3183,7 @@ mod tests {
         assert!(h.contains("BindReadOnlyPaths=/opt/gha"));
     }
 
-    // #149: drop-in interaction tests. systemd treats list-typed
+    // Drop-in interaction tests. systemd treats list-typed
     // directives (RestrictAddressFamilies, BindReadOnlyPaths,
     // SystemCallFilter, ...) as APPEND across drop-ins — every line
     // contributes to the union, the LAST one does not "win". The
@@ -3456,7 +3451,7 @@ mod tests {
         validate_drop_in("x", body).unwrap();
     }
 
-    // #185 — multi-line edge cases for the F48 reset-on-empty regex.
+    // Multi-line edge cases for the F48 reset-on-empty regex.
     // These pin the regex against systemd.syntax(7) parsing semantics:
     // leading whitespace is ignored, comments are skipped, multi-line
     // bodies must be scanned per-line, and continuation lines (trailing
@@ -3675,7 +3670,7 @@ mod tests {
 
     #[test]
     fn cache_template_sets_umask_0007_for_uds_mode() {
-        // #199 (resolved via UMask=0007): the sccache UDS mode is
+        // SEC-04 step 2 (resolved via UMask=0007): the sccache UDS mode is
         // kernel-enforced at vfs_mknod time (Linux
         // net/unix/af_unix.c:unix_bind_bsd:1349 —
         // `umode_t mode = S_IFSOCK | (SOCK_INODE(...)->i_mode & ~current_umask())`).
@@ -3696,14 +3691,14 @@ mod tests {
 
     #[test]
     fn render_cache_drop_in_relies_on_template_umask_no_exec_start_post_shim() {
-        // #199 mode enforcement lives in the cache template (UMask=0007),
+        // SEC-04 step 2 mode enforcement lives in the cache template (UMask=0007),
         // not the per-pool drop-in. The drop-in must NOT emit a chmod
-        // ExecStartPost — that approach was the chmod-after-bind shim
-        // ruled out at design time because of the TOCTOU window
-        // between bind() returning and chmod() landing during which a
-        // same-group attacker could connect. UMask= closes the window
-        // at vfs_mknod time. This test pins both pool kinds (sccache
-        // and ccache-only) to confirm neither emits ExecStartPost.
+        // ExecStartPost — the chmod-after-bind shim is rejected by the
+        // design because of the TOCTOU window between bind() returning
+        // and chmod() landing during which a same-group attacker could
+        // connect. UMask= closes the window at vfs_mknod time. This
+        // test pins both pool kinds (sccache and ccache-only) to
+        // confirm neither emits ExecStartPost.
         for kinds in [
             vec![CacheKind::Sccache],
             vec![CacheKind::Ccache],
@@ -3721,7 +3716,7 @@ mod tests {
             assert!(
                 !body.contains("ExecStartPost"),
                 "cache drop-in must NOT emit ExecStartPost — \
-                 #199 is solved at the template level via UMask=0007. \
+                 SEC-04 step 2 is solved at the template level via UMask=0007. \
                  got body:\n{body}"
             );
         }
@@ -3926,8 +3921,8 @@ mod tests {
     fn render_nft_accepts_full_identifier_charset() {
         // The full IDENTIFIER_REGEX charset is `^[a-z]([a-z0-9-]*[a-z0-9])?$`.
         // Use a name that exercises all of `[a-z]` + `[0-9]` + `-`
-        // while staying within `NETNS_RUNNER_NAME_MAX_LEN` (#432: the
-        // generator now enforces the IFNAMSIZ-derived cap as
+        // while staying within `NETNS_RUNNER_NAME_MAX_LEN` (the
+        // generator enforces the IFNAMSIZ-derived cap as
         // defense-in-depth, so this test feeds a name that fits the
         // tighter netns cap rather than the looser
         // `RUNNER_NAME_MAX_LEN`). 7 chars covers `[a-z]` + `[0-9]` +
@@ -3998,7 +3993,7 @@ mod tests {
         );
     }
 
-    // --- #147: Service-interface typed accessors --------------------
+    // --- Service-interface typed accessors -------------------------
     //
     // The trait's `get_service_property_*` methods delegate to
     // `get_unit_property*` with a hardcoded `org.freedesktop.systemd1

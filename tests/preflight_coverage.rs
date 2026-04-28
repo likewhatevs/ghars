@@ -1,4 +1,4 @@
-//! preflight.rs integration tests (#174).
+//! preflight.rs integration tests.
 //!
 //! Drives the test-seam variants `preflight_os_with_path`,
 //! `preflight_root_with_status_path`, `preflight_ptrace_scope_with_path`,

@@ -1,4 +1,4 @@
-//! Property tests for #155 + #184: validators.rs and systemd::render_nft_rules.
+//! Property tests for validators.rs and systemd::render_nft_rules.
 //!
 //! Default 256 cases per proptest macro (the proptest crate's default —
 //! ProptestConfig::cases). When run with `PROPTEST_CASES=4096` (or the
@@ -31,10 +31,10 @@ use ghars::validators::{
 use ipnet::IpNet;
 use proptest::prelude::*;
 
-// --- #155 validate_runner_name ----------------------------------------
+// --- validate_runner_name ---------------------------------------------
 
 /// Build strings that satisfy `IDENTIFIER_REGEX = ^[a-z]([a-z0-9-]*[a-z0-9])?$`
-/// AND `validate_runner_name`'s tighter `RUNNER_NAME_MAX_LEN` cap (#427).
+/// AND `validate_runner_name`'s tighter `RUNNER_NAME_MAX_LEN` cap.
 ///
 /// Construction:
 /// - First char ∈ `[a-z]`.
@@ -76,7 +76,7 @@ proptest! {
     #[test]
     fn runner_name_accepts_arbitrary_valid_identifier(name in valid_runner_name()) {
         // Length constraint: generator caps at 1 + (RUNNER_NAME_MAX_LEN-2) + 1
-        // = RUNNER_NAME_MAX_LEN per the runner-name cap (#427).
+        // = RUNNER_NAME_MAX_LEN per the runner-name cap.
         prop_assert!(name.len() >= 1 && name.len() <= RUNNER_NAME_MAX_LEN);
         validate_runner_name(&name).map_err(|e| {
             TestCaseError::fail(format!(
@@ -130,7 +130,7 @@ proptest! {
     }
 }
 
-// --- #155 validate_url ------------------------------------------------
+// --- validate_url -----------------------------------------------------
 
 /// Build well-formed `https://github.com/OWNER[/REPO][.git][/]` URLs.
 /// OWNER and REPO each: first char ∈ `[A-Za-z0-9]`, rest ∈
@@ -214,7 +214,7 @@ proptest! {
     }
 }
 
-// --- #155 validate_memory_max ---------------------------------------------
+// --- validate_memory_max --------------------------------------------------
 
 /// Build `MemoryMax=` values the validator must accept:
 /// - empty string,
@@ -277,7 +277,7 @@ proptest! {
     }
 }
 
-// --- #184 render_nft_rules property tests ---------------------------------
+// --- render_nft_rules property tests --------------------------------------
 
 /// Build identifier-shape strings bounded to
 /// `NETNS_RUNNER_NAME_MAX_LEN`. The nft generator (and the
@@ -518,7 +518,7 @@ proptest! {
         );
     }
 
-    /// #446 integration-layer pin: every name `valid_netns_runner_name`
+    /// Integration-layer pin: every name `valid_netns_runner_name`
     /// emits MUST produce a `host_veth_name` that fits the kernel's
     /// usable IFNAMSIZ window (`< IFNAMSIZ` bytes — the kernel reserves
     /// the trailing NUL). This is the public-API mirror of the in-tree
@@ -539,7 +539,7 @@ proptest! {
         );
     }
 
-    /// #446 integration-layer pin: same property as
+    /// Integration-layer pin: same property as
     /// `host_veth_name_fits_ifnamsiz` but for the runner-side veth.
     /// Both ends must fit because iproute2 / netlink rejects either
     /// with EINVAL when the byte length hits the kernel cap.
@@ -554,7 +554,7 @@ proptest! {
     }
 }
 
-/// #446 negative pin: an instance name beyond
+/// Negative pin: an instance name beyond
 /// `NETNS_RUNNER_NAME_MAX_LEN` MUST produce a veth name that overflows
 /// the IFNAMSIZ usable window. Documents the cap as the
 /// boundary, not just an internal constant.

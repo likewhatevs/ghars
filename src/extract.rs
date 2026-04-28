@@ -30,7 +30,7 @@ use std::time::Duration;
 
 const CHUNK_SIZE: usize = 65_536;
 
-/// #666: hard cap on bytes streamed by `http_download`.
+/// Hard cap on bytes streamed by `http_download`.
 ///
 /// The actions/runner Linux tarball runs ~250 MiB (x64 + arm64 weigh in
 /// at ~245 MB and ~210 MB respectively, observed at v2.334.0). 512 MiB
@@ -57,7 +57,7 @@ const MAX_TARBALL_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
 /// per-request time. Body is written in 64KiB chunks; nothing is held
 /// fully in memory.
 ///
-/// #666: enforces a `MAX_TARBALL_DOWNLOAD_BYTES` cap on cumulative bytes
+/// Enforces a `MAX_TARBALL_DOWNLOAD_BYTES` cap on cumulative bytes
 /// streamed. The cap defends against compression-bomb responses (reqwest's
 /// `gzip` feature auto-decompresses on the read path; an attacker who
 /// can inject HTTP responses can decompress a small payload to terabytes
@@ -75,7 +75,7 @@ pub fn http_download(url: &str, dest: &Utf8Path, timeout: Duration) -> Result<()
     http_download_with_cap(url, dest, timeout, MAX_TARBALL_DOWNLOAD_BYTES)
 }
 
-/// #680: production wraps this with `MAX_TARBALL_DOWNLOAD_BYTES`.
+/// Production wraps this with `MAX_TARBALL_DOWNLOAD_BYTES`.
 /// Tests can call this directly with a small `max_bytes` (e.g. 64) to
 /// exercise the cap-firing branch + unlink-on-overflow cleanup
 /// without serving a 512 MiB body.
@@ -149,7 +149,7 @@ fn http_download_with_cap(
         if n == 0 {
             break;
         }
-        // #666: post-decompression cumulative byte counter. Saturating
+        // post-decompression cumulative byte counter. Saturating
         // add keeps the comparison sound in the impossible 2^64-byte
         // edge case; the cap fires far below that.
         total = total.saturating_add(n as u64);
@@ -266,13 +266,11 @@ pub fn download_and_verify(
 pub enum FilterDecision {
     /// Member is safe to extract; the caller may proceed with `unpack_in`.
     ///
-    /// Mode masking (#141): the tar crate's `unpack_in` honors the
+    /// Mode masking: the tar crate's `unpack_in` honors the
     /// header's mode minus setuid/setgid/sticky by default — see
     /// `tar-rs/src/entry.rs:unpack_unprivileged` (the `set_preserve_mtime`
     /// pathway), which is what ghars uses (`set_preserve_ownerships`
-    /// stays unset). Computing a separate `masked_mode` here was
-    /// unused: nothing stamped it back onto the header before unpack.
-    /// Removed in favor of trusting the tar crate's defaults.
+    /// stays unset).
     Allow,
     /// Member must be skipped (PAX/GNU extension headers). Not an error;
     /// the tar crate handles these internally on the next iteration but
@@ -369,7 +367,7 @@ fn is_safe_relative_path(bytes: &[u8]) -> bool {
 /// [`safe_member_filter`] to every entry and refusing to extract entries
 /// that fail the filter.
 ///
-/// Defense in depth (B2 review #171 — symlink-after-extract attack):
+/// Defense in depth against the symlink-after-extract attack:
 ///
 /// 1. [`safe_member_filter`] rejects any entry whose member path or
 ///    link target is absolute or contains `..`. This is the primary
@@ -534,7 +532,7 @@ pub fn verify_local_tarball(path: &Utf8Path) -> Result<()> {
 /// Install a runner tarball into `runner_home/bin.<version>/` via the
 /// extract-as-root + atomic-rename pattern (SEC-09 / SEC-33).
 ///
-/// **Concurrency contract (#442):** MUST be called under `apply.lock`
+/// **Concurrency contract:** MUST be called under `apply.lock`
 /// (acquired in `apply::apply`). `apply::gc_stale_staging_dirs`
 /// assumes exclusive access to `<state_dir>/.staging/` under that
 /// lock — concurrent callers would race the GC's age-and-PID gates
@@ -679,7 +677,7 @@ pub fn swap_bin_symlink(runner_home: &Utf8Path, version: &str) -> Result<()> {
 /// The move is the design's "atomic rename" step from Part 17 SEC-09. Two
 /// concerns this function handles:
 ///
-/// 1. **EXDEV on cross-filesystem rename (B2 review #179).** When
+/// 1. **EXDEV on cross-filesystem rename.** When
 ///    `<state_dir>/.staging/` and `<runner_home>/bin.<version>/` are on
 ///    different filesystems (operator mounts per-runner home on a separate
 ///    disk), `rename(2)` returns `EXDEV`. We detect that and fall back to
@@ -688,7 +686,7 @@ pub fn swap_bin_symlink(runner_home: &Utf8Path, version: &str) -> Result<()> {
 ///    available alternative is to forbid cross-FS layouts at preflight,
 ///    which the design does not require.
 ///
-/// 2. **Atomicity gap on upgrade-in-place (#142 / design Part 17 SEC-09).**
+/// 2. **Atomicity gap on upgrade-in-place (design Part 17 SEC-09).**
 ///    When `final_dir` already exists, we `remove_dir_all` it and then
 ///    `rename` staging onto it. Between those two calls there is a window
 ///    where `final_dir` does not exist. The fully-atomic alternative is
@@ -851,14 +849,11 @@ mod tests {
 
     #[test]
     fn filter_accepts_setuid_setgid_sticky_modes() {
-        // 0o7777 = setuid + setgid + sticky + rwxrwxrwx. Pre-#141 the
-        // filter computed `mode & 0o777 & !0o7000` and returned it via
-        // `Allow.masked_mode`; nothing wrote that back onto the header
-        // before `unpack_in`, so the masking was a no-op. The tar
-        // crate's unprivileged unpack already strips setuid/setgid via
+        // 0o7777 = setuid + setgid + sticky + rwxrwxrwx. The tar crate's
+        // unprivileged unpack strips setuid/setgid via
         // `set_preserve_permissions(false)`-style defaults — verified
         // against tar-rs/src/entry.rs `unpack_unprivileged`. The filter
-        // is now authoritative for path/typeflag rejection only.
+        // is authoritative for path/typeflag rejection only.
         let gz = build_tar_gz(&[(b"runsvc.sh", tar::EntryType::Regular, b"", 0o7777, b"")]);
         let decision = first_entry_filter(&gz).unwrap();
         assert_eq!(decision, FilterDecision::Allow);
@@ -1184,7 +1179,7 @@ mod tests {
         verify_local_tarball(&path).unwrap();
     }
 
-    /// #438: TOCTOU parity test between `validators::validate_runner_tarball`
+    /// TOCTOU parity test between `validators::validate_runner_tarball`
     /// (load-time gate) and `verify_local_tarball` (apply-time gate).
     /// The two checks must form a closed pair: a path that passes the
     /// load-time check but is then mutated to a symlink before
@@ -1217,7 +1212,7 @@ mod tests {
         let target = tmp.path().join("real.tar.gz");
         let path = Utf8PathBuf::from_path_buf(tmp.path().join("tarball.tar.gz")).unwrap();
         // Step 1: regular file at the validated path. Bytes start
-        // with the gzip magic (1f 8b) so the validator's #439 magic
+        // with the gzip magic (1f 8b) so the validator's magic
         // check accepts the planted file. The remaining bytes are
         // not a valid deflate stream — but the validator only reads
         // the first 2 bytes, so the rest is irrelevant for this
@@ -1257,7 +1252,7 @@ mod tests {
         );
     }
 
-    /// #448 unlink-mutation TOCTOU: a path that passes the load-time
+    /// Unlink-mutation TOCTOU: a path that passes the load-time
     /// gate (regular file) but is then unlinked before
     /// `install_runner_binary` runs MUST be rejected by the apply-time
     /// gate (`verify_local_tarball`). Symmetric with the symlink-swap
@@ -1277,7 +1272,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = Utf8PathBuf::from_path_buf(tmp.path().join("tarball.tar.gz")).unwrap();
         // Step 1: regular file at the validated path.
-        // #439: bytes start with gzip magic 1f 8b so validate_runner_tarball accepts.
+        // bytes start with gzip magic 1f 8b so validate_runner_tarball accepts.
         fs::write(
             path.as_std_path(),
             b"\x1f\x8bfake but valid tarball bytes\n",
@@ -1306,7 +1301,7 @@ mod tests {
         );
     }
 
-    /// #448 directory-mutation TOCTOU: a path that passes the
+    /// Directory-mutation TOCTOU: a path that passes the
     /// load-time gate (regular file) but is then replaced with a
     /// directory at the same path before `install_runner_binary` runs
     /// MUST be rejected by the apply-time gate. Symmetric with the
@@ -1324,7 +1319,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = Utf8PathBuf::from_path_buf(tmp.path().join("tarball.tar.gz")).unwrap();
         // Step 1: regular file at the validated path.
-        // #439: bytes start with gzip magic 1f 8b so validate_runner_tarball accepts.
+        // bytes start with gzip magic 1f 8b so validate_runner_tarball accepts.
         fs::write(
             path.as_std_path(),
             b"\x1f\x8bfake but valid tarball bytes\n",
@@ -1361,7 +1356,7 @@ mod tests {
         );
     }
 
-    /// #448: extend the TOCTOU parity coverage to a table-driven
+    /// Extend the TOCTOU parity coverage to a table-driven
     /// equivalence proof. For every file-shape the operator can
     /// hand the tool, both gates must agree (accept or reject in
     /// lockstep). The `validate_and_verify_form_closed_*` test
@@ -1393,7 +1388,7 @@ mod tests {
                 expect_accept: true,
                 plant: Box::new(|root| {
                     let p = Utf8PathBuf::from_path_buf(root.join("regular.tar.gz")).unwrap();
-                    // #439: gzip magic prefix so validate_runner_tarball accepts.
+                    // gzip magic prefix so validate_runner_tarball accepts.
                     fs::write(&p, b"\x1f\x8bfake but valid bytes\n").unwrap();
                     p
                 }),
@@ -1637,7 +1632,7 @@ mod tests {
         );
     }
 
-    // -- #171 post-extract canonical-path defense ------------------------
+    // -- Post-extract canonical-path defense ----------------------------
 
     #[test]
     fn verify_extracted_inside_dest_accepts_normal_member() {
@@ -1690,7 +1685,7 @@ mod tests {
         );
     }
 
-    // -- #179 EXDEV cross-filesystem fallback ---------------------------
+    // -- EXDEV cross-filesystem fallback --------------------------------
 
     #[test]
     fn copy_dir_recursive_copies_files_dirs_and_symlinks() {
@@ -1726,14 +1721,13 @@ mod tests {
         assert!(!is_cross_device_link(&eacces));
     }
 
-    // -- #157 Python parity: setuid stripped on disk --------------------
+    // -- Python parity: setuid stripped on disk -------------------------
 
     #[test]
     fn extract_tarball_strips_setuid_on_disk_end_to_end() {
         // Python parity: install_gha_runner.py test_extract_tarball_strips_setuid.
-        // After #141 the filter no longer computes a masked mode (the
-        // tar crate's `unpack_in` strips setuid/setgid for unprivileged
-        // unpack by default). This test is the load-bearing assertion:
+        // The tar crate's `unpack_in` strips setuid/setgid for unprivileged
+        // unpack by default. This test is the load-bearing assertion:
         // the EXTRACTED FILE on disk has zero setuid + setgid bits.
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
@@ -1762,7 +1756,7 @@ mod tests {
         );
     }
 
-    // -- #158 race tolerance --------------------------------------------
+    // -- Race tolerance -------------------------------------------------
 
     #[test]
     fn install_runner_binary_replaces_stale_staging_dir_from_prior_crash() {
@@ -1865,7 +1859,7 @@ mod tests {
         assert_eq!(leftover, 0, "staging should be drained after both installs");
     }
 
-    // -- #159 http_download timeout -------------------------------------
+    // -- http_download timeout ------------------------------------------
 
     #[test]
     fn http_download_returns_err_within_timeout_on_slow_response() {
@@ -1915,7 +1909,7 @@ mod tests {
         m.assert();
     }
 
-    /// #666 streaming cap pin: `http_download` rejects responses whose
+    /// Streaming cap pin: `http_download` rejects responses whose
     /// post-decompression body exceeds `MAX_TARBALL_DOWNLOAD_BYTES`.
     /// Constructing a 512+ MiB mock body in CI would balloon test
     /// runtime and memory, so this test exercises the boundary by
@@ -1951,7 +1945,7 @@ mod tests {
         );
     }
 
-    /// #666 streaming cap fires + cleanup pin: drives a body just over
+    /// Streaming cap fires + cleanup pin: drives a body just over
     /// a small test-only threshold (12 KiB), but to exercise the
     /// production code path we serve a body just over the production
     /// cap is impractical in CI. Instead this test pins the smaller
@@ -1985,7 +1979,7 @@ mod tests {
         m.assert();
     }
 
-    /// #680 happy-path pin via cap-injecting helper: a body smaller
+    /// Happy-path pin via cap-injecting helper: a body smaller
     /// than the test cap downloads successfully, dest file persists
     /// with the expected bytes. Symmetric with
     /// `http_download_succeeds_under_cap` but exercises the
@@ -2010,23 +2004,23 @@ mod tests {
         m.assert();
     }
 
-    /// #680 over-cap rejection + unlink pin: a body larger than the
+    /// Over-cap rejection + unlink pin: a body larger than the
     /// test cap (128 bytes vs cap of 64) triggers the cap-firing
     /// branch in `http_download_with_cap`. Asserts (a) the call
     /// returns Err with the "exceeds … post-decompression" diagnostic,
     /// AND (b) the destination file does NOT exist post-call —
     /// exercising the `drop(out); fs::remove_file(dest)` cleanup
-    /// path which had zero runtime coverage pre-#680. This is the
-    /// load-bearing security pin: a half-written file surviving a
-    /// cap-fire could be promoted by a later SHA256 check. Also
-    /// pins format prefix ("download failed:"), URL presence,
-    /// "post-decompression" qualifier (parity with github.rs Layer 2
-    /// framing), network-path triage hint, MAX_TARBALL_DOWNLOAD_BYTES
-    /// escape hatch, and anti-doubling invariant (single occurrence
-    /// of "response body exceeds"). #727 softens the alarming
-    /// "compression bomb" framing to neutral "larger than expected"
-    /// language; #724 adds human-readable byte sizes alongside the
-    /// raw cap value so operators don't have to mentally divide.
+    /// path. This is the load-bearing security pin: a half-written
+    /// file surviving a cap-fire could be promoted by a later SHA256
+    /// check. Also pins format prefix ("download failed:"), URL
+    /// presence, "post-decompression" qualifier (parity with
+    /// github.rs Layer 2 framing), network-path triage hint,
+    /// MAX_TARBALL_DOWNLOAD_BYTES escape hatch, and anti-doubling
+    /// invariant (single occurrence of "response body exceeds"). The
+    /// framing uses neutral "larger than expected" language rather
+    /// than alarming "compression bomb" wording, and includes
+    /// human-readable byte sizes alongside the raw cap value so
+    /// operators don't have to mentally divide.
     #[test]
     fn http_download_with_cap_rejects_over_cap_and_unlinks_dest() {
         let mut server = mockito::Server::new();
@@ -2064,22 +2058,22 @@ mod tests {
                     msg.contains("post-decompression"),
                     "msg must surface 'post-decompression' framing; got: {msg}"
                 );
-                // #727 — alarming "compression bomb" framing dropped
-                // in favor of neutral "larger than expected" wording
+                // Alarming "compression bomb" framing is dropped in
+                // favor of neutral "larger than expected" wording
                 // that names both threat-model and legitimate-payload
-                // possibilities. Pin the new wording so a regression
+                // possibilities. Pin the wording so a regression
                 // back to the alarming framing surfaces here.
                 assert!(
                     msg.contains("larger than expected"),
-                    "msg must surface neutral 'larger than expected' framing per #727; got: {msg}"
+                    "msg must surface neutral 'larger than expected' framing; got: {msg}"
                 );
                 assert!(
                     msg.contains("deliberately-crafted") && msg.contains("legitimately large"),
-                    "msg must name both threat-model + legitimate-payload possibilities per #727; got: {msg}"
+                    "msg must name both threat-model + legitimate-payload possibilities; got: {msg}"
                 );
                 assert!(
                     !msg.contains("compression bomb"),
-                    "msg MUST NOT surface alarming 'compression bomb' framing per #727; got: {msg}"
+                    "msg MUST NOT surface alarming 'compression bomb' framing; got: {msg}"
                 );
                 // Pin operator hint parity with github.rs cap-exceeded
                 // hint so a post-cap operator gets the same
@@ -2116,18 +2110,17 @@ mod tests {
                     msg.contains("64 B (64 bytes)"),
                     "msg must include human-readable byte size '64 B (64 bytes)'; got: {msg}"
                 );
-                // Cap-hint suffix removed: the `(current limit: ...)`
-                // trailing parenthetical is dropped (parity with
-                // github.rs Layer 1 / Layer 2). The cap value already
-                // appears in the body (`exceeds 64 B (64 bytes)
-                // post-decompression`); the load-bearing breadcrumb
-                // is the symbol-name reference
+                // No `(current limit: ...)` trailing parenthetical
+                // (parity with github.rs Layer 1 / Layer 2). The cap
+                // value already appears in the body (`exceeds 64 B
+                // (64 bytes) post-decompression`); the load-bearing
+                // breadcrumb is the symbol-name reference
                 // (`MAX_TARBALL_DOWNLOAD_BYTES`, pinned above).
                 // Negative pin guards against regression that
-                // re-introduces the duplicated suffix.
+                // re-introduces a duplicated suffix.
                 assert!(
                     !msg.contains("current limit:"),
-                    "msg MUST NOT surface 'current limit:' suffix (cap-hint suffix removed); got: {msg}"
+                    "msg MUST NOT surface 'current limit:' suffix; got: {msg}"
                 );
             }
             other => panic!("expected GharsError::Tarball, got {other:?}"),

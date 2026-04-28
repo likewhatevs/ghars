@@ -1,4 +1,4 @@
-//! Plan engine end-to-end tests with full TOML fixtures (#209).
+//! Plan engine end-to-end tests with full TOML fixtures.
 //!
 //! Each test loads a realistic `ghars.toml` fixture (parsed via
 //! `toml::from_str::<Config>`), runs `plan_from` against

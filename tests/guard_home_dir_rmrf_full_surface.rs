@@ -1,4 +1,4 @@
-//! Full guard surface for `apply::guard_home_dir_rmrf` (#211).
+//! Full guard surface for `apply::guard_home_dir_rmrf`.
 //!
 //! The guard has 5 documented failure modes (see apply.rs:1568-1583):
 //! 1. home_dir == "/"

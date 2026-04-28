@@ -1,4 +1,4 @@
-//! Count expansion edge cases for `plan::expand_counts` (#206).
+//! Count expansion edge cases for `plan::expand_counts`.
 //!
 //! Existing in-tree tests (in `plan::tests`) cover:
 //! - basic count = 3 → ci-1, ci-2, ci-3
@@ -232,12 +232,12 @@ fn count_block_with_zero_count_skipped_alongside_others() {
 
 #[test]
 fn count_block_prefix_length_at_boundary_for_max_count_suffix() {
-    // RUNNER_NAME_MAX_LEN = 25 (#427) is the binding cap, tighter than
+    // RUNNER_NAME_MAX_LEN = 25 is the binding cap, tighter than
     // IDENTIFIER_MAX_LEN = 64. Longest suffix from MAX_COUNT = 1024 is
     // `-1024` (5 chars). Largest accepted prefix is 25 - 5 = 20 chars.
     // 21-char prefix + `-1024` = 26 chars → rejects via the runner-name
-    // layer (#427 layered on top of validate_identifier in
-    // `validate_generated_identifier`).
+    // length cap which sits on top of validate_identifier in
+    // `validate_generated_identifier`.
     let max_safe_prefix = "a".repeat(20);
     expand_counts(&cfg(vec![count_runner(&max_safe_prefix, MAX_COUNT)]))
         .expect("20-char prefix + -1024 fits within RUNNER_NAME_MAX_LEN");
@@ -248,7 +248,7 @@ fn count_block_prefix_length_at_boundary_for_max_count_suffix() {
     let msg = format!("{err}");
     assert!(
         msg.contains("runner-name validation"),
-        "msg must come from runner-name layer (#427); got: {msg}"
+        "msg must come from runner-name layer; got: {msg}"
     );
 }
 

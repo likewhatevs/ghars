@@ -52,7 +52,7 @@ fn mk_file_with_mode(dir: &tempfile::TempDir, name: &str, mode: u32) -> Utf8Path
 /// path refuses non-root callers (extract.rs `require_root_for_install`)
 /// to enforce root-owned-end-to-end. Integration tests build the lib
 /// without `cfg(test)`, so the gate fires; we skip when not root
-/// rather than fail (#235).
+/// rather than fail.
 fn running_as_root() -> bool {
     fs::metadata("/proc/self")
         .map(|m| m.uid() == 0)

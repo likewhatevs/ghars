@@ -30,8 +30,8 @@
 //! 429 deepens the rate-limit window and wastes ghars's per-IP quota,
 //! so the manual re-run path is strictly safer for v0.1. Adding a
 //! `Retry-After`-aware retry layer (with backoff + jitter + cap) is
-//! tracked as a v0.2 follow-up alongside #145 (custom hyper-connector
-//! injection for per-deployment proxy CA).
+//! tracked as a v0.2 follow-up alongside the custom hyper-connector
+//! injection work for per-deployment proxy CA.
 //!
 //! ## Residual exposure (v0.1)
 //!
@@ -59,8 +59,8 @@
 //! absence of a cap means v0.1 trusts the upstream not to misbehave.
 //! Closing this requires injecting a custom `tower::Layer` between
 //! octocrab's service stack and hyper to bound the collected body —
-//! the same hook point as #145 (custom hyper-connector for
-//! per-deployment proxy CA), so the mitigation is tracked there.
+//! the same hook point as the proxy-CA work, so the mitigation is
+//! tracked there.
 
 use std::io::{IsTerminal, Read};
 use std::os::unix::fs::MetadataExt;
@@ -80,7 +80,7 @@ use crate::github::{self, Scope};
 /// `expires_at` to `now + 1h - 30s` for any source that does not
 /// supply an authoritative expiry (interactive paste, token file).
 ///
-/// # Memory hygiene (#245)
+/// # Memory hygiene
 ///
 /// `value` is zeroized on `Drop` (including during panic unwind) so a
 /// panic between mint and consume cannot leave plaintext token bytes on
@@ -98,12 +98,12 @@ use crate::github::{self, Scope};
 /// `Clone` is intentionally NOT derived: zeroize-on-drop hardens one
 /// end of the token's lifetime, but `.clone()` would silently widen
 /// the attack surface by spawning unscrubbed copies in caller frames.
-/// No production caller clones a `RegistrationToken` today (verified
-/// at the time of #245 via grep); test fixtures that need duplicates
-/// construct them via `RegistrationToken { ... }` literals so the
-/// typing surface stays consistent with the production "consume by
-/// reference" pattern at `apply::execute_remove_runner` (passing
-/// `&token.value` into `ConfigShellCtx`).
+/// No production caller clones a `RegistrationToken` today (verified via grep);
+/// test fixtures that need duplicates construct them via
+/// `RegistrationToken { ... }` literals so the typing surface stays
+/// consistent with the production "consume by reference" pattern at
+/// `apply::execute_remove_runner` (passing `&token.value` into
+/// `ConfigShellCtx`).
 ///
 /// # Display / debug policy
 ///
@@ -133,7 +133,7 @@ pub struct RegistrationToken {
     pub source: String,
 }
 
-// #245: pin the zeroize-on-drop wiring at compile time. If a future
+// Pin the zeroize-on-drop wiring at compile time. If a future
 // edit drops the `ZeroizeOnDrop` derive (or replaces `value: String`
 // with a non-zeroizable type), this `const _` block fails to compile
 // here rather than silently regressing the memory-hygiene contract.
@@ -314,7 +314,7 @@ impl TokenSource for GithubAppToken {
 /// fine-grained). ghars is token-type-agnostic — octocrab forwards
 /// whatever string the operator supplies as a Bearer credential and
 /// GitHub validates server-side. The schema enforces XOR
-/// (`token_env` xor `token_file`) at construction time (#15).
+/// (`token_env` xor `token_file`) at construction time.
 #[derive(Debug)]
 pub struct PatToken {
     name: String,
@@ -530,8 +530,8 @@ impl InteractiveToken {
     }
 }
 
-/// Convert a raw operator-pasted token into a [`RegistrationToken`]
-/// (#160 helper). Pure logic split out from `InteractiveToken::prompt`
+/// Convert a raw operator-pasted token into a [`RegistrationToken`].
+/// Pure logic split out from `InteractiveToken::prompt`
 /// so tests can drive every code path without an attached TTY:
 ///   1. F39 trailing CR/LF strip — `trim_end_matches(['\r', '\n'])`,
 ///      NEVER `.trim()` (preserves embedded whitespace).
@@ -585,7 +585,7 @@ fn validate_interactive_token_shape(token: &str, name: &str) -> Result<()> {
             "re-copy the token; registration tokens are short opaque strings".into(),
         ));
     }
-    // #273: emit a CLASS label rather than echoing the offending char
+    // Emit a CLASS label rather than echoing the offending char
     // itself so even a one-character partial leak of the operator's
     // pasted bytes is impossible. NUL is checked first because '\0'
     // is also `is_control()` — without the explicit pre-check the
@@ -740,7 +740,7 @@ async fn call_octocrab_token(
 }
 
 /// Convert a successful octocrab `SelfHostedRunnerToken` response into
-/// a ghars [`RegistrationToken`] (#161 helper). Pure logic split out
+/// a ghars [`RegistrationToken`]. Pure logic split out
 /// from `GithubAppToken::mint` and `PatToken::mint` so tests can drive
 /// the conversion with synthetic responses without an octocrab client
 /// or live network.
@@ -765,7 +765,7 @@ fn registration_token_from_api(
 }
 
 fn octocrab_to_auth(name: &str, op: &str, err: &octocrab::Error) -> GharsError {
-    // #307 / #365: pick the actionable hint by error class so the
+    // Pick the actionable hint by error class so the
     // operator sees the right diagnosis — octocrab::Error is
     // `#[non_exhaustive]` (see octocrab-0.42.1/src/error.rs:25), the
     // catch-all keeps the build healthy across upstream variant
@@ -961,7 +961,7 @@ mod tests {
     /// might receive from a credential file. The contract is:
     /// `trim_end_matches(['\r', '\n'])` — NOT `.trim()`. Embedded
     /// whitespace and any non-`\r\n` characters anywhere in the string
-    /// must survive verbatim (#163).
+    /// must survive verbatim.
     #[test]
     fn strip_trailing_newlines_handles_edge_cases() {
         // Empty input is a fixed point.
@@ -1048,7 +1048,7 @@ mod tests {
     fn validate_interactive_token_shape_rejects_nul() {
         let err = validate_interactive_token_shape("AAAAAAAAAAAAAAAA\0AAA", "x").unwrap_err();
         let msg = format!("{err}");
-        // #273: NUL takes the explicit `'\0'` branch BEFORE
+        // NUL takes the explicit `'\0'` branch BEFORE
         // is_control() (which it is also a member of). Pin that
         // the label is "NUL byte" — NOT "control character" — so a
         // future regression that drops the NUL pre-check surfaces
@@ -1064,7 +1064,7 @@ mod tests {
         );
     }
 
-    /// #273: the third class label — control characters that aren't
+    /// The third class label — control characters that aren't
     /// NUL or whitespace (e.g. `\x07` BEL, `\x1b` ESC) must take the
     /// generic `"control character"` branch.
     #[test]
@@ -1132,7 +1132,7 @@ mod tests {
         .unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("both"), "{msg}");
-        // #354: hint must substitute the actual auth name, not leave
+        // Hint must substitute the actual auth name, not leave
         // a literal `[auth.NAME]` placeholder. PatToken::new was
         // called with `"p"` so the rendered hint must read
         // `[auth.p]`. Pinned because the placeholder version was
@@ -1155,7 +1155,7 @@ mod tests {
         assert!(msg.contains("XOR"), "{msg}");
     }
 
-    /// #614: pin the EXACT (Some, Some) rejection message — `both
+    /// Pin the EXACT (Some, Some) rejection message — `both
     /// token_env and token_file are set; pick exactly one`. Existing
     /// `pat_token_rejects_both_env_and_file` tests substring `"both"`
     /// + the [auth.NAME] hint substitution; this test pins the full
@@ -1177,7 +1177,7 @@ mod tests {
         );
     }
 
-    /// #614: pin the EXACT (None, None) rejection message — `PAT
+    /// Pin the EXACT (None, None) rejection message — `PAT
     /// requires token_env XOR token_file; both are unset`. Existing
     /// `pat_token_rejects_neither_env_nor_file` tests only the `XOR`
     /// substring; this test pins the full message so a future
@@ -1192,7 +1192,7 @@ mod tests {
         );
     }
 
-    /// #614: pin (Some, None) — env-only path — as the canonical
+    /// Pin (Some, None) — env-only path — as the canonical
     /// XOR-OK shape. Happy-path coverage already exists in
     /// `pat_token_accepts_env_via_external_setter` (which depends on
     /// the runtime PATH env var); this test isolates the input
@@ -1222,7 +1222,7 @@ mod tests {
         // we do not assert post-state of `var` here.
     }
 
-    /// #614: (None, Some) — token_file path — Ok arm. Cannot be
+    /// (None, Some) — token_file path — Ok arm. Cannot be
     /// exercised under unit tests because `read_root_owned_0600`
     /// requires the file to be `mode 0600 owner=root`, and the test
     /// runner is unprivileged. Existing tests pin the rejection
@@ -1413,7 +1413,7 @@ mod tests {
         }
     }
 
-    /// SEC-06 rotation contract (#161): `TokenFileToken::read` MUST
+    /// SEC-06 rotation contract: `TokenFileToken::read` MUST
     /// re-read the file on every mint so the token rotates without a
     /// ghars restart. A mutation that caches the bytes in `self`
     /// during construction would silently break rotation. This test
@@ -1487,7 +1487,7 @@ mod tests {
         assert_eq!(t.source, "s");
     }
 
-    // ---- #160: InteractiveToken pure-logic helper ---------------------
+    // ---- InteractiveToken pure-logic helper ---------------------------
 
     #[test]
     fn assemble_interactive_token_strips_trailing_newlines_and_validates_shape() {
@@ -1538,9 +1538,8 @@ mod tests {
     #[test]
     fn assemble_interactive_token_rejects_embedded_whitespace() {
         // 40-char token with embedded space — shape validator finds
-        // the offending char in chars().find loop. Per #273 the
-        // error reports the CLASS ("whitespace") rather than echoing
-        // the byte itself.
+        // the offending char in chars().find loop. The error reports
+        // the CLASS ("whitespace") rather than echoing the byte itself.
         let raw = format!("{}AAA AA\n", "A".repeat(34));
         let err = assemble_interactive_token("ifc", &raw).unwrap_err();
         let msg = format!("{err}");
@@ -1549,9 +1548,9 @@ mod tests {
 
     #[test]
     fn assemble_interactive_token_rejects_embedded_nul() {
-        // NUL inside the body — same path as whitespace. Per #273
-        // the error reports "forbidden NUL byte" rather than echoing
-        // the literal NUL.
+        // NUL inside the body — same path as whitespace. The error
+        // reports "forbidden NUL byte" rather than echoing the
+        // literal NUL.
         let raw = format!("{}A\0AAAA\n", "A".repeat(34));
         let err = assemble_interactive_token("ifc", &raw).unwrap_err();
         let msg = format!("{err}");
@@ -1573,7 +1572,7 @@ mod tests {
         assert_eq!(tok.source, "interactive:stdin:buckos-pat");
     }
 
-    // ---- #161: registration_token_from_api conversion -----------------
+    // ---- registration_token_from_api conversion -----------------------
 
     /// Build a synthetic `SelfHostedRunnerToken` via serde_json since
     /// the upstream struct is `#[non_exhaustive]` (not constructible
@@ -1619,7 +1618,7 @@ mod tests {
         assert_eq!(rt.expires_at.timezone(), Utc);
     }
 
-    // ---- #364: octocrab_to_auth class-label hints via mockito --------
+    // ---- octocrab_to_auth class-label hints via mockito ---------------
     //
     // octocrab::Error variants carry `snafu::Backtrace` fields that are
     // not constructible without a snafu dev-dep, AND the variants are
@@ -1631,7 +1630,7 @@ mod tests {
     // `octocrab_to_auth`. The hint text in the resulting GharsError
     // is the contract being pinned.
     //
-    // Each test maps one HTTP status family to its #307 / #365 hint:
+    // Each test maps one HTTP status family to its actionable hint:
     //   401/403 → "permissions / scopes"
     //   404     → "owner/repo / Actions enabled"
     //   429     → "rate limit"
@@ -1695,7 +1694,7 @@ mod tests {
         let msg = drive_repo_registration_error_through_pipeline(&client, "pat-401");
         assert!(
             msg.contains("permissions / scopes"),
-            "401 must surface the permissions/scopes hint (#307): {msg}"
+            "401 must surface the permissions/scopes hint: {msg}"
         );
         assert!(msg.contains("401"), "hint must name the status code: {msg}");
         mock.assert();
@@ -1736,7 +1735,7 @@ mod tests {
         // 404 for missing owner/repo, for an authenticated principal
         // that lacks visibility into the repo (private repo without
         // access), or when Actions is disabled at the repo level.
-        // Pin the dedicated arm (#365) to the operator-actionable
+        // Pin the dedicated 404 arm to the operator-actionable
         // hint so a future refactor that drops back to the catch-all
         // "see the API response above" generic text breaks here.
         let mut server = mockito::Server::new();
@@ -1757,11 +1756,11 @@ mod tests {
         let msg = drive_repo_registration_error_through_pipeline(&client, "pat-404");
         assert!(
             msg.contains("owner/repo"),
-            "404 must surface the owner/repo hint (#365): {msg}"
+            "404 must surface the owner/repo hint: {msg}"
         );
         assert!(
             msg.contains("Actions enabled"),
-            "404 hint must mention Actions-enabled gate (#365): {msg}"
+            "404 hint must mention Actions-enabled gate: {msg}"
         );
         assert!(msg.contains("404"), "hint must name the status code: {msg}");
         mock.assert();
@@ -1785,7 +1784,7 @@ mod tests {
         let msg = drive_repo_registration_error_through_pipeline(&client, "pat-429");
         assert!(
             msg.contains("rate limit"),
-            "429 must surface the rate-limit hint (#307): {msg}"
+            "429 must surface the rate-limit hint: {msg}"
         );
         assert!(msg.contains("429"), "hint must name the status code: {msg}");
         mock.assert();
@@ -1809,7 +1808,7 @@ mod tests {
         let msg = drive_repo_registration_error_through_pipeline(&client, "pat-503");
         assert!(
             msg.contains("upstream is degraded"),
-            "5xx must surface the upstream-degraded hint (#307): {msg}"
+            "5xx must surface the upstream-degraded hint: {msg}"
         );
         assert!(msg.contains("503"), "hint must name the status code: {msg}");
         mock.assert();
@@ -1822,7 +1821,7 @@ mod tests {
         // becomes unreachable; reqwest (octocrab's HTTP backend)
         // surfaces a connection error which octocrab wraps as either
         // Hyper or Service per its non-exhaustive variant set. Both
-        // route to the transport-failure branch in #307.
+        // route to the transport-failure branch in octocrab_to_auth.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind localhost listener");
         let addr = listener.local_addr().expect("read addr");
         drop(listener);
@@ -1832,11 +1831,11 @@ mod tests {
         let msg = drive_repo_registration_error_through_pipeline(&client, "pat-net");
         assert!(
             msg.contains("transport / network failure"),
-            "connection-refused must surface the transport-failure hint (#307): {msg}"
+            "connection-refused must surface the transport-failure hint: {msg}"
         );
     }
 
-    // ---- #610: octocrab::Error Display supply-chain pin ---------------
+    // ---- octocrab::Error Display supply-chain pin ---------------------
     //
     // `octocrab_to_auth` interpolates `{err}` (the upstream
     // `octocrab::Error::Display`) into the GharsError::Auth message
@@ -1894,7 +1893,7 @@ mod tests {
     // unmatched and `mock.assert()` would fail — so this test also
     // pins that the PAT does reach the wire.
 
-    /// #610 pin: octocrab::Error Display does not leak the
+    /// Pin: octocrab::Error Display does not leak the
     /// Authorization-bearer PAT, the request-body bytes, or the
     /// response-body bytes when rendered through `octocrab_to_auth`.
     /// Defense-in-depth supply-chain guard.
@@ -2013,7 +2012,7 @@ mod tests {
         mock.assert();
     }
 
-    // ---- #248: secret-leakage policy enforcement ----------------------
+    // ---- secret-leakage policy enforcement ----------------------------
     //
     // The error.rs module-level doc states GharsError Display output
     // MUST NOT contain token bytes / env values / PEM bytes. The tests
@@ -2064,8 +2063,8 @@ mod tests {
     }
 
     /// `validate_interactive_token_shape` MUST NOT echo any byte from
-    /// the rejected token — not even the offending one (#273).
-    /// Earlier policy allowed a one-character partial leak via
+    /// the rejected token — not even the offending one. Earlier
+    /// policy allowed a one-character partial leak via
     /// `{bad:?}`; the new contract emits a class label ("NUL byte",
     /// "whitespace", "control character") so even a single byte of
     /// operator entropy is impossible to recover from the error.
@@ -2105,9 +2104,9 @@ mod tests {
     fn assemble_interactive_token_failure_does_not_leak_pasted_bytes() {
         // Make the token too long so validation fails on length —
         // length-failure must reveal nothing about the pasted bytes.
-        // Per #273 the forbidden-char path also leaks no byte (it
-        // emits a class label only); this test pins the length
-        // branch independently.
+        // The forbidden-char path also leaks no byte (it emits a
+        // class label only); this test pins the length branch
+        // independently.
         let secret_bulk = "PRETEND_TOKEN_VERY_LONG_OPERATOR_PASTED_BYTES_";
         let oversize_token = secret_bulk.repeat(20);
         assert!(oversize_token.len() > INTERACTIVE_TOKEN_MAX_LEN);

@@ -160,7 +160,7 @@ fn plan_update_with_recreate_when_url_changes_via_annotations() {
 
     let mut actual = ActualState::default();
     // X-Ghars-Runner-Url annotation lives in the 00-ghars.conf
-    // drop-in body (#347) — classifier reads it from there, not
+    // drop-in body — classifier reads it from there, not
     // from on_disk_unit_text. Hand-craft a drop-in body with the
     // OLD url so the annotation-diff classifier flags `url` as a
     // recreate reason.
@@ -224,7 +224,7 @@ fn plan_update_conservative_recreate_on_hash_mismatch_alone() {
             _ => None,
         })
         .expect("CreateRunner expected from bootstrap plan");
-    // #289: bootstrap renders BEFORE install records the runsvc
+    // Bootstrap renders BEFORE install records the runsvc
     // digest, so its 00-ghars.conf body has no X-Ghars-Runsvc-Sha256
     // annotation. The plan path now treats missing annotation as a
     // recreate trigger ("runsvc_integrity"). To test the uncovered
@@ -670,7 +670,7 @@ fn plan_mixed_create_remove_noop_resolves_correctly() {
     assert_eq!(noops, 1);
 }
 
-/// #408 end-to-end: a cache pool drop-in directory with an
+/// End-to-end: a cache pool drop-in directory with an
 /// instance name longer than `CACHE_POOL_NAME_MAX_LEN` exists on
 /// disk (operator-installed, partial-apply crash, or downgrade
 /// from a future ghars). state::discover() now INCLUDES the

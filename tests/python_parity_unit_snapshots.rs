@@ -17,15 +17,15 @@
 //! - `dropin_00_identity`         — identity annotations only (always emitted).
 //! - `dropin_10_memory`           — `MemoryMax=` only.
 //! - `dropin_20_hardening_kvm_off`— operator-strict profile that revokes
-//!   `DeviceAllow=/dev/kvm rw` (#177 fix; exercises the F48 reset
+//!   `DeviceAllow=/dev/kvm rw` (exercises the F48 reset
 //!   exemption).
 //! - `dropin_20_hardening_strict` — every overridable directive flipped.
 //! - `dropin_30_cache_pool_ccache`/`_sccache`/`_unified` — three pool
 //!   shapes (Part 9b).
 //! - `dropin_40_network_netns`    — F79 fail-closed netns binding.
 //! - `dropin_50_numa`             — `AllowedCPUs=` + `AllowedMemoryNodes=`.
-//! - `dropin_60_proxy`            — proxy + CA-trust env (R2/#38).
-//! - `dropin_70_hooks`            — pre/post-job hooks (R3/#40).
+//! - `dropin_60_proxy`            — proxy + CA-trust env (R2).
+//! - `dropin_70_hooks`            — pre/post-job hooks (R3).
 //! - `dropin_80_lognamespace`     — `LogNamespace=ghars-NAME` (always).
 //! - `cache_drop_in_*`            — `ghars-cache@NAME.service.d/00-ghars.conf`
 //!   per-pool drop-ins (ccache-only, sccache-only, both).
@@ -135,7 +135,7 @@ fn dropin_10_memory_snapshot() {
 
 #[test]
 fn dropin_20_hardening_kvm_off_snapshot() {
-    // #177 regression: kvm=false MUST emit a bare `DeviceAllow=` reset
+    // Regression: kvm=false MUST emit a bare `DeviceAllow=` reset
     // (revoking the template's /dev/kvm grant). The snapshot pins the
     // exact rendered text so a future edit that re-regresses this
     // (e.g. flipping render_hardening to skip the line) fails the
@@ -422,8 +422,8 @@ fn nft_rules_full_snapshot() {
     // Exercises every PortSpec variant (Single/Set/Range), Proto::Both
     // (emits one rule per L4), and a comment carrying characters that
     // are inside the safe set (`[A-Za-z0-9 _.,:/-]`). Anything outside
-    // that set is now rejected by validate_egress_comment at config-
-    // load time and never reaches the renderer (SEC-30).
+    // that set is rejected by validate_egress_comment at config-load
+    // time and never reaches the renderer (SEC-30).
     let binding = EffectiveNetworkBinding {
         name: "buck2-isolated".into(),
         spec: NetworkSpec {

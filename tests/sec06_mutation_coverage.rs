@@ -1,5 +1,5 @@
 //! SEC-06 mutation-killing tests for `auth::read_root_owned_0600`'s
-//! `mode & 0o077` mask. (Task #162.)
+//! `mode & 0o077` mask.
 //!
 //! A cargo-mutants run of `auth.rs` will try mutations like:
 //! - `mode & 0o077` → `mode & 0o070` (drops other-bits coverage)
