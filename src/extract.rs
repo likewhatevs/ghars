@@ -117,8 +117,8 @@ fn http_download_with_cap(
         )
     })?;
 
-    if !resp.status().is_success() {
-        let status = resp.status();
+    let status = resp.status();
+    if !status.is_success() {
         return Err(GharsError::Tarball(
             format!("download failed ({status}): {url}"),
             None,
@@ -1089,6 +1089,69 @@ mod tests {
             other => panic!("expected Tarball, got {other:?}"),
         }
         m.assert();
+    }
+
+    /// Cross-surface parity pin: both `extract.rs::http_download` and
+    /// `github.rs::fetch_latest_release_at` must produce the same
+    /// `(404 Not Found)` parenthetical for an HTTP error status, so a
+    /// single log-scrape rule covers both download surfaces. Drives a
+    /// 404 through each surface against its own mockito server and
+    /// asserts both error messages contain the identical parenthetical
+    /// substring. A regression that splits the format on either side
+    /// (e.g. extract.rs reverting to "HTTP {chain}" or github.rs
+    /// switching to numeric-only `(404)`) surfaces here.
+    #[test]
+    fn http_status_parenthetical_is_identical_across_extract_and_github() {
+        const PARENTHETICAL: &str = "(404 Not Found)";
+
+        let mut extract_server = mockito::Server::new();
+        let extract_mock = extract_server
+            .mock("GET", "/nope")
+            .with_status(404)
+            .create();
+        let extract_tmp = tempfile::tempdir().unwrap();
+        let extract_dest =
+            Utf8PathBuf::from_path_buf(extract_tmp.path().join("nope")).unwrap();
+        let extract_url = format!("{}/nope", extract_server.url());
+        let extract_err =
+            http_download(&extract_url, &extract_dest, Duration::from_secs(10)).unwrap_err();
+        let extract_msg = match extract_err {
+            GharsError::Tarball(msg, _) => msg,
+            other => panic!("expected Tarball, got {other:?}"),
+        };
+        extract_mock.assert();
+
+        let mut github_server = mockito::Server::new();
+        let github_mock = github_server
+            .mock("GET", "/repos/actions/runner/releases/latest")
+            .with_status(404)
+            .with_body("not found")
+            .create();
+        let github_url = format!(
+            "{}/repos/actions/runner/releases/latest",
+            github_server.url()
+        );
+        let client = crate::github::build_blocking_client(None).unwrap();
+        let github_err = crate::github::fetch_latest_release_at(
+            &client,
+            &github_url,
+            crate::config::Arch::X86_64,
+        )
+        .unwrap_err();
+        let github_msg = match github_err {
+            GharsError::GitHub(msg, _) => msg,
+            other => panic!("expected GitHub, got {other:?}"),
+        };
+        github_mock.assert();
+
+        assert!(
+            extract_msg.contains(PARENTHETICAL),
+            "extract.rs msg must contain identical parenthetical {PARENTHETICAL:?}; got: {extract_msg}"
+        );
+        assert!(
+            github_msg.contains(PARENTHETICAL),
+            "github.rs msg must contain identical parenthetical {PARENTHETICAL:?}; got: {github_msg}"
+        );
     }
 
     #[test]
