@@ -6848,10 +6848,10 @@ labels  = ["alpha", "beta"]
         );
     }
 
-    // ---- caches in-place contract (#271) ----------------------------
+    // ---- caches in-place contract -----------------------------------
 
-    /// caches change is in-place per design Part 3 (#271). The
-    /// classifier branch added in WO-B must:
+    /// caches change is in-place per design Part 3. The
+    /// caches in-place classifier branch must:
     ///   - record a FieldChange { path: "caches", before, after };
     ///   - NOT push to recreate_reasons;
     ///   - NOT trip the `uncovered` fallback (gated on
@@ -6928,7 +6928,7 @@ labels  = ["alpha", "beta"]
             .expect("caches change must emit UpdateRunner");
         assert!(
             !upd.requires_recreate,
-            "caches change must be in-place (#271); got reasons {:?}",
+            "caches change must be in-place; got reasons {:?}",
             upd.recreate_reasons
         );
         assert!(

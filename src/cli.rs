@@ -16803,7 +16803,7 @@ auth = \"pat\"
     ///      `describe()` output before stderr emission via the
     ///      step-bullet escape inside
     ///      `render_rollback_advisory`'s rev-walk loop. The second
-    ///      pass is idempotent (#596 — pinned in lib.rs) so the
+    ///      pass is idempotent (pinned in lib.rs) so the
     ///      redundancy costs only one O(n) byte scan.
     ///
     /// Asserting on the rendered advisory exercises the END of the
@@ -16819,10 +16819,10 @@ auth = \"pat\"
     /// the `describe()`-side wiring.
     ///
     /// Historical note: the per-failure label was NOT sanitized
-    /// when this test was first introduced (#600 then-pending) — the
+    /// when this test was first introduced — the
     /// per-step bullets passed through the describe() +
     /// render_rollback_advisory chain but the per-failure label
-    /// rendered raw. #600 (WO-S12A) closed that gap by wrapping the
+    /// rendered raw. That gap was later closed by wrapping the
     /// label with `escape_control_chars` at the per-failure
     /// sub-block emission inside `render_rollback_advisory`. This
     /// test still uses a benign label (`"RemoveRunner(buckos)"`)
@@ -16853,7 +16853,7 @@ auth = \"pat\"
         // escape_control_chars on `name` (apply.rs:657-658). The
         // second pass at the step-bullet escape inside
         // `render_rollback_advisory`'s rev-walk loop is idempotent
-        // (#596 — pinned in lib.rs). Together they guarantee a
+        // (pinned in lib.rs). Together they guarantee a
         // future regression in EITHER layer cannot leak ESC bytes
         // to stderr.
         result.failed_undo_logs.push((
@@ -16899,9 +16899,9 @@ auth = \"pat\"
         );
     }
 
-    // ---------- WO-S12A: cli.rs sanitization follow-ups ---------------
+    // ---------- cli.rs sanitization follow-ups -----------------------
 
-    /// WO-S12A #600: pin that `render_rollback_advisory` runs the
+    /// pin that `render_rollback_advisory` runs the
     /// per-failure label through `escape_control_chars` before
     /// stderr emission. Previously the label was emitted via
     /// `format!("\n  {label}:")` without escaping; the per-step
@@ -16943,7 +16943,8 @@ auth = \"pat\"
         // can ONLY have come from the label render path. If the
         // step-bullet escape inside `render_rollback_advisory`'s
         // rev-walk loop were the only defense, this test would
-        // still fail until #600's label escape lands.
+        // still fail until the label escape (the per-failure
+        // label-render path inside `render_rollback_advisory`) lands.
         result.failed_undo_logs.push((
             hostile_label.into(),
             vec![apply::UndoStep::StopUnit {
@@ -16986,7 +16987,7 @@ auth = \"pat\"
         );
     }
 
-    /// WO-S12A #590 (a): pin that `push_indented_body` escapes raw
+    /// (a): pin that `push_indented_body` escapes raw
     /// control bytes from operator-supplied drop-in bodies before
     /// emitting them to the indented body block. Drop-in bodies on
     /// the `--diff` path originate from `Created.after` /
@@ -17050,7 +17051,7 @@ auth = \"pat\"
         );
     }
 
-    /// WO-S12A #590 (b): pin that `render_drop_in_body_block` for
+    /// (b): pin that `render_drop_in_body_block` for
     /// the `Created` variant scrubs hostile bytes in the body. The
     /// helper delegates to `push_indented_body`, so this is the
     /// integration-level check that the `Created { after }` arm
@@ -17089,7 +17090,7 @@ auth = \"pat\"
         );
     }
 
-    /// WO-S12A #590 (b'): mirror of `Created` test for the
+    /// (b'): mirror of `Created` test for the
     /// `Removed` variant. Recreate-class plan output emits
     /// `Removed { before }` entries via
     /// `RunnerDelta::before_drop_in_basenames` synthesis (the
@@ -17143,7 +17144,7 @@ auth = \"pat\"
         );
     }
 
-    /// WO-S12A #590 (c): pin the unified-diff path. Hostile bytes
+    /// (c): pin the unified-diff path. Hostile bytes
     /// in the operator-authored `before` or `after` flow into
     /// `similar::udiff::unified_diff`'s output, then
     /// `push_indented_unified_diff` emits each line. The escape
