@@ -1729,6 +1729,23 @@ fn recreate_reason_note(reason: &str) -> Option<&'static str> {
     }
 }
 
+/// Render one Action as a single-line plan entry with leading sigil.
+///
+/// Sigil → variant mapping (column-0 grep targets):
+/// - `+` ⇒ `CreateRunner` / `CreateCachePool`
+/// - `-` ⇒ `RemoveRunner` / `RemoveCachePool`
+/// - `~` ⇒ `UpdateRunner` (in-place, Restart-class) / `UpdateCachePool`
+/// - `!` ⇒ `UpdateRunner` (recreate-class — escalated destructive update)
+/// - ` ` ⇒ `NoOp`
+///
+/// `^~ runner` matches Restart-class `UpdateRunner` only — recreate-
+/// class `UpdateRunner` uses `!` as of the sigil split. Operators who
+/// previously grepped `^~ runner` to count "all UpdateRunner" must
+/// switch to either `^[~!] runner` (sigil-class union) or
+/// `^.* runner .* update:` (verb-based, sigil-agnostic). For the
+/// "all destructive actions" pipeline, grep `[recreate]` on the
+/// trailing bracket tag instead — that matches `+`/`-`/`!` lines plus
+/// `[recreate]`-tagged pool actions in one pass.
 fn render_action_line(action: &Action, color: ColorMode, diff: bool) -> String {
     let (sigil, summary, ansi) = match action {
         Action::CreateRunner(p) => ('+', format!("runner {} (create)", p.spec.name), "\x1b[32m"),

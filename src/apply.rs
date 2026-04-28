@@ -163,6 +163,11 @@ pub enum ApplyOutcome {
         /// Cache-pool names this apply removed the runner's user from
         /// via `gpasswd -d` (one entry per pool). Sorted; empty
         /// semantics symmetric with `pools_added`.
+        ///
+        /// Symmetric counterpart on the cache-pool side:
+        /// [`Self::PoolUpdated`] / [`Self::PoolSkipped`] intentionally
+        /// lack these Vecs (pool-kind changes don't reconcile
+        /// membership — group identity is name-parameterized).
         pools_removed: Vec<String>,
     },
     /// `execute_update_runner` recreate branch — `requires_recreate
@@ -415,14 +420,14 @@ pub struct ApplyResult {
     ///
     /// Failed actions appear here as
     /// [`ApplyOutcome::Failed { error_summary, plan_disruption }`]
-    /// rows alongside their successful / skipped peers (#474). The
-    /// full [`GharsError`] chain for the same action is also
-    /// preserved on [`Self::failed`] for programmatic consumers
-    /// (typed-error access, exit-code mapping). cmd_apply walks
-    /// `details` to render every action's row uniformly; success
-    /// rows go to stdout (`ok: LABEL ...`), failure rows go to
-    /// stderr (`fail: LABEL ...`) so the stdout/stderr grep split
-    /// is preserved. NoOp actions render as
+    /// rows alongside their successful / skipped peers that were
+    /// processed (#474). The full [`GharsError`] chain for the same
+    /// action is also preserved on [`Self::failed`] for programmatic
+    /// consumers (typed-error access, exit-code mapping). cmd_apply
+    /// walks `details` to render every processed action's row
+    /// uniformly; success rows go to stdout (`ok: LABEL ...`),
+    /// failure rows go to stderr (`fail: LABEL ...`) so the
+    /// stdout/stderr grep split is preserved. NoOp actions render as
     /// `noop: REASON [none]` on stdout (not `ok: LABEL`) — the
     /// label already carries `NoOp(REASON)`, so the verbose form
     /// would double-tag the reason. Additive alongside the existing
@@ -2110,10 +2115,11 @@ pub fn apply(
                     action: label.clone(),
                     source: Box::new(e),
                 };
-                // #474: per-action audit row — the Failed variant
-                // is pushed to `details` alongside the existing
-                // `failed` push so the in-execution-order Vec
-                // covers every action regardless of outcome class.
+                // Per-action audit row — the Failed variant is pushed
+                // to `details` alongside the existing `failed` push so
+                // the in-execution-order Vec covers every processed
+                // action. Under fail_fast, actions after the first
+                // failure are never pushed.
                 // `result.failed` keeps the typed GharsError chain
                 // for programmatic consumers (exit-code mapping,
                 // rollback advisories).

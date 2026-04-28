@@ -182,8 +182,7 @@ fn http_download_with_cap(
                      this can indicate a deliberately-crafted payload OR a legitimately large \
                      upstream response; verify network path (compromised mirror, hostile proxy \
                      CA, or non-GitHub origin); if the upstream payload is legitimately this \
-                     large, file a ghars issue to raise MAX_TARBALL_DOWNLOAD_BYTES \
-                     (current limit: {max_h} ({max_bytes} bytes))",
+                     large, file a ghars issue to raise MAX_TARBALL_DOWNLOAD_BYTES",
                     max_h = human_bytes(max_bytes)
                 ),
                 None,
@@ -2111,22 +2110,26 @@ mod tests {
                     1,
                     "single occurrence of 'response body exceeds' required; got: {msg}"
                 );
-                // #724 — human-readable byte size for cap value (64 B
+                // Human-readable byte size for cap value (64 B
                 // for sub-KiB integer-byte path) alongside raw "64
                 // bytes" so an operator reads "64 B (64 bytes)"
                 // without mental conversion.
                 assert!(
                     msg.contains("64 B (64 bytes)"),
-                    "msg must include human-readable byte size '64 B (64 bytes)' per #724; got: {msg}"
+                    "msg must include human-readable byte size '64 B (64 bytes)'; got: {msg}"
                 );
+                // Cap-hint suffix removed: the `(current limit: ...)`
+                // trailing parenthetical is dropped (parity with
+                // github.rs Layer 1 / Layer 2). The cap value already
+                // appears in the body (`exceeds 64 B (64 bytes)
+                // post-decompression`); the load-bearing breadcrumb
+                // is the symbol-name reference
+                // (`MAX_TARBALL_DOWNLOAD_BYTES`, pinned above).
+                // Negative pin guards against regression that
+                // re-introduces the duplicated suffix.
                 assert!(
-                    msg.contains("current limit:") && msg.contains("64 B (64 bytes)"),
-                    "msg must surface 'current limit: <human> (<bytes>)' so operator self-screens; got: {msg}"
-                );
-                assert_eq!(
-                    msg.matches("current limit:").count(),
-                    1,
-                    "single occurrence of 'current limit:' required; got: {msg}"
+                    !msg.contains("current limit:"),
+                    "msg MUST NOT surface 'current limit:' suffix (cap-hint suffix removed); got: {msg}"
                 );
             }
             other => panic!("expected GharsError::Tarball, got {other:?}"),

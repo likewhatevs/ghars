@@ -657,14 +657,11 @@ fn http_get_payload_with_cap(
                             cl_h = human_bytes(cl),
                             max_h = human_bytes(max_bytes)
                         ),
-                        format!(
-                            "the on-wire (pre-decompression) Content-Length is suspiciously \
-                             large; verify network path (compromised mirror, hostile proxy CA, \
-                             or non-GitHub origin); if the upstream payload is legitimately \
-                             this large, file a ghars issue to raise MAX_RELEASES_BODY_BYTES \
-                             (current limit: {max_h} ({max_bytes} bytes))",
-                            max_h = human_bytes(max_bytes)
-                        ),
+                        "the on-wire (pre-decompression) Content-Length is suspiciously \
+                         large; verify network path (compromised mirror, hostile proxy CA, \
+                         or non-GitHub origin); if the upstream payload is legitimately \
+                         this large, file a ghars issue to raise MAX_RELEASES_BODY_BYTES"
+                            .into(),
                     ));
                 }
             }
@@ -691,14 +688,11 @@ fn http_get_payload_with_cap(
                 "GitHub API response body exceeds {cap_h} ({cap} bytes) post-decompression: {url}",
                 cap_h = human_bytes(cap)
             ),
-            format!(
-                "the post-decompression body is larger than expected; this can indicate \
-                 a deliberately-crafted payload OR a legitimately large upstream response; \
-                 check status.github.com, then file a ghars issue to raise \
-                 MAX_RELEASES_BODY_BYTES if the payload is genuine \
-                 (current limit: {cap_h} ({cap} bytes))",
-                cap_h = human_bytes(cap)
-            ),
+            "the post-decompression body is larger than expected; this can indicate \
+             a deliberately-crafted payload OR a legitimately large upstream response; \
+             check status.github.com, then file a ghars issue to raise \
+             MAX_RELEASES_BODY_BYTES if the payload is genuine"
+                .into(),
         ),
     })?;
     serde_json::from_slice::<ReleaseApiPayload>(&buf).map_err(|e| {
@@ -2095,19 +2089,23 @@ mod tests {
                     hint.contains("MAX_RELEASES_BODY_BYTES"),
                     "Layer 1 hint must surface MAX_RELEASES_BODY_BYTES escape hatch; got: {hint}"
                 );
-                // #724 — Layer 1 msg must surface human-readable size labels alongside raw byte counts so an operator can read "128 B (128 bytes)" without mental conversion.
+                // Human-readable size labels alongside raw byte counts so an operator can read "128 B (128 bytes)" without mental conversion.
                 assert!(
                     msg.contains("128 B") && msg.contains("64 B"),
                     "Layer 1 msg must include human-readable byte sizes (e.g. '128 B', '64 B'); got: {msg}"
                 );
+                // Cap-hint suffix removed: the `(current limit: ...)`
+                // trailing parenthetical is dropped. The cap value
+                // already appears in the body (`exceeds 64 B (64
+                // bytes)`), and re-stating it in the hint added no
+                // operator-actionable information. The load-bearing
+                // breadcrumb is the symbol-name reference
+                // (`MAX_RELEASES_BODY_BYTES`), pinned above. Negative
+                // pin guards against a regression that re-introduces
+                // the duplicated suffix.
                 assert!(
-                    hint.contains("current limit:") && hint.contains("64 B (64 bytes)"),
-                    "Layer 1 hint must surface 'current limit: <human> (<bytes>)' so operator self-screens; got: {hint}"
-                );
-                assert_eq!(
-                    hint.matches("current limit:").count(),
-                    1,
-                    "Layer 1 hint must contain exactly one 'current limit:'; got: {hint}"
+                    !hint.contains("current limit:"),
+                    "Layer 1 hint MUST NOT surface 'current limit:' suffix (cap-hint suffix removed); got: {hint}"
                 );
             }
             other => panic!("expected GharsError::GitHub, got {other:?}"),
@@ -2197,7 +2195,7 @@ mod tests {
                     hint.contains("MAX_RELEASES_BODY_BYTES"),
                     "hint must surface MAX_RELEASES_BODY_BYTES escape hatch; got: {hint}"
                 );
-                // #724 — Layer 2 msg must include human-readable size
+                // Layer 2 msg must include human-readable size
                 // label (e.g. "64 B") alongside raw "64 bytes" so an
                 // operator reads them without mental conversion. The
                 // small-cap test uses a 64-byte cap which renders as
@@ -2206,14 +2204,16 @@ mod tests {
                     msg.contains("64 B (64 bytes)"),
                     "Layer 2 msg must include human-readable byte size '64 B (64 bytes)'; got: {msg}"
                 );
+                // Cap-hint suffix removed: the `(current limit: ...)`
+                // trailing parenthetical is dropped (parity with Layer
+                // 1). The cap value already appears in the body
+                // (`exceeds 64 B (64 bytes) post-decompression`); the
+                // load-bearing breadcrumb is the symbol-name reference
+                // (`MAX_RELEASES_BODY_BYTES`, pinned above). Negative
+                // pin guards against regression.
                 assert!(
-                    hint.contains("current limit:") && hint.contains("64 B (64 bytes)"),
-                    "Layer 2 hint must surface 'current limit: <human> (<bytes>)' so operator self-screens; got: {hint}"
-                );
-                assert_eq!(
-                    hint.matches("current limit:").count(),
-                    1,
-                    "Layer 2 hint must contain exactly one 'current limit:'; got: {hint}"
+                    !hint.contains("current limit:"),
+                    "Layer 2 hint MUST NOT surface 'current limit:' suffix (cap-hint suffix removed); got: {hint}"
                 );
             }
             other => panic!("expected GharsError::GitHub, got {other:?}"),
