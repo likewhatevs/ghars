@@ -421,7 +421,7 @@ pub struct ApplyResult {
     /// Failed actions appear here as
     /// [`ApplyOutcome::Failed { error_summary, plan_disruption }`]
     /// rows alongside their successful / skipped peers that were
-    /// processed (#474). The full [`GharsError`] chain for the same
+    /// processed. The full [`GharsError`] chain for the same
     /// action is also preserved on [`Self::failed`] for programmatic
     /// consumers (typed-error access, exit-code mapping). cmd_apply
     /// walks `details` to render every processed action's row
@@ -431,7 +431,7 @@ pub struct ApplyResult {
     /// `noop: REASON [none]` on stdout (not `ok: LABEL`) — the
     /// label already carries `NoOp(REASON)`, so the verbose form
     /// would double-tag the reason. Additive alongside the existing
-    /// Vecs so pre-#340 consumers compile unchanged. (#340 + #474)
+    /// Vecs so older programmatic consumers compile unchanged.
     pub details: Vec<(String, ApplyOutcome)>,
     /// `(label, recorded_steps)` rows — one entry per failed action,
     /// carrying the [`UndoLog`]'s recorded mutations in insertion
@@ -1353,12 +1353,9 @@ impl Users for RealUsers {
         if matches!(status.code(), Some(9)) {
             return Ok(());
         }
-        Err(GharsError::Apply {
-            action: format!("useradd({name})"),
-            source: Box::new(GharsError::Io(std::io::Error::other(format!(
-                "useradd exited with {status:?}"
-            )))),
-        })
+        Err(GharsError::Io(std::io::Error::other(format!(
+            "useradd[{name}]: exited with {status:?}"
+        ))))
     }
 
     fn userdel_if_present(&self, name: &str) -> Result<()> {
@@ -1377,12 +1374,9 @@ impl Users for RealUsers {
         if matches!(status.code(), Some(6)) {
             return Ok(());
         }
-        Err(GharsError::Apply {
-            action: format!("userdel({name})"),
-            source: Box::new(GharsError::Io(std::io::Error::other(format!(
-                "userdel exited with {status:?}"
-            )))),
-        })
+        Err(GharsError::Io(std::io::Error::other(format!(
+            "userdel[{name}]: exited with {status:?}"
+        ))))
     }
 
     fn groupadd_if_missing(&self, group: &str) -> Result<()> {
@@ -1400,12 +1394,9 @@ impl Users for RealUsers {
         if matches!(status.code(), Some(9)) {
             return Ok(());
         }
-        Err(GharsError::Apply {
-            action: format!("groupadd({group})"),
-            source: Box::new(GharsError::Io(std::io::Error::other(format!(
-                "groupadd exited with {status:?}"
-            )))),
-        })
+        Err(GharsError::Io(std::io::Error::other(format!(
+            "groupadd[{group}]: exited with {status:?}"
+        ))))
     }
 
     fn groupdel_if_present(&self, group: &str) -> Result<()> {
@@ -1420,12 +1411,9 @@ impl Users for RealUsers {
         if matches!(status.code(), Some(6)) {
             return Ok(());
         }
-        Err(GharsError::Apply {
-            action: format!("groupdel({group})"),
-            source: Box::new(GharsError::Io(std::io::Error::other(format!(
-                "groupdel exited with {status:?}"
-            )))),
-        })
+        Err(GharsError::Io(std::io::Error::other(format!(
+            "groupdel[{group}]: exited with {status:?}"
+        ))))
     }
 
     fn add_user_to_group(&self, user: &str, group: &str) -> Result<()> {
@@ -1440,12 +1428,9 @@ impl Users for RealUsers {
         if status.success() {
             return Ok(());
         }
-        Err(GharsError::Apply {
-            action: format!("gpasswd -a {user} {group}"),
-            source: Box::new(GharsError::Io(std::io::Error::other(format!(
-                "gpasswd exited with {status:?}"
-            )))),
-        })
+        Err(GharsError::Io(std::io::Error::other(format!(
+            "gpasswd[-a {user} {group}]: exited with {status:?}"
+        ))))
     }
 
     fn remove_user_from_group(&self, user: &str, group: &str) -> Result<()> {
@@ -1467,20 +1452,17 @@ impl Users for RealUsers {
         if matches!(status.code(), Some(3)) {
             return Ok(());
         }
-        Err(GharsError::Apply {
-            action: format!("gpasswd -d {user} {group}"),
-            source: Box::new(GharsError::Io(std::io::Error::other(format!(
-                "gpasswd exited with {status:?}"
-            )))),
-        })
+        Err(GharsError::Io(std::io::Error::other(format!(
+            "gpasswd[-d {user} {group}]: exited with {status:?}"
+        ))))
     }
 }
 
 fn spawn_err(prog: &str, e: &std::io::Error) -> GharsError {
-    GharsError::Apply {
-        action: format!("spawn {prog}"),
-        source: Box::new(GharsError::Io(std::io::Error::new(e.kind(), e.to_string()))),
-    }
+    GharsError::Io(std::io::Error::new(
+        e.kind(),
+        format!("spawn {prog}: {e}"),
+    ))
 }
 
 // ---------- Config.sh runner seam --------------------------------------
@@ -4297,10 +4279,9 @@ mod tests {
                         .unwrap()
                         .clone()
                         .unwrap_or_else(|| "mock: add_user_to_group injected failure".into());
-                    return Err(GharsError::Apply {
-                        action: format!("gpasswd -a {user} {group}"),
-                        source: Box::new(GharsError::Io(std::io::Error::other(msg))),
-                    });
+                    return Err(GharsError::Io(std::io::Error::other(format!(
+                        "gpasswd[-a {user} {group}]: {msg}"
+                    ))));
                 }
             }
             self.memberships
@@ -4312,12 +4293,10 @@ mod tests {
         fn remove_user_from_group(&self, user: &str, group: &str) -> Result<()> {
             if let Some(target) = self.fail_remove_group.lock().unwrap().as_deref() {
                 if target == group {
-                    return Err(GharsError::Apply {
-                        action: format!("gpasswd -d {user} {group}"),
-                        source: Box::new(GharsError::Io(std::io::Error::other(
-                            "mock: remove_user_from_group injected failure",
-                        ))),
-                    });
+                    return Err(GharsError::Io(std::io::Error::other(format!(
+                        "gpasswd[-d {user} {group}]: \
+                         mock: remove_user_from_group injected failure"
+                    ))));
                 }
             }
             self.removed_memberships
@@ -5829,10 +5808,11 @@ mod tests {
                     !error_summary.is_empty(),
                     "Failed.error_summary must carry the inner error display",
                 );
-                // Bare-error scenario (FlakySystemd returns
-                // GharsError::Systemd, not pre-wrapped Apply).
-                // RealUsers helpers may produce double-wrapped Apply;
-                // that case is tracked separately (#521).
+                // Bare-error scenario: FlakySystemd returns
+                // GharsError::Systemd, RealUsers returns bare
+                // GharsError::Io — neither is pre-wrapped in
+                // GharsError::Apply, so the outer apply()-loop wrap
+                // does not produce a double-wrapped Display chain.
                 assert!(
                     !error_summary.contains("apply (action "),
                     "error_summary must NOT include the GharsError::Apply wrapping prefix \

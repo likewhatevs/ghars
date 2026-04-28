@@ -223,12 +223,9 @@ impl Users for TestUsers {
     fn groupdel_if_present(&self, group: &str) -> ghars::Result<()> {
         if let Some(target) = self.fail_groupdel.lock().unwrap().as_deref() {
             if target == group {
-                return Err(GharsError::Apply {
-                    action: format!("groupdel({group})"),
-                    source: Box::new(GharsError::Io(std::io::Error::other(format!(
-                        "test: groupdel({group}) injected failure"
-                    )))),
-                });
+                return Err(GharsError::Io(std::io::Error::other(format!(
+                    "groupdel[{group}]: test: injected failure"
+                ))));
             }
         }
         Ok(())

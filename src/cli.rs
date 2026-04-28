@@ -2955,9 +2955,9 @@ fn cmd_apply(
     }
 
     Ok(apply_exit_code(
-        &result,
         args.detailed_exitcode,
         args.detailed_exitcode_recreate,
+        &result,
     ))
 }
 
@@ -3138,24 +3138,6 @@ pub(crate) fn status_exit_code(health: &[preflight::CheckResult]) -> i32 {
     }
 }
 
-/// True iff `plan` contains any action whose
-/// [`crate::plan::Action::disruption`] is
-/// [`crate::plan::Disruption::Recreate`]. Drives the
-/// `--detailed-exitcode-recreate` exit-code 8 path (#464).
-///
-/// Recreate-class actions per [`crate::plan::Action::disruption`] at
-/// plan.rs: `CreateRunner`, `UpdateRunner` with
-/// `requires_recreate=true`, `RemoveRunner`, `CreateCachePool`, and
-/// `RemoveCachePool`. `UpdateCachePool` is always
-/// `Disruption::Restart`. Ignores `Disruption::Restart` (in-place
-/// restart) and `Disruption::None` (NoOp).
-#[must_use]
-pub(crate) fn plan_has_recreate(plan: &Plan) -> bool {
-    plan.actions
-        .iter()
-        .any(|a| a.disruption() == plan::Disruption::Recreate)
-}
-
 /// Returns `Some(8)` when the operator opted into
 /// `--detailed-exitcode-recreate` AND the plan contains a recreate-
 /// class action; otherwise `None` so callers fall through to the
@@ -3187,7 +3169,7 @@ pub(crate) fn plan_has_recreate(plan: &Plan) -> bool {
 /// early returns across the command-dispatch path. (#464)
 #[must_use]
 pub(crate) fn recreate_exit_code(detailed_exitcode_recreate: bool, plan: &Plan) -> Option<i32> {
-    if detailed_exitcode_recreate && plan_has_recreate(plan) {
+    if detailed_exitcode_recreate && plan.has_recreate() {
         Some(8)
     } else {
         None
@@ -3291,11 +3273,17 @@ pub(crate) fn dry_run_exit_code(
 /// Pulled out as a pure function so tests synthesize `ApplyResult`
 /// values and pin the precedence directly without spinning up D-Bus or
 /// the apply runtime (#237).
+///
+/// Parameter order matches the sibling `cancel_exit_code` /
+/// `dry_run_exit_code` / `recreate_exit_code` helpers: detailed-exit
+/// flags first, data payload last. A flag-first convention keeps the
+/// call sites aligned with the underlying state-machine reading order
+/// ("which gates are armed?" → "what does the data say?").
 #[must_use]
 pub(crate) fn apply_exit_code(
-    result: &apply::ApplyResult,
     detailed_exitcode: bool,
     detailed_exitcode_recreate: bool,
+    result: &apply::ApplyResult,
 ) -> i32 {
     if result.failed.is_empty() {
         if detailed_exitcode_recreate
@@ -4349,7 +4337,7 @@ mod tests {
 
     // ---- #464: --detailed-exitcode-recreate (exit code 8) ------------
 
-    /// `plan_has_recreate` returns `true` for any plan whose action set
+    /// `Plan::has_recreate` returns `true` for any plan whose action set
     /// contains a recreate-class action. `CreateRunner` is recreate per
     /// `Action::disruption()` at plan.rs.
     #[test]
@@ -4358,10 +4346,10 @@ mod tests {
             actions: vec![Action::CreateRunner(fake_runner_plan("a"))],
             warnings: vec![],
         };
-        assert!(plan_has_recreate(&plan));
+        assert!(plan.has_recreate());
     }
 
-    /// `plan_has_recreate` returns `false` for plans with only NoOp
+    /// `Plan::has_recreate` returns `false` for plans with only NoOp
     /// actions. Empty action vec is also `false` — no actions, nothing
     /// to recreate.
     #[test]
@@ -4370,8 +4358,8 @@ mod tests {
             actions: vec![Action::NoOp("a: in sync".into())],
             warnings: vec![],
         };
-        assert!(!plan_has_recreate(&all_noop));
-        assert!(!plan_has_recreate(&Plan::default()));
+        assert!(!all_noop.has_recreate());
+        assert!(!Plan::default().has_recreate());
     }
 
     /// `recreate_exit_code` returns `Some(8)` only when both the flag
@@ -4448,7 +4436,7 @@ mod tests {
             details: vec![("create runner a".into(), apply::ApplyOutcome::Created)],
             ..Default::default()
         };
-        assert_eq!(apply_exit_code(&result, false, true), 8);
+        assert_eq!(apply_exit_code(false, true, &result), 8);
     }
 
     /// `apply_exit_code`: success path with `--detailed-exitcode-recreate`
@@ -4470,7 +4458,7 @@ mod tests {
             )],
             ..Default::default()
         };
-        assert_eq!(apply_exit_code(&result, false, true), 0);
+        assert_eq!(apply_exit_code(false, true, &result), 0);
     }
 
     /// `apply_exit_code`: failure precedence — partial-failure (4)
@@ -4485,7 +4473,7 @@ mod tests {
             details: vec![("create runner a".into(), apply::ApplyOutcome::Created)],
             ..Default::default()
         };
-        assert_eq!(apply_exit_code(&result, false, true), 4);
+        assert_eq!(apply_exit_code(false, true, &result), 4);
     }
 
     /// `apply_exit_code`: failure precedence — total auth failure (5)
@@ -4499,7 +4487,7 @@ mod tests {
             details: vec![],
             ..Default::default()
         };
-        assert_eq!(apply_exit_code(&result, false, true), 5);
+        assert_eq!(apply_exit_code(false, true, &result), 5);
     }
 
     /// CLI parses `ghars plan --detailed-exitcode-recreate` and sets
@@ -4642,7 +4630,7 @@ mod tests {
             details: vec![("create runner a".into(), apply::ApplyOutcome::Created)],
             ..Default::default()
         };
-        assert_eq!(apply_exit_code(&result, true, true), 8);
+        assert_eq!(apply_exit_code(true, true, &result), 8);
     }
 
     /// #556 (T-4): `apply_exit_code` total-failure-without-auth →
@@ -4671,10 +4659,10 @@ mod tests {
         // success-path recreate gate at the top of `apply_exit_code`
         // is gated on `result.failed.is_empty()` so this exercises
         // the failure branch.
-        assert_eq!(apply_exit_code(&result, false, true), 1);
+        assert_eq!(apply_exit_code(false, true, &result), 1);
     }
 
-    /// #558 (T-6): `plan_has_recreate` returns `true` for
+    /// #558 (T-6): `Plan::has_recreate` returns `true` for
     /// recreate-class actions BEYOND `CreateRunner`. Existing tests
     /// only cover Create + NoOp. `RemoveRunner` is unambiguously
     /// recreate per `Action::disruption` — pin so the helper does
@@ -4685,7 +4673,7 @@ mod tests {
             actions: vec![Action::RemoveRunner(fake_identity("legacy"))],
             warnings: vec![],
         };
-        assert!(plan_has_recreate(&plan));
+        assert!(plan.has_recreate());
     }
 
     /// #559 (T-5): inverse pin — `apply_exit_code` flag-OFF with a
@@ -4704,10 +4692,10 @@ mod tests {
         };
         // Both detailed flags off → 0 (not 8) on success even with
         // a recreate-class outcome.
-        assert_eq!(apply_exit_code(&result, false, false), 0);
+        assert_eq!(apply_exit_code(false, false, &result), 0);
         // detailed_exitcode on, recreate flag off → 2 (existing
         // detailed-exitcode contract, NOT 8).
-        assert_eq!(apply_exit_code(&result, true, false), 2);
+        assert_eq!(apply_exit_code(true, false, &result), 2);
     }
 
     /// #571 (T-4/T-5): `FieldValue::List` edge cases — empty Vec
@@ -5147,7 +5135,7 @@ token_env = \"GHARS_PAT\"
     // pre-#464 tests stay terse; #464-specific tests call
     // `apply_exit_code` with all three args inline.
     fn classify(result: &apply::ApplyResult, detailed_exitcode: bool) -> i32 {
-        apply_exit_code(result, detailed_exitcode, false)
+        apply_exit_code(detailed_exitcode, false, result)
     }
 
     fn auth_err(msg: &str) -> GharsError {
@@ -14053,7 +14041,7 @@ auth = \"pat\"
         assert_eq!(result.failed.len(), 2);
         // Exit code: succeeded non-empty + failed non-empty → 4
         // (partial). The Failed details rows do not change the mapping.
-        assert_eq!(apply_exit_code(&result, false, false), 4);
+        assert_eq!(apply_exit_code(false, false, &result), 4);
     }
 
     /// #507: pin the per-action prefix shapes cmd_apply emits for each
@@ -14155,7 +14143,7 @@ auth = \"pat\"
         // Partial-failure (4) trumps every flag combo: 2 (detailed) and
         // 8 (recreate) both lose to 4.
         for (de, der) in [(false, false), (false, true), (true, false), (true, true)] {
-            assert_eq!(apply_exit_code(&partial, de, der), 4, "de={de}, der={der}");
+            assert_eq!(apply_exit_code(de, der, &partial), 4, "de={de}, der={der}");
         }
 
         // Total-auth failure → 5.
@@ -14170,7 +14158,7 @@ auth = \"pat\"
             )],
             ..apply::ApplyResult::default()
         };
-        assert_eq!(apply_exit_code(&total_auth, false, false), 5);
+        assert_eq!(apply_exit_code(false, false, &total_auth), 5);
 
         // Total non-auth failure → 1.
         let total_non_auth = apply::ApplyResult {
@@ -14184,7 +14172,7 @@ auth = \"pat\"
             )],
             ..apply::ApplyResult::default()
         };
-        assert_eq!(apply_exit_code(&total_non_auth, false, false), 1);
+        assert_eq!(apply_exit_code(false, false, &total_non_auth), 1);
     }
 
     // ---------- #492: cmd_apply summary footer tests --------------------
@@ -15623,7 +15611,7 @@ auth = \"pat\"
         };
         // recreate flag ON, detailed flag OFF: no recreate outcomes ⇒ 0.
         assert_eq!(
-            apply_exit_code(&result, false, true),
+            apply_exit_code(false, true, &result),
             0,
             "recreate flag on but zero recreate-class outcomes must return 0",
         );
@@ -15632,7 +15620,7 @@ auth = \"pat\"
         // the `apply_exit_code` fall-through path:
         // `if detailed_exitcode { 2 } else { 0 }`.
         assert_eq!(
-            apply_exit_code(&result, true, true),
+            apply_exit_code(true, true, &result),
             2,
             "recreate flag on, no recreate outcomes, detailed flag on ⇒ 2",
         );
@@ -15678,7 +15666,7 @@ auth = \"pat\"
         assert_eq!(result.failed.len(), 1);
         // Total non-auth failure (succeeded empty, no auth error) ⇒ 1.
         assert_eq!(
-            apply_exit_code(&result, false, false),
+            apply_exit_code(false, false, &result),
             1,
             "total non-auth failure under fail_fast must yield exit 1",
         );
@@ -15696,7 +15684,7 @@ auth = \"pat\"
             ..Default::default()
         };
         assert_eq!(
-            apply_exit_code(&auth_result, false, false),
+            apply_exit_code(false, false, &auth_result),
             5,
             "total auth failure under fail_fast must yield exit 5",
         );

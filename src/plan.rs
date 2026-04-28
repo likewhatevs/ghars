@@ -286,6 +286,30 @@ pub struct Plan {
     pub warnings: Vec<String>,
 }
 
+impl Plan {
+    /// True iff this plan contains any action whose
+    /// [`Action::disruption`] is [`Disruption::Recreate`]. Drives the
+    /// `--detailed-exitcode-recreate` exit-code 8 path.
+    ///
+    /// Recreate-class actions per [`Action::disruption`]:
+    /// `CreateRunner`, `UpdateRunner` with `requires_recreate=true`,
+    /// `RemoveRunner`, `CreateCachePool`, and `RemoveCachePool`.
+    /// `UpdateCachePool` is always `Disruption::Restart`. Ignores
+    /// `Disruption::Restart` (in-place restart) and
+    /// `Disruption::None` (NoOp).
+    ///
+    /// Lives on `Plan` rather than as a free function in cli.rs
+    /// because the predicate reads only plan data and the disruption
+    /// taxonomy is defined in this module — no CLI state is involved.
+    /// CLI exit-code helpers wrap this in renderer-side gating.
+    #[must_use]
+    pub fn has_recreate(&self) -> bool {
+        self.actions
+            .iter()
+            .any(|a| a.disruption() == Disruption::Recreate)
+    }
+}
+
 /// Data carried by a `CreateRunner` action: the resolved spec, the
 /// rendered template + drop-ins, the spec hash, and (when not pinned to
 /// `runner_tarball`) the resolved release metadata.
