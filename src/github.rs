@@ -541,6 +541,20 @@ enum BodyCapError {
 /// growth cost of `read_to_end` for the realistic releases-API
 /// payload, while a small-cap test never over-allocates beyond the
 /// cap itself.
+///
+/// Naming: `_capped` (past participle on the result), not `_with_cap`
+/// (suffix used by the `http_download_with_cap` / `http_get_payload_with_cap`
+/// pair). Those siblings are CAP-INJECTION SEAMS — each is paired
+/// with a no-suffix production wrapper (`http_download` /
+/// `http_get_payload`) that hardcodes `MAX_*_BYTES`, and the
+/// `_with_cap` variant is the test-only entry point that takes the
+/// cap as a parameter. `read_body_capped` has no such pair: every
+/// caller (production at `http_get_payload_with_cap` and every
+/// `read_body_capped_*` direct unit test below) passes `cap`
+/// explicitly. Renaming to `read_body_with_cap` would suggest a
+/// `read_body` no-cap sibling that doesn't exist. The current name
+/// describes the OUTPUT invariant (the returned body is bounded by
+/// `cap`), which matches the function's actual contract.
 fn read_body_capped<R: Read>(reader: R, cap: u64) -> std::result::Result<Vec<u8>, BodyCapError> {
     let initial = std::cmp::min(cap, INITIAL_BODY_CAPACITY) as usize;
     let mut buf = Vec::with_capacity(initial);
