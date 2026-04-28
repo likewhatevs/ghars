@@ -9827,6 +9827,21 @@ auth = \"pat\"
             cfg.runners[0].memory_max.is_none(),
             "count block must leave memory_max=None for precedence test to be discriminating",
         );
+        // Parity guard: merge_defaults's `runner.memory_max OR
+        // defaults.memory_max` chain falls through to the [defaults]
+        // block when the runner-level field is None. If a future
+        // fixture change sets defaults.memory_max, the count-expanded
+        // ci-1 would inherit that value via merge_defaults — making
+        // the "explicit ci-1 carries 8G" assertion below tautological
+        // again, this time through the defaults inheritance path
+        // rather than the count-block override path. Pinning both
+        // None ensures the assertion is discriminating regardless of
+        // which fallback layer drift introduces the value.
+        assert!(
+            cfg.defaults.memory_max.is_none(),
+            "defaults must leave memory_max=None for precedence test to be \
+             discriminating via merge_defaults or_else chain",
+        );
         let ci1_plan = plan
             .actions
             .iter()
@@ -10083,6 +10098,22 @@ auth = \"pat\"
             "/var/lib/ghars",
             "RemoveRunner.prefix must be parent of WorkingDirectory= \
              from the discovered unit text",
+        );
+
+        // Pin the docstring's "desired-only arm fires for 'web'
+        // (CreateRunner)" claim. The doc states both arms fire in
+        // this fixture; without this assertion that claim is
+        // unverified and could silently regress (e.g. plan_from
+        // refactor that drops the desired-only arm in mixed plans).
+        assert!(
+            plan.actions
+                .iter()
+                .any(|a| matches!(a, Action::CreateRunner(p) if p.spec.name == "web")),
+            "desired-only arm must emit CreateRunner(web); got actions: {:?}",
+            plan.actions
+                .iter()
+                .map(|a| format!("{a:?}"))
+                .collect::<Vec<_>>(),
         );
 
         // Sanity: summary.recreates contains the RemoveRunner label

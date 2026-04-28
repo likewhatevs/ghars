@@ -6788,6 +6788,31 @@ labels  = ["alpha", "beta"]
             FieldValue::String("github_app".into()),
             "after must reflect the desired side's auth_name string",
         );
+        // auth_name strings differ between desired and discovered ⇒
+        // spec_hash differs ⇒ DriftCause::SpecChanged. Pins the
+        // drift-cause classification: the on-disk unit text is fresh
+        // (just rendered by discovered_for) so DriftDetected cannot
+        // fire; only the spec-hash mismatch path applies.
+        assert_eq!(
+            upd.drift_cause,
+            DriftCause::SpecChanged,
+            "Pat → GithubApp auth-name change must classify as SpecChanged: \
+             the auth_name string diff drives a spec_hash mismatch with no \
+             on-disk drift",
+        );
+        // Inverse pin: auth_kind discriminant must NOT leak into
+        // field_changes. merge_defaults strips the AuthSpec
+        // discriminant when lowering to EffectiveRunnerSpec.auth_name,
+        // so the classifier never observes an "auth_kind" surface and
+        // must not synthesize one. A regression that adds
+        // `auth_kind` to field_changes — for example by inspecting
+        // cfg.auth[name] discriminant directly — fails this pin.
+        assert!(
+            !upd.field_changes.iter().any(|fc| fc.path == "auth_kind"),
+            "auth_kind must NOT appear — discriminant is stripped by \
+             merge_defaults; got field_changes: {:?}",
+            upd.field_changes,
+        );
     }
 
     // ---- caches in-place contract (#271) ----------------------------
