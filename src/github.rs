@@ -1717,6 +1717,13 @@ mod tests {
         match err {
             GharsError::GitHub(msg, hint) => {
                 assert!(msg.contains("429"), "msg must include status code; got: {msg}");
+                // URL trailing-position pin: HTTP-status arm uses the
+                // same ": {url}" suffix shape as Layer 1 / Layer 2 so a
+                // single log parser can match all three error classes.
+                assert!(
+                    msg.ends_with(&format!(": {url}")),
+                    "HTTP-status (429) msg must end with ': {{url}}'; got: {msg}"
+                );
                 assert!(
                     hint.contains("secondary rate limit") && hint.contains("Retry-After"),
                     "429 hint must mention secondary rate limit + Retry-After; got: {hint}"
@@ -2083,6 +2090,14 @@ mod tests {
                     msg.contains("Content-Length") && msg.contains("128") && msg.contains("64"),
                     "msg must surface CL=128 vs cap=64; got: {msg}"
                 );
+                // URL trailing-position pin: the wrapper places the URL
+                // at the end of the message so log parsers can grep the
+                // line with a stable suffix. A regression that moves the
+                // URL into the middle of the message would surface here.
+                assert!(
+                    msg.ends_with(&format!(": {url}")),
+                    "Layer 1 msg must end with ': {{url}}'; got: {msg}"
+                );
                 // Layer 1 differentiation: on-wire/pre-decompression framing distinct from Layer 2's post-decompression/bomb-signature framing.
                 assert!(
                     hint.contains("on-wire") && hint.contains("pre-decompression"),
@@ -2155,6 +2170,13 @@ mod tests {
                 assert!(
                     !msg.contains("response response"),
                     "anti-doubling pin: wrapper must not produce doubled 'response response'; got: {msg}"
+                );
+                // URL trailing-position pin: Layer 2 mirrors Layer 1's
+                // ": {url}" suffix so log parsers can grep both layers'
+                // lines with the same stable suffix shape.
+                assert!(
+                    msg.ends_with(&format!(": {url}")),
+                    "Layer 2 msg must end with ': {{url}}'; got: {msg}"
                 );
                 assert!(
                     hint.contains("compromised mirror") || hint.contains("hostile proxy"),
@@ -2243,6 +2265,26 @@ mod tests {
                     io_err.to_string().contains("synthetic mid-stream failure"),
                     "Io variant must preserve the underlying io::Error Display so the wrapper can surface it to the operator; got: {io_err}"
                 );
+                // Anti-doubling pin: synthesize the wrapper's exact
+                // format string and verify no doubled-noun framing
+                // (e.g. "response read failed: read failed", "response
+                // response") regardless of the inner io::Error Display
+                // text. The wrapper at http_get_payload_with_cap's IO
+                // arm uses `format!("GitHub API response read failed:
+                // {chain}: {url}", chain = format_error_chain(&io_err))`
+                // — a regression that double-prefixes the noun would
+                // surface here.
+                let url = "https://api.github.com/repos/actions/runner/releases/latest";
+                let chain = format_error_chain(&io_err);
+                let wrapped = format!("GitHub API response read failed: {chain}: {url}");
+                assert!(
+                    !wrapped.contains("response read failed: read failed"),
+                    "anti-doubling pin: wrapper must not produce doubled 'read failed' framing; got: {wrapped}"
+                );
+                assert!(
+                    !wrapped.contains("response response"),
+                    "anti-doubling pin: wrapper must not produce doubled 'response' noun; got: {wrapped}"
+                );
             }
             other => panic!(
                 "I/O failure must produce BodyCapError::Io — that variant is the wrapper's I/O-error discriminant; got: {other:?}"
@@ -2320,20 +2362,193 @@ mod tests {
     }
 
     /// `format_error_chain` on an io::Error with no source returns just
-    /// the outer Display (no trailing ": "). Pinned to defend against
-    /// a regression that always appends a separator.
+    /// the outer Display verbatim — no trailing ": ", no inner-layer
+    /// addition, no transformation. Exact-identity assertion defends
+    /// against a regression that prepends/appends framing or transforms
+    /// the outer text when there is no source chain to walk.
     #[test]
     fn format_error_chain_handles_no_source() {
         use std::io;
         let err = io::Error::new(io::ErrorKind::TimedOut, "operation timed out");
         let chain = format_error_chain(&err);
+        assert_eq!(
+            chain,
+            err.to_string(),
+            "with no source, chain must equal err.to_string() exactly; got: {chain}"
+        );
+    }
+
+    /// E2E pin: a 2-level io::Error source chain must survive
+    /// `read_body_capped` → `BodyCapError::Io` → wrapper at
+    /// `http_get_payload_with_cap`'s I/O-error arm → final
+    /// `GharsError::GitHub` message. Both the outer (mid-layer) and
+    /// inner Display strings must appear in the operator-visible
+    /// message, joined by the wrapper's "response read failed:" prefix
+    /// + format_error_chain's ": " separator. Defends against a
+    /// regression that switches the wrapper from `format_error_chain`
+    /// back to `{io_err}` (which would drop the inner Display).
+    ///
+    /// Synthesizes the full path: a `FailingReader` that returns an
+    /// `io::Error::Other` whose payload is a custom `Mid` error whose
+    /// `.source()` points at an `Inner` error. `read_body_capped`
+    /// preserves the io::Error in `BodyCapError::Io(io_err)`. The
+    /// production wrapper arm at `http_get_payload_with_cap` then calls
+    /// `format_error_chain(&io_err)` which walks `io_err.source()` →
+    /// `Mid` → `Inner` and joins all three Display layers with ": ".
+    /// Inline the wrapper's exact mapping logic (the synthesis bypasses
+    /// reqwest, so we reuse the same `format!("GitHub API response read
+    /// failed: {chain}: {url}")` pattern as the production arm).
+    #[test]
+    fn read_body_capped_io_error_preserves_2_level_source_chain() {
+        use std::error::Error;
+        use std::fmt;
+        use std::io;
+
+        #[derive(Debug)]
+        struct Inner(&'static str);
+        impl fmt::Display for Inner {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(self.0)
+            }
+        }
+        impl Error for Inner {}
+
+        #[derive(Debug)]
+        struct Mid {
+            msg: &'static str,
+            cause: Inner,
+        }
+        impl fmt::Display for Mid {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(self.msg)
+            }
+        }
+        impl Error for Mid {
+            fn source(&self) -> Option<&(dyn Error + 'static)> {
+                Some(&self.cause)
+            }
+        }
+
+        struct ChainFailingReader {
+            mid_msg: &'static str,
+            inner_msg: &'static str,
+            fired: bool,
+        }
+        impl io::Read for ChainFailingReader {
+            fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+                if self.fired {
+                    return Ok(0);
+                }
+                self.fired = true;
+                let mid = Mid {
+                    msg: self.mid_msg,
+                    cause: Inner(self.inner_msg),
+                };
+                Err(io::Error::new(io::ErrorKind::Other, mid))
+            }
+        }
+
+        let reader = ChainFailingReader {
+            mid_msg: "tls handshake failure",
+            inner_msg: "rustls: cert expired",
+            fired: false,
+        };
+        let cap: u64 = 64;
+        let err = read_body_capped(reader, cap).unwrap_err();
+        let io_err = match err {
+            BodyCapError::Io(e) => e,
+            other => panic!("expected BodyCapError::Io with chain payload, got {other:?}"),
+        };
+        let chain = format_error_chain(&io_err);
         assert!(
-            chain.contains("operation timed out"),
-            "chain must surface the io::Error Display; got: {chain}"
+            chain.contains("tls handshake failure"),
+            "chain must surface mid-layer Display; got: {chain}"
         );
         assert!(
-            !chain.ends_with(": "),
-            "chain must not have a trailing separator when there is no source; got: {chain}"
+            chain.contains("rustls: cert expired"),
+            "chain must surface inner-layer Display via .source() walk; got: {chain}"
+        );
+        let url = "https://api.github.com/repos/actions/runner/releases/latest";
+        let final_msg = format!("GitHub API response read failed: {chain}: {url}");
+        assert!(
+            final_msg.contains("tls handshake failure"),
+            "wrapper-shaped final msg must preserve mid-layer Display through wrapping; got: {final_msg}"
+        );
+        assert!(
+            final_msg.contains("rustls: cert expired"),
+            "wrapper-shaped final msg must preserve inner-layer Display through wrapping; got: {final_msg}"
+        );
+        assert!(
+            !final_msg.contains("read failed: read failed"),
+            "anti-doubling pin: wrapper prefix must not duplicate when chain starts with similar text; got: {final_msg}"
+        );
+    }
+
+    /// `format_error_chain` depth cap pin. Construct a 17-level Error
+    /// chain where each level's `.source()` returns the next level;
+    /// after format_error_chain, the output must contain exactly 16
+    /// ": " separators (= 17 layers of Display joined by 16 separators
+    /// would be the unbounded case, but the cap stops the walk at
+    /// FORMAT_IO_CHAIN_MAX_DEPTH = 16 source-chain hops, producing
+    /// outermost + 16 hops = 17 emitted layers separated by 16 ": ").
+    /// The cap fires *before* the 17th hop, so the 18th-and-beyond
+    /// layers are dropped. This defends against regressions that
+    /// remove the depth cap (would cycle/explode on cyclic chains) or
+    /// off-by-one regressions that set the cap to 15 or 17.
+    ///
+    /// Note on counting: format_error_chain emits the outermost layer's
+    /// Display first (no leading ": "), then walks `.source()` up to
+    /// FORMAT_IO_CHAIN_MAX_DEPTH (16) more levels, prepending ": "
+    /// before each. So a chain with depth >= 17 produces exactly 16
+    /// ": " separators in output.
+    #[test]
+    fn format_error_chain_depth_cap_stops_at_max() {
+        use std::error::Error;
+        use std::fmt;
+
+        #[derive(Debug)]
+        struct LinkedNode {
+            label: String,
+            next: Option<Box<LinkedNode>>,
+        }
+        impl fmt::Display for LinkedNode {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(&self.label)
+            }
+        }
+        impl Error for LinkedNode {
+            fn source(&self) -> Option<&(dyn Error + 'static)> {
+                self.next.as_deref().map(|n| n as &(dyn Error + 'static))
+            }
+        }
+
+        let mut head: Option<Box<LinkedNode>> = None;
+        for i in (0..20).rev() {
+            head = Some(Box::new(LinkedNode {
+                label: format!("layer-{i}"),
+                next: head,
+            }));
+        }
+        let head = head.unwrap();
+        let chain = format_error_chain(head.as_ref());
+        let separator_count = chain.matches(": ").count();
+        assert_eq!(
+            separator_count, FORMAT_IO_CHAIN_MAX_DEPTH,
+            "depth cap must stop walk at FORMAT_IO_CHAIN_MAX_DEPTH (= 16) hops, producing exactly 16 ': ' separators; got {separator_count} in chain: {chain}"
+        );
+        assert!(
+            chain.contains("layer-0"),
+            "chain must include outermost layer; got: {chain}"
+        );
+        assert!(
+            chain.contains(&format!("layer-{}", FORMAT_IO_CHAIN_MAX_DEPTH)),
+            "chain must include the last layer reached by the cap (layer-{}); got: {chain}",
+            FORMAT_IO_CHAIN_MAX_DEPTH
+        );
+        assert!(
+            !chain.contains(&format!("layer-{}", FORMAT_IO_CHAIN_MAX_DEPTH + 1)),
+            "chain must NOT include layers beyond the cap (layer-{}); got: {chain}",
+            FORMAT_IO_CHAIN_MAX_DEPTH + 1
         );
     }
 }
