@@ -6755,6 +6755,200 @@ labels  = ["alpha", "beta"]
         );
     }
 
+    /// First-post-upgrade transition: a runner whose on-disk
+    /// `X-Ghars-Spec-Hash` was computed by a pre-canonicalization
+    /// `merge_defaults` (no labels sort) must produce an `UpdateRunner`
+    /// with `requires_recreate=true` and the `uncovered` recreate
+    /// reason on the first plan run after the upgrade. This is the
+    /// expected one-time recreate when a runner crosses the
+    /// canonicalization boundary; the apply path then re-renders the
+    /// canonical spec onto disk and the next plan returns to NoOp
+    /// (the steady-state pinned by `plan_noop_when_labels_reorder_only`
+    /// above).
+    ///
+    /// Mirrors the caches-canonicalization class but exercises the
+    /// HASH-MISMATCH gate rather than the steady-state NoOp gate.
+    /// Routes specifically through the `uncovered` arm at the
+    /// `recreate_reasons.push("uncovered")` site in `plan_from`'s
+    /// intersection branch:
+    ///   - `!hashes_equal`: discovered carries the pre-canonical OLD
+    ///     hash, desired re-hashes to NEW after `merge_defaults`
+    ///     sorts.
+    ///   - `recreate_reasons.is_empty()`: Stage 1 labels classifier
+    ///     sorts BOTH sides via `sorted_set_field_diff` so the set-
+    ///     equal labels produce no `labels` recreate reason.
+    ///   - `field_changes.is_empty()`: same path, no FieldChange
+    ///     emitted for set-equal sorted comparison.
+    ///   - `!any_drop_in_modified`: the only Modified drop-in is
+    ///     `00-ghars.conf` (carries `X-Ghars-Spec-Hash`), which is
+    ///     filtered out of the in-place evidence set by the basename
+    ///     gate at the `any_drop_in_modified` filter.
+    ///
+    /// Fixture construction: clone the canonical spec (post-merge_-
+    /// defaults, labels sorted), then assign an unsorted labels Vec
+    /// AND recompute `spec_hash` from the unsorted-labels spec. That
+    /// recomputation is what makes the OLD hash distinct from NEW —
+    /// `spec_hash` clears the embedded hash before serializing and
+    /// the labels Vec is part of the canonical-JSON payload, so a
+    /// reordered labels Vec lands at a different SHA-256 output.
+    /// `discovered_for` then renders drop-ins from this pre-canonical
+    /// spec; `render_identity`'s defense-in-depth sort (systemd.rs)
+    /// re-sorts labels in the X-Ghars-Labels emission, but the OLD
+    /// hash persists in `X-Ghars-Spec-Hash` and on the
+    /// `DiscoveredRunner` field.
+    ///
+    /// A regression that REMOVED the `merge_defaults` labels sort
+    /// would silently break this transition guarantee — the new plan
+    /// would compute a hash from unsorted labels matching the OLD
+    /// hash (no recreate fires) and the canonicalization promise
+    /// (steady-state byte-identical X-Ghars-Labels) would silently
+    /// erode. A regression that REMOVED the `uncovered` fallback
+    /// would land the hash mismatch in NoOp territory and the on-
+    /// disk `X-Ghars-Spec-Hash` would never re-sync to NEW.
+    #[test]
+    fn plan_first_post_upgrade_labels_canonicalization_emits_uncovered_recreate() {
+        // Desired: operator config with labels in some order. After
+        // merge_defaults, labels sort to ["alpha","beta","middle"]
+        // and spec_hash captures that canonical form (NEW).
+        let cfg = config_with_runners(vec![{
+            let mut r = minimal_runner("a");
+            r.labels = vec!["middle".into(), "alpha".into(), "beta".into()];
+            r
+        }]);
+        let desired_spec = merge_defaults(
+            &cfg.runners[0],
+            &cfg.defaults,
+            "pat".into(),
+            vec![],
+            None,
+            None,
+            None,
+            Arch::X86_64,
+            cfg_source_default(),
+        );
+        // Canonical contract pin: merge_defaults must sort labels.
+        // If this assertion fails, the test scaffold itself is broken
+        // and the body assertions below would be evaluating against
+        // a non-canonical desired spec.
+        assert_eq!(
+            desired_spec.labels,
+            vec![
+                "alpha".to_string(),
+                "beta".to_string(),
+                "middle".to_string()
+            ],
+            "merge_defaults must sort labels for the desired spec; got: {:?}",
+            desired_spec.labels
+        );
+        let new_hash = spec_hash(&desired_spec);
+
+        // Pre-canonical (OLD) discovered spec: same fields as
+        // desired, but labels Vec is REORDERED back to a non-canonical
+        // permutation BEFORE recomputing spec_hash. This simulates a
+        // runner registered by a pre-canonicalization version of
+        // ghars whose merge_defaults did not yet sort labels — the
+        // hash that landed in `X-Ghars-Spec-Hash` was computed from
+        // the operator's source order, NOT from the canonical sort.
+        let mut pre_canonical_spec = desired_spec.clone();
+        pre_canonical_spec.labels =
+            vec!["middle".into(), "alpha".into(), "beta".into()];
+        pre_canonical_spec.spec_hash = spec_hash(&pre_canonical_spec);
+        let old_hash = pre_canonical_spec.spec_hash.clone();
+        // Hash-mismatch precondition: the canonical-sort change must
+        // shift the hash. If this fails, spec_hash isn't sensitive to
+        // labels Vec order (e.g. a hypothetical refactor that sorted
+        // inside spec_hash itself) and the rest of the test would
+        // not exercise the uncovered path.
+        assert_ne!(
+            old_hash, new_hash,
+            "pre-canonical (unsorted) spec_hash must differ from canonical (sorted) spec_hash; \
+             got old={old_hash} new={new_hash}"
+        );
+
+        // Build the discovered runner: spec_hash field carries OLD
+        // (the hash that pre-canonical ghars wrote into
+        // X-Ghars-Spec-Hash); drop-ins are rendered from
+        // pre_canonical_spec but `render_identity` defense-in-depth
+        // sorts labels in the X-Ghars-Labels emission, so the
+        // discovered drop-in body has SORTED labels with OLD hash.
+        // That mismatch (OLD-hash + SORTED-labels) is exactly what
+        // `state::discover` reads off-disk after the upgrade lands.
+        let mut actual = empty_actual();
+        actual.runners.insert(
+            "a".into(),
+            discovered_for("a", &pre_canonical_spec, Drift::InSync),
+        );
+
+        let plan = plan_from(&cfg, &actual, &empty_paths())
+            .expect("plan_from must succeed for the transition fixture");
+
+        // Single UpdateRunner action: the runner crossed the
+        // canonicalization boundary and the planner must recreate it.
+        let updates: Vec<&RunnerDelta> = plan
+            .actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::UpdateRunner(d) => Some(d),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            updates.len(),
+            1,
+            "transition must produce exactly one UpdateRunner; got plan: {:?}",
+            plan.actions
+        );
+        let upd = updates[0];
+        assert!(
+            upd.requires_recreate,
+            "transition must recreate (hash mismatch with no field-level explanation); \
+             got reasons {:?} field_changes {:?}",
+            upd.recreate_reasons, upd.field_changes
+        );
+        // The classifier MUST route this through the `uncovered`
+        // fallback specifically — labels are set-equal after sorting
+        // so no `labels` reason fires, and 00-ghars.conf is the only
+        // Modified drop-in (filtered by basename) so Stage 2 finds
+        // nothing. Pin the typed reason and the absence of the
+        // `labels` reason so a future regression that incorrectly
+        // routed this through Stage 1 (e.g. dropping the
+        // `sorted_set_field_diff` sort) would surface as `labels`
+        // instead of `uncovered`.
+        assert_eq!(
+            upd.recreate_reasons,
+            vec!["uncovered"],
+            "transition must route through `uncovered` only; got: {:?}",
+            upd.recreate_reasons
+        );
+        // Stage 1 must record NO labels FieldChange — the discovered
+        // and desired sorted-label sets are byte-identical, so the
+        // classifier's set-equal branch returns None. A FieldChange
+        // here would mean the labels classifier diverged from the
+        // hash classifier (canonical mismatch) on this transition.
+        assert!(
+            !upd.field_changes.iter().any(|c| c.path == "labels"),
+            "uncovered fallback must NOT carry a labels FieldChange (set-equal after sort); \
+             got: {:?}",
+            upd.field_changes
+        );
+        // Sibling pin: the `after` spec_hash on the delta carries
+        // the canonical NEW hash. This is the hash apply will write
+        // back to disk during the recreate, so the next plan run
+        // returns to NoOp. RunnerDelta has no `before` field — the
+        // OLD hash lives on the input `DiscoveredRunner` which the
+        // planner consumes; we read it back from `actual` directly
+        // to pin the contract end-to-end.
+        assert_eq!(
+            upd.after.spec_hash, new_hash,
+            "delta.after.spec_hash must carry the canonical NEW hash"
+        );
+        assert_eq!(
+            actual.runners.get("a").expect("runner present").spec_hash,
+            old_hash,
+            "discovered.spec_hash fixture must carry the pre-canonical OLD hash"
+        );
+    }
+
     // ---- #384: hardening Vec canonicalization (3 set-semantic fields) -
 
     /// `merge_hardening` sorts `restrict_address_families` in place so
