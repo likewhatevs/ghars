@@ -9583,9 +9583,10 @@ auth = \"pat\"
     /// naming keeps lex-order coincident with natural-order
     /// (`ci-1, ci-2, ci-3`). For count >= 10 lex-sort produces
     /// `ci-1, ci-10, ci-2, ...` — operator-confusing but contractually
-    /// correct (sort_unstable on `Vec<String>` is byte-wise). Mixed-
-    /// digit fixtures and additional shapes (mixed Create+Update) are
-    /// taskified separately as a follow-up.
+    /// correct (sort_unstable on `Vec<String>` is byte-wise). The
+    /// count=0 + discovered-runner shape is pinned by the sibling
+    /// `plan_from_count_zero_with_discovered_runner_emits_remove_in_summary_recreates`
+    /// test below.
     ///
     /// Asserts:
     /// - `summary.total_actions == 3` — fan-out arity.
@@ -10061,18 +10062,18 @@ auth = \"pat\"
     /// Discovered-only runner with POPULATED annotations: extends
     /// the count=0 sibling above by feeding `plan_from`'s
     /// discovered-only diff arm a `DiscoveredRunner` whose
-    /// `00-ghars.conf` drop-in carries a full annotation set (the
-    /// fixture renders the bytes that
-    /// `apply.rs::execute_create_runner` would have written to disk;
-    /// `state::discover` in production reads those bytes back via
-    /// `fs::read_to_string`). `reconstruct_identity` reads
+    /// `00-ghars.conf` drop-in carries a full annotation set and
+    /// whose unit body carries non-default `User=` / `WorkingDirectory=`
+    /// values. `reconstruct_identity` reads
     /// `discovered.drop_ins["00-ghars.conf"]` via
-    /// `DiscoveredAnnotations::from_discovered` and the on-disk
-    /// unit text for `User=` / `WorkingDirectory=`, so a populated
-    /// fixture produces a `RunnerIdentity` with non-empty url +
-    /// auth_name + meaningful prefix/user — matching what
+    /// `DiscoveredAnnotations::from_discovered` for url + auth_name
+    /// and the on-disk unit text via `parse_user_from_unit` /
+    /// `parse_working_directory_from_unit` for user + prefix, so a
+    /// populated fixture produces a `RunnerIdentity` with non-empty
+    /// url + auth_name + meaningful prefix/user — matching what
     /// `apply.rs::execute_remove_runner` needs to mint a
-    /// deregistration token.
+    /// deregistration token and to `userdel` the right account on
+    /// recreate.
     ///
     /// The count=0 sibling
     /// (`plan_from_count_zero_with_discovered_runner_emits_remove_in_summary_recreates`)
@@ -10081,12 +10082,25 @@ auth = \"pat\"
     /// fallbacks. This test takes the populated path, distinct from
     /// that fallback.
     ///
+    /// To make the user/prefix assertions load-bearing, the unit
+    /// body emits `User=custom-old-web` and
+    /// `WorkingDirectory=/opt/ghars/old-web` rather than the runner
+    /// template's hardcoded `User=ghars-%i` /
+    /// `WorkingDirectory=/var/lib/ghars/%i`. The fallback paths in
+    /// `reconstruct_identity` would produce `ghars-old-web` (from
+    /// `format!("{RUNNER_USER_PREFIX}{name}")`) and `/var/lib/ghars`
+    /// (from `paths.state_dir`), so an `assert_eq!` against the
+    /// non-default values fails the moment the parse path stops
+    /// firing — pinning that the populated body, not the fallback,
+    /// produced the identity.
+    ///
     /// Distinct config shape: no count block; one explicit runner
     /// "web" desired, one different-named "old-web" discovered. The
     /// desired-only arm fires for "web" (CreateRunner), the
     /// discovered-only arm fires for "old-web" (RemoveRunner). The
     /// assertion focuses on the RemoveRunner — its identity must
-    /// carry the annotated values, not the fallback empty strings.
+    /// carry the parsed values, not the fallback empty strings or
+    /// derived defaults.
     #[test]
     fn plan_from_discovered_only_runner_populates_remove_runner_identity() {
         // Desired: explicit runner "web" (no count block).
@@ -10096,9 +10110,8 @@ auth = \"pat\"
         // present on disk, no matching desired entry. The
         // discovered-only arm in plan_from emits RemoveRunner("old-web").
         // Build the discovered runner's spec + render to populate
-        // on_disk_unit_text + drop_ins["00-ghars.conf"] (the latter
-        // is what DiscoveredAnnotations::from_discovered reads for
-        // url + auth_name).
+        // drop_ins["00-ghars.conf"] (which DiscoveredAnnotations::
+        // from_discovered reads for url + auth_name).
         let discovered_spec = crate::config::EffectiveRunnerSpec {
             name: "old-web".into(),
             url: "https://github.com/example/old-web".into(),
@@ -10127,13 +10140,37 @@ auth = \"pat\"
         };
         let rendered = crate::systemd::render_runner_unit(&discovered_spec)
             .expect("render_runner_unit must succeed for valid spec");
+        // Synthesize the on-disk unit body with non-default User=
+        // and WorkingDirectory= lines so the parse path produces
+        // values distinct from `reconstruct_identity`'s fallbacks.
+        // The runner template (`crate::systemd::runner_template_text`)
+        // hardcodes `User=ghars-%i` and
+        // `WorkingDirectory=/var/lib/ghars/%i` — substituting %i to
+        // "old-web" yields `ghars-old-web` and `/var/lib/ghars`,
+        // identical to what the `unwrap_or_else` arms would produce
+        // (RUNNER_USER_PREFIX + name and `paths.state_dir`
+        // respectively). Without a divergent unit body, an
+        // assert_eq! against either value would pass whether parsing
+        // succeeded or the fallback fired — no falsifiability for
+        // the populated-vs-fallback distinction this test exists to
+        // verify. The drop-in body in `rendered.drop_ins` is kept
+        // unchanged: that's where url + auth_name annotations live,
+        // and they read through `DiscoveredAnnotations::
+        // from_discovered`, which targets the 00-ghars.conf drop-in
+        // (not the unit body).
+        let on_disk_unit_text = "[Unit]\n\
+             Description=GitHub Actions Runner (old-web)\n\
+             [Service]\n\
+             User=custom-old-web\n\
+             WorkingDirectory=/opt/ghars/old-web\n"
+            .to_string();
         let mut actual = state::ActualState::default();
         actual.runners.insert(
             "old-web".into(),
             state::DiscoveredRunner {
                 name: "old-web".into(),
                 spec_hash: discovered_spec.spec_hash.clone(),
-                on_disk_unit_text: rendered.template,
+                on_disk_unit_text,
                 drop_ins: rendered.drop_ins,
                 running: false,
                 enabled: false,
@@ -10173,19 +10210,29 @@ auth = \"pat\"
              annotation, not the empty fallback",
         );
         assert_eq!(
-            remove_identity.user, "ghars-old-web",
-            "RemoveRunner.user must reflect the User= line in the \
-             discovered unit text after %i substitution",
+            remove_identity.user, "custom-old-web",
+            "RemoveRunner.user must reflect the User= line parsed \
+             from the discovered unit body, not \
+             reconstruct_identity's RUNNER_USER_PREFIX+name fallback. \
+             The synthetic on_disk_unit_text emits \
+             `User=custom-old-web` (distinct from the fallback \
+             `ghars-old-web`), so this assertion fails the moment \
+             parse_user_from_unit stops firing or the parse->fallback \
+             order inverts.",
         );
-        // RemoveRunner.prefix is parse_working_directory_from_unit's
-        // parent, i.e. WorkingDirectory's directory. The renderer
-        // emits `WorkingDirectory=/var/lib/ghars/old-web` — parent
-        // is `/var/lib/ghars`.
         assert_eq!(
             remove_identity.prefix.as_str(),
-            "/var/lib/ghars",
-            "RemoveRunner.prefix must be parent of WorkingDirectory= \
-             from the discovered unit text",
+            "/opt/ghars",
+            "RemoveRunner.prefix must be the parent of the \
+             WorkingDirectory= line parsed from the discovered unit \
+             body. The synthetic on_disk_unit_text emits \
+             `WorkingDirectory=/opt/ghars/old-web`; \
+             parse_working_directory_from_unit returns the path, \
+             reconstruct_identity takes its parent (/opt/ghars). \
+             The fallback would produce `paths.state_dir` \
+             (`/var/lib/ghars` for Paths::default()) — distinct from \
+             `/opt/ghars`, so this assertion is load-bearing and \
+             fails if the parse path stops firing.",
         );
 
         // Pin the docstring's "desired-only arm fires for 'web'
@@ -11158,7 +11205,7 @@ token_env = \"GHARS_PAT\"
         );
     }
 
-    // ---------- #242 follow-up: gap-filling cmd_init/cmd_add tests ----
+    // ---------- gap-filling cmd_init/cmd_add tests --------------------
 
     #[test]
     fn cmd_init_creates_parent_dir_when_missing() {
@@ -15766,21 +15813,21 @@ auth = \"pat\"
         );
     }
 
-    // ---------- #585: sigil multi-element recreate_reasons pin -----------
+    // ---------- sigil multi-element recreate_reasons pin -----------------
 
-    /// #585 (PASS-2 follow-up to #491): pin the multi-element
-    /// `recreate_reasons.join(",")` format the renderer at
-    /// `render_action_line` produces. The #491 base test covers the
-    /// empty case; this test pins the multi-element case so a
-    /// future renderer change to a different separator (e.g.
-    /// `, ` with space, `+`, etc.) is caught at the test layer.
-    /// Format expected: `update: recreate (url,arch)` — comma
-    /// without space between elements.
+    /// Pin the multi-element `recreate_reasons.join(",")` format the
+    /// renderer at `render_action_line` produces. The empty-case
+    /// pin lives on `render_action_line_update_runner_recreate_uses_bang_sigil`;
+    /// this test pins the multi-element case so a future renderer
+    /// change to a different separator (e.g. `, ` with space, `+`,
+    /// etc.) is caught at the test layer. Format expected:
+    /// `update: recreate (url,arch)` — comma without space between
+    /// elements.
     ///
     /// This `(REASONS)` parenthetical only applies when
-    /// `recreate_reasons` is non-empty. Per #535, the empty-reasons
-    /// branch emits `update: recreate` with NO parens (omit-parens
-    /// guard at cli.rs:1314-1323) — see
+    /// `recreate_reasons` is non-empty. The empty-reasons branch
+    /// emits `update: recreate` with NO parens (omit-parens guard
+    /// in render_action_line) — see
     /// `render_action_line_update_runner_recreate_uses_bang_sigil`
     /// for that pin.
     #[test]

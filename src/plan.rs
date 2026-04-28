@@ -1788,10 +1788,16 @@ fn classify_recreate_reasons_from_annotations(
 /// 7. Apply Part 3 `requires_recreate` policy — done in
 ///    [`classify_recreate_reasons_from_annotations`].
 /// 8. Cache-pool diffs against the discovered set. State discovery
-///    does not yet enumerate `ghars-cache@*.service` units, so v0.1
-///    emits `CreateCachePool` for every desired pool referenced by
-///    at least one effective spec. Update/Remove classification
-///    lands when state.discover gains pool discovery (B4 #109).
+///    enumerates `ghars-cache@*.service` units into
+///    `actual.cache_pools`; the planner unions desired (every pool
+///    referenced by at least one effective spec) with actual and emits
+///    `CreateCachePool` for desired-only, `RemoveCachePool` for
+///    actual-only, and `UpdateCachePool` when both sides match a name
+///    but the pool's `spec_hash` differs OR the discovered pool's drift
+///    classification is anything other than `InSync` (so an unmanaged
+///    `99-*.conf` drop-in trips an update even when the body the
+///    planner cares about is unchanged). Both-match + hash-equal +
+///    in-sync emits no action.
 /// 9. Orphan handling — `actual.orphans` always become `RemoveRunner`
 ///    (matches Part 7 — managed unit, no matching desired). External
 ///    units are never touched. Identity reconstructed from
