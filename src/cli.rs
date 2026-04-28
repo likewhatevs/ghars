@@ -9746,29 +9746,65 @@ auth = \"pat\"
         assert_eq!(body["summary"]["any_recreate"], false);
     }
 
-    /// Count expansion with explicit collision: a count block
-    /// `name = "ci" count = 3` plus an explicit `[[runner]] name =
-    /// "ci-1"` produces 3 distinct expanded names — the explicit ci-1
-    /// pre-empts the count-block ci-1, so the plan has CreateRunner
-    /// for ci-1, ci-2, ci-3 (one each, no duplicates). The
-    /// `expand_counts_auto_skips_explicit_collision` test in plan.rs
-    /// pins the expansion-side count; this test extends the contract
-    /// to the rendered `summary.recreates` shape — the count and
-    /// explicit blocks share a single recreates entry per name.
-    #[test]
-    fn plan_from_count_with_explicit_collision_lists_each_name_once_in_recreates() {
-        // Build a config with a count=3 block AND an explicit ci-1.
-        // cfg_with_runner_trust_zone produces one runner — promote it
-        // to a count block, then add an explicit ci-1 alongside.
+    /// Shared scaffold for the explicit-collision precedence sibling
+    /// tests (forward: explicit Some > count None, and inverse:
+    /// explicit None > count Some).
+    ///
+    /// Sets up a `Config` with a count=3 block named `ci` (whose
+    /// `memory_max` is set to `count_block_memory_max`) plus an
+    /// explicit `[[runner]] name = "ci-1"` (whose `memory_max` is set
+    /// to `explicit_memory_max`), invokes `plan_from`, and runs the
+    /// invariants every direction must satisfy:
+    ///
+    /// 1. The plan emits exactly 3 `CreateRunner` actions — `expand_counts`
+    ///    at plan.rs:813 auto-skips the count-expanded `ci-1` (because
+    ///    `explicit_names.contains("ci-1")`), so the explicit ci-1's
+    ///    RunnerSpec passes through directly while the count block
+    ///    contributes ci-2 and ci-3.
+    /// 2. `summary.recreates` is exactly
+    ///    `["CreateRunner(ci-1)", "CreateRunner(ci-2)", "CreateRunner(ci-3)"]`
+    ///    — sorted by `Action::label()` byte order, no duplicates,
+    ///    no extras.
+    /// 3. `summary.by_disruption.recreate == 3` and
+    ///    `summary.any_recreate == true`.
+    /// 4. Discriminating-fixture guard: `cfg.runners[0].memory_max`
+    ///    (the count block) exactly equals `count_block_memory_max`.
+    ///    If a future fixture refactor drifts the count block's
+    ///    memory_max, the assertion below becomes non-discriminating
+    ///    (e.g. forward: both sides Some("8G") would silently pass
+    ///    even if precedence broke; inverse: both sides None would
+    ///    silently pass).
+    /// 5. Discriminating-fixture guard: `cfg.defaults.memory_max` is
+    ///    None. `merge_defaults`'s `runner.memory_max OR defaults.memory_max`
+    ///    chain at plan.rs:1048 falls through to defaults when the
+    ///    runner-level field is None — if a future fixture sets
+    ///    defaults.memory_max, the explicit-side None case would
+    ///    silently inherit the defaults value, masking the "explicit
+    ///    wins" assertion through the defaults-inheritance path
+    ///    rather than the count-block override path.
+    /// 6. The plan's `CreateRunner(ci-1)` action carries
+    ///    `spec.memory_max == expected_ci1_memory_max` — the
+    ///    load-bearing precedence pin. With direction-varying
+    ///    fixtures, this assertion proves that the explicit block
+    ///    wins regardless of which side carries more configuration:
+    ///    forward (Some > None) excludes a "count overrides explicit"
+    ///    bug; inverse (None > Some) excludes a "richer-spec wins"
+    ///    bug.
+    fn assert_explicit_collision_precedence(
+        count_block_memory_max: Option<String>,
+        explicit_memory_max: Option<String>,
+        expected_ci1_memory_max: Option<String>,
+    ) {
         let mut cfg = cfg_with_runner_trust_zone("ci", "default".into());
         cfg.runners[0].count = Some(3);
+        cfg.runners[0].memory_max = count_block_memory_max.clone();
         let explicit = crate::config::RunnerSpec {
             name: "ci-1".into(),
             count: None,
             url: "https://github.com/example/ci-1".into(),
             auth: Some("pat".into()),
             labels: Vec::new(),
-            memory_max: Some("8G".into()),
+            memory_max: explicit_memory_max,
             runner_version: None,
             runner_sha256: None,
             runner_tarball: None,
@@ -9789,10 +9825,10 @@ auth = \"pat\"
         let actual = state::ActualState::default();
         let paths = Paths::default();
 
-        let plan =
-            plan::plan_from(&cfg, &actual, &paths).expect("count+explicit plan_from must succeed");
+        let plan = plan::plan_from(&cfg, &actual, &paths)
+            .expect("count+explicit plan_from must succeed");
 
-        // 3 expanded names total (ci-1 from explicit, ci-2 + ci-3 from count).
+        // 1. 3 CreateRunner actions total.
         let create_count = plan
             .actions
             .iter()
@@ -9809,6 +9845,8 @@ auth = \"pat\"
                 .collect::<Vec<_>>(),
         );
 
+        // 2 + 3. summary.recreates exact-match + by_disruption +
+        // any_recreate.
         let body = plan_to_json_value(&plan, false);
         let recreates = body["summary"]["recreates"].as_array().unwrap();
         let labels: Vec<&str> = recreates.iter().map(|v| v.as_str().unwrap()).collect();
@@ -9825,41 +9863,29 @@ auth = \"pat\"
         assert_eq!(body["summary"]["by_disruption"]["recreate"], 3);
         assert_eq!(body["summary"]["any_recreate"], true);
 
-        // Pin explicit-block precedence via spec field: the explicit
-        // ci-1 RunnerSpec carries memory_max = "8G", whereas the count
-        // block (cfg_with_runner_trust_zone leaves memory_max = None)
-        // would not. Find the CreateRunner action for "ci-1" and
-        // assert the resolved spec carries the explicit block's
-        // memory_max value, proving the explicit block won the
-        // collision rather than the count block's expanded ci-1.
-        //
-        // Guard: confirm the count block's fixture still leaves
-        // memory_max = None. If a future fixture change sets
-        // memory_max on the count block, the precedence assertion
-        // below becomes tautological (both blocks would carry
-        // Some("8G")) and silently stops discriminating which block
-        // won the collision. This guard makes that fixture-drift
-        // surface as a CI failure here instead of as a broken-but-
-        // green test.
-        assert!(
-            cfg.runners[0].memory_max.is_none(),
-            "count block must leave memory_max=None for precedence test to be discriminating",
+        // 4. Discriminating-fixture guard: count-block memory_max
+        // matches the caller's input exactly. If the caller passed
+        // None, this catches future drift that flips it to Some; if
+        // the caller passed Some, this catches drift that flips it to
+        // a different Some. Either drift would make assertion 6 below
+        // non-discriminating.
+        assert_eq!(
+            cfg.runners[0].memory_max, count_block_memory_max,
+            "count block memory_max must match the caller's input \
+             ({count_block_memory_max:?}) for precedence test to be discriminating",
         );
-        // Parity guard: merge_defaults's `runner.memory_max OR
-        // defaults.memory_max` chain falls through to the [defaults]
-        // block when the runner-level field is None. If a future
-        // fixture change sets defaults.memory_max, the count-expanded
-        // ci-1 would inherit that value via merge_defaults — making
-        // the "explicit ci-1 carries 8G" assertion below tautological
-        // again, this time through the defaults inheritance path
-        // rather than the count-block override path. Pinning both
-        // None ensures the assertion is discriminating regardless of
-        // which fallback layer drift introduces the value.
+        // 5. Discriminating-fixture guard: defaults.memory_max is
+        // None so merge_defaults's or_else chain at plan.rs:1048
+        // can't inject a defaults value into the explicit-side
+        // EffectiveRunnerSpec.
         assert!(
             cfg.defaults.memory_max.is_none(),
             "defaults must leave memory_max=None for precedence test to be \
              discriminating via merge_defaults or_else chain",
         );
+
+        // 6. Load-bearing precedence pin: ci-1's plan-emitted spec
+        // carries the expected memory_max value.
         let ci1_plan = plan
             .actions
             .iter()
@@ -9869,10 +9895,33 @@ auth = \"pat\"
             })
             .expect("CreateRunner(ci-1) must exist in actions");
         assert_eq!(
-            ci1_plan.spec.memory_max,
+            ci1_plan.spec.memory_max, expected_ci1_memory_max,
+            "explicit-block precedence: ci-1's spec memory_max must equal the \
+             explicit block's value ({expected_ci1_memory_max:?}), not the \
+             count block's ({count_block_memory_max:?})",
+        );
+    }
+
+    /// Count expansion with explicit collision: a count block
+    /// `name = "ci" count = 3` plus an explicit `[[runner]] name =
+    /// "ci-1"` produces 3 distinct expanded names — the explicit ci-1
+    /// pre-empts the count-block ci-1, so the plan has CreateRunner
+    /// for ci-1, ci-2, ci-3 (one each, no duplicates). The
+    /// `expand_counts_auto_skips_explicit_collision` test in plan.rs
+    /// pins the expansion-side count; this test extends the contract
+    /// to the rendered `summary.recreates` shape — the count and
+    /// explicit blocks share a single recreates entry per name.
+    ///
+    /// Body delegates to `assert_explicit_collision_precedence` for
+    /// the shared 6-invariant scaffold; this test contributes the
+    /// forward direction (count `memory_max = None`, explicit
+    /// `memory_max = Some("8G")`, expected ci-1 `Some("8G")`).
+    #[test]
+    fn plan_from_count_with_explicit_collision_lists_each_name_once_in_recreates() {
+        assert_explicit_collision_precedence(
+            None,
             Some("8G".into()),
-            "explicit-block precedence: ci-1's spec must carry the explicit \
-             memory_max=\"8G\", not the count block's None",
+            Some("8G".into()),
         );
     }
 
@@ -9895,98 +9944,17 @@ auth = \"pat\"
     /// any "richer-spec wins" alternative. Together they pin the
     /// invariant that explicit-block precedence is positional/identity
     /// based, not field-density based.
+    ///
+    /// Body delegates to `assert_explicit_collision_precedence` for
+    /// the shared 6-invariant scaffold; this test contributes the
+    /// inverse direction (count `memory_max = Some("4G")`, explicit
+    /// `memory_max = None`, expected ci-1 `None`).
     #[test]
     fn plan_from_count_with_explicit_collision_explicit_none_wins_over_count_some() {
-        // Build a config with a count=3 block carrying memory_max =
-        // Some("4G") AND an explicit ci-1 carrying memory_max = None.
-        // The explicit block must override the count-expanded ci-1
-        // even though the count block is "richer".
-        let mut cfg = cfg_with_runner_trust_zone("ci", "default".into());
-        cfg.runners[0].count = Some(3);
-        cfg.runners[0].memory_max = Some("4G".into());
-        let explicit = crate::config::RunnerSpec {
-            name: "ci-1".into(),
-            count: None,
-            url: "https://github.com/example/ci-1".into(),
-            auth: Some("pat".into()),
-            labels: Vec::new(),
-            memory_max: None,
-            runner_version: None,
-            runner_sha256: None,
-            runner_tarball: None,
-            arch: None,
-            user: None,
-            prefix: None,
-            caches: Vec::new(),
-            trust_zone: "default".into(),
-            network: None,
-            proxy: None,
-            hooks: None,
-            hardening: crate::config::Hardening::default(),
-            allowed_cpus: None,
-            allowed_memory_nodes: None,
-        };
-        cfg.runners.push(explicit);
-
-        let actual = state::ActualState::default();
-        let paths = Paths::default();
-
-        let plan = plan::plan_from(&cfg, &actual, &paths)
-            .expect("count+explicit (inverse) plan_from must succeed");
-
-        // 3 expanded names total (ci-1 from explicit, ci-2 + ci-3
-        // from count) — same shape as the forward-direction sibling.
-        let create_count = plan
-            .actions
-            .iter()
-            .filter(|a| matches!(a, Action::CreateRunner(_)))
-            .count();
-        assert_eq!(
-            create_count, 3,
-            "count=3 with explicit ci-1 collision must yield 3 CreateRunner actions \
-             (no duplicate ci-1); got {} actions: {:?}",
-            plan.actions.len(),
-            plan.actions
-                .iter()
-                .map(|a| format!("{a:?}"))
-                .collect::<Vec<_>>(),
-        );
-
-        // Discriminating-fixture guards. The forward-direction sibling
-        // pins `count.memory_max = None` and `defaults.memory_max =
-        // None` so its `Some("8G")` assertion is discriminating. This
-        // inverse test pins the symmetric setup: the count block
-        // carries `Some("4G")` (so the assertion below — that ci-1's
-        // memory_max resolves to None — proves the explicit block
-        // won, not that the count block's value happened to be None
-        // already), and the defaults must remain None (otherwise
-        // merge_defaults's `or_else(|| defaults.memory_max.clone())`
-        // would inject the defaults value into the explicit ci-1's
-        // EffectiveRunnerSpec, masking the "explicit wins" assertion
-        // through the defaults-inheritance path).
-        assert_eq!(
-            cfg.runners[0].memory_max,
+        assert_explicit_collision_precedence(
             Some("4G".into()),
-            "count block must carry memory_max=Some(\"4G\") for inverse \
-             precedence test to be discriminating",
-        );
-        assert!(
-            cfg.defaults.memory_max.is_none(),
-            "defaults must leave memory_max=None for inverse precedence test \
-             to be discriminating via merge_defaults or_else chain",
-        );
-        let ci1_plan = plan
-            .actions
-            .iter()
-            .find_map(|a| match a {
-                Action::CreateRunner(p) if p.spec.name == "ci-1" => Some(p),
-                _ => None,
-            })
-            .expect("CreateRunner(ci-1) must exist in actions");
-        assert_eq!(
-            ci1_plan.spec.memory_max, None,
-            "explicit-block precedence (inverse): ci-1's spec must carry the \
-             explicit None, not the count block's memory_max=\"4G\"",
+            None,
+            None,
         );
     }
 
