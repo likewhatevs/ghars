@@ -466,9 +466,12 @@ impl FieldValue {
 
 /// One field-level change between the discovered runner's annotation-
 /// reconstructed before-state and the desired effective spec. Emitted
-/// by `classify_recreate_reasons_from_annotations` for every recreate-
-/// bound field whose value differs. CLI consumers render this as
-/// `path: before → after`.
+/// by `classify_recreate_reasons_from_annotations` for every annotation-
+/// covered field whose value differs — both recreate-class fields (the
+/// emit pushes a matching `recreate_reasons` token) and in-place fields
+/// (`auth_name`, `trust_zone`, `caches` — emit without pushing a token
+/// so the diff is visible without forcing a recreate). CLI consumers
+/// render this as `path: before → after`.
 ///
 /// `path` is a stable static identifier — see [`Self::path`] field
 /// doc for the full enumeration. `before` and `after` carry typed
@@ -479,11 +482,18 @@ pub struct FieldChange {
     /// scripts can grep on it.
     ///
     /// Flat tokens for schema v2 (the value the JSON renderer
-    /// emits under `"schema_version": "2"`) — `url`,
-    /// `runner_version`, `labels`, `arch`, `user`, `prefix`,
-    /// `runner_sha256`, `runner_tarball`, `network`, `auth_name`,
-    /// `trust_zone`, `caches`. Dotted notation (e.g.
-    /// `network.mode`, `hardening.kvm`,
+    /// emits under `"schema_version": "2"`):
+    /// - Recreate-class (apply does remove → create): `url`,
+    ///   `runner_version`, `labels`, `arch`, `user`, `prefix`,
+    ///   `runner_sha256`, `runner_tarball`, `network`.
+    /// - In-place (apply does supplementary-group / registry diffs,
+    ///   not unit rewrites): `auth_name`, `trust_zone`, `caches`.
+    ///
+    /// The flat-token list mixes both classes; presence of a
+    /// `FieldChange` does NOT imply `requires_recreate=true` — read
+    /// `RunnerDelta.recreate_reasons` for that signal.
+    ///
+    /// Dotted notation (e.g. `network.mode`, `hardening.kvm`,
     /// `network.allowed_egress`) is reserved for future schema
     /// versions; bumping `schema_version` is the migration path
     /// so existing consumers' grep-on-flat-token gates do not
@@ -564,6 +574,14 @@ pub struct RunnerDelta {
     /// `requires_recreate` is true). Each entry names the field whose
     /// change triggered the recreate decision; CLI consumers display
     /// them verbatim.
+    ///
+    /// These are raw classifier tokens. Field-name tokens (`url`,
+    /// `labels`, `arch`, …) render verbatim because the corresponding
+    /// `FieldChange` row already shows the before→after pair on the
+    /// preceding line; the two non-field tokens (`runsvc_integrity`,
+    /// `uncovered`) are glossed for operator display by
+    /// `cli::recreate_reason_note` — keep that match arm in lockstep
+    /// with the vocabulary below.
     ///
     /// Vocabulary (every string this Vec may contain):
     /// - `"url"` — runner URL changed (registration is URL-bound).
