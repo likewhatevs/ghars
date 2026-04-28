@@ -4515,7 +4515,7 @@ mod tests {
     /// `apply_exit_code`: failure precedence — partial-failure (4)
     /// trumps recreate (8) even when recreate-class actions ALSO
     /// landed successfully. The operator needs to know "go check
-    /// what failed" before "go check what would recreate". (#464)
+    /// what failed" before "go check what would recreate".
     #[test]
     fn apply_exit_code_partial_failure_trumps_recreate() {
         let result = apply::ApplyResult {
@@ -4529,7 +4529,7 @@ mod tests {
 
     /// `apply_exit_code`: failure precedence — total auth failure (5)
     /// trumps recreate (8). Auth is a structural pre-condition;
-    /// recreate is downstream plan-shape. (#464)
+    /// recreate is downstream plan-shape.
     #[test]
     fn apply_exit_code_auth_failure_trumps_recreate() {
         let result = apply::ApplyResult {
@@ -4583,7 +4583,7 @@ mod tests {
         }
     }
 
-    // ---- #464 T-1: cancel_exit_code missing cells ---------------------
+    // ---- T-1: cancel_exit_code missing cells --------------------------
 
     /// T-1a: cancel + recreate flag (alone) + recreate plan → 8.
     /// Pins recreate trumps default-0 even without `--detailed-exitcode`.
@@ -4618,7 +4618,7 @@ mod tests {
         assert_eq!(cancel_exit_code(false, true, &all_noop), 0);
     }
 
-    // ---- #464 T-2: dry_run_exit_code missing cells --------------------
+    // ---- T-2: dry_run_exit_code missing cells -------------------------
 
     /// T-2a: dry-run + recreate flag (alone) + recreate plan → 8.
     /// Pins recreate trumps default-0 even without `--detailed-exitcode`.
@@ -4667,7 +4667,7 @@ mod tests {
         assert_eq!(dry_run_exit_code(false, true, &all_noop), 0);
     }
 
-    // ---- #464 T-3: apply_exit_code 8>2 precedence ---------------------
+    // ---- T-3: apply_exit_code 8>2 precedence --------------------------
 
     /// T-3: `apply_exit_code` with both flags set + success path +
     /// recreate-class outcome → 8. Pins that recreate (8) trumps
@@ -4684,7 +4684,7 @@ mod tests {
         assert_eq!(apply_exit_code(true, true, &result), 8);
     }
 
-    /// #556 (T-4): `apply_exit_code` total-failure-without-auth →
+    /// T-4: `apply_exit_code` total-failure-without-auth →
     /// 1 trumps recreate (8). Symmetric with the partial-failure (4)
     /// and auth-failure (5) precedence pins: failure precedence
     /// strictly trumps recreate, regardless of which failure class
@@ -4713,7 +4713,7 @@ mod tests {
         assert_eq!(apply_exit_code(false, true, &result), 1);
     }
 
-    /// #558 (T-6): `Plan::has_recreate` returns `true` for
+    /// T-6: `Plan::has_recreate` returns `true` for
     /// recreate-class actions BEYOND `CreateRunner`. Existing tests
     /// only cover Create + NoOp. `RemoveRunner` is unambiguously
     /// recreate per `Action::disruption` — pin so the helper does
@@ -4727,7 +4727,7 @@ mod tests {
         assert!(plan.has_recreate());
     }
 
-    /// #559 (T-5): inverse pin — `apply_exit_code` flag-OFF with a
+    /// T-5: inverse pin — `apply_exit_code` flag-OFF with a
     /// recreate-class outcome in `result.details` MUST NOT return
     /// 8. The recreate signal is strictly opt-in; CI callers that
     /// did not pass `--detailed-exitcode-recreate` get the existing
@@ -4749,7 +4749,7 @@ mod tests {
         assert_eq!(apply_exit_code(true, false, &result), 2);
     }
 
-    /// #571 (T-4/T-5): `FieldValue::List` edge cases — empty Vec
+    /// T-4/T-5: `FieldValue::List` edge cases — empty Vec
     /// renders as the empty string in text, and as
     /// `{"type":"list","values":[]}` in JSON. Single-item Vec
     /// renders as the bare item with no trailing comma. Pins both
@@ -4887,11 +4887,11 @@ mod tests {
         assert!(!s.is_empty());
     }
 
-    // -------- #241: cmd_init no longer creates the ghars system user --
+    // -------- cmd_init does not create the ghars system user ----------
 
     #[test]
     fn cmd_init_writes_config_only_no_user_provisioning() {
-        // SEC-27 (#241): init scaffolds ghars.toml and nothing else.
+        // SEC-27: init scaffolds ghars.toml and nothing else.
         // Per-runner system users live in apply::execute_create_runner;
         // a vestigial shared `ghars` user contradicts the per-runner
         // UID model. This test confirms cmd_init does NOT shell out
@@ -4914,7 +4914,7 @@ mod tests {
 
     #[test]
     fn cmd_init_writes_config_with_owner_group_only_mode() {
-        // #240: ghars.toml at /etc/ghars/ghars.toml exposes the
+        // ghars.toml at /etc/ghars/ghars.toml exposes the
         // [auth.*] section's `token_env` / `token_file` references and
         // any custom paths the operator embedded. Default umask leaves
         // the file 0644 (world-readable). Enforce 0640 from creation
@@ -4951,7 +4951,7 @@ mod tests {
         assert_eq!(body, "# operator's existing config\n");
     }
 
-    // -------- #243: cmd_add validates inputs ---------------------------
+    // -------- cmd_add validates inputs ---------------------------------
 
     fn add_args_for(repo: &str, name: Option<&str>, auth: Option<&str>) -> AddArgs {
         AddArgs {
@@ -4979,7 +4979,7 @@ token_env = \"GHARS_PAT\"
 
     #[test]
     fn cmd_add_rejects_invalid_repo_url() {
-        // #243: a malformed --repo (e.g. ftp://, userinfo, traversal)
+        // A malformed --repo (e.g. ftp://, userinfo, traversal)
         // would construct an invalid URL. cmd_add must reject BEFORE
         // appending the [[runner]] block, leaving the operator's
         // config untouched.
@@ -5015,7 +5015,7 @@ token_env = \"GHARS_PAT\"
 
     #[test]
     fn cmd_add_rejects_unknown_auth_ref() {
-        // #243: --auth NAME must reference a [auth.NAME] entry that
+        // --auth NAME must reference a [auth.NAME] entry that
         // exists in the loaded config. An unknown auth ref would
         // otherwise leave a [[runner]] block that every subsequent
         // apply rejects.
@@ -5046,7 +5046,7 @@ token_env = \"GHARS_PAT\"
 
     #[test]
     fn cmd_add_rejects_invalid_runner_name() {
-        // #243: explicit --name must satisfy IDENTIFIER_REGEX
+        // Explicit --name must satisfy IDENTIFIER_REGEX
         // (lowercase, dashes, no leading digit). Reject early so the
         // user's config doesn't pick up a name that apply will refuse.
         let tmp = tempfile::tempdir().unwrap();
@@ -5103,15 +5103,15 @@ token_env = \"GHARS_PAT\"
         assert!(after.contains("url = \"https://github.com/owner/repo\""));
     }
 
-    // -------- #253 / #390: confirm_apply on non-TTY -------------------
+    // -------- confirm_apply on non-TTY --------------------------------
 
     #[test]
     fn confirm_apply_rejects_when_stdin_is_not_a_terminal() {
-        // #253: under `cargo nextest` stdin is a pipe (NOT a TTY), so
+        // Under `cargo nextest` stdin is a pipe (NOT a TTY), so
         // calling confirm_apply directly exercises the fail-closed
         // branch — read_line would otherwise return Ok(0) and silently
         // cancel the apply (or block on an unclosed pipe). The
-        // function MUST surface an Interactive error (#390) pointing
+        // function MUST surface an Interactive error pointing
         // operators at --auto-approve, with exit code 7 to disambiguate
         // from config-shape Validation rejections (6).
         if io::stdin().is_terminal() {
@@ -5124,13 +5124,13 @@ token_env = \"GHARS_PAT\"
         let err = confirm_apply().expect_err(
             "confirm_apply must reject non-TTY stdin; would otherwise block / silently cancel",
         );
-        // #390: the variant must be Interactive (not Validation), so
+        // The variant must be Interactive (not Validation), so
         // wrapper scripts can branch on the variant tag — and exit
         // code 7 confirms err_to_exit_code maps the new variant
         // distinctly from Validation's 6.
         assert!(
             matches!(err, GharsError::Interactive(_, _)),
-            "expected Interactive variant (#390), got: {err:?}"
+            "expected Interactive variant, got: {err:?}"
         );
         assert_eq!(
             err_to_exit_code(&err),
@@ -5148,7 +5148,7 @@ token_env = \"GHARS_PAT\"
         );
     }
 
-    // ---------- #247: removed flags should be rejected by the parser
+    // ---------- removed flags should be rejected by the parser
 
     #[test]
     fn cli_rejects_removed_plan_flag_refresh_releases() {
@@ -5159,14 +5159,14 @@ token_env = \"GHARS_PAT\"
         let r = Cli::try_parse_from(["ghars", "plan", "--refresh-releases"]);
         assert!(
             r.is_err(),
-            "plan --refresh-releases must be rejected (#247)"
+            "plan --refresh-releases must be rejected"
         );
     }
 
     #[test]
     fn cli_rejects_removed_plan_flag_output_dir() {
         let r = Cli::try_parse_from(["ghars", "plan", "--output-dir", "/tmp/x"]);
-        assert!(r.is_err(), "plan --output-dir must be rejected (#247)");
+        assert!(r.is_err(), "plan --output-dir must be rejected");
     }
 
     #[test]
@@ -5174,16 +5174,16 @@ token_env = \"GHARS_PAT\"
         let r = Cli::try_parse_from(["ghars", "apply", "--refresh-releases"]);
         assert!(
             r.is_err(),
-            "apply --refresh-releases must be rejected (#247)"
+            "apply --refresh-releases must be rejected"
         );
     }
 
-    // ---------- #251: exit-code precedence ----------------------------
+    // ---------- exit-code precedence -----------------------------------
 
-    // #237: tests drive the production `apply_exit_code` directly
+    // Tests drive the production `apply_exit_code` directly
     // (no test-local precedence duplication). `classify` partially
-    // applies `detailed_exitcode_recreate = false` so the existing
-    // pre-#464 tests stay terse; #464-specific tests call
+    // applies `detailed_exitcode_recreate = false` so the
+    // 2-flag-arity tests stay terse; recreate-flag tests call
     // `apply_exit_code` with all three args inline.
     fn classify(result: &apply::ApplyResult, detailed_exitcode: bool) -> i32 {
         apply_exit_code(detailed_exitcode, false, result)
@@ -5288,7 +5288,7 @@ token_env = \"GHARS_PAT\"
     #[test]
     fn exit_code_partial_failure_with_only_succeeded_takes_4_not_5() {
         // Mixed: 2 succeeded, 1 auth-failed, 1 non-auth-failed. Auth's
-        // 5 must NOT win when partial-success is observable. (#251)
+        // 5 must NOT win when partial-success is observable.
         let r = apply::ApplyResult {
             succeeded: vec!["CreateRunner(a)".into(), "CreateRunner(b)".into()],
             failed: vec![
@@ -5355,7 +5355,7 @@ token_env = \"GHARS_PAT\"
         assert_eq!(classify(&total_no_auth, true), 1);
     }
 
-    // ---------- #237: status_exit_code ---------------------------------
+    // ---------- status_exit_code ---------------------------------------
 
     fn pass(name: &str) -> preflight::CheckResult {
         preflight::CheckResult {
@@ -5426,7 +5426,7 @@ token_env = \"GHARS_PAT\"
         assert_eq!(status_exit_code(&health), 0);
     }
 
-    // ---------- #258: D-Bus failure rewrap ----------------------------
+    // ---------- D-Bus failure rewrap -----------------------------------
 
     #[test]
     fn open_dbus_error_carries_actionable_hint() {
@@ -5463,7 +5463,7 @@ token_env = \"GHARS_PAT\"
         );
     }
 
-    // ---------- #236: argv parsing for every subcommand --------------
+    // ---------- argv parsing for every subcommand ----------------------
 
     #[test]
     fn argv_validate_without_deep_defaults_to_false() {
@@ -5486,7 +5486,7 @@ token_env = \"GHARS_PAT\"
         }
     }
 
-    /// `ghars plan --detailed-exitcode` parses (#391 / #456). Pins the
+    /// `ghars plan --detailed-exitcode` parses. Pins the
     /// flag name + the bool field shape so a future rename or
     /// `ArgAction` change breaks compile here rather than silently
     /// dropping the terraform-plan-parity exit code.
@@ -5499,7 +5499,7 @@ token_env = \"GHARS_PAT\"
         }
     }
 
-    /// `ghars plan` (no flag) leaves `detailed_exitcode = false` (#456).
+    /// `ghars plan` (no flag) leaves `detailed_exitcode = false`.
     /// Pins the default so a future move to `Option<bool>`, an
     /// `ArgAction::SetTrue` sentinel, or an inverted `default_value`
     /// can't change the exit-code semantics for unflagged invocations.
@@ -5520,7 +5520,7 @@ token_env = \"GHARS_PAT\"
                 assert!(!args.auto_approve);
                 assert!(!args.fail_fast);
                 assert!(!args.detailed_exitcode);
-                // #557 (T-7): pin clap default-false for the recreate
+                // T-7: pin clap default-false for the recreate
                 // gate. Drift here would surprise CI consumers with
                 // unexpected exit code 8.
                 assert!(
@@ -5594,7 +5594,7 @@ token_env = \"GHARS_PAT\"
 
     #[test]
     fn cmd_status_runners_only_propagates_config_parse_error() {
-        // #261: cmd_status MUST load_config FIRST, before any other
+        // cmd_status MUST load_config FIRST, before any other
         // work, even under --runners-only. Two contracts on this
         // assertion (per design Part 10):
         //
@@ -5649,7 +5649,7 @@ token_env = \"GHARS_PAT\"
         );
     }
 
-    /// #406 BATCH 18: cmd_status calls load_config which now runs the
+    /// cmd_status calls load_config which runs the
     /// full post-load validator sweep. Pre-batch-18, cmd_status only
     /// got validate_networks via load_config — the other 4 validators
     /// (security_overrides, identity_fields, no_duplicate_caches,
@@ -5725,7 +5725,7 @@ size = \"200G\"
         );
     }
 
-    /// #427 end-to-end: a `[[runner]] name` longer than
+    /// End-to-end: a `[[runner]] name` longer than
     /// `RUNNER_NAME_MAX_LEN` must reject through `cmd_status` because
     /// `validate_runner_names` is wired into `load_config` (the 6th
     /// post-load validator). Symmetric to
@@ -5794,7 +5794,7 @@ auth = \"pat\"
         );
     }
 
-    /// #434 end-to-end: a `[[runner]] user = "..."` longer than
+    /// End-to-end: a `[[runner]] user = "..."` longer than
     /// `USER_MAX_LEN` must reject through `cmd_status` because
     /// `validate_user_overrides` is wired into `load_config` (the 7th
     /// post-load validator). Symmetric to the runner-name and
@@ -5862,7 +5862,7 @@ user = \"{oversize_user}\"
         );
     }
 
-    /// #434 defaults variant: `[defaults] user = "..."` longer than
+    /// Defaults variant: `[defaults] user = "..."` longer than
     /// `USER_MAX_LEN` must reject with the `defaults:` scope (NOT a
     /// per-runner scope). Pairs with the runner-scope test above to
     /// cover both surfaces of `validate_user_overrides`.
@@ -5918,7 +5918,7 @@ token_env = \"GHARS_PAT\"
         assert_eq!(err_to_exit_code(&err), 6);
     }
 
-    /// #381 end-to-end: a `[[runner]] trust_zone` containing a control
+    /// End-to-end: a `[[runner]] trust_zone` containing a control
     /// character (here `\n`) must reject through `cmd_status` because
     /// `validate_identity_fields` is wired into `load_config` as one
     /// of the post-load validators (see the validator-order comment
@@ -5999,7 +5999,7 @@ trust_zone = \"audited\\nInjected=stuff\"
         );
     }
 
-    /// #381 end-to-end: a `[cache_pools.NAME] trust_zone` containing
+    /// End-to-end: a `[cache_pools.NAME] trust_zone` containing
     /// a control character (here `\r`) must reject through `cmd_status`.
     /// Symmetric to the runner-scoped trust_zone test above —
     /// `validate_identity_fields` walks both `cfg.runners` and
@@ -6062,7 +6062,7 @@ trust_zone = \"audited\\rsmuggled\"
         assert_eq!(err_to_exit_code(&err), 6);
     }
 
-    /// #381 end-to-end happy path: `cmd_status` ACCEPTS a config whose
+    /// End-to-end happy path: `cmd_status` ACCEPTS a config whose
     /// trust_zone fields are clean (no control chars). Pins the
     /// negative — without it, a future regression that always rejects
     /// trust_zone (e.g. validator misuse) would only fail the rejection
@@ -6127,7 +6127,7 @@ trust_zone = \"audited\"
         );
     }
 
-    /// #349 end-to-end: a `[[runner]] runner_tarball = "/nonexistent..."`
+    /// End-to-end: a `[[runner]] runner_tarball = "/nonexistent..."`
     /// must reject through `cmd_status` because `validate_runner_tarballs`
     /// is the 8th post-load validator wired into `load_config`. Symmetric
     /// to the runner-name / cache-pool / runner-user end-to-end tests
@@ -6207,7 +6207,7 @@ runner_tarball = \"{nonexistent}\"
         );
     }
 
-    /// #349 symlink branch: `validate_runner_tarball` lstat's the path
+    /// Symlink branch: `validate_runner_tarball` lstat's the path
     /// BEFORE `is_file()` so a symlink-to-regular-file is rejected with
     /// the "not a symlink" error from the symlink-rejection arm of
     /// `validators::validate_runner_tarball`. This pins the rejection
@@ -6283,7 +6283,7 @@ runner_tarball = \"{}\"
         );
     }
 
-    /// #349 directory branch: `validate_runner_tarball` rejects a path
+    /// Directory branch: `validate_runner_tarball` rejects a path
     /// that exists, is not a symlink, but `is_file()` returns false —
     /// covering the directory case (the `is_file()` arm of
     /// `validators::validate_runner_tarball`). Pairs with the
@@ -6355,7 +6355,7 @@ runner_tarball = \"{}\"
         );
     }
 
-    /// #432 end-to-end: a `[[runner]] name` exceeding
+    /// End-to-end: a `[[runner]] name` exceeding
     /// `NETNS_RUNNER_NAME_MAX_LEN` (= 7) MUST reject through
     /// `cmd_status` when the runner's effective network mode is
     /// `Netns`. The kernel hard-caps interface names at IFNAMSIZ-1
@@ -6374,8 +6374,8 @@ runner_tarball = \"{}\"
             .unwrap()
             .join("ghars.toml");
         // 8-char name (one over the cap) — fits the legacy
-        // RUNNER_NAME_MAX_LEN (25) so #427 does not pre-reject; the
-        // failure must come from the new netns gate.
+        // RUNNER_NAME_MAX_LEN (25) so the runner-name length cap does
+        // not pre-reject; the failure must come from the new netns gate.
         let oversize_name = "a".repeat(crate::validators::NETNS_RUNNER_NAME_MAX_LEN + 1);
         let body = format!(
             "\
@@ -6439,14 +6439,14 @@ network = \"isolated\"
         );
     }
 
-    /// #447 defaults-inheritance pin: a `[[runner]]` with NO per-runner
+    /// Defaults-inheritance pin: a `[[runner]]` with NO per-runner
     /// `network = "..."` must INHERIT `[defaults] network = "isolated"`
     /// and therefore be subject to the netns IFNAMSIZ gate. Without
     /// this test a regression that walked only `runner.network`
     /// (skipping the defaults fallback) would silently exempt
     /// inheriting runners from the IFNAMSIZ cap, producing the same
     /// opaque `RTNETLINK ... Numerical result out of range` failure at
-    /// apply time that #432 was meant to prevent.
+    /// apply time that the netns-name-length gate prevents.
     ///
     /// 8-char name = `NETNS_RUNNER_NAME_MAX_LEN + 1` — the smallest
     /// shape that breaks IFNAMSIZ. Symmetric with the explicit-mode
@@ -6524,7 +6524,7 @@ auth = \"pat\"
         );
     }
 
-    /// #432 contract pin: the same 8-char runner name that fails the
+    /// Contract pin: the same 8-char runner name that fails the
     /// netns gate above MUST PASS when no [network.NAME] is referenced
     /// (implicit Open mode — no veth allocated, no IFNAMSIZ exposure).
     /// Without this test a regression that tightened
@@ -6566,7 +6566,7 @@ auth = \"pat\"
         );
     }
 
-    /// #432 contract pin: the existing #427 boundary at
+    /// Contract pin: the existing RUNNER_NAME_MAX_LEN boundary at
     /// `RUNNER_NAME_MAX_LEN` (25 chars) must still hold for Open-mode
     /// runners. The new netns gate (= 7) is ADDITIONAL — it MUST NOT
     /// retroactively tighten the global runner-name cap. A regression
@@ -6609,11 +6609,11 @@ auth = \"pat\"
         fs::write(config_path.as_std_path(), body).unwrap();
         load_config(&config_path).expect(
             "25-char name (= RUNNER_NAME_MAX_LEN) in Open mode must pass — \
-             #432 gate must NOT retroactively tighten Open-mode runners",
+             netns-name-length gate must NOT retroactively tighten Open-mode runners",
         );
     }
 
-    /// #432 count-block expansion: a count block whose worst-case
+    /// Count-block expansion: a count block whose worst-case
     /// expanded instance name exceeds `NETNS_RUNNER_NAME_MAX_LEN` MUST
     /// reject. The expanded shape is `{prefix}-{i}` for `i in 1..=N`,
     /// so the worst case is `prefix.len() + 1 + count.to_string().len()`.
@@ -6693,7 +6693,7 @@ network = \"isolated\"
         );
     }
 
-    /// #432 boundary pin: a runner name of EXACTLY
+    /// Boundary pin: a runner name of EXACTLY
     /// `NETNS_RUNNER_NAME_MAX_LEN` chars in netns mode must ACCEPT.
     /// Together with the `_rejects_oversize_` test (cap+1), this pins
     /// the exact boundary the validator enforces. A regression that
@@ -6742,7 +6742,7 @@ network = \"isolated\"
         );
     }
 
-    /// #432 count-block boundary pin: `count = Some(1)` MUST be
+    /// Count-block boundary pin: `count = Some(1)` MUST be
     /// treated as bare-name (no suffix), matching `plan::is_count_block`
     /// which only returns `true` for `count >= 2`. A 7-char name with
     /// `count = 1` produces a single instance with name `"aaaaaaa"` —
@@ -6786,7 +6786,7 @@ network = \"isolated\"
         );
     }
 
-    /// #432 count-block boundary pin: `count = Some(0)` produces
+    /// Count-block boundary pin: `count = Some(0)` produces
     /// ZERO runners (see `plan::expand_counts` early-return on
     /// `Some(0)`), so no veth is ever allocated for that block. The
     /// netns gate MUST NOT reject an oversize name when `count = 0`
@@ -6832,7 +6832,7 @@ network = \"isolated\"
         );
     }
 
-    /// #447: when `[defaults] network = "isolated"` is set and a
+    /// When `[defaults] network = "isolated"` is set and a
     /// `[[runner]]` block has no `network = ...` override, the
     /// netns gate MUST resolve the network reference through the
     /// defaults inheritance path (`runner.network → defaults.network
@@ -6900,7 +6900,7 @@ auth = \"pat\"
 
     #[test]
     fn cmd_status_health_only_still_loads_config() {
-        // #261: even when output is health-only (skips state.discover
+        // Even when output is health-only (skips state.discover
         // entirely), cmd_status must still call load_config. The
         // "every command path validates config first" project
         // standard prevents users from getting a misleading "PASS" on
@@ -7178,7 +7178,7 @@ auth = \"pat\"
         assert_eq!(cli.verbose, 3);
     }
 
-    /// #454: pin single `-v` shape. Without this, a regression that
+    /// Pin single `-v` shape. Without this, a regression that
     /// changed the clap action from `Count` to `SetTrue` would still
     /// pass the -vv/-vvv tests (clap-derive's `Count` collapses
     /// repeated short flags) but silently break the single-flag case
@@ -7189,7 +7189,7 @@ auth = \"pat\"
         assert_eq!(cli.verbose, 1);
     }
 
-    /// #454: pin `--verbose` long-form shape. Operators may pass the
+    /// Pin `--verbose` long-form shape. Operators may pass the
     /// long form (CI scripts often do for readability); a regression
     /// that dropped `long` from the clap derive would silently break
     /// it without affecting the short-form `-v` tests.
@@ -7199,27 +7199,27 @@ auth = \"pat\"
         assert_eq!(cli.verbose, 1);
     }
 
-    // ---------- #454: verbose_to_filter_level truth table ----------
+    // ---------- verbose_to_filter_level truth table ---------------
 
-    /// #454 row 1/6: default operator state. No flags = info.
+    /// Row 1/6: default operator state. No flags = info.
     #[test]
     fn verbose_to_filter_level_quiet_false_verbose_0_returns_info() {
         assert_eq!(verbose_to_filter_level(false, 0), "info");
     }
 
-    /// #454 row 2/6: --quiet alone collapses info chatter to warn.
+    /// Row 2/6: --quiet alone collapses info chatter to warn.
     #[test]
     fn verbose_to_filter_level_quiet_true_verbose_0_returns_warn() {
         assert_eq!(verbose_to_filter_level(true, 0), "warn");
     }
 
-    /// #454 row 3/6: -v alone bumps to debug.
+    /// Row 3/6: -v alone bumps to debug.
     #[test]
     fn verbose_to_filter_level_quiet_false_verbose_1_returns_debug() {
         assert_eq!(verbose_to_filter_level(false, 1), "debug");
     }
 
-    /// #454 row 4/6: --quiet AND -v → -v wins; debug. Pins the
+    /// Row 4/6: --quiet AND -v → -v wins; debug. Pins the
     /// "verbose overrides quiet" contract documented in the helper's
     /// doc-comment.
     #[test]
@@ -7227,19 +7227,19 @@ auth = \"pat\"
         assert_eq!(verbose_to_filter_level(true, 1), "debug");
     }
 
-    /// #454 row 5/6: -vv = trace (any v >= 2 lands here).
+    /// Row 5/6: -vv = trace (any v >= 2 lands here).
     #[test]
     fn verbose_to_filter_level_quiet_false_verbose_2_returns_trace() {
         assert_eq!(verbose_to_filter_level(false, 2), "trace");
     }
 
-    /// #454 row 6/6: --quiet AND -vv → -vv wins; trace.
+    /// Row 6/6: --quiet AND -vv → -vv wins; trace.
     #[test]
     fn verbose_to_filter_level_quiet_true_verbose_2_returns_trace() {
         assert_eq!(verbose_to_filter_level(true, 2), "trace");
     }
 
-    /// #454 saturation: any verbose >= 2 maps to trace, not just 2.
+    /// Saturation: any verbose >= 2 maps to trace, not just 2.
     /// Pins that the `_ => "trace"` arm catches arbitrary higher
     /// counts (operators sometimes type -vvvvv).
     #[test]
@@ -7258,7 +7258,7 @@ auth = \"pat\"
         }
     }
 
-    // ---------- #238: render_plan + render_action_line all variants -----
+    // ---------- render_plan + render_action_line all variants ---------
 
     fn fake_effective_spec(name: &str) -> crate::config::EffectiveRunnerSpec {
         crate::config::EffectiveRunnerSpec {
@@ -7373,8 +7373,7 @@ auth = \"pat\"
         // header. The test exercises a recreate-class field (url) and
         // a list-typed field (labels) to confirm both paths produce a
         // line; list rendering uses Display of the whole vec for now —
-        // the +/- per-item form is reserved for the full --diff flag
-        // (#285).
+        // the +/- per-item form is reserved for the full --diff flag.
         let delta = plan::RunnerDelta {
             identity: fake_identity("buckos"),
             after: fake_runner_plan("buckos"),
@@ -7404,13 +7403,13 @@ auth = \"pat\"
         );
         let lines: Vec<&str> = line.split('\n').collect();
         assert_eq!(lines.len(), 3, "header + 2 field lines, got: {line}");
-        // #462: recreate-class UpdateRunner uses `!` sigil at column 0.
+        // Recreate-class UpdateRunner uses `!` sigil at column 0.
         assert!(lines[0].starts_with("! "), "got: {}", lines[0]);
         assert_eq!(
             lines[1],
             "    url: https://github.com/example/buckos → https://github.com/example/buckos-new",
         );
-        // #463: List-typed FieldValue renders comma-joined in text
+        // List-typed FieldValue renders comma-joined in text
         // (no surrounding brackets — same v1 contract as the
         // pre-typed `labels.join(",")`). Operator grep pipelines
         // that key off `labels:.*gpu` keep working.
@@ -7419,7 +7418,7 @@ auth = \"pat\"
 
     #[test]
     fn render_action_line_update_runner_emits_drop_in_change_lines() {
-        // #301: Created (`+ basename`), Modified (`~ basename`), and
+        // Created (`+ basename`), Modified (`~ basename`), and
         // Removed (`- basename`) all surface in the brief view under
         // the action header so toggling a per-family drop-in
         // (enabling [proxy] → 60-proxy.conf created, clearing
@@ -7487,7 +7486,7 @@ auth = \"pat\"
 
     #[test]
     fn render_action_line_update_runner_in_place_includes_drift_cause() {
-        // #260: in-place update without recreate must carry the
+        // In-place update without recreate must carry the
         // drift_cause label so operators can tell config edit vs
         // detected drift.
         let delta = plan::RunnerDelta {
@@ -7513,7 +7512,7 @@ auth = \"pat\"
 
     #[test]
     fn render_action_line_update_runner_recreate_lists_reasons_and_cause() {
-        // #260 + existing recreate-reasons formatting: spec_changed
+        // Existing recreate-reasons formatting: spec_changed
         // cause + requires_recreate path emits both labels.
         let delta = plan::RunnerDelta {
             identity: fake_identity("buckos"),
@@ -7536,10 +7535,10 @@ auth = \"pat\"
         assert!(line.contains("url,runner_version"), "got: {line}");
     }
 
-    /// #462: recreate-class UpdateRunner must use the `!` sigil.
+    /// Recreate-class UpdateRunner must use the `!` sigil.
     /// In-place UpdateRunner keeps `~`. Both header lines still
     /// terminate with the `[recreate]`/`[restart]` bracket tag from
-    /// #285, but the column-0 sigil is the fast-scan signal that
+    /// the disruption tag, but the column-0 sigil is the fast-scan signal that
     /// distinguishes destructive (token re-mint + GitHub
     /// reregistration + unit teardown) from in-place (drop-in
     /// rewrite + restart) updates.
@@ -7604,7 +7603,7 @@ auth = \"pat\"
 
     #[test]
     fn render_action_line_update_runner_both_cause() {
-        // #260: hash changed AND drift detected → combined label.
+        // Hash changed AND drift detected → combined label.
         let delta = plan::RunnerDelta {
             identity: fake_identity("buckos"),
             after: fake_runner_plan("buckos"),
@@ -7686,7 +7685,7 @@ auth = \"pat\"
         );
     }
 
-    // ---------- #285: Action::disruption() per variant -------------
+    // ---------- Action::disruption() per variant -------------------
 
     #[test]
     fn disruption_create_runner_is_recreate() {
@@ -7720,8 +7719,8 @@ auth = \"pat\"
     fn disruption_update_runner_inplace_branch_is_restart() {
         // requires_recreate=false stays in execute_update_runner's
         // in-place path: at worst, daemon-reload + stop + start.
-        // Plan-time worst-case (apply-time None short-circuit per
-        // #337 is byte-equality-driven and not plan-visible).
+        // Plan-time worst-case (apply-time None short-circuit is
+        // byte-equality-driven and not plan-visible).
         let delta = plan::RunnerDelta {
             identity: fake_identity("buckos"),
             after: fake_runner_plan("buckos"),
@@ -7845,11 +7844,11 @@ auth = \"pat\"
 
     #[test]
     fn render_plan_summary_line_uses_disruption_label_not_hardcoded() {
-        // PHD #285 / #471: pin that every label token in the text
+        // Pin that every label token in the text
         // footer comes from `Disruption::label()`, not from a
         // hardcoded string literal in the format string. If a
         // future refactor inlines the label strings (regressing
-        // the CLN-2 / #471 fix), the substring assertions below
+        // the CLN-2 helper extraction), the substring assertions below
         // continue to pass — but the source-of-truth check at
         // the bottom (substring built from `label()` calls)
         // would still match. The load-bearing guarantee is the
@@ -7882,9 +7881,9 @@ auth = \"pat\"
         assert_eq!(line, expected);
     }
 
-    // ---------- #476: render_apply_summary_line ---------------------
+    // ---------- render_apply_summary_line ---------------------------
 
-    /// #476: empty result emits zeroed footer with `any_recreate: false`.
+    /// Empty result emits zeroed footer with `any_recreate: false`.
     /// Pins the contract that the footer is always emitted (even when
     /// the plan was empty / dry-run-noop), preserving the
     /// "always-present footer" invariant operators rely on for
@@ -7904,7 +7903,7 @@ auth = \"pat\"
         assert_eq!(line, expected);
     }
 
-    /// #476: every outcome class lands in the right bucket.
+    /// Every outcome class lands in the right bucket.
     /// `applied` covers Created/Removed/Recreated/InPlaceRestarted/
     /// PoolCreated/PoolUpdated/PoolRemoved; `skipped` covers NoOp,
     /// DryRunSkipped, InPlaceSkipped, PoolSkipped; `failed` covers
@@ -7962,7 +7961,7 @@ auth = \"pat\"
         assert_eq!(line, expected);
     }
 
-    /// #476: `any_recreate` is true when ANY row's disruption is
+    /// `any_recreate` is true when ANY row's disruption is
     /// Recreate, including a Failed row carrying
     /// `plan_disruption=Recreate`. A partially-applied recreate-class
     /// action that errored mid-way still flips the gate, matching the
@@ -7996,7 +7995,7 @@ auth = \"pat\"
         );
     }
 
-    /// #478 / #618: empty result (no failures) ⇒ no advisory rendered.
+    /// Empty result (no failures) ⇒ no advisory rendered.
     /// Pins that successful applies emit zero stderr advisory noise.
     /// The gate counts non-empty step lists in `failed_undo_logs`;
     /// a default `ApplyResult` (empty `failed_undo_logs`) yields
@@ -8007,10 +8006,10 @@ auth = \"pat\"
         assert!(render_rollback_advisory(&result).is_none());
     }
 
-    /// #478 / #618: header + per-action body + per-step bullet list.
+    /// Header + per-action body + per-step bullet list.
     /// Pins the exact rendering format so operators with downstream
     /// parsers see a stable contract. Header counts entries in
-    /// `failed_undo_logs` with non-empty steps (#618).
+    /// `failed_undo_logs` with non-empty steps.
     #[test]
     fn render_rollback_advisory_renders_per_action_steps() {
         let mut result = apply::ApplyResult::default();
@@ -8036,7 +8035,7 @@ auth = \"pat\"
         );
         let advisory = render_rollback_advisory(&result).unwrap();
         // Header: count of failed actions with cleanup steps,
-        // "Manual cleanup may be required:" (#618).
+        // "Manual cleanup may be required:".
         assert!(
             advisory.starts_with("Rollback advisory: 1 action(s) failed."),
             "advisory must lead with failed-count header; got: {advisory}",
@@ -8070,15 +8069,15 @@ auth = \"pat\"
         );
     }
 
-    /// #478 / #551 / #618: the synthetic `daemon_reload` post-loop
+    /// The synthetic `daemon_reload` post-loop
     /// failure has an empty UndoLog (no per-action mutation manifest).
     /// The advisory renderer skips per-action blocks whose step list
     /// is empty AND counts ONLY non-empty entries in the header N
-    /// (#618), so header count matches body block count under the
+    /// so header count matches body block count under the
     /// MIXED case (empty + non-empty side by side). The ISOLATED
     /// all-empty case is pinned by
     /// `render_rollback_advisory_daemon_reload_only_failure_returns_none`
-    /// per #551 (returns `None` instead of header-only output).
+    /// (returns `None` instead of header-only output).
     #[test]
     fn render_rollback_advisory_skips_empty_step_lists() {
         // Mixed: one daemon_reload (empty) + one real failure with steps.
@@ -8092,7 +8091,7 @@ auth = \"pat\"
             }],
         );
         let advisory = render_rollback_advisory(&result).unwrap();
-        // #618: header counts ONLY non-empty entries (1 here: the
+        // Header counts ONLY non-empty entries (1 here: the
         // RemoveRunner(orphan) failure). The empty-step daemon_reload
         // failure surfaces via the per-action `fail:` line in the
         // cmd_apply detail loop, not via the advisory header.
@@ -8255,7 +8254,7 @@ auth = \"pat\"
         );
     }
 
-    /// #476: only-skipped path (dry-run). Every action skipped via
+    /// Only-skipped path (dry-run). Every action skipped via
     /// `DryRunSkipped`; applied=0, failed=0, skipped=N, all in `none`
     /// disruption bucket.
     #[test]
@@ -8282,7 +8281,7 @@ auth = \"pat\"
         assert_eq!(line, expected);
     }
 
-    // ---------- #285: disruption tag in render_action_line --------
+    // ---------- disruption tag in render_action_line --------------
 
     #[test]
     fn render_action_line_appends_recreate_tag_for_create() {
@@ -8367,7 +8366,7 @@ auth = \"pat\"
         assert!(line.contains("\x1b[32m"), "expected color in line: {line}");
     }
 
-    // ---------- #285: --diff body payload (text) ------------------
+    // ---------- --diff body payload (text) ------------------------
 
     #[test]
     fn render_action_line_diff_modified_emits_unified_diff() {
@@ -8539,7 +8538,7 @@ auth = \"pat\"
         assert!(!line.contains("        after:"), "got: {line}");
         assert!(!line.contains("MemoryMax="), "got: {line}");
         assert!(!line.contains("@@"), "got: {line}");
-        // Preserved suppressed without --diff (matches pre-#285).
+        // Preserved suppressed without --diff.
         assert!(!line.contains("15-resolv.conf"), "got: {line}");
         assert!(!line.contains("(unchanged)"), "got: {line}");
     }
@@ -8587,7 +8586,7 @@ auth = \"pat\"
 
     #[test]
     fn render_action_line_no_diff_recreate_does_not_render_drop_ins() {
-        // Without --diff, recreate output is unchanged from pre-#285
+        // Without --diff, recreate output omits drop-in body
         // (no drop-in expansion at all — header only).
         let mut after_plan = fake_runner_plan("buckos");
         after_plan.drop_ins.insert(
@@ -8616,7 +8615,7 @@ auth = \"pat\"
         assert!(!line.contains("X-Ghars-Spec-Hash"), "got: {line}");
     }
 
-    // ---- #468: recreate `--diff` shows removed drop-ins -----------------
+    // ---- recreate `--diff` shows removed drop-ins ---------------------
 
     /// T1: recreate `--diff` with `before_drop_in_basenames` containing
     /// a name NOT in `after.drop_ins` → emits `- {basename}` line.
@@ -8700,7 +8699,7 @@ auth = \"pat\"
             ColorMode { enabled: false },
             true,
         );
-        // Created lines still render (existing #285 behavior).
+        // Created lines still render (existing --diff body behavior).
         assert!(line.contains("    + 00-ghars.conf"), "got: {line}");
         // No Removed lines — `None` is "unknown pre-state", suppressed.
         assert!(
@@ -8709,7 +8708,7 @@ auth = \"pat\"
         );
     }
 
-    /// #563 COV-1: recreate `--diff` with multiple removed basenames
+    /// COV-1: recreate `--diff` with multiple removed basenames
     /// preserves insertion order in the rendered output. Operators
     /// reading the diff scan top-to-bottom — order drift would
     /// disrupt visual review. Pin: input Vec
@@ -8755,7 +8754,7 @@ auth = \"pat\"
         );
     }
 
-    /// #563 COV-2: recreate `--diff` with `before_drop_in_basenames =
+    /// COV-2: recreate `--diff` with `before_drop_in_basenames =
     /// Some(vec![])` (discovered drop-in directory was present but
     /// empty / fully reused) renders no Removed lines. Distinct
     /// from the `None` case (T2): `Some(empty)` is "known empty",
@@ -8870,7 +8869,7 @@ auth = \"pat\"
     /// T5: `plan_to_json_value` recreate path emits
     /// `{"basename": "...", "change_kind": "removed"}` for basenames
     /// only in the before set. Diverges from in-place Removed: NO
-    /// `before` body field — basename-only signal (sidesteps #461).
+    /// `before` body field — basename-only signal.
     #[test]
     fn plan_to_json_value_diff_recreate_emits_removed_basenames() {
         let mut after_plan = fake_runner_plan("buckos");
@@ -8907,7 +8906,7 @@ auth = \"pat\"
             .expect("removed entry missing");
         assert_eq!(removed["basename"], "99-custom.conf");
         // Diverges from in-place Removed: NO `before` body field
-        // (basename-only signal, sidesteps #461).
+        // (basename-only signal).
         assert!(
             removed.get("before").is_none(),
             "recreate-path Removed must NOT carry a `before` body, got: {removed:?}"
@@ -8962,7 +8961,7 @@ auth = \"pat\"
         );
     }
 
-    // ---------- #285: JSON disruption + diff payload --------------
+    // ---------- JSON disruption + diff payload --------------------
 
     #[test]
     fn plan_to_json_value_includes_disruption_for_every_action_kind() {
@@ -9237,13 +9236,13 @@ auth = \"pat\"
         );
     }
 
-    // ---------- #285 addendum (D-6): schema_version --------------
+    // ---------- D-6 addendum: schema_version ---------------------
 
     #[test]
     fn plan_to_json_value_emits_schema_version_at_top_level() {
         // Top-level `schema_version` is a forward-compat hook for
-        // CI consumers. Bumped to `"2"` in #463 because
-        // FieldChange.before/after became tagged FieldValue objects;
+        // CI consumers. Set to `"2"` because
+        // FieldChange.before/after are tagged FieldValue objects;
         // any future shape change that breaks v2 consumers requires
         // another bump and CHANGELOG/devadv re-review.
         let plan = Plan {
@@ -9275,7 +9274,7 @@ auth = \"pat\"
         assert_eq!(body["summary"]["by_disruption"]["recreate"], 0);
     }
 
-    // ---------- #285 addendum (D-7): summary ---------------------
+    // ---------- D-7 addendum: summary ----------------------------
 
     #[test]
     fn plan_to_json_value_summary_counts_match_action_disruptions() {
@@ -9364,9 +9363,9 @@ auth = \"pat\"
         assert_eq!(body["summary"]["by_disruption"]["recreate"], 1);
     }
 
-    // ---------- #469: summary.recreates --------------------------
+    // ---------- summary.recreates --------------------------------
 
-    /// #469: empty plan must still emit `recreates: []` as a key
+    /// Empty plan must still emit `recreates: []` as a key
     /// (stable shape so CI consumers can `jq '.summary.recreates |
     /// length'` without conditional checks for key presence).
     #[test]
@@ -9383,7 +9382,7 @@ auth = \"pat\"
         );
     }
 
-    /// #469: every recreate-class action lands in `recreates` and the
+    /// Every recreate-class action lands in `recreates` and the
     /// list is sorted alphabetically by `Action::label()`. Non-
     /// recreate actions (NoOp, in-place UpdateRunner, UpdateCachePool)
     /// must NOT appear in `recreates`. Pin the full label vocabulary
@@ -9473,7 +9472,7 @@ auth = \"pat\"
         assert_eq!(body["summary"]["any_recreate"], true);
     }
 
-    /// #469: restart-only + noop plan reports `recreates: []` even
+    /// Restart-only + noop plan reports `recreates: []` even
     /// when total_actions > 0. Symmetric pin against
     /// `summary_any_recreate_false_when_only_restart_and_none`.
     #[test]
@@ -9510,7 +9509,7 @@ auth = \"pat\"
         assert_eq!(body["summary"]["any_recreate"], false);
     }
 
-    /// #469: cross-type entity-name collision contract.
+    /// Cross-type entity-name collision contract.
     ///
     /// A runner named `alpha` and a cache pool named `alpha` are
     /// disambiguated in `summary.recreates` by their `Action::label()`
@@ -9537,7 +9536,7 @@ auth = \"pat\"
         );
     }
 
-    /// #469: `recreates` is `--diff`-independent.
+    /// `recreates` is `--diff`-independent.
     ///
     /// `summary.recreates` carries only `Action::label()` strings and
     /// derives nothing from drop-in bodies or per-action diff payload.
@@ -9592,7 +9591,7 @@ auth = \"pat\"
         );
     }
 
-    /// #469: all-recreate-only plan boundary pin.
+    /// All-recreate-only plan boundary pin.
     ///
     /// When every action is recreate-class (no `NoOp`, no
     /// `Restart`-class actions), `recreates.len()` must equal
@@ -9627,7 +9626,7 @@ auth = \"pat\"
         assert_eq!(s["any_recreate"], true);
     }
 
-    /// #469: pool-only plan pin.
+    /// Pool-only plan pin.
     ///
     /// A plan with only cache-pool actions (no runner actions) must
     /// still produce the correct `recreates` set. `CreateCachePool`
@@ -10683,7 +10682,7 @@ auth = \"pat\"
         );
     }
 
-    // ---------- #285: --diff argv parsing -------------------------
+    // ---------- --diff argv parsing -------------------------------
 
     #[test]
     fn cli_plan_diff_default_is_false() {
@@ -10772,7 +10771,7 @@ auth = \"pat\"
             warnings,
         };
         // Drive the production Value-construction directly. No test
-        // mirror — `plan_to_json_value` IS the production code (#313).
+        // mirror — `plan_to_json_value` IS the production code.
         let body = plan_to_json_value(&plan, false);
         let actions = body["actions"].as_array().expect("actions array");
         let kinds: Vec<&str> = actions
@@ -10791,7 +10790,7 @@ auth = \"pat\"
                 "noop",
             ]
         );
-        // update_runner carries drift_cause + recreate_reasons (#260).
+        // update_runner carries drift_cause + recreate_reasons.
         let upd = actions
             .iter()
             .find(|v| v["kind"] == "update_runner")
@@ -10847,9 +10846,9 @@ auth = \"pat\"
     /// The shape contract (top-level `actions` + `warnings`,
     /// per-action `field_changes` + `drop_in_changes`) is pinned by
     /// `render_plan_json_emits_action_array_per_variant` which
-    /// drives `plan_to_json_value` directly (no test mirror after
-    /// #313). Together the two tests cover both the happy-path
-    /// output shape AND the non-panicking end-to-end pipe.
+    /// drives `plan_to_json_value` directly (no test mirror).
+    /// Together the two tests cover both the happy-path output shape
+    /// AND the non-panicking end-to-end pipe.
     #[test]
     fn render_plan_json_handles_update_runner_with_full_diff_payload() -> Result<()> {
         let delta = plan::RunnerDelta {
@@ -11088,7 +11087,7 @@ auth = \"pat\"
         // entry per basename in the union of rendered + discovered
         // drop-ins (including Preserved — JSON consumers may want to
         // render the audit trail), each tagged with a `change_kind`
-        // string (#305 — distinct from the per-action `kind`).
+        // string (distinct from the per-action `kind`).
         let plan = Plan {
             actions: vec![Action::UpdateRunner(plan::RunnerDelta {
                 identity: fake_identity("buckos"),
@@ -11120,7 +11119,7 @@ auth = \"pat\"
             warnings: vec![],
         };
         let v = plan_to_json_value(&plan, false);
-        // #574: assert schema_version on the full-payload smoke test
+        // Assert schema_version on the full-payload smoke test
         // so a renderer-level bump can't bypass the dedicated
         // `plan_to_json_value_emits_schema_version_at_top_level` pin.
         assert_eq!(v["schema_version"], "2");
@@ -11130,7 +11129,7 @@ auth = \"pat\"
         let fcs = action["field_changes"].as_array().unwrap();
         assert_eq!(fcs.len(), 1);
         assert_eq!(fcs[0]["path"], "url");
-        // #463 schema v2: `before`/`after` are tagged FieldValue
+        // Schema v2: `before`/`after` are tagged FieldValue
         // objects ({"type": "string", "value": ..} for scalars,
         // {"type": "list", "values": [..]} for lists).
         assert_eq!(fcs[0]["before"]["type"], "string");
@@ -11141,7 +11140,7 @@ auth = \"pat\"
         let dics = action["drop_in_changes"].as_array().unwrap();
         assert_eq!(dics.len(), 2);
         assert_eq!(dics[0]["basename"], "10-memory.conf");
-        // #305: inner discriminator is `change_kind`, distinct from
+        // Inner discriminator is `change_kind`, distinct from
         // the per-action `kind`, so JSON consumers can disambiguate
         // without context.
         assert_eq!(dics[0]["change_kind"], "modified");
@@ -11156,7 +11155,7 @@ auth = \"pat\"
         assert!(dics[0].get("after").is_none(), "no body diff in basic JSON");
     }
 
-    /// #463 T-1: pin the List-typed FieldValue JSON shape end-to-end.
+    /// Pin the List-typed FieldValue JSON shape end-to-end.
     /// Symmetric with the String-typed pin in
     /// `render_plan_json_update_runner_emits_field_changes_and_drop_in_changes` —
     /// catches drift where a renderer change accidentally collapses
@@ -11272,7 +11271,7 @@ auth = \"pat\"
         }
     }
 
-    // ---------- #242: cmd_init mode + cmd_add labels coverage --------
+    // ---------- cmd_init mode + cmd_add labels coverage -------------
 
     #[test]
     fn cmd_init_returns_zero_and_writes_canonical_body() {
@@ -11287,7 +11286,7 @@ auth = \"pat\"
         let body = fs::read_to_string(config_path.as_std_path()).unwrap();
         assert_eq!(body, INIT_EXAMPLE_CONFIG);
         assert!(body.contains("# ghars config"));
-        // OWNER/REPO placeholder (#263).
+        // OWNER/REPO placeholder.
         assert!(body.contains("OWNER/REPO"));
         // Per-runner SEC-27 hint.
         assert!(body.contains("SEC-27"));
@@ -11433,7 +11432,7 @@ token_env = \"GHARS_PAT\"
         // SEC-27 hint must remain so operators don't paste a shared
         // user= line back in by mistake.
         assert!(INIT_EXAMPLE_CONFIG.contains("SEC-27"));
-        // Personal-fork URL must not appear (#263).
+        // Personal-fork URL must not appear.
         assert!(!INIT_EXAMPLE_CONFIG.contains("likewhatevs"));
         assert!(INIT_EXAMPLE_CONFIG.contains("OWNER/REPO"));
     }
@@ -11674,7 +11673,7 @@ token_env = \"GHARS_PAT\"";
         assert!(after.contains("name = \"owner-repo-1\""));
     }
 
-    // ---------- #260: drift_cause label coverage ----------------------
+    // ---------- drift_cause label coverage ----------------------------
 
     #[test]
     fn drift_cause_labels_cover_each_variant() {
@@ -11686,7 +11685,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    // ---------- #252: cmd_completions / cmd_manpages ------------------
+    // ---------- cmd_completions / cmd_manpages ------------------------
 
     #[test]
     fn cmd_completions_to_writes_bash_completion_script() {
@@ -11848,7 +11847,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    // ---------- #257: dispatch routing parses every Command variant ----
+    // ---------- dispatch routing parses every Command variant ---------
     //
     // The `dispatch` function itself touches systemd / D-Bus / netns
     // helpers, so it can't be invoked directly in unit tests. The
@@ -12083,7 +12082,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    // -------- #344/#346: trust_zone charset validator -------------------
+    // -------- trust_zone charset validator ------------------------------
 
     /// Helper for the trust_zone tests: build the minimal Config that
     /// `validate_identity_fields` expects, then mutate the runner /
@@ -12134,10 +12133,10 @@ token_env = \"GHARS_PAT\"";
         }
     }
 
-    /// #344: a runner.trust_zone containing `\n` must be rejected at
-    /// config-load by `validate_identity_fields`. Pre-fix, the only
-    /// gate was `render_identity` (#286), which surfaces the error
-    /// during `plan` rather than `validate` and without the
+    /// A runner.trust_zone containing `\n` must be rejected at
+    /// config-load by `validate_identity_fields`. Without this gate
+    /// the only check would be `render_identity`, which surfaces the
+    /// error during `plan` rather than `validate` and without the
     /// `runner "NAME"` scope prefix the operator needs to locate the
     /// offending block.
     #[test]
@@ -12154,7 +12153,7 @@ token_env = \"GHARS_PAT\"";
                     msg.contains("trust_zone") && msg.contains("newline"),
                     "msg must name the field + char class; got: {msg}"
                 );
-                // #380: config-load gate is NOT render_identity. The
+                // Config-load gate is NOT render_identity. The
                 // bare check_identity_field error must not bake in the
                 // render_identity prefix, and validate_identity_fields
                 // must not accidentally route through render_identity.
@@ -12163,9 +12162,9 @@ token_env = \"GHARS_PAT\"";
                     "msg must NOT contain \"render_identity\" prefix at \
                      config-load time; got: {msg}"
                 );
-                // #380 (FIX 12): the runner scope prefix must be
-                // adjacent to `field "trust_zone"` — no infix between
-                // them. Catches a regression that re-introduces a
+                // The runner scope prefix must be adjacent to
+                // `field "trust_zone"` — no infix between them.
+                // Catches a regression that re-introduces a
                 // function-name prefix between the block scope and
                 // the field name.
                 assert!(
@@ -12178,7 +12177,7 @@ token_env = \"GHARS_PAT\"";
         }
     }
 
-    /// #344: a runner.trust_zone containing `\0` (NUL byte) must be
+    /// A runner.trust_zone containing `\0` (NUL byte) must be
     /// rejected. Pinned alongside the newline test because NUL is a
     /// distinct branch in `check_identity_field`'s NUL-class branch
     /// — a future regression that broadened the newline check but
@@ -12197,14 +12196,14 @@ token_env = \"GHARS_PAT\"";
                     msg.contains("trust_zone") && msg.contains("NUL"),
                     "msg must name the field + char class; got: {msg}"
                 );
-                // #380: config-load gate must NOT emit "render_identity:" prefix.
+                // Config-load gate must NOT emit "render_identity:" prefix.
                 assert!(
                     !msg.contains("render_identity"),
                     "msg must NOT contain \"render_identity\" prefix at \
                      config-load time; got: {msg}"
                 );
-                // #380 (P2-F2): adjacent-substring pin — runner scope
-                // must be directly followed by `field`, no infix.
+                // Adjacent-substring pin — runner scope must be
+                // directly followed by `field`, no infix.
                 assert!(
                     msg.contains("runner \"buckos\": field"),
                     "msg must contain `runner \"buckos\": field` as adjacent \
@@ -12215,7 +12214,7 @@ token_env = \"GHARS_PAT\"";
         }
     }
 
-    /// #344: a `[cache_pools.NAME].trust_zone` containing `\n` must be
+    /// A `[cache_pools.NAME].trust_zone` containing `\n` must be
     /// rejected with the `cache_pool "NAME":` scope prefix. The runner
     /// branch is exercised by the two tests above; this test pins the
     /// SECOND iteration in `validate_identity_fields` (the one over
@@ -12247,14 +12246,14 @@ token_env = \"GHARS_PAT\"";
                     msg.contains("trust_zone") && msg.contains("newline"),
                     "msg must name the field + char class; got: {msg}"
                 );
-                // #380: config-load gate must NOT emit "render_identity:" prefix.
+                // Config-load gate must NOT emit "render_identity:" prefix.
                 assert!(
                     !msg.contains("render_identity"),
                     "msg must NOT contain \"render_identity\" prefix at \
                      config-load time; got: {msg}"
                 );
-                // #380 (P2-F2): adjacent-substring pin — cache_pool
-                // scope must be directly followed by `field`, no infix.
+                // Adjacent-substring pin — cache_pool scope must be
+                // directly followed by `field`, no infix.
                 assert!(
                     msg.contains("cache_pool \"build\": field"),
                     "msg must contain `cache_pool \"build\": field` as adjacent \
@@ -12265,9 +12264,9 @@ token_env = \"GHARS_PAT\"";
         }
     }
 
-    // -------- #345/#346: config_source charset (plan-time gate) ---------
+    // -------- config_source charset (plan-time gate) -------------------
 
-    /// #345: `config_source` is composed at plan time from
+    /// `config_source` is composed at plan time from
     /// `paths.config_dir.join("ghars.toml")` (plan_from's config_source
     /// synthesis). A `Paths`
     /// instance with a `\n` in `config_dir` (synthesizable in tests
@@ -12298,7 +12297,7 @@ token_env = \"GHARS_PAT\"";
                     msg.contains("config_source") && msg.contains("newline"),
                     "msg must name the field + char class; got: {msg}"
                 );
-                // #380: plan_from invokes check_identity_field directly
+                // plan_from invokes check_identity_field directly
                 // (no render_identity wrapper). The bare error must
                 // not carry the "render_identity:" prefix.
                 assert!(
@@ -12311,9 +12310,9 @@ token_env = \"GHARS_PAT\"";
         }
     }
 
-    // -------- #370: duplicate cache references in [[runner]].caches ----
+    // -------- duplicate cache references in [[runner]].caches ---------
 
-    /// #370: `[[runner]] caches = ["build", "build"]` must reject at
+    /// `[[runner]] caches = ["build", "build"]` must reject at
     /// config load. The duplicate would render two identical
     /// X-Ghars-Caches comma-elements (`render_identity` joins the
     /// Vec via `cache_names.join(",")`), and apply.rs canonicalizes
@@ -12341,7 +12340,7 @@ token_env = \"GHARS_PAT\"";
         }
     }
 
-    /// #370: a runner with non-duplicate caches passes. Pinned so a
+    /// A runner with non-duplicate caches passes. Pinned so a
     /// future regression that broadened the validator into rejecting
     /// the multi-element happy path is caught.
     #[test]
@@ -12351,7 +12350,7 @@ token_env = \"GHARS_PAT\"";
         validate_no_duplicate_caches(&cfg).expect("distinct cache references must pass validation");
     }
 
-    /// #370: cross-runner reuse of the same pool is FINE — pools are
+    /// Cross-runner reuse of the same pool is FINE — pools are
     /// designed to be referenced by multiple runners
     /// (`CacheMode::Shared` is `CachePoolSpec.mode`'s `#[default]`).
     /// The validator must check each runner's caches independently,
@@ -12369,12 +12368,12 @@ token_env = \"GHARS_PAT\"";
         validate_no_duplicate_caches(&cfg).expect("cross-runner pool reuse must pass validation");
     }
 
-    // -------- #613: AuthSpec::Pat XOR shape gate ------------------------
+    // -------- AuthSpec::Pat XOR shape gate ------------------------------
 
     /// Build a fixture Config with a single `[auth.NAME]` entry of
     /// AuthSpec::Pat and the runner's auth ref pointing at `name`. The
     /// 4+ reject tests below all share this scaffold — the helper
-    /// collapses the boilerplate (#636) and pins the auth-name → error
+    /// collapses the boilerplate and pins the auth-name → error
     /// scope linkage in one place.
     ///
     /// `cfg_with_runner_trust_zone` inserts `[auth.pat]` by default;
@@ -12404,7 +12403,7 @@ token_env = \"GHARS_PAT\"";
     ///   - msg contains the colon-space `auth "NAME": ` scope shape
     ///     emitted by `prepend_validation_scope`.
     ///   - msg does NOT contain a redundant `kind = pat`/`kind =
-    ///     "pat"` prefix (#624/#637) — the scope already identifies
+    ///     "pat"` prefix — the scope already identifies
     ///     the offending `[auth.NAME]` block and AuthSpec::Pat is the
     ///     only variant the loop checks.
     ///   - hint is non-empty.
@@ -12426,7 +12425,7 @@ token_env = \"GHARS_PAT\"";
                     "msg must scope to {expected_scope:?} (colon-space format \
                      from prepend_validation_scope); got: {msg}"
                 );
-                // #624/#637: scope is `auth "NAME":` — never
+                // Scope is `auth "NAME":` — never
                 // `kind = pat:` (would duplicate the variant tag the
                 // scope already implies).
                 assert!(
@@ -12465,7 +12464,7 @@ token_env = \"GHARS_PAT\"";
         }
     }
 
-    /// #613: `[auth.NAME]` with `kind = "pat"` and BOTH `token_env` and
+    /// `[auth.NAME]` with `kind = "pat"` and BOTH `token_env` and
     /// `token_file` set must reject at config-load. PatToken::new
     /// re-validates at apply time, but cmd_validate / cmd_plan
     /// short-circuit before reaching `build_token_source` — the
@@ -12477,7 +12476,7 @@ token_env = \"GHARS_PAT\"";
         assert_pat_xor_rejects(&cfg, "pat", &["mutually exclusive"], &["remove one"], &[]);
     }
 
-    /// #613: `[auth.NAME]` with `kind = "pat"` and NEITHER
+    /// `[auth.NAME]` with `kind = "pat"` and NEITHER
     /// `token_env` nor `token_file` set must reject at config-load.
     /// Symmetric with the (Some, Some) gate — the only Ok shape is
     /// (Some, None) or (None, Some).
@@ -12493,7 +12492,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #613: env-only PAT (the `cfg_with_runner_trust_zone` default
+    /// Env-only PAT (the `cfg_with_runner_trust_zone` default
     /// shape) is the canonical Ok arm. Pinned so a future regression
     /// that broadened the validator into rejecting the happy path is
     /// caught.
@@ -12504,7 +12503,7 @@ token_env = \"GHARS_PAT\"";
         validate_pat_xor(&cfg).expect("env-only PAT must pass validation");
     }
 
-    /// #613: file-only PAT — the symmetric Ok arm. The shape-only gate
+    /// File-only PAT — the symmetric Ok arm. The shape-only gate
     /// MUST accept (None, Some) at config-load; `PatToken::new` runs
     /// the SEC-25 mode-0600 + owner-root + not-symlink check at apply
     /// time. Pinned so a future regression that rejects (None, Some)
@@ -12515,13 +12514,13 @@ token_env = \"GHARS_PAT\"";
         validate_pat_xor(&cfg).expect("file-only PAT must pass validation");
     }
 
-    /// #623: `token_env = ""` (empty string) is shape-valid TOML but
+    /// `token_env = ""` (empty string) is shape-valid TOML but
     /// useless — `std::env::var("")` always returns `NotPresent`. The
     /// shape gate must reject this at config-load with an actionable
     /// message instead of falling through to apply where it surfaces
     /// as "env var unset".
     ///
-    /// #630: hint shape is pinned via `assert_pat_xor_rejects` —
+    /// Hint shape is pinned via `assert_pat_xor_rejects` —
     /// asserts the hint references "environment variable" (the
     /// remediation domain) and the canonical example token_env =
     /// "GHARS_PAT" so a future regression that drops the example
@@ -12538,12 +12537,12 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #623: `token_file = ""` (empty string) is shape-valid TOML but
+    /// `token_file = ""` (empty string) is shape-valid TOML but
     /// useless — `Utf8PathBuf::from("")` is empty and `read_root_owned_0600`
     /// would fail with a confusing "open failed" error. The shape gate
     /// must reject this at config-load with an actionable message.
     ///
-    /// #630: hint shape pinned — references the SEC-25 invariant
+    /// Hint shape pinned — references the SEC-25 invariant
     /// ("0600 root-owned file") and the canonical example
     /// token_file = "/etc/ghars/pat".
     #[test]
@@ -12558,9 +12557,9 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #629: a single-space `token_env = " "` is shape-valid TOML but
+    /// A single-space `token_env = " "` is shape-valid TOML but
     /// useless for the same reason `token_env = ""` is — env-var
-    /// names cannot contain spaces. Pre-#629 the gate ran
+    /// names cannot contain spaces. Without this gate the check ran
     /// `is_empty()` which returned false for `" "`, so a misconfigured
     /// whitespace-only value flowed through to apply where
     /// `std::env::var(" ")` returns `NotPresent` (or worse, succeeds
@@ -12579,7 +12578,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #629: tab-only `token_env = "\t"` — same gate, different
+    /// Tab-only `token_env = "\t"` — same gate, different
     /// whitespace class (HT, U+0009). `str::trim` strips Unicode
     /// whitespace per `char::is_whitespace`, of which `\t` is one.
     /// Pinned so a regression that narrows trim() to spaces only
@@ -12596,7 +12595,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #629: CRLF `token_env = "\r\n"` — operators occasionally paste
+    /// CRLF `token_env = "\r\n"` — operators occasionally paste
     /// from Windows tools that include `\r\n`. `str::trim` strips
     /// both. Pinned so the gate covers the full Unicode-whitespace
     /// surface, not just ASCII-32.
@@ -12612,7 +12611,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #629: mixed whitespace `token_env = " \t\n "` — must reject.
+    /// Mixed whitespace `token_env = " \t\n "` — must reject.
     /// Pins that the gate rejects ANY all-whitespace combination, not
     /// just single-class runs.
     #[test]
@@ -12627,7 +12626,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #629: whitespace-only `token_file = " "` — symmetric with the
+    /// Whitespace-only `token_file = " "` — symmetric with the
     /// token_env gate. `Utf8PathBuf::from(" ")` is a path with a
     /// single-space basename which would surface as a confusing
     /// "open failed" or "stat failed" error inside `PatToken::new`.
@@ -12643,7 +12642,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #629: tab-only `token_file = "\t"`.
+    /// Tab-only `token_file = "\t"`.
     #[test]
     fn validate_pat_xor_rejects_whitespace_only_token_file_tab() {
         let cfg = cfg_with_pat_auth("pat", None, Some("\t"));
@@ -12656,7 +12655,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #629: CRLF `token_file = "\r\n"` — symmetric with the
+    /// CRLF `token_file = "\r\n"` — symmetric with the
     /// token_env CRLF gate. Operators occasionally paste from
     /// Windows tools that include `\r\n`. `str::trim` strips both,
     /// so the gate rejects.
@@ -12672,7 +12671,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #629: mixed whitespace `token_file = " \t\n "` — symmetric
+    /// Mixed whitespace `token_file = " \t\n "` — symmetric
     /// with the token_env mixed-whitespace gate. Pins that the
     /// token_file gate rejects ANY all-whitespace combination, not
     /// just single-class runs.
@@ -12688,7 +12687,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #629/#659 (Unicode pin): NBSP `token_env = "\u{00A0}"`
+    /// (Unicode pin): NBSP `token_env = "\u{00A0}"`
     /// (no-break space, U+00A0) — Unicode whitespace beyond ASCII.
     /// `str::trim` defers to `char::is_whitespace` which includes
     /// the Unicode `White_Space` property; NBSP is one. Pinned so
@@ -12708,23 +12707,15 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #669: `token_env = "X "` (trailing space on real content)
-    /// rejects via the env-side trim-mismatch gate, BEFORE the POSIX
-    /// charset gate. Pre-#669 this fell through to the POSIX charset
-    /// gate, which surfaced "is not a valid POSIX environment
-    /// variable name" — technically correct but misleading: the
-    /// operator's intent was almost certainly a shell-quoting
-    /// hiccup, not a charset violation. Post-#669 the trim-mismatch
-    /// arm fires first with a dedicated diagnostic that names the
-    /// condition.
-    ///
-    /// Renamed from `validate_pat_xor_accepts_token_env_with_trailing_space_on_real_content`
-    /// (#661) when the POSIX charset gate landed; the pre-#658 test
-    /// pinned the boundary that "X " accepted via trim().is_empty()
-    /// being false. Post-#658 the test contract flipped from accept
-    /// to reject; post-#669 the diagnostic shifted from POSIX-charset
-    /// to trim-mismatch. The name remains `_rejects_` per #640
-    /// (observable-contract terminology).
+    /// `token_env = "X "` (trailing space on real content) rejects
+    /// via the env-side trim-mismatch gate, BEFORE the POSIX charset
+    /// gate. Without the trim-mismatch gate, "X " would fall through
+    /// to the POSIX charset gate, surfacing "is not a valid POSIX
+    /// environment variable name" — technically correct but
+    /// misleading: the operator's intent is almost certainly a
+    /// shell-quoting hiccup, not a charset violation. The
+    /// trim-mismatch arm fires first with a dedicated diagnostic
+    /// that names the condition.
     #[test]
     fn validate_pat_xor_rejects_token_env_trailing_space_on_real_content() {
         let cfg = cfg_with_pat_auth("pat", Some("X "), None);
@@ -12745,21 +12736,12 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #660: `token_file = "/etc/ghars/pat "` (trailing space on real
-    /// content) rejects via the trim-mismatch gate. Pre-#660 the
-    /// shape gate accepted any non-whitespace-only path; post-#660
-    /// the trim-mismatch check catches a path whose edges carry
-    /// extra whitespace which would surface as `open(2)` ENOENT on
-    /// a literal-space basename. Pinned so a future regression that
-    /// drops the trim-mismatch gate is caught.
-    ///
-    /// Renamed from `validate_pat_xor_accepts_token_file_with_trailing_space_on_real_content`
-    /// (#661) when the trim-mismatch gate landed; the pre-#660 test
-    /// pinned the boundary that "/etc/ghars/pat " accepted via
-    /// trim().is_empty() being false. Post-#660 the contract flipped
-    /// from accept to reject and the name follows. Convention per
-    /// #640 (rename observable-contract terminology, not
-    /// implementation detail).
+    /// `token_file = "/etc/ghars/pat "` (trailing space on real
+    /// content) rejects via the trim-mismatch gate. The trim-mismatch
+    /// check catches a path whose edges carry extra whitespace which
+    /// would surface as `open(2)` ENOENT on a literal-space basename.
+    /// Pinned so a future regression that drops the trim-mismatch
+    /// gate is caught.
     #[test]
     fn validate_pat_xor_rejects_token_file_trailing_space_on_real_content() {
         let cfg = cfg_with_pat_auth("pat", None, Some("/etc/ghars/pat "));
@@ -12775,7 +12757,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #669: `token_env = " X"` (leading-only whitespace on real
+    /// `token_env = " X"` (leading-only whitespace on real
     /// content) rejects via the trim-mismatch gate before reaching
     /// the POSIX charset check. Symmetric with the trailing-space
     /// pin.
@@ -12795,7 +12777,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #669: `token_env = " X "` (leading + trailing whitespace on
+    /// `token_env = " X "` (leading + trailing whitespace on
     /// real content) rejects via the trim-mismatch gate. Pinned
     /// alongside the leading-only and trailing-only cases so a
     /// regression that only handles one edge is caught.
@@ -12815,7 +12797,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #661: `token_file = " /etc/ghars/pat"` (leading-only
+    /// `token_file = " /etc/ghars/pat"` (leading-only
     /// whitespace on real content) rejects via the trim-mismatch
     /// gate. Symmetric with the trailing-space pin; `path !=
     /// path.trim()` catches both edges.
@@ -12831,7 +12813,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #661: `token_file = " /etc/ghars/pat "` (leading + trailing
+    /// `token_file = " /etc/ghars/pat "` (leading + trailing
     /// whitespace on real content) rejects via the trim-mismatch
     /// gate. Pinned alongside the leading-only and trailing-only
     /// cases.
@@ -12847,7 +12829,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #658: a POSIX-violating `token_env` (e.g. `"FOO-BAR"` with a
+    /// A POSIX-violating `token_env` (e.g. `"FOO-BAR"` with a
     /// dash, which `std::env::var` accepts as a lookup key but whose
     /// shape is not a portable POSIX env var name) rejects with a
     /// charset diagnostic. Pinned independently of the
@@ -12866,7 +12848,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #658: `token_env` starting with a digit (e.g. `"1FOO"`)
+    /// `token_env` starting with a digit (e.g. `"1FOO"`)
     /// rejects via POSIX charset. POSIX names must start with a
     /// letter or underscore — digit-leading shells often accept it
     /// in practice but the standard forbids it, and a portable
@@ -12883,7 +12865,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #658 NEGATIVE pin: a clean POSIX-conformant `token_env`
+    /// NEGATIVE pin: a clean POSIX-conformant `token_env`
     /// (canonical `"GHARS_PAT"`) MUST pass the charset gate. Pinned
     /// so a future regression that over-tightens the regex (e.g.
     /// drops `_` from the first-char class, or rejects all-uppercase
@@ -12894,7 +12876,7 @@ token_env = \"GHARS_PAT\"";
         validate_pat_xor(&cfg).expect("canonical POSIX token_env must pass shape gate");
     }
 
-    /// #658 NEGATIVE pin: a single-letter `token_env` (`"X"`) — the
+    /// NEGATIVE pin: a single-letter `token_env` (`"X"`) — the
     /// shortest legal POSIX form — MUST pass. Boundary check on the
     /// regex's `*` quantifier (zero or more trailing chars).
     #[test]
@@ -12903,7 +12885,7 @@ token_env = \"GHARS_PAT\"";
         validate_pat_xor(&cfg).expect("single-letter POSIX token_env must pass shape gate");
     }
 
-    /// #658 NEGATIVE pin: a leading-underscore `token_env` (`"_FOO"`)
+    /// NEGATIVE pin: a leading-underscore `token_env` (`"_FOO"`)
     /// — the second legal POSIX first-char — MUST pass. POSIX env
     /// var names start with `[A-Za-z_]`, so `_` is in the legal set.
     #[test]
@@ -12912,7 +12894,7 @@ token_env = \"GHARS_PAT\"";
         validate_pat_xor(&cfg).expect("leading-underscore POSIX token_env must pass shape gate");
     }
 
-    /// #659: `token_env` containing a NUL (U+0000) rejects via the
+    /// `token_env` containing a NUL (U+0000) rejects via the
     /// hidden-char gate. Surfaces the codepoint + byte offset so
     /// the operator can locate the invisible char in their editor.
     /// NUL is a control char so it would also be caught by the
@@ -12931,7 +12913,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #659: `token_env` containing a BOM (U+FEFF) rejects via the
+    /// `token_env` containing a BOM (U+FEFF) rejects via the
     /// hidden-char gate. Operators occasionally paste from
     /// Windows tools that prefix the value with a BOM; the byte
     /// is invisible in most editors and would silently break
@@ -12948,7 +12930,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #659: `token_env` containing a zero-width space (U+200B)
+    /// `token_env` containing a zero-width space (U+200B)
     /// rejects via the hidden-char gate. Pinned alongside BOM and
     /// NUL so the entire default-ignorable set defends against
     /// invisible breakage.
@@ -12964,7 +12946,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #659: `token_env` containing a zero-width non-joiner (U+200C)
+    /// `token_env` containing a zero-width non-joiner (U+200C)
     /// rejects via the hidden-char gate. Together with the ZWSP /
     /// ZWJ / WJ pins, covers the default-ignorable format
     /// characters most likely to survive a copy-paste from a
@@ -12981,7 +12963,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #659: `token_env` containing a soft hyphen (U+00AD) rejects
+    /// `token_env` containing a soft hyphen (U+00AD) rejects
     /// via the hidden-char gate. SHY is not a control char, so
     /// `is_control()` would not catch it — the explicit list arm
     /// fires.
@@ -12997,7 +12979,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #659: `token_file` containing a BOM (U+FEFF) at the start
+    /// `token_file` containing a BOM (U+FEFF) at the start
     /// rejects via the hidden-char gate. Symmetric with the
     /// token_env BOM pin; the path-side surface is independent
     /// because paths lack the POSIX charset gate that catches BOM
@@ -13014,7 +12996,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #659: `token_file` containing a NUL (U+0000) rejects via the
+    /// `token_file` containing a NUL (U+0000) rejects via the
     /// hidden-char gate. NUL terminates C strings, so an embedded
     /// NUL in a path would surface as a confusing kernel error
     /// (or worse, silently truncate the path) at apply time.
@@ -13030,7 +13012,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #659: `token_file` containing a zero-width joiner (U+200D)
+    /// `token_file` containing a zero-width joiner (U+200D)
     /// rejects via the hidden-char gate. Symmetric with the
     /// token_env ZWNJ pin.
     #[test]
@@ -13045,7 +13027,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #659: `token_env` containing a word joiner (U+2060) rejects
+    /// `token_env` containing a word joiner (U+2060) rejects
     /// via the hidden-char gate. Each explicit codepoint slot in
     /// `is_disallowed_hidden_char` (NUL/SHY/CGJ/ALM/MVS, the
     /// ZWSP-ZWNJ-ZWJ-LRM-RLM block, the bidi-override block,
@@ -13066,7 +13048,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #659: `token_env` containing an ESC control char (U+001B)
+    /// `token_env` containing an ESC control char (U+001B)
     /// rejects via the `is_control()` arm of `is_disallowed_hidden_char`.
     /// Pinned independently of the explicit-codepoint matches so a
     /// regression that narrows the control-char arm (e.g. drops it
@@ -13088,7 +13070,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #659 precedence pin: hidden-char gate fires BEFORE the POSIX
+    /// Precedence pin: hidden-char gate fires BEFORE the POSIX
     /// charset gate. Input `"\u{FEFF}foo-bar"` would fail BOTH:
     /// the BOM is in the explicit hidden-char list, AND the dash
     /// in `foo-bar` violates POSIX charset. The hidden-char gate is
@@ -13110,7 +13092,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #659: `token_env = "X\u{FEFF}FOO"` — non-zero byte offset
+    /// `token_env = "X\u{FEFF}FOO"` — non-zero byte offset
     /// pin. The hidden char (BOM, 3-byte UTF-8 sequence) sits at
     /// byte offset 1 (after a 1-byte ASCII 'X'). The diagnostic
     /// must surface "byte offset 1" — not 0 or any character index.
@@ -13129,7 +13111,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #660 NEGATIVE pin: `token_file = "/etc/ghars/my pat"` (real
+    /// NEGATIVE pin: `token_file = "/etc/ghars/my pat"` (real
     /// path with internal whitespace, no edge whitespace) MUST
     /// PASS the shape gate. `path_str != path_str.trim()` is FALSE
     /// when whitespace is purely internal — Unix paths can legally
@@ -13144,7 +13126,7 @@ token_env = \"GHARS_PAT\"";
             .expect("token_file with internal-only whitespace must pass shape gate");
     }
 
-    /// #658 precedence pin: per-field gates fire BEFORE the XOR
+    /// Precedence pin: per-field gates fire BEFORE the XOR
     /// tuple-match. Input `(Some("FOO-BAR"), Some("/etc/ghars/pat"))`
     /// is BOTH XOR-violating (both fields set) AND charset-violating
     /// on token_env (dash in "FOO-BAR"). The per-field charset gate
@@ -13164,7 +13146,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #664/scope-propagation pin: an unusual auth name combined
+    /// Scope-propagation pin: an unusual auth name combined
     /// with the (true,true) XOR shape MUST scope the error to the
     /// operator's chosen name. Sibling test
     /// `validate_pat_xor_rejects_unusual_auth_name` exercises the
@@ -13190,7 +13172,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #664: an unusual auth name that does NOT contain "pat" as a
+    /// An unusual auth name that does NOT contain "pat" as a
     /// substring (e.g. `"alpha-zone-creds"`) MUST scope the error
     /// correctly via `assert_pat_xor_rejects`. The helper pins the
     /// scope shape (`auth "NAME": `) and the absence of redundant
@@ -13211,7 +13193,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #663: the (true,true) XOR error hint includes both canonical
+    /// The (true,true) XOR error hint includes both canonical
     /// example values (`GHARS_PAT` and `/etc/ghars/pat`) so an
     /// operator reading the rejection sees the same remediation
     /// breadcrumb the empty-string / charset arms already provide.
