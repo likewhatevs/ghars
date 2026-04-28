@@ -1319,8 +1319,20 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
     // the conservative `spec_hash_mismatch` recreate fallback, even
     // though both fields are knowable at config-load time. Comma-
     // joined labels mirrors the existing X-Ghars-Caches format.
-    let labels_joined = spec.labels.join(",");
-    let _ = writeln!(s, "X-Ghars-Labels={labels_joined}");
+    //
+    // Labels arrive pre-sorted by `merge_defaults` (set semantics —
+    // GitHub matches workflow `runs-on:` against the registered label
+    // set order-independently). The defensive sort here mirrors the
+    // caches comment below: any future caller that builds an
+    // `EffectiveRunnerSpec` directly bypasses `merge_defaults`'s
+    // sort, so re-sorting at the emission site keeps the on-disk
+    // `X-Ghars-Labels=` annotation canonical regardless. Without
+    // this, an unsorted-Vec direct-construct caller would emit a
+    // non-canonical annotation and the plan classifier's sorted
+    // comparison would silently mask the divergence.
+    let mut label_names: Vec<&str> = spec.labels.iter().map(String::as_str).collect();
+    label_names.sort_unstable();
+    let _ = writeln!(s, "X-Ghars-Labels={}", label_names.join(","));
     let arch_str = match spec.arch {
         crate::config::Arch::X86_64 => "x86_64",
         crate::config::Arch::Aarch64 => "aarch64",

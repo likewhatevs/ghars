@@ -559,6 +559,16 @@ pub struct RunnerDelta {
     /// the unconditional `X-Ghars-Caches` emit; apply skips the
     /// group-diff to avoid spurious gpasswd churn (the next apply
     /// will land annotations and a future change can reconcile).
+    ///
+    /// Order: when `Some`, the Vec is sorted alphabetically.
+    /// `plan_from` sorts the discovered annotation at population time
+    /// so operator-facing surfaces (--diff output, plan JSON
+    /// serialization, error messages that name "removed pools") see a
+    /// canonical order regardless of the order the on-disk
+    /// `X-Ghars-Caches=` annotation happened to be written in.
+    /// Membership reconciliation in apply collects this Vec into a
+    /// BTreeSet before computing the gpasswd diff, so the sort is
+    /// correctness-neutral for that path; it only normalizes display.
     pub before_caches: Option<Vec<String>>,
     /// Pre-update on-disk drop-in basenames discovered in the runner's
     /// drop-in directory (alphabetically ordered, parity with
@@ -879,6 +889,27 @@ pub fn merge_defaults(
     if labels.is_empty() {
         labels.push(runner.name.clone());
     }
+    // Labels form an unordered set for GitHub Actions runner matching:
+    // a workflow `runs-on: [linux, gpu]` matches a runner registered
+    // with `[gpu, linux]` identically. The `--labels CSV` argv passed
+    // to `config.sh` at runner-registration time is interpreted
+    // server-side as a set, so local order-sensitivity would cause
+    // spurious recreate-class plans on cosmetic TOML reorders.
+    //
+    // Sort + dedup so every downstream consumer — `spec_hash`,
+    // `render_identity`'s `X-Ghars-Labels` line, and the Stage 1
+    // classifier comparison in
+    // `classify_recreate_reasons_from_annotations` — sees a canonical
+    // form. The HashSet pass above already removes duplicates seen
+    // from `defaults.labels.iter().chain(runner.labels.iter())`; the
+    // post-sort `dedup` is defense-in-depth in case a future caller
+    // injects an already-non-unique Vec into the merge stream.
+    // Sort is unstable because label strings are unique by
+    // construction so stable order between equal elements is
+    // irrelevant; byte-wise `Ord` agrees with operator intent for
+    // the ASCII subset enforced by `validate_label`.
+    labels.sort_unstable();
+    labels.dedup();
 
     let trust_zone = if runner.trust_zone.is_empty() {
         DEFAULT_TRUST_ZONE.to_string()
@@ -1028,19 +1059,35 @@ fn pick_vec<T: Clone>(runner: &[T], defaults: &[T]) -> Vec<T> {
 /// - Round-trip through `serde_json::Value` whose `Object` map is
 ///   `BTreeMap`-backed (no `preserve_order` feature) — keys land in
 ///   sorted order at every depth.
-/// - Arrays preserve source order (`Vec` is ordered by intent for
-///   `labels` and `allowed_egress`). `caches` is the exception:
-///   `lower_to_effective` sorts the bindings by `name` (#371) so the
-///   spec arriving here is canonical regardless of the operator's
-///   TOML ordering. `spec_hash` itself does NOT re-sort — callers
-///   that bypass `lower_to_effective` (e.g. hand-built test fixtures)
-///   must sort their own caches Vec before hashing if they want the
+/// - Arrays preserve source order in canonical JSON (`Vec` is
+///   ordered by intent). `caches` and `labels` are the set-semantic
+///   exceptions: `lower_to_effective` sorts `caches` by name during
+///   cache-pool resolution; `merge_defaults` sorts `labels` by name
+///   after the concat-and-dedup pass. So the spec arriving here is
+///   canonical regardless of the operator's TOML ordering. `spec_hash`
+///   itself does NOT re-sort — callers that bypass the lowering
+///   pipeline (e.g. hand-built test fixtures) must sort their own
+///   `caches` / `labels` Vecs before hashing if they want the
 ///   reorder-invariance contract. First apply post-upgrade will
 ///   rewrite `00-ghars.conf` and `30-cache-pool.conf` with sorted
-///   caches for any runner whose TOML order differed.
-///   Other Vec fields stay order-sensitive because their semantic
-///   value depends on order (systemd `Labels=` preserves source
-///   order; `allowed_egress` rules apply first-match-wins).
+///   caches/labels for any runner whose TOML order differed.
+///
+///   Set-semantic rationale for `labels`: GitHub Actions matches
+///   workflow `runs-on:` against the registered label set
+///   identically regardless of order — `runs-on: [linux, gpu]`
+///   selects a runner whose registered labels are `[gpu, linux]` the
+///   same as `[linux, gpu]`. The `--labels CSV` argv passed to
+///   `config.sh` (assembled at `apply.rs::build_register_cmd`) is
+///   handed to GitHub at registration time; the runner's behavior
+///   is order-independent for matching workflow `runs-on:`
+///   selectors. Local order-sensitivity in the spec_hash would cause
+///   spurious recreate-class `UpdateRunner` plans (registration is
+///   labels-bound, so a hash flip drives a recreate reason) on
+///   cosmetic TOML edits.
+///
+///   `allowed_egress` and other Vec fields stay order-sensitive
+///   because their semantic value depends on order (`allowed_egress`
+///   rules apply first-match-wins).
 /// - The `spec_hash` field of the input is zeroed before hashing so
 ///   the function is idempotent: hashing a spec, embedding the hash,
 ///   and re-hashing yields the same value.
@@ -1317,15 +1364,39 @@ fn classify_recreate_reasons_from_annotations(
             });
         }
     }
-    if let Some(labels) = discovered.labels.as_ref()
-        && labels.as_slice() != desired.labels.as_slice()
-    {
-        reasons.push("labels");
-        out_changes.push(FieldChange {
-            path: "labels",
-            before: FieldValue::List(labels.clone()),
-            after: FieldValue::List(desired.labels.clone()),
-        });
+    // Labels are set-semantic for GitHub Actions matching, mirror the
+    // caches treatment below. Sort BOTH sides before equality so a
+    // pure reorder (older ghars-applied unit wrote
+    // `X-Ghars-Labels=beta,alpha` then operator reorders TOML to
+    // `[alpha, beta]`) does not record a misleading `labels` recreate
+    // reason / FieldChange even though GitHub's view of the
+    // registration is identical. `merge_defaults` already sorts
+    // `desired.labels` (so `after_sorted` is a no-op for any spec
+    // coming through `plan_from`); kept here for defense-in-depth so a
+    // direct caller that builds an `EffectiveRunnerSpec` without going
+    // through `merge_defaults` inherits canonical comparison
+    // semantics. `before_sorted` still matters in production — the
+    // discovered `00-ghars.conf` may have been written by an older
+    // ghars or operator-edited and may not be canonical.
+    //
+    // FieldChange.before/after are emitted in sorted form so
+    // operator-facing surfaces (--diff output, plan JSON) see the
+    // canonical order GitHub will see at registration time.
+    if let Some(before) = discovered.labels.as_ref() {
+        let mut before_sorted: Vec<&str> = before.iter().map(String::as_str).collect();
+        before_sorted.sort_unstable();
+        let mut after_sorted: Vec<&str> = desired.labels.iter().map(String::as_str).collect();
+        after_sorted.sort_unstable();
+        if before_sorted != after_sorted {
+            reasons.push("labels");
+            out_changes.push(FieldChange {
+                path: "labels",
+                before: FieldValue::List(
+                    before_sorted.iter().map(|s| (*s).to_owned()).collect(),
+                ),
+                after: FieldValue::List(after_sorted.iter().map(|s| (*s).to_owned()).collect()),
+            });
+        }
     }
     if let Some(arch) = discovered.arch.as_deref() {
         let desired_arch = match desired.arch {
@@ -1992,7 +2063,25 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                         // group-membership diff. Source is the same
                         // 00-ghars.conf body the rest of Stage 1 reads
                         // from.
-                        before_caches: annotations.caches.clone(),
+                        //
+                        // Sort `before_caches` so operator-facing
+                        // surfaces (--diff output, plan JSON, error
+                        // messages that name "removed pools") see a
+                        // canonical alphabetical order regardless of
+                        // the order the on-disk X-Ghars-Caches=
+                        // annotation happened to be written in. Apply
+                        // collects this Vec into a BTreeSet at
+                        // apply.rs::execute_update_runner before
+                        // computing the gpasswd diff, so sorting at
+                        // this population site is correctness-neutral
+                        // for the membership reconciliation; it only
+                        // affects display order for downstream
+                        // consumers that iterate the Vec directly.
+                        before_caches: annotations.caches.as_ref().map(|v| {
+                            let mut sorted = v.clone();
+                            sorted.sort_unstable();
+                            sorted
+                        }),
                         // #468: snapshot the discovered drop-in
                         // basenames (BTreeMap keys, already
                         // alphabetically ordered) so the recreate
@@ -2849,8 +2938,14 @@ mod tests {
 
     // --- merge_defaults -------------------------------------------------
 
+    /// labels concat + dedup + sort. defaults.labels first, then
+    /// runner.labels, dedup, then sorted alphabetically (set-semantic
+    /// for GitHub Actions registration). The contract is canonical
+    /// sort because labels are matched as a set server-side; local
+    /// order-sensitivity would cause spurious recreate-class plans
+    /// on cosmetic TOML reorders.
     #[test]
-    fn merge_defaults_label_concat_dedup_preserves_order() {
+    fn merge_defaults_label_concat_dedup_sorted() {
         let runner = {
             let mut r = minimal_runner("buckos");
             r.labels = vec!["buck2".into(), "self-hosted".into()];
@@ -2871,9 +2966,12 @@ mod tests {
             Arch::X86_64,
             "/etc/ghars/ghars.toml".into(),
         );
-        // defaults.labels first, then runner.labels, dedup, source
-        // order — "self-hosted" appears once.
-        assert_eq!(eff.labels, vec!["self-hosted", "linux", "buck2"]);
+        // Concat-and-dedup yields {"self-hosted","linux","buck2"};
+        // sort by name yields ["buck2","linux","self-hosted"].
+        // Single "self-hosted" entry pins the dedup contract is still
+        // honored (defaults sees it first; runner.labels would have
+        // re-pushed it absent dedup).
+        assert_eq!(eff.labels, vec!["buck2", "linux", "self-hosted"]);
     }
 
     #[test]
@@ -5077,11 +5175,14 @@ mod tests {
             proptest::prop_assert_eq!(eff.runner_version, run_ver.or(def_ver));
         }
 
-        // Property: labels = concat(defaults, runner) deduped by
-        // first-seen order. If both are empty after dedup, falls back
-        // to [name] (F34 Python parity).
+        // labels = concat(defaults, runner) deduped (membership
+        // only — first-seen order is no longer meaningful) and then
+        // sorted alphabetically. If both are empty after dedup, falls
+        // back to [name] (F34 Python parity). Set semantics — labels
+        // are the GitHub Actions registration tag set, matched
+        // order-independently against workflow `runs-on:`.
         #[test]
-        fn prop_merge_defaults_labels_concat_dedup_first_seen(
+        fn prop_merge_defaults_labels_concat_dedup_sorted(
             def_labels in prop::collection::vec("[a-z][a-z0-9-]{0,8}", 0..5),
             run_labels in prop::collection::vec("[a-z][a-z0-9-]{0,8}", 0..5),
         ) {
@@ -5108,6 +5209,9 @@ mod tests {
 
             // Reconstruct expected labels manually (mirrors
             // merge_defaults logic — if it diverges, the test fails).
+            // Concat → dedup → fallback-to-name → sort. The fallback
+            // happens BEFORE the sort so a single-name fallback is also
+            // canonical (sorting a one-element Vec is a no-op).
             let mut expected: Vec<String> = Vec::new();
             let mut seen: HashSet<String> = HashSet::new();
             for l in def_labels.iter().chain(run_labels.iter()) {
@@ -5118,6 +5222,7 @@ mod tests {
             if expected.is_empty() {
                 expected.push("frog".to_string());
             }
+            expected.sort();
             proptest::prop_assert_eq!(eff.labels, expected);
         }
 
@@ -5558,13 +5663,24 @@ mod tests {
         assert_eq!(spec_hash(&spec_a), spec_hash(&spec_b));
     }
 
-    /// Property: shuffling `labels` MUST change the hash. labels are
-    /// ordered by intent (operator-controlled order is part of the
-    /// semantic value — e.g. systemd Labels= rendering preserves
-    /// source order). Any hash that ignores Vec order would produce
-    /// false-negative drift detection when the operator reorders.
+    /// Property: shuffling `labels` MUST NOT change the hash. Labels
+    /// are set-semantic for GitHub Actions runner registration —
+    /// workflow `runs-on: [linux, gpu]` matches a runner registered
+    /// with `[gpu, linux]` identically because GitHub deduplicates
+    /// and matches the joined `--labels CSV` argv server-side.
+    /// Locally flipping `spec_hash` on a cosmetic operator reorder
+    /// would drive a recreate-class `UpdateRunner` (registration is
+    /// labels-bound, so a hash mismatch with no Stage 1 typed reason
+    /// fell to the `uncovered` recreate fallback) for a no-op edit.
+    /// Mirrors the caches canonicalization at the same function's
+    /// `caches.sort_by` site (paired in `lower_to_effective`).
+    ///
+    /// Construct two specs with the same label SET in different ORDER
+    /// and assert `spec_hash` is identical. See `merge_defaults`'s
+    /// `labels.sort_unstable() + labels.dedup()` block for the
+    /// implementation site.
     #[test]
-    fn spec_hash_changes_on_labels_reorder() {
+    fn spec_hash_unchanged_on_labels_reorder() {
         let runner1 = {
             let mut r = minimal_runner("a");
             r.labels = vec!["alpha".into(), "beta".into()];
@@ -5598,7 +5714,21 @@ mod tests {
             Arch::X86_64,
             "/etc/ghars/ghars.toml".into(),
         );
-        assert_ne!(spec_hash(&spec1), spec_hash(&spec2));
+        // Both labels Vecs are sorted by `merge_defaults`, so the
+        // resulting EffectiveRunnerSpec.labels is `["alpha","beta"]`
+        // for both runner1 and runner2. spec_hash must agree.
+        assert_eq!(
+            spec1.labels,
+            vec!["alpha".to_string(), "beta".to_string()],
+            "merge_defaults must sort labels; got: {:?}",
+            spec1.labels
+        );
+        assert_eq!(
+            spec2.labels, spec1.labels,
+            "reordered TOML input must produce identical sorted labels Vec; got: {:?} vs {:?}",
+            spec2.labels, spec1.labels
+        );
+        assert_eq!(spec_hash(&spec1), spec_hash(&spec2));
     }
 
     /// Property: two TOML files that produce semantically-identical
@@ -6402,6 +6532,106 @@ labels  = ["alpha", "beta"]
             noops.len(),
             1,
             "caches reorder must produce exactly one NoOp; got plan: {:?}",
+            plan_second.actions
+        );
+    }
+
+    /// A pure labels reorder (operator rewrites
+    /// `labels = ["beta","alpha"]` as `labels = ["alpha","beta"]` in
+    /// TOML, no membership change) MUST end-to-end produce a `NoOp`,
+    /// not an `UpdateRunner`. Mirrors `plan_noop_when_caches_reorder_only`
+    /// for the caches treatment. Labels are set-semantic for GitHub
+    /// Actions runner registration — workflow `runs-on:` matches
+    /// against the registered label set order-independently — so a
+    /// cosmetic reorder must NOT drive a recreate-class UpdateRunner.
+    ///
+    /// Without `merge_defaults` sorting `labels` by name, the
+    /// `spec_hash` flips on reorder (Vec preserves source order in
+    /// canonical JSON; Stage 1 classifier would then either fire the
+    /// `labels` typed reason on the annotation diff or fall through
+    /// to the `uncovered` recreate fallback). After the sort, both
+    /// orderings produce the same spec, the same `spec_hash`, and the
+    /// same rendered `X-Ghars-Labels=` annotation, so plan diff sees
+    /// nothing to do.
+    ///
+    /// Built end-to-end through `plan_from` so this test exercises
+    /// the full pipeline — `lower_to_effective` (calls `merge_defaults`)
+    /// → `spec_hash` canonical-JSON → `render_identity` X-Ghars-Labels.
+    /// A regression that dropped the sort from `merge_defaults` would
+    /// trip the Stage 1 classifier or the spec_hash mismatch and
+    /// surface as an UpdateRunner with the `labels` recreate reason.
+    #[test]
+    fn plan_noop_when_labels_reorder_only() {
+        let make_cfg = |order: Vec<&str>| -> Config {
+            config_with_runners(vec![{
+                let mut r = minimal_runner("a");
+                r.labels = order.into_iter().map(String::from).collect();
+                r
+            }])
+        };
+
+        // First config: operator wrote ["beta","alpha"]. Run plan_from
+        // once with empty actual state — produces a CreateRunner
+        // whose spec carries the canonical sorted spec.
+        let cfg_first = make_cfg(vec!["beta", "alpha"]);
+        let plan_first = plan_from(&cfg_first, &empty_actual(), &empty_paths())
+            .expect("first plan must succeed");
+        let first_spec = plan_first
+            .actions
+            .iter()
+            .find_map(|a| match a {
+                Action::CreateRunner(rp) => Some(rp.spec.clone()),
+                _ => None,
+            })
+            .expect("first plan must emit CreateRunner");
+        // Pin the canonical-sorted contract on the first spec so any
+        // regression dropping the sort fails this assertion before
+        // the NoOp check. Both ["beta","alpha"] and ["alpha","beta"]
+        // must lower to ["alpha","beta"].
+        assert_eq!(
+            first_spec.labels,
+            vec!["alpha".to_string(), "beta".to_string()],
+            "merge_defaults must sort labels; got: {:?}",
+            first_spec.labels
+        );
+
+        // Discovered state mirrors the first config's apply: same
+        // spec_hash, render_runner_unit-derived drop-ins (via
+        // discovered_for), Drift::InSync.
+        let mut actual = empty_actual();
+        actual
+            .runners
+            .insert("a".into(), discovered_for("a", &first_spec, Drift::InSync));
+
+        // Second config: operator reorders to ["alpha","beta"]. After
+        // merge_defaults sorts, both configs lower to the same
+        // EffectiveRunnerSpec → same spec_hash → no diff.
+        let cfg_second = make_cfg(vec!["alpha", "beta"]);
+        let plan_second =
+            plan_from(&cfg_second, &actual, &empty_paths()).expect("second plan must succeed");
+
+        // The reorder must produce a NoOp, not UpdateRunner.
+        let noops: Vec<_> = plan_second
+            .actions
+            .iter()
+            .filter(|a| matches!(a, Action::NoOp(_)))
+            .collect();
+        let updates: Vec<_> = plan_second
+            .actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::UpdateRunner(d) => Some(d),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            updates.is_empty(),
+            "labels reorder must NOT produce UpdateRunner; got: {updates:?}"
+        );
+        assert_eq!(
+            noops.len(),
+            1,
+            "labels reorder must produce exactly one NoOp; got plan: {:?}",
             plan_second.actions
         );
     }
@@ -7469,10 +7699,14 @@ labels  = ["alpha", "beta"]
             Some("v2.999.0"),
             "Effective-Version round-trip"
         );
+        // Labels are set-semantic, sorted by `merge_defaults` before
+        // emission, so the round-trip surfaces them in canonical
+        // alphabetical order regardless of the operator's input
+        // order.
         assert_eq!(
             anns.labels.as_deref(),
-            Some(&["self-hosted".to_owned(), "linux".to_owned()][..]),
-            "Labels round-trip (comma-joined → split)"
+            Some(&["linux".to_owned(), "self-hosted".to_owned()][..]),
+            "Labels round-trip (comma-joined → split, canonically sorted)"
         );
         assert_eq!(anns.arch.as_deref(), Some("aarch64"), "Arch round-trip");
         assert_eq!(

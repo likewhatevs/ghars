@@ -377,8 +377,13 @@ fn defaults_merge_runner_scalar_overrides_defaults_scalar() {
     assert_eq!(spec.prefix.as_str(), "/srv/runners");
 }
 
+/// labels concat + dedup + sort. Labels are set-semantic and sorted
+/// alphabetically because GitHub matches workflow `runs-on:` against
+/// the registered label set order-independently. The dedup contract
+/// still holds — "self-hosted" appears once even though it's in both
+/// the defaults and the runner block.
 #[test]
-fn defaults_merge_labels_concat_dedup_preserves_order() {
+fn defaults_merge_labels_concat_dedup_sorted() {
     let mut cfg = make_config();
     cfg.defaults = Defaults {
         labels: vec!["self-hosted".into(), "linux".into()],
@@ -397,11 +402,12 @@ fn defaults_merge_labels_concat_dedup_preserves_order() {
             _ => None,
         })
         .expect("CreateRunner");
-    // Order: defaults first (self-hosted, linux), then runner-only
-    // (buck2). The duplicate self-hosted is deduped.
+    // Concat-and-dedup yields {"self-hosted","linux","buck2"};
+    // sort by name yields ["buck2","linux","self-hosted"]. The
+    // single "self-hosted" entry pins the dedup contract.
     assert_eq!(
         create.spec.labels,
-        vec!["self-hosted".to_string(), "linux".into(), "buck2".into()]
+        vec!["buck2".to_string(), "linux".into(), "self-hosted".into()]
     );
 }
 
