@@ -9566,8 +9566,8 @@ auth = \"pat\"
     /// (`ci-1, ci-2, ci-3`). For count >= 10 lex-sort produces
     /// `ci-1, ci-10, ci-2, ...` — operator-confusing but contractually
     /// correct (sort_unstable on `Vec<String>` is byte-wise). Mixed-
-    /// digit fixtures and additional shapes (count=0, mixed
-    /// Create+Update) are taskified separately as a follow-up.
+    /// digit fixtures and additional shapes (mixed Create+Update) are
+    /// taskified separately as a follow-up.
     ///
     /// Asserts:
     /// - `summary.total_actions == 3` — fan-out arity.
@@ -9806,6 +9806,41 @@ auth = \"pat\"
         );
         assert_eq!(body["summary"]["by_disruption"]["recreate"], 3);
         assert_eq!(body["summary"]["any_recreate"], true);
+
+        // Pin explicit-block precedence via spec field: the explicit
+        // ci-1 RunnerSpec carries memory_max = "8G", whereas the count
+        // block (cfg_with_runner_trust_zone leaves memory_max = None)
+        // would not. Find the CreateRunner action for "ci-1" and
+        // assert the resolved spec carries the explicit block's
+        // memory_max value, proving the explicit block won the
+        // collision rather than the count block's expanded ci-1.
+        //
+        // Guard: confirm the count block's fixture still leaves
+        // memory_max = None. If a future fixture change sets
+        // memory_max on the count block, the precedence assertion
+        // below becomes tautological (both blocks would carry
+        // Some("8G")) and silently stops discriminating which block
+        // won the collision. This guard makes that fixture-drift
+        // surface as a CI failure here instead of as a broken-but-
+        // green test.
+        assert!(
+            cfg.runners[0].memory_max.is_none(),
+            "count block must leave memory_max=None for precedence test to be discriminating",
+        );
+        let ci1_plan = plan
+            .actions
+            .iter()
+            .find_map(|a| match a {
+                Action::CreateRunner(p) if p.spec.name == "ci-1" => Some(p),
+                _ => None,
+            })
+            .expect("CreateRunner(ci-1) must exist in actions");
+        assert_eq!(
+            ci1_plan.spec.memory_max,
+            Some("8G".into()),
+            "explicit-block precedence: ci-1's spec must carry the explicit \
+             memory_max=\"8G\", not the count block's None",
+        );
     }
 
     /// Count=0 → orphan RemoveRunner end-to-end shape: a `[[runner]]`
@@ -17164,6 +17199,22 @@ auth = \"pat\"
         assert!(
             err.contains("CreateCachePool(a)"),
             "advisory must list failed-action label: {err}",
+        );
+        // Load-bearing label-twice pin: a single `err.contains(label)`
+        // would pass even if the advisory body omitted the label,
+        // because the per-action `fail:` row already prints the label
+        // on stderr (per `render_apply_emission`'s Failed-arm
+        // routing). The advisory body independently contains the
+        // label as a per-action sub-block header (`  LABEL:`) — so
+        // the label MUST appear at least twice on stderr: once from
+        // the `fail:` row, once from the advisory body. This pin
+        // catches a regression that drops the advisory body's label
+        // line while leaving the header.
+        let label_count = err.matches("CreateCachePool(a)").count();
+        assert!(
+            label_count >= 2,
+            "label must appear at least twice on stderr (fail: row + \
+             advisory body); got {label_count} occurrence(s): {err}",
         );
         assert!(
             err.contains("created directory"),
