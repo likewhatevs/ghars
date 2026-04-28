@@ -6813,6 +6813,25 @@ labels  = ["alpha", "beta"]
              merge_defaults; got field_changes: {:?}",
             upd.field_changes,
         );
+        // Auth-name change rewrites the X-Ghars-Auth-Name annotation
+        // in the runner's 00-ghars.conf drop-in (render_identity emits
+        // the auth_name string into that file). The on-disk drop-in
+        // body therefore differs from the freshly-rendered desired
+        // body, so the classifier records a Modified change for
+        // 00-ghars.conf. A regression that elides the drop-in diff
+        // (e.g. classifying as in-place but skipping the file rewrite)
+        // would silently cause the X-Ghars-Auth-Name annotation to
+        // drift from the operator's [auth.NAME] reference, breaking
+        // the next planner cycle's annotation-vs-config comparison.
+        assert!(
+            upd.drop_in_changes.iter().any(|dc| {
+                dc.basename == "00-ghars.conf"
+                    && matches!(dc.change, DropInChangeKind::Modified { .. })
+            }),
+            "auth-name change must produce Modified 00-ghars.conf drop-in \
+             change; got: {:?}",
+            upd.drop_in_changes,
+        );
     }
 
     // ---- caches in-place contract (#271) ----------------------------

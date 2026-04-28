@@ -10116,14 +10116,25 @@ auth = \"pat\"
                 .collect::<Vec<_>>(),
         );
 
-        // Sanity: summary.recreates contains the RemoveRunner label
-        // (RemoveRunner is recreate-class).
+        // Full-Vec pin on summary.recreates: the plan has exactly
+        // 2 actions — CreateRunner("web") from the desired-only arm
+        // and RemoveRunner("old-web") from the discovered-only arm.
+        // Both are recreate-class (per Action::disruption()), so both
+        // labels appear in summary.recreates. plan_summary_value
+        // sorts via sort_unstable() over Action::label() output, so
+        // "CreateRunner(web)" < "RemoveRunner(old-web)" by byte-wise
+        // lex order. assert_eq! catches both ordering regressions
+        // and any spurious/missing entries — strictly tighter than
+        // a single .contains() check.
         let body = plan_to_json_value(&plan, false);
         let recreates = body["summary"]["recreates"].as_array().unwrap();
         let labels: Vec<&str> = recreates.iter().map(|v| v.as_str().unwrap()).collect();
-        assert!(
-            labels.contains(&"RemoveRunner(old-web)"),
-            "summary.recreates must contain RemoveRunner(old-web); got: {labels:?}",
+        assert_eq!(
+            labels,
+            vec!["CreateRunner(web)", "RemoveRunner(old-web)"],
+            "summary.recreates must equal exactly [CreateRunner(web), \
+             RemoveRunner(old-web)] (sorted by Action::label byte-wise); \
+             got: {labels:?}",
         );
     }
 
