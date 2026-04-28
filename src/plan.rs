@@ -6472,91 +6472,52 @@ labels  = ["alpha", "beta"]
         );
     }
 
-    // ---- #310: auth_name in-place contract --------------------------
+    // ---- auth_name in-place contract --------------------------------
 
-    /// auth_name change is in-place per design Part 3 (#306). The
-    /// classifier must:
-    ///   - record a FieldChange { path: "auth_name", before, after };
-    ///   - NOT push to recreate_reasons;
-    ///   - NOT trip the `uncovered` fallback (gated on
-    ///     `field_changes.is_empty()` alongside `recreate_reasons.is_empty()`
-    ///     in `plan_from`'s uncovered-fallback predicate).
-    /// This test pins all three at once so a regression in any branch
-    /// is caught before commit.
+    /// Same-discriminant fixture for the auth-name in-place contract:
+    /// both `[auth.NAME]` blocks are `AuthSpec::Pat`, distinct auth-ref
+    /// names (`pat-old` → `pat-new`). Delegates to the shared
+    /// 7-invariant scaffold `assert_auth_name_change_is_in_place`,
+    /// which pins `recreate_reasons == vec![]`,
+    /// `requires_recreate == false`, exactly one `field_changes` entry
+    /// (`auth_name` with the expected before/after), `drift_cause ==
+    /// SpecChanged`, no `auth_kind` leakage, and a `Modified`
+    /// `00-ghars.conf` drop-in entry.
+    ///
+    /// Same-discriminant Pat→Pat with different auth-ref names is the
+    /// most common operator transition (token rotation: retire one
+    /// `[auth.pat-old]` block, point runners at `[auth.pat-new]`),
+    /// distinct from the same-name `pat`→`github_app` sibling that
+    /// also uses two `AuthSpec::Pat` blocks but exercises the
+    /// auth-name strings the cross-discriminant siblings use as
+    /// labels.
     #[test]
-    fn plan_update_runner_auth_name_change_is_in_place_with_field_change() {
-        // Two distinct PATs; the runner moves from `pat-old` →
-        // `pat-new`. config_with_runners' default config registers only
-        // "pat", so we extend with both.
-        let mut cfg = config_with_runners(vec![{
-            let mut r = minimal_runner("a");
-            r.auth = Some("pat-new".into());
-            r
-        }]);
-        cfg.auth = IndexMap::new();
-        cfg.auth.insert(
+    fn plan_update_in_place_on_auth_name_change_pat_old_to_pat_new_has_empty_recreate_reasons() {
+        // Two `[auth.NAME]` blocks named `pat-old` and `pat-new`,
+        // both `AuthSpec::Pat`. The runner moves from auth-ref
+        // `pat-old` → `pat-new`.
+        let mut auth_blocks = IndexMap::new();
+        auth_blocks.insert(
             "pat-old".into(),
             AuthSpec::Pat {
                 token_env: Some("GHARS_PAT_OLD".into()),
                 token_file: None,
             },
         );
-        cfg.auth.insert(
+        auth_blocks.insert(
             "pat-new".into(),
             AuthSpec::Pat {
                 token_env: Some("GHARS_PAT_NEW".into()),
                 token_file: None,
             },
         );
-
-        // Discovered runner was registered against pat-old.
-        let old_runner = cfg.runners[0].clone();
-        let mut old_spec = merge_defaults(
-            &old_runner,
-            &cfg.defaults,
-            "pat-old".into(),
-            vec![],
-            None,
-            None,
-            None,
-            Arch::X86_64,
-            cfg_source_default(),
+        assert_auth_name_change_is_in_place(
+            auth_blocks,
+            "pat-old",
+            "pat-new",
+            FieldValue::String("pat-old".into()),
+            FieldValue::String("pat-new".into()),
         );
-        old_spec.spec_hash = spec_hash(&old_spec);
-        let mut actual = empty_actual();
-        actual
-            .runners
-            .insert("a".into(), discovered_for("a", &old_spec, Drift::InSync));
-
-        let plan = plan_from(&cfg, &actual, &empty_paths()).unwrap();
-        let upd = plan
-            .actions
-            .iter()
-            .find_map(|a| match a {
-                Action::UpdateRunner(d) => Some(d),
-                _ => None,
-            })
-            .expect("auth_name change must emit UpdateRunner");
-        assert!(
-            !upd.requires_recreate,
-            "auth_name change must be in-place; got reasons {:?}",
-            upd.recreate_reasons
-        );
-        assert!(
-            !upd.recreate_reasons.contains(&"uncovered"),
-            "auth_name change must NOT trip uncovered fallback; got reasons {:?}",
-            upd.recreate_reasons
-        );
-        let auth_name_change = upd
-            .field_changes
-            .iter()
-            .find(|fc| fc.path == "auth_name")
-            .expect("field_changes must include auth_name entry");
-        assert_eq!(
-            auth_name_change.before,
-            FieldValue::String("pat-old".into())
-        );
-        assert_eq!(auth_name_change.after, FieldValue::String("pat-new".into()));
     }
 
     /// Shared scaffold for the auth-name in-place sibling tests
@@ -6724,21 +6685,44 @@ labels  = ["alpha", "beta"]
         );
     }
 
+    /// Shared cross-discriminant `[auth.NAME]` fixture: a `pat` block
+    /// of kind `AuthSpec::Pat` paired with a `github_app` block of
+    /// kind `AuthSpec::GithubApp`. Used by the forward
+    /// (`pat → github_app`) and inverse (`github_app → pat`) sibling
+    /// tests of the auth-name in-place contract — the two directions
+    /// share an identical fixture and differ only in which auth-ref
+    /// name appears on the discovered vs desired side.
+    ///
+    /// Centralizing the construction keeps the two siblings in lock-
+    /// step: if the GithubApp content changes (e.g. private_key_path
+    /// moves to a different convention), both directions re-derive
+    /// from a single source.
+    fn auth_blocks_with_pat_and_github_app() -> IndexMap<String, AuthSpec> {
+        let mut auth_blocks = IndexMap::new();
+        auth_blocks.insert(
+            "pat".into(),
+            AuthSpec::Pat {
+                token_env: Some("GHARS_PAT".into()),
+                token_file: None,
+            },
+        );
+        auth_blocks.insert(
+            "github_app".into(),
+            AuthSpec::GithubApp {
+                app_id: 12345,
+                installation_id: 67890,
+                private_key_path: Utf8PathBuf::from("/etc/ghars/app.pem"),
+            },
+        );
+        auth_blocks
+    }
+
     /// Inverse pin for the auth-name in-place contract: when the
     /// operator switches a runner from one auth ref to another (here
     /// `pat` → `github_app` — an auth-name string change between two
     /// `[auth.NAME]` blocks, both `AuthSpec::Pat` under the hood),
     /// the planner must NOT trip the `uncovered` recreate fallback at
     /// `plan_from`'s spec-hash-mismatch gate.
-    ///
-    /// `recreate_reasons == vec![]` (exact-match) is strictly tighter
-    /// than the sibling `plan_update_runner_auth_name_change_is_in_place_with_field_change`'s
-    /// `!contains(&"uncovered")` check: any future regression that
-    /// pushes ANY token (not just "uncovered") into `recreate_reasons`
-    /// for an auth-name change fails this assertion. The empty-Vec
-    /// invariant is the load-bearing pin — `requires_recreate` is
-    /// derived from the `requires_recreate = !recreate_reasons.is_empty()`
-    /// gate in `plan_from`'s spec-hash-mismatch arm.
     ///
     /// Body delegates to `assert_auth_name_change_is_in_place` for the
     /// shared 7-invariant scaffold; this test contributes the
@@ -6809,28 +6793,12 @@ labels  = ["alpha", "beta"]
     /// configs to GitHub Apps as their fleet grows.
     #[test]
     fn plan_update_in_place_on_auth_name_change_pat_to_github_app_has_empty_recreate_reasons() {
-        // Two `[auth.NAME]` blocks with REAL cross-discriminant
-        // shape: "pat" is AuthSpec::Pat, "github_app" is
-        // AuthSpec::GithubApp. The runner.auth ref switches from
-        // "pat" (discovered side) to "github_app" (desired side).
-        let mut auth_blocks = IndexMap::new();
-        auth_blocks.insert(
-            "pat".into(),
-            AuthSpec::Pat {
-                token_env: Some("GHARS_PAT".into()),
-                token_file: None,
-            },
-        );
-        auth_blocks.insert(
-            "github_app".into(),
-            AuthSpec::GithubApp {
-                app_id: 12345,
-                installation_id: 67890,
-                private_key_path: Utf8PathBuf::from("/etc/ghars/app.pem"),
-            },
-        );
+        // REAL cross-discriminant shape (Pat + GithubApp) shared with
+        // the inverse-direction sibling test. The runner.auth ref
+        // switches from "pat" (discovered side) to "github_app"
+        // (desired side).
         assert_auth_name_change_is_in_place(
-            auth_blocks,
+            auth_blocks_with_pat_and_github_app(),
             "pat",
             "github_app",
             FieldValue::String("pat".into()),
@@ -6867,29 +6835,12 @@ labels  = ["alpha", "beta"]
     /// to discover the asymmetry.
     #[test]
     fn plan_update_in_place_on_auth_name_change_github_app_to_pat_has_empty_recreate_reasons() {
-        // Two `[auth.NAME]` blocks with REAL cross-discriminant shape
-        // (same as the forward sibling): "pat" is AuthSpec::Pat,
-        // "github_app" is AuthSpec::GithubApp. The runner.auth ref
+        // REAL cross-discriminant shape (Pat + GithubApp) shared with
+        // the forward-direction sibling test. The runner.auth ref
         // switches in the OPPOSITE direction: from "github_app"
         // (discovered side) to "pat" (desired side).
-        let mut auth_blocks = IndexMap::new();
-        auth_blocks.insert(
-            "pat".into(),
-            AuthSpec::Pat {
-                token_env: Some("GHARS_PAT".into()),
-                token_file: None,
-            },
-        );
-        auth_blocks.insert(
-            "github_app".into(),
-            AuthSpec::GithubApp {
-                app_id: 12345,
-                installation_id: 67890,
-                private_key_path: Utf8PathBuf::from("/etc/ghars/app.pem"),
-            },
-        );
         assert_auth_name_change_is_in_place(
-            auth_blocks,
+            auth_blocks_with_pat_and_github_app(),
             "github_app",
             "pat",
             FieldValue::String("github_app".into()),
