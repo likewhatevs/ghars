@@ -293,9 +293,8 @@ impl ApplyOutcome {
                 pools_removed,
             } => {
                 let group_ops = pools_added.len() + pools_removed.len();
-                let mut s = format!(
-                    "in-place: {files_changed} file(s) changed, {group_ops} group op(s)"
-                );
+                let mut s =
+                    format!("in-place: {files_changed} file(s) changed, {group_ops} group op(s)");
                 // #473: surface pool names when the gpasswd diff was
                 // non-empty so the operator sees WHICH pools moved,
                 // not just how many. Suffix shape:
@@ -372,19 +371,18 @@ impl ApplyOutcome {
     #[must_use]
     pub fn disruption(&self) -> crate::plan::Disruption {
         match self {
-            Self::InPlaceSkipped
-            | Self::PoolSkipped
-            | Self::NoOp
-            | Self::DryRunSkipped => crate::plan::Disruption::None,
-            Self::InPlaceRestarted { .. } | Self::PoolUpdated => {
-                crate::plan::Disruption::Restart
+            Self::InPlaceSkipped | Self::PoolSkipped | Self::NoOp | Self::DryRunSkipped => {
+                crate::plan::Disruption::None
             }
+            Self::InPlaceRestarted { .. } | Self::PoolUpdated => crate::plan::Disruption::Restart,
             Self::Recreated
             | Self::Created
             | Self::Removed
             | Self::PoolCreated
             | Self::PoolRemoved => crate::plan::Disruption::Recreate,
-            Self::Failed { plan_disruption, .. } => *plan_disruption,
+            Self::Failed {
+                plan_disruption, ..
+            } => *plan_disruption,
         }
     }
 }
@@ -651,13 +649,22 @@ impl UndoStep {
                 format!("wrote {}", crate::escape_control_chars(path.as_str()))
             }
             UndoStep::RemoveFile { path, .. } => {
-                format!("removed file {}", crate::escape_control_chars(path.as_str()))
+                format!(
+                    "removed file {}",
+                    crate::escape_control_chars(path.as_str())
+                )
             }
             UndoStep::CreateDir { path } => {
-                format!("created directory {}", crate::escape_control_chars(path.as_str()))
+                format!(
+                    "created directory {}",
+                    crate::escape_control_chars(path.as_str())
+                )
             }
             UndoStep::RemoveDir { path } => {
-                format!("removed directory {}", crate::escape_control_chars(path.as_str()))
+                format!(
+                    "removed directory {}",
+                    crate::escape_control_chars(path.as_str())
+                )
             }
             UndoStep::StartUnit { name } => {
                 format!("started {}", crate::escape_control_chars(name))
@@ -1459,10 +1466,7 @@ impl Users for RealUsers {
 }
 
 fn spawn_err(prog: &str, e: &std::io::Error) -> GharsError {
-    GharsError::Io(std::io::Error::new(
-        e.kind(),
-        format!("spawn {prog}: {e}"),
-    ))
+    GharsError::Io(std::io::Error::new(e.kind(), format!("spawn {prog}: {e}")))
 }
 
 // ---------- Config.sh runner seam --------------------------------------
@@ -2139,9 +2143,7 @@ pub fn apply(
                 //   must clean up manually.
                 // Either way, the advisory's steps are a cleanup
                 // checklist, not a "still pending" guarantee.
-                result
-                    .failed_undo_logs
-                    .push((label, log.into_steps()));
+                result.failed_undo_logs.push((label, log.into_steps()));
                 if opts.fail_fast {
                     let _ = deps.systemd.daemon_reload();
                     return Ok(result);
@@ -5827,10 +5829,7 @@ mod tests {
             other => panic!("expected ApplyOutcome::Failed, got {other:?}"),
         }
         // disruption() on Failed delegates to plan_disruption.
-        assert_eq!(
-            det_outcome.disruption(),
-            crate::plan::Disruption::Recreate,
-        );
+        assert_eq!(det_outcome.disruption(), crate::plan::Disruption::Recreate,);
         let calls = systemd.calls.lock().unwrap();
         assert!(
             calls
@@ -5905,12 +5904,8 @@ mod tests {
     ///    load-bearing.
     #[test]
     fn apply_result_details_failed_labels_match_failed_vec_for_multi_failure_plans() {
-        let auth_err = |msg: &str| {
-            GharsError::Auth(msg.into(), "hint".into())
-        };
-        let validation_err = |msg: &str| {
-            GharsError::Validation(msg.into(), "hint".into())
-        };
+        let auth_err = |msg: &str| GharsError::Auth(msg.into(), "hint".into());
+        let validation_err = |msg: &str| GharsError::Validation(msg.into(), "hint".into());
         let result = ApplyResult {
             succeeded: vec!["CreateRunner(c)".into()],
             failed: vec![
@@ -6015,8 +6010,7 @@ mod tests {
             .iter()
             .map(|(label, _)| label.as_str())
             .collect();
-        let failed_labels_borrowed: Vec<&str> =
-            failed_labels.iter().map(String::as_str).collect();
+        let failed_labels_borrowed: Vec<&str> = failed_labels.iter().map(String::as_str).collect();
         assert_eq!(
             undo_labels, failed_labels_borrowed,
             "failed_undo_logs labels must match failed labels in order",
@@ -8826,10 +8820,7 @@ mod tests {
     /// rendered detail string is deterministic across runs.
     #[test]
     fn execute_update_runner_in_place_populates_pool_name_vecs() {
-        fn run_case(
-            before: Option<Vec<&str>>,
-            after: Vec<&str>,
-        ) -> ApplyOutcome {
+        fn run_case(before: Option<Vec<&str>>, after: Vec<&str>) -> ApplyOutcome {
             let tmp = tempfile::tempdir().unwrap();
             let paths = make_paths(&tmp);
             let systemd = MockSystemd::default();
@@ -9359,10 +9350,7 @@ mod tests {
             "pool removed (group + storage + drop-in)"
         );
         assert_eq!(ApplyOutcome::NoOp.detail(), "noop (in sync)");
-        assert_eq!(
-            ApplyOutcome::DryRunSkipped.detail(),
-            "dry-run (skipped)"
-        );
+        assert_eq!(ApplyOutcome::DryRunSkipped.detail(), "dry-run (skipped)");
         // #474: Failed.detail() returns the captured error_summary
         // verbatim — no rewrapping, no prefix.
         assert_eq!(
@@ -9412,11 +9400,7 @@ mod tests {
         // comma-separated lists + semicolon between groups.
         let outcome = ApplyOutcome::InPlaceRestarted {
             files_changed: 5,
-            pools_added: vec![
-                "alpha".into(),
-                "beta".into(),
-                "gamma".into(),
-            ],
+            pools_added: vec!["alpha".into(), "beta".into(), "gamma".into()],
             pools_removed: vec!["delta".into(), "epsilon".into()],
         };
         assert_eq!(
@@ -9454,14 +9438,8 @@ mod tests {
         assert_eq!(ApplyOutcome::Recreated.disruption(), Disruption::Recreate);
         assert_eq!(ApplyOutcome::Created.disruption(), Disruption::Recreate);
         assert_eq!(ApplyOutcome::Removed.disruption(), Disruption::Recreate);
-        assert_eq!(
-            ApplyOutcome::PoolCreated.disruption(),
-            Disruption::Recreate,
-        );
-        assert_eq!(
-            ApplyOutcome::PoolRemoved.disruption(),
-            Disruption::Recreate,
-        );
+        assert_eq!(ApplyOutcome::PoolCreated.disruption(), Disruption::Recreate,);
+        assert_eq!(ApplyOutcome::PoolRemoved.disruption(), Disruption::Recreate,);
         // #474: Failed.disruption() returns the action's plan-time
         // worst-case disruption stored in `plan_disruption`. All
         // three variants must round-trip — apply-time impact is
@@ -9606,9 +9584,7 @@ mod tests {
         assert_eq!(steps.len(), 3);
         assert!(matches!(&steps[0], UndoStep::WriteFile { path, .. } if path == "/a"));
         assert!(matches!(&steps[1], UndoStep::CreateDir { path } if path == "/b"));
-        assert!(
-            matches!(&steps[2], UndoStep::StartUnit { name } if name == "x.service"),
-        );
+        assert!(matches!(&steps[2], UndoStep::StartUnit { name } if name == "x.service"),);
     }
 
     /// #340: pin that `apply()` pushes a `(label, NoOp)` row into
@@ -10008,8 +9984,7 @@ mod tests {
         // Confirm the on-disk bytes were rewritten to the rendered
         // body — read_then_write_if_changed only writes when bytes
         // differ.
-        let after_disk =
-            std::fs::read(drop_in_dir.join("00-ghars.conf").as_std_path()).unwrap();
+        let after_disk = std::fs::read(drop_in_dir.join("00-ghars.conf").as_std_path()).unwrap();
         assert_eq!(after_disk, delta.drop_in_body.as_bytes());
     }
 
@@ -10462,11 +10437,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let paths = make_paths(&tmp);
         fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
-        fs::write(
-            paths.unit_file("a").as_std_path(),
-            b"[Unit]\n",
-        )
-        .unwrap();
+        fs::write(paths.unit_file("a").as_std_path(), b"[Unit]\n").unwrap();
         fs::create_dir_all(paths.drop_in_dir("a").as_std_path()).unwrap();
         fs::create_dir_all(paths.runner_home("a").as_std_path()).unwrap();
         fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
@@ -10548,11 +10519,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let paths = make_paths(&tmp);
         fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
-        fs::write(
-            paths.unit_file("a").as_std_path(),
-            b"[Unit]\n",
-        )
-        .unwrap();
+        fs::write(paths.unit_file("a").as_std_path(), b"[Unit]\n").unwrap();
         fs::create_dir_all(paths.drop_in_dir("a").as_std_path()).unwrap();
         fs::create_dir_all(paths.runner_home("a").as_std_path()).unwrap();
         fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
@@ -10589,8 +10556,7 @@ mod tests {
         let err = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new()).unwrap_err();
         let rendered = format!("{err}");
         assert!(
-            rendered.contains("no runner_tarball")
-                && rendered.contains("no resolved release"),
+            rendered.contains("no runner_tarball") && rendered.contains("no resolved release"),
             "expected create-path Validation failure; got: {rendered}"
         );
         // Remove side effects MUST have fired before create errored:
@@ -10630,11 +10596,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let paths = make_paths(&tmp);
         fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
-        fs::write(
-            paths.unit_file("a").as_std_path(),
-            b"[Unit]\n",
-        )
-        .unwrap();
+        fs::write(paths.unit_file("a").as_std_path(), b"[Unit]\n").unwrap();
         fs::create_dir_all(paths.drop_in_dir("a").as_std_path()).unwrap();
         fs::create_dir_all(paths.runner_home("a").as_std_path()).unwrap();
         fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
@@ -10714,11 +10676,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let paths = make_paths(&tmp);
         fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
-        fs::write(
-            paths.unit_file("a").as_std_path(),
-            b"[Unit]\n",
-        )
-        .unwrap();
+        fs::write(paths.unit_file("a").as_std_path(), b"[Unit]\n").unwrap();
         fs::create_dir_all(paths.drop_in_dir("a").as_std_path()).unwrap();
         fs::create_dir_all(paths.runner_home("a").as_std_path()).unwrap();
         fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
@@ -10774,11 +10732,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let paths = make_paths(&tmp);
         fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
-        fs::write(
-            paths.unit_file("a").as_std_path(),
-            b"[Unit]\n",
-        )
-        .unwrap();
+        fs::write(paths.unit_file("a").as_std_path(), b"[Unit]\n").unwrap();
         fs::create_dir_all(paths.drop_in_dir("a").as_std_path()).unwrap();
         fs::create_dir_all(paths.runner_home("a").as_std_path()).unwrap();
         fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
@@ -10815,8 +10769,7 @@ mod tests {
         // production code computes it via `sha256_of_runsvc()` AFTER
         // run_register, then renders the 00-ghars.conf drop-in with
         // `X-Ghars-Runsvc-Sha256=sha256:<hex>`.
-        const MOCK_RUNSVC: &[u8] =
-            b"#!/bin/sh\n# mock runsvc\nexec ./bin/runsvc.sh \"$@\"\n";
+        const MOCK_RUNSVC: &[u8] = b"#!/bin/sh\n# mock runsvc\nexec ./bin/runsvc.sh \"$@\"\n";
         let mut hasher = Sha256::new();
         hasher.update(MOCK_RUNSVC);
         let expected_hex = format!("{:x}", hasher.finalize());
@@ -10989,18 +10942,18 @@ mod tests {
         // a refactor that reorders create's step 1 BEFORE its
         // Validation gate.
         let unit = "ghars-runner@a.service";
-        let stop_runner = steps.iter().any(|s| {
-            matches!(s, UndoStep::StopUnit { name } if name == unit)
-        });
-        let disable_runner = steps.iter().any(|s| {
-            matches!(s, UndoStep::DisableUnit { name } if name == unit)
-        });
-        let user_del = steps.iter().any(|s| {
-            matches!(s, UndoStep::UserDel { name } if name == "ghars-a")
-        });
-        let user_add = steps.iter().any(|s| {
-            matches!(s, UndoStep::UserAdd { name } if name == "ghars-a")
-        });
+        let stop_runner = steps
+            .iter()
+            .any(|s| matches!(s, UndoStep::StopUnit { name } if name == unit));
+        let disable_runner = steps
+            .iter()
+            .any(|s| matches!(s, UndoStep::DisableUnit { name } if name == unit));
+        let user_del = steps
+            .iter()
+            .any(|s| matches!(s, UndoStep::UserDel { name } if name == "ghars-a"));
+        let user_add = steps
+            .iter()
+            .any(|s| matches!(s, UndoStep::UserAdd { name } if name == "ghars-a"));
         assert!(
             stop_runner,
             "remove-side StopUnit must appear in log; got: {steps:?}",
@@ -11193,7 +11146,9 @@ mod tests {
         );
         let error_summary = match outcome {
             ApplyOutcome::Failed { error_summary, .. } => error_summary.clone(),
-            other => panic!("expected ApplyOutcome::Failed for post-loop daemon_reload, got {other:?}"),
+            other => {
+                panic!("expected ApplyOutcome::Failed for post-loop daemon_reload, got {other:?}")
+            }
         };
         // (i) raw ESC byte must not survive: the Systemd Display would
         // have included `\x1b`, and the post-loop branch's
@@ -11529,12 +11484,12 @@ mod tests {
         // (c) remove-side StopUnit / DisableUnit landed before the
         // create-side Validation gate. Mirror T8 assertion.
         let unit = "ghars-runner@a.service";
-        let stop_runner = steps.iter().any(|s| {
-            matches!(s, UndoStep::StopUnit { name } if name == unit)
-        });
-        let disable_runner = steps.iter().any(|s| {
-            matches!(s, UndoStep::DisableUnit { name } if name == unit)
-        });
+        let stop_runner = steps
+            .iter()
+            .any(|s| matches!(s, UndoStep::StopUnit { name } if name == unit));
+        let disable_runner = steps
+            .iter()
+            .any(|s| matches!(s, UndoStep::DisableUnit { name } if name == unit));
         assert!(
             stop_runner,
             "remove-side StopUnit must appear in log; got: {steps:?}",
@@ -11564,10 +11519,7 @@ mod tests {
             added.contains(&"ghars-a".to_string()),
             "create-side useradd must have run before the Validation gate; got added={added:?}"
         );
-        let userdel_count = removed
-            .iter()
-            .filter(|n| n.as_str() == "ghars-a")
-            .count();
+        let userdel_count = removed.iter().filter(|n| n.as_str() == "ghars-a").count();
         assert_eq!(
             userdel_count, 2,
             "rollback must invert UserAdd (1× remove-side userdel + 1× undo walk); \

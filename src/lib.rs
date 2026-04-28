@@ -128,7 +128,10 @@ mod tests {
     fn escape_control_chars_passes_clean_ascii_unchanged_as_borrowed() {
         let s = "fail: CreateRunner(buckos): systemd: Manager.StartUnit failed";
         let out = escape_control_chars(s);
-        assert!(matches!(out, Cow::Borrowed(_)), "clean input must be Borrowed");
+        assert!(
+            matches!(out, Cow::Borrowed(_)),
+            "clean input must be Borrowed"
+        );
         assert_eq!(out, s);
     }
 
@@ -200,7 +203,10 @@ mod tests {
         // are `is_ascii_control()`, all pass through. Borrowed.
         let s = "Файл-test \u{1F44D}";
         let out = escape_control_chars(s);
-        assert!(matches!(out, Cow::Borrowed(_)), "non-ASCII must be Borrowed");
+        assert!(
+            matches!(out, Cow::Borrowed(_)),
+            "non-ASCII must be Borrowed"
+        );
         assert_eq!(out, s);
     }
 
@@ -220,7 +226,10 @@ mod tests {
         // broader `is_control()` check is caught.
         let s = "before\u{009B}after";
         let out = escape_control_chars(s);
-        assert!(matches!(out, Cow::Borrowed(_)), "C1 codepoint must not trigger escaping");
+        assert!(
+            matches!(out, Cow::Borrowed(_)),
+            "C1 codepoint must not trigger escaping"
+        );
         assert_eq!(out, s);
     }
 

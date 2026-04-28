@@ -1109,8 +1109,7 @@ mod tests {
             .with_status(404)
             .create();
         let extract_tmp = tempfile::tempdir().unwrap();
-        let extract_dest =
-            Utf8PathBuf::from_path_buf(extract_tmp.path().join("nope")).unwrap();
+        let extract_dest = Utf8PathBuf::from_path_buf(extract_tmp.path().join("nope")).unwrap();
         let extract_url = format!("{}/nope", extract_server.url());
         let extract_err =
             http_download(&extract_url, &extract_dest, Duration::from_secs(10)).unwrap_err();
@@ -2075,8 +2074,7 @@ mod tests {
                     "msg must surface neutral 'larger than expected' framing per #727; got: {msg}"
                 );
                 assert!(
-                    msg.contains("deliberately-crafted")
-                        && msg.contains("legitimately large"),
+                    msg.contains("deliberately-crafted") && msg.contains("legitimately large"),
                     "msg must name both threat-model + legitimate-payload possibilities per #727; got: {msg}"
                 );
                 assert!(

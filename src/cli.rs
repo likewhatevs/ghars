@@ -68,12 +68,13 @@ use std::sync::LazyLock;
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::CommandFactory;
 use regex::Regex;
-use unicode_general_category::{get_general_category, GeneralCategory};
+use unicode_general_category::{GeneralCategory, get_general_category};
 use zbus::blocking::{Connection, Proxy};
 use zbus::zvariant::OwnedObjectPath;
 
+use crate::Result;
 use crate::apply;
-use crate::auth::{build_token_source, TokenSource};
+use crate::auth::{TokenSource, build_token_source};
 use crate::config::{AuthSpec, Config, Hardening, HooksSpec};
 use crate::error::GharsError;
 use crate::escape_control_chars;
@@ -83,7 +84,6 @@ use crate::preflight;
 use crate::state;
 use crate::systemd::DbusSystemd;
 use crate::validators;
-use crate::Result;
 
 /// Top-level `ghars` CLI.
 #[derive(clap::Parser, Debug)]
@@ -943,11 +943,9 @@ static POSIX_ENV_VAR_NAME_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// Hints reused by every `validate_pat_xor` rejection arm so the
 /// canonical example value (`GHARS_PAT` / `/etc/ghars/pat`) appears
 /// in operator output regardless of which gate fires first.
-const TOKEN_ENV_HINT: &str =
-    "set token_env to the name of an environment variable holding the PAT \
+const TOKEN_ENV_HINT: &str = "set token_env to the name of an environment variable holding the PAT \
      (e.g. token_env = \"GHARS_PAT\"), or remove the field";
-const TOKEN_FILE_HINT: &str =
-    "set token_file to the absolute path of a 0600 root-owned file holding \
+const TOKEN_FILE_HINT: &str = "set token_file to the absolute path of a 0600 root-owned file holding \
      the PAT (e.g. token_file = \"/etc/ghars/pat\"), or remove the field";
 
 /// #659: returns true for characters disallowed inside non-empty
@@ -2708,6 +2706,94 @@ pub(crate) fn render_apply_summary_line(result: &apply::ApplyResult) -> String {
     )
 }
 
+/// Render every `cmd_apply` post-execution stdout/stderr line for a
+/// completed `ApplyResult` to the supplied writers. Splits into three
+/// emission sections, all routed by stream.
+///
+/// **Stream routing**: `noop:` + `ok:` + summary footer → stdout;
+/// `fail:` + rollback advisory → stderr.
+///
+/// **Error semantics**: Returns `Err` on the first write failure to
+/// either stream; remaining lines are NOT emitted. This is a behavior
+/// shift from the prior inline pattern which attempted each writeln
+/// independently. The sole production caller swallows the error
+/// (`let _ = ...`) matching the prior best-effort semantics.
+///
+/// 1. **Per-action detail loop** (`result.details`, in execution order):
+///    - `NoOp(REASON)` → stdout: `noop: REASON [none]` (label-strip
+///      collapses the otherwise-verbose `ok: NoOp(REASON) [none]
+///      (noop (in sync))` double-tag — the parenthesized REASON
+///      inside the label is the operator-facing string).
+///    - `Failed { .. }` → STDERR: `fail: LABEL [disruption] (error)`.
+///    - all other Ok variants → stdout: `ok: LABEL [disruption] (detail)`.
+///    The `[disruption]` bracket tag (`[none]`/`[restart]`/`[recreate]`)
+///    reuses the plan-output vocabulary from `render_action_line`
+///    (Part 5 of the design) so a single `grep [recreate]` matches
+///    both surfaces.
+///
+/// 2. **Apply summary footer** ([`render_apply_summary_line`]) → stdout.
+///    Symmetric with `render_plan_summary_line` (same disruption
+///    vocabulary, same applied/failed/skipped+tail format). Emitted
+///    after the per-action lines so operators see the rollup at the
+///    bottom of the apply output.
+///
+/// 3. **Rollback advisory** ([`render_rollback_advisory`]) → STDERR.
+///    Gated on the renderer returning `Some(...)` so successful
+///    applies (and applies whose only failure was a synthetic
+///    daemon_reload with no recorded undo steps) emit no extra noise.
+///    Belongs with the `fail:` rows on stderr, not the success-path
+///    summary on stdout.
+///
+/// **Stream-routing contract**: `noop:` and `ok:` lines plus the
+/// summary footer go to `stdout`; `fail:` lines plus the rollback
+/// advisory go to `stderr`. Tests pass capture buffers (`&mut Vec<u8>`)
+/// for both streams so the routing is verifiable without a TTY.
+///
+/// `result.failed` retains the typed `GharsError` chain for
+/// programmatic consumers (exit-code mapping, undo log advisory); the
+/// per-action rendering loop reads `result.details` exclusively now,
+/// per the contract documented at [`apply::ApplyResult::details`].
+pub(crate) fn render_apply_emission(
+    result: &apply::ApplyResult,
+    stdout: &mut impl std::io::Write,
+    stderr: &mut impl std::io::Write,
+) -> std::io::Result<()> {
+    for (label, outcome) in &result.details {
+        match outcome {
+            apply::ApplyOutcome::NoOp => {
+                let reason = label
+                    .strip_prefix("NoOp(")
+                    .and_then(|s| s.strip_suffix(')'))
+                    .unwrap_or(label.as_str());
+                // Hardcoded `[none]` for shape parity with `ok:`/`fail:`
+                // bracket tags — operators parse all rows with one regex.
+                writeln!(stdout, "noop: {reason} [none]")?;
+            }
+            apply::ApplyOutcome::Failed { .. } => {
+                writeln!(
+                    stderr,
+                    "fail: {label} [{}] ({})",
+                    outcome.disruption().label(),
+                    outcome.detail(),
+                )?;
+            }
+            _ => {
+                writeln!(
+                    stdout,
+                    "ok: {label} [{}] ({})",
+                    outcome.disruption().label(),
+                    outcome.detail(),
+                )?;
+            }
+        }
+    }
+    writeln!(stdout, "{}", render_apply_summary_line(result))?;
+    if let Some(advisory) = render_rollback_advisory(result) {
+        writeln!(stderr, "{advisory}")?;
+    }
+    Ok(())
+}
+
 /// Build one `drop_in_changes[]` JSON entry. When `diff = false`,
 /// emits the pre-#285 shape (`basename` + `change_kind`). When
 /// `diff = true`, adds body content per variant: `after` for
@@ -2894,88 +2980,7 @@ fn cmd_apply(
     };
     let result = apply::apply(&plan, &deps, paths, &opts)?;
     if !quiet {
-        // #340 + #474: render every action with a per-action detail
-        // line. Format: `ok: LABEL [disruption] (detail)` for success
-        // / skip / dry-run, `fail: LABEL [disruption] (error)` for
-        // failed actions. The `[disruption]` bracket tag
-        // (`[none]`/`[restart]`/`[recreate]`) reuses the plan-output
-        // vocabulary from #285 so a single `grep [recreate]` matches
-        // both surfaces. `result.details` is populated in execution
-        // order (post sort_into_phases) covering success, skip,
-        // dry-run, AND failure rows (#474); the outcome's `detail()`
-        // carries the variant-specific suffix (e.g. "in-place: 2
-        // file(s) changed, 0 group op(s)", or with a non-empty
-        // pool diff "in-place: 2 file(s) changed, 1 group op(s)
-        // (added: build-cache)" per #473; "noop (bytes + groups
-        // match)"; "dry-run (skipped)"; or the failure error
-        // string). NoOp actions are special-cased to emit
-        // `noop: REASON` instead of the verbose `ok: NoOp(REASON)
-        // [none] (noop (in sync))` double-tag (DA1 finding) — the
-        // label already carries `NoOp(REASON)`, so re-saying `noop
-        // (in sync)` is redundant. `fail:` rows route to stderr to
-        // preserve the stdout/stderr split for grep pipelines.
-        // `result.failed` retains the typed GharsError chain for
-        // programmatic consumers; the rendering layer reads
-        // `result.details` exclusively now.
-        for (label, outcome) in &result.details {
-            match outcome {
-                apply::ApplyOutcome::NoOp => {
-                    // F-DA3: append `[none]` for shape parity with the
-                    // `ok: LABEL [disruption] (...)` and
-                    // `fail: LABEL [disruption] (...)` lines so a single
-                    // regex parses every row. NoOp is always
-                    // `Disruption::None` (verified at apply.rs by the
-                    // `disruption()` mapping).
-                    let reason = label
-                        .strip_prefix("NoOp(")
-                        .and_then(|s| s.strip_suffix(')'))
-                        .unwrap_or(label.as_str());
-                    let _ = writeln!(io::stdout(), "noop: {reason} [none]");
-                }
-                apply::ApplyOutcome::Failed { .. } => {
-                    let _ = writeln!(
-                        io::stderr(),
-                        "fail: {label} [{}] ({})",
-                        outcome.disruption().label(),
-                        outcome.detail(),
-                    );
-                }
-                _ => {
-                    let _ = writeln!(
-                        io::stdout(),
-                        "ok: {label} [{}] ({})",
-                        outcome.disruption().label(),
-                        outcome.detail(),
-                    );
-                }
-            }
-        }
-        // #476: apply summary footer — symmetric with
-        // `render_plan_summary_line` (#285 / #471). Emitted after
-        // the per-action lines and before the exit code so
-        // operators see the rollup at the bottom of the apply
-        // output. Goes to stdout (matches plan footer).
-        let _ = writeln!(io::stdout(), "{}", render_apply_summary_line(&result));
-        // #478: rollback-state advisory — gated on
-        // `!result.failed.is_empty()` so successful applies emit no
-        // extra noise. Goes to STDERR (the advisory belongs with
-        // `fail:` rows, not the success-path summary on stdout).
-        // Multi-line block listing each failed action with its
-        // recorded UndoSteps (#281's per-action mutation manifest)
-        // so the operator sees what landed on disk before the
-        // action errored. PHD-1 (#478 pass 1): when
-        // `--rollback-on-failure` was set, `apply::undo` already
-        // ran (best-effort, per-step failures logged to tracing,
-        // not surfaced to the operator). The advisory still lists
-        // the full step set because per-step undo success is not
-        // tracked at the `ApplyResult` level — the steps describe
-        // what was ATTEMPTED (forward-direction inversions) or
-        // SKIPPED (reverse-direction lossy ones), not what
-        // residual state remains. Operator MUST treat the list as
-        // a cleanup checklist, not a "still pending" report.
-        if let Some(advisory) = render_rollback_advisory(&result) {
-            let _ = writeln!(io::stderr(), "{advisory}");
-        }
+        let _ = render_apply_emission(&result, &mut io::stdout(), &mut io::stderr());
     }
 
     Ok(apply_exit_code(
@@ -3227,11 +3232,7 @@ pub(crate) fn cancel_exit_code(
     if let Some(code) = recreate_exit_code(detailed_exitcode_recreate, plan) {
         return code;
     }
-    if detailed_exitcode {
-        2
-    } else {
-        0
-    }
+    if detailed_exitcode { 2 } else { 0 }
 }
 
 /// Process exit code for `apply --dry-run` (Part 5).
@@ -3327,11 +3328,7 @@ pub(crate) fn apply_exit_code(
         .failed
         .iter()
         .any(|(_, e)| matches!(e, GharsError::Auth(_, _)));
-    if any_auth {
-        5
-    } else {
-        1
-    }
+    if any_auth { 5 } else { 1 }
 }
 
 fn confirm_apply() -> Result<bool> {
@@ -9078,16 +9075,20 @@ auth = \"pat\"
         // BTreeMap iteration is alphabetical, so 00 < 10.
         assert_eq!(entries[0]["basename"], "00-ghars.conf");
         assert_eq!(entries[0]["change_kind"], "created");
-        assert!(entries[0]["after"]
-            .as_str()
-            .unwrap()
-            .contains("X-Ghars-Spec-Hash"));
+        assert!(
+            entries[0]["after"]
+                .as_str()
+                .unwrap()
+                .contains("X-Ghars-Spec-Hash")
+        );
         assert_eq!(entries[1]["basename"], "10-memory.conf");
         assert_eq!(entries[1]["change_kind"], "created");
-        assert!(entries[1]["after"]
-            .as_str()
-            .unwrap()
-            .contains("MemoryMax=4G"));
+        assert!(
+            entries[1]["after"]
+                .as_str()
+                .unwrap()
+                .contains("MemoryMax=4G")
+        );
 
         // Without --diff: backward-compat empty array.
         let body = plan_to_json_value(&plan, false);
@@ -9573,8 +9574,8 @@ auth = \"pat\"
         let actual = state::ActualState::default();
         let paths = Paths::default();
 
-        let plan = plan::plan_from(&cfg, &actual, &paths)
-            .expect("count-expanded plan_from must succeed");
+        let plan =
+            plan::plan_from(&cfg, &actual, &paths).expect("count-expanded plan_from must succeed");
 
         // Sanity: 3 CreateRunner actions, no UpdateRunner / RemoveRunner.
         let create_count = plan
@@ -9583,7 +9584,8 @@ auth = \"pat\"
             .filter(|a| matches!(a, Action::CreateRunner(_)))
             .count();
         assert_eq!(
-            create_count, 3,
+            create_count,
+            3,
             "count = 3 with no discovered must emit 3 CreateRunner actions; \
              got {} actions: {:?}",
             plan.actions.len(),
@@ -10181,10 +10183,12 @@ auth = \"pat\"
         assert_eq!(actions[0]["kind"], "create_runner");
         assert_eq!(actions[0]["name"], "a");
         assert!(actions[0]["url"].is_string());
-        assert!(actions[0]["spec_hash"]
-            .as_str()
-            .unwrap()
-            .starts_with("sha256:"));
+        assert!(
+            actions[0]["spec_hash"]
+                .as_str()
+                .unwrap()
+                .starts_with("sha256:")
+        );
     }
 
     #[test]
@@ -12769,7 +12773,11 @@ token_env = \"GHARS_PAT\"";
                 "no precomposed equivalent exists",
             ],
             &["/etc/ghars/pat"],
-            &["NFC", "if the character was intentional", "hidden character"],
+            &[
+                "NFC",
+                "if the character was intentional",
+                "hidden character",
+            ],
         );
     }
 
@@ -12791,7 +12799,11 @@ token_env = \"GHARS_PAT\"";
                 "no precomposed equivalent exists",
             ],
             &["/etc/ghars/pat"],
-            &["NFC", "if the character was intentional", "hidden character"],
+            &[
+                "NFC",
+                "if the character was intentional",
+                "hidden character",
+            ],
         );
     }
 
@@ -12814,7 +12826,11 @@ token_env = \"GHARS_PAT\"";
                 "no precomposed equivalent exists",
             ],
             &["/etc/ghars/pat"],
-            &["NFC", "if the character was intentional", "hidden character"],
+            &[
+                "NFC",
+                "if the character was intentional",
+                "hidden character",
+            ],
         );
     }
 
@@ -12838,7 +12854,11 @@ token_env = \"GHARS_PAT\"";
                 "no precomposed equivalent exists",
             ],
             &["/etc/ghars/pat"],
-            &["NFC", "if the character was intentional", "hidden character"],
+            &[
+                "NFC",
+                "if the character was intentional",
+                "hidden character",
+            ],
         );
     }
 
@@ -12863,7 +12883,11 @@ token_env = \"GHARS_PAT\"";
                 "no precomposed equivalent exists",
             ],
             &["/etc/ghars/pat"],
-            &["NFC", "if the character was intentional", "hidden character"],
+            &[
+                "NFC",
+                "if the character was intentional",
+                "hidden character",
+            ],
         );
     }
 
@@ -13139,7 +13163,14 @@ token_env = \"GHARS_PAT\"";
         assert_pat_xor_rejects(
             &cfg,
             "pat",
-            &["token_file", "combining mark", "U+0300", "byte offset", "precomposed", "NFC"],
+            &[
+                "token_file",
+                "combining mark",
+                "U+0300",
+                "byte offset",
+                "precomposed",
+                "NFC",
+            ],
             &["/etc/ghars/pat"],
             &["hidden character"],
         );
@@ -16574,6 +16605,282 @@ auth = \"pat\"
         assert!(
             colored.contains("evil"),
             "non-control suffix must pass through (color); got: {colored}"
+        );
+    }
+
+    // ---------- render_apply_emission stream-routing tests ---------------
+    //
+    // `render_apply_emission` extracts the cmd_apply post-execution
+    // emission block (per-action loop + summary footer + rollback
+    // advisory) into a single helper that takes generic `&mut impl
+    // io::Write` for stdout and stderr. Tests pass `Vec<u8>` capture
+    // buffers so the stream-routing contract becomes observable
+    // without a TTY: `noop:` and `ok:` rows plus the summary footer
+    // route to stdout; `fail:` rows plus the rollback advisory route
+    // to stderr. These are the smallest pinning tests for the
+    // contract documented in the helper's doc comment.
+
+    /// Successful single-action plan (Created outcome) routes the
+    /// `ok:` row plus the summary footer to stdout, with stderr
+    /// completely empty. This is the success-path baseline:
+    /// the cmd_apply output must stay grep-able on stdout when no
+    /// action failed.
+    #[test]
+    fn render_apply_emission_ok_outcome_routes_to_stdout_only() {
+        let result = apply::ApplyResult {
+            details: vec![("CreateRunner(a)".into(), apply::ApplyOutcome::Created)],
+            ..apply::ApplyResult::default()
+        };
+        let mut stdout: Vec<u8> = Vec::new();
+        let mut stderr: Vec<u8> = Vec::new();
+        render_apply_emission(&result, &mut stdout, &mut stderr).unwrap();
+        let out = String::from_utf8(stdout).unwrap();
+        let err = String::from_utf8(stderr).unwrap();
+        assert!(
+            out.contains("ok: CreateRunner(a)"),
+            "ok: row missing from stdout: {out}"
+        );
+        assert!(
+            out.contains("Apply: 1 applied"),
+            "summary footer missing from stdout: {out}"
+        );
+        assert!(
+            err.is_empty(),
+            "success path must not write to stderr; got: {err:?}"
+        );
+    }
+
+    /// Failed single-action plan routes the `fail:` row to stderr
+    /// and only the summary footer to stdout. The `fail:` row MUST
+    /// stay off stdout so a `grep ^fail` pipeline does not falsely
+    /// match on stdout when stdout is being scraped for `ok:`/`noop:`
+    /// status. Mirror image of `render_apply_emission_ok_outcome_routes_to_stdout_only`.
+    #[test]
+    fn render_apply_emission_failed_outcome_routes_to_stderr() {
+        let result = apply::ApplyResult {
+            details: vec![(
+                "CreateRunner(a)".into(),
+                apply::ApplyOutcome::Failed {
+                    error_summary: "github: 401".into(),
+                    plan_disruption: plan::Disruption::Recreate,
+                },
+            )],
+            ..apply::ApplyResult::default()
+        };
+        let mut stdout: Vec<u8> = Vec::new();
+        let mut stderr: Vec<u8> = Vec::new();
+        render_apply_emission(&result, &mut stdout, &mut stderr).unwrap();
+        let out = String::from_utf8(stdout).unwrap();
+        let err = String::from_utf8(stderr).unwrap();
+        assert!(
+            err.contains("fail: CreateRunner(a)"),
+            "fail: row missing from stderr: {err}"
+        );
+        assert!(
+            !out.contains("fail:"),
+            "fail: row must NOT leak to stdout; got: {out}"
+        );
+        assert!(
+            out.contains("Apply: 0 applied, 1 failed"),
+            "summary footer missing from stdout: {out}"
+        );
+    }
+
+    /// NoOp action emits the special `noop: REASON [none]` line
+    /// (label-strip collapses `NoOp(REASON)` into bare `REASON`)
+    /// and routes to stdout. Pins both:
+    /// (a) the strip-prefix/strip-suffix branch that converts
+    ///     `NoOp(idempotent)` → `idempotent`, and
+    /// (b) the stream routing — NoOp goes to stdout, never stderr.
+    #[test]
+    fn render_apply_emission_noop_strips_label_prefix_and_routes_to_stdout() {
+        let result = apply::ApplyResult {
+            details: vec![("NoOp(idempotent)".into(), apply::ApplyOutcome::NoOp)],
+            ..apply::ApplyResult::default()
+        };
+        let mut stdout: Vec<u8> = Vec::new();
+        let mut stderr: Vec<u8> = Vec::new();
+        render_apply_emission(&result, &mut stdout, &mut stderr).unwrap();
+        let out = String::from_utf8(stdout).unwrap();
+        let err = String::from_utf8(stderr).unwrap();
+        assert!(
+            out.contains("noop: idempotent [none]"),
+            "expected `noop: idempotent [none]` (label-strip applied); got: {out}",
+        );
+        assert!(
+            !out.contains("noop: NoOp(idempotent)"),
+            "label prefix must be stripped, not preserved; got: {out}",
+        );
+        assert!(err.is_empty(), "noop must not touch stderr; got: {err:?}");
+    }
+
+    /// Pins the `unwrap_or` fallback in the NoOp arm: when the label
+    /// does NOT have the `NoOp(...)` prefix wrapper (e.g. a synthetic
+    /// fixture or future label-shape evolution that supplies a bare
+    /// reason), the helper renders the label verbatim as the reason.
+    /// This guards the strip-prefix/strip-suffix chain — if a future
+    /// refactor replaces `unwrap_or(label.as_str())` with `unwrap()`,
+    /// this test traps the panic.
+    #[test]
+    fn render_apply_emission_noop_without_wrapper_renders_label_verbatim() {
+        let result = apply::ApplyResult {
+            details: vec![(
+                "literal-no-wrapper".into(),
+                apply::ApplyOutcome::NoOp,
+            )],
+            ..apply::ApplyResult::default()
+        };
+        let mut stdout: Vec<u8> = Vec::new();
+        let mut stderr: Vec<u8> = Vec::new();
+        render_apply_emission(&result, &mut stdout, &mut stderr).unwrap();
+        let out = String::from_utf8(stdout).unwrap();
+        assert!(
+            out.contains("noop: literal-no-wrapper [none]"),
+            "expected `noop: literal-no-wrapper [none]` (unwrap_or fallback applied); got: {out}",
+        );
+    }
+
+    /// `DryRunSkipped` is one of the non-NoOp Ok variants and must
+    /// route to stdout via the catch-all `_` arm of the per-action
+    /// match. Pins that the wildcard arm covers DryRunSkipped (and
+    /// future Ok additions) without falsely matching the `Failed`
+    /// or `NoOp` arms.
+    #[test]
+    fn render_apply_emission_dry_run_skipped_routes_to_stdout() {
+        let result = apply::ApplyResult {
+            details: vec![("CreateRunner(a)".into(), apply::ApplyOutcome::DryRunSkipped)],
+            ..apply::ApplyResult::default()
+        };
+        let mut stdout: Vec<u8> = Vec::new();
+        let mut stderr: Vec<u8> = Vec::new();
+        render_apply_emission(&result, &mut stdout, &mut stderr).unwrap();
+        let out = String::from_utf8(stdout).unwrap();
+        let err = String::from_utf8(stderr).unwrap();
+        assert!(
+            out.contains("ok: CreateRunner(a)"),
+            "DryRunSkipped renders as `ok:` row on stdout; got: {out}",
+        );
+        assert!(
+            out.contains("dry-run"),
+            "DryRunSkipped detail() emits 'dry-run'; got: {out}",
+        );
+        assert!(err.is_empty(), "stderr must stay empty; got: {err:?}");
+    }
+
+    /// Mixed plan: one `ok:` row AND one `fail:` row. The two streams
+    /// must split cleanly — `ok:` on stdout, `fail:` on stderr, with
+    /// neither leaking to the other side. Stronger than the single-
+    /// outcome tests above because it demonstrates per-action arm
+    /// dispatch rather than just a single-arm walk.
+    #[test]
+    fn render_apply_emission_mixed_outcomes_split_cleanly_across_streams() {
+        let result = apply::ApplyResult {
+            details: vec![
+                ("CreateRunner(a)".into(), apply::ApplyOutcome::Created),
+                (
+                    "RemoveRunner(b)".into(),
+                    apply::ApplyOutcome::Failed {
+                        error_summary: "systemd: stop failed".into(),
+                        plan_disruption: plan::Disruption::Recreate,
+                    },
+                ),
+            ],
+            ..apply::ApplyResult::default()
+        };
+        let mut stdout: Vec<u8> = Vec::new();
+        let mut stderr: Vec<u8> = Vec::new();
+        render_apply_emission(&result, &mut stdout, &mut stderr).unwrap();
+        let out = String::from_utf8(stdout).unwrap();
+        let err = String::from_utf8(stderr).unwrap();
+        // Stdout has the ok row + footer, NOT the fail row.
+        assert!(out.contains("ok: CreateRunner(a)"), "ok row: {out}");
+        assert!(out.contains("Apply: 1 applied, 1 failed"), "footer: {out}");
+        assert!(
+            !out.contains("fail: RemoveRunner(b)"),
+            "fail row leaked to stdout: {out}",
+        );
+        // Stderr has the fail row, NOT the ok row.
+        assert!(
+            err.contains("fail: RemoveRunner(b)"),
+            "fail row missing from stderr: {err}",
+        );
+        assert!(
+            !err.contains("ok: CreateRunner(a)"),
+            "ok row leaked to stderr: {err}",
+        );
+    }
+
+    /// When `result.failed_undo_logs` has at least one non-empty
+    /// step list, `render_rollback_advisory` returns Some(advisory)
+    /// and the helper emits it to STDERR. Pins:
+    /// (a) the advisory reaches stderr (not stdout);
+    /// (b) the `fail:` row also reaches stderr — both fail-class
+    ///     emissions consolidate on the error stream.
+    #[test]
+    fn render_apply_emission_advisory_routes_to_stderr() {
+        let mut result = apply::ApplyResult {
+            details: vec![(
+                "CreateCachePool(a)".into(),
+                apply::ApplyOutcome::Failed {
+                    error_summary: "systemd: enable_unit failed".into(),
+                    plan_disruption: plan::Disruption::Recreate,
+                },
+            )],
+            ..apply::ApplyResult::default()
+        };
+        push_failed(
+            &mut result,
+            "CreateCachePool(a)",
+            vec![apply::UndoStep::CreateDir {
+                path: Utf8PathBuf::from("/etc/systemd/system/ghars-cache@a.service.d"),
+            }],
+        );
+        let mut stdout: Vec<u8> = Vec::new();
+        let mut stderr: Vec<u8> = Vec::new();
+        render_apply_emission(&result, &mut stdout, &mut stderr).unwrap();
+        let out = String::from_utf8(stdout).unwrap();
+        let err_s = String::from_utf8(stderr).unwrap();
+        assert!(
+            err_s.contains("Rollback advisory"),
+            "advisory missing from stderr: {err_s}",
+        );
+        assert!(
+            err_s.contains("CreateCachePool(a)"),
+            "advisory must list failed-action label: {err_s}",
+        );
+        assert!(
+            !out.contains("Rollback advisory"),
+            "advisory leaked to stdout: {out}",
+        );
+        // Footer still on stdout.
+        assert!(
+            out.contains("Apply: 0 applied, 1 failed"),
+            "footer missing from stdout: {out}",
+        );
+        // Symmetric cross-stream negative pin: footer must NOT appear on stderr.
+        assert!(
+            !err_s.contains("Apply:"),
+            "footer must NOT appear on stderr"
+        );
+    }
+
+    /// When `failed_undo_logs` is empty (no failures at all),
+    /// `render_rollback_advisory` returns None and the helper emits
+    /// no advisory line. Pins the negative case: a successful apply
+    /// produces no advisory noise on stderr.
+    #[test]
+    fn render_apply_emission_no_advisory_when_no_failures() {
+        let result = apply::ApplyResult {
+            details: vec![("CreateRunner(a)".into(), apply::ApplyOutcome::Created)],
+            ..apply::ApplyResult::default()
+        };
+        let mut stdout: Vec<u8> = Vec::new();
+        let mut stderr: Vec<u8> = Vec::new();
+        render_apply_emission(&result, &mut stdout, &mut stderr).unwrap();
+        let err = String::from_utf8(stderr).unwrap();
+        assert!(
+            !err.contains("Rollback advisory"),
+            "no advisory expected on success: {err}",
         );
     }
 }

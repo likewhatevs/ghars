@@ -1699,7 +1699,10 @@ mod tests {
         let err = fetch_latest_release_at(&client, &url, Arch::X86_64).unwrap_err();
         match err {
             GharsError::GitHub(msg, hint) => {
-                assert!(msg.contains("404"), "msg must include status code; got: {msg}");
+                assert!(
+                    msg.contains("404"),
+                    "msg must include status code; got: {msg}"
+                );
                 assert!(
                     hint.contains("runner version") && hint.contains("owner/repo"),
                     "404 hint must surface runner-version + owner/repo guidance; got: {hint}"
@@ -1730,7 +1733,10 @@ mod tests {
         let err = fetch_latest_release_at(&client, &url, Arch::X86_64).unwrap_err();
         match err {
             GharsError::GitHub(msg, hint) => {
-                assert!(msg.contains("429"), "msg must include status code; got: {msg}");
+                assert!(
+                    msg.contains("429"),
+                    "msg must include status code; got: {msg}"
+                );
                 // URL trailing-position pin: HTTP-status arm uses the
                 // same ": {url}" suffix shape as Layer 1 / Layer 2 so a
                 // single log parser can match all three error classes.
@@ -1768,7 +1774,10 @@ mod tests {
         let err = fetch_latest_release_at(&client, &url, Arch::X86_64).unwrap_err();
         match err {
             GharsError::GitHub(msg, hint) => {
-                assert!(msg.contains("401"), "msg must include status code; got: {msg}");
+                assert!(
+                    msg.contains("401"),
+                    "msg must include status code; got: {msg}"
+                );
                 assert!(
                     hint.contains("normally public"),
                     "401 hint must surface public-endpoint qualifier; got: {hint}"
@@ -1806,7 +1815,10 @@ mod tests {
         let err = fetch_latest_release_at(&client, &url, Arch::X86_64).unwrap_err();
         match err {
             GharsError::GitHub(msg, hint) => {
-                assert!(msg.contains("403"), "msg must include status code; got: {msg}");
+                assert!(
+                    msg.contains("403"),
+                    "msg must include status code; got: {msg}"
+                );
                 assert!(
                     hint.contains("normally public"),
                     "403 hint must surface public-endpoint qualifier; got: {hint}"
@@ -1842,7 +1854,10 @@ mod tests {
         let err = fetch_latest_release_at(&client, &url, Arch::X86_64).unwrap_err();
         match err {
             GharsError::GitHub(msg, hint) => {
-                assert!(msg.contains("503"), "msg must include status code; got: {msg}");
+                assert!(
+                    msg.contains("503"),
+                    "msg must include status code; got: {msg}"
+                );
                 assert!(
                     hint.contains("upstream is degraded") && hint.contains("status.github.com"),
                     "5xx hint must mention upstream-degraded + status.github.com; got: {hint}"
@@ -1876,7 +1891,10 @@ mod tests {
         let err = fetch_latest_release_at(&client, &url, Arch::X86_64).unwrap_err();
         match err {
             GharsError::GitHub(msg, hint) => {
-                assert!(msg.contains("418"), "msg must include status code; got: {msg}");
+                assert!(
+                    msg.contains("418"),
+                    "msg must include status code; got: {msg}"
+                );
                 assert!(
                     hint.contains("unexpected HTTP status"),
                     "catch-all hint must use generic wording; got: {hint}"
@@ -2215,8 +2233,7 @@ mod tests {
                     "Layer 2 hint must surface neutral 'larger than expected' framing per #727; got: {hint}"
                 );
                 assert!(
-                    hint.contains("deliberately-crafted")
-                        && hint.contains("legitimately large"),
+                    hint.contains("deliberately-crafted") && hint.contains("legitimately large"),
                     "Layer 2 hint must name both threat-model + legitimate-payload possibilities; got: {hint}"
                 );
                 assert!(

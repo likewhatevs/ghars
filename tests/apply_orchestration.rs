@@ -921,3 +921,230 @@ fn _references_to_keep_imports() -> CachePoolDelta {
         spec_hash: String::new(),
     }
 }
+
+// ---------- failed / failed_undo_logs ordering invariant tests --------
+//
+// `apply::apply` populates two parallel Vecs on every per-action error
+// arm: `result.failed: Vec<(String, GharsError)>` and
+// `result.failed_undo_logs: Vec<(String, Vec<UndoStep>)>`. The
+// production code pushes both within the same loop iteration
+// (apply.rs: per-action arm pushes failed first, then failed_undo_logs
+// alongside; synthetic post-loop daemon_reload arm does the same with
+// empty steps). This pairing is the load-bearing invariant
+// `failed[i].0 == failed_undo_logs[i].0` for every i, plus
+// `failed.len() == failed_undo_logs.len()`. The advisory renderer
+// (`render_rollback_advisory`) and the `--rollback-on-failure`
+// resolver depend on it.
+//
+// These tests pin the invariant from the integration-test layer where
+// real `apply::apply` runs end-to-end. The proptest feeds N random
+// CreateCachePool actions through the failure path; the two directed
+// siblings cover fail_fast=true (single-failure short-circuit) and the
+// daemon_reload-only failure (post-loop arm with empty step list).
+
+proptest::proptest! {
+    /// Property: with `fail_fast=false` and N (2..=8) CreateCachePool
+    /// actions all forced to fail (TestSystemd::fail_enable=true),
+    /// the per-action arm pushes both Vecs in lockstep so:
+    /// (a) `failed.len() == failed_undo_logs.len()` (universal length
+    ///     invariant), and
+    /// (b) `failed[i].0 == failed_undo_logs[i].0` for every i (pair
+    ///     ordering invariant — the advisory renderer relies on this
+    ///     to attribute step lists to the right action).
+    ///
+    /// Why proptest over a fixed N: a future refactor that decouples
+    /// the two Vec pushes (e.g. moves the typed-error push to a
+    /// post-loop sweep) would still pass a fixed-N=2 directed test if
+    /// it happens to produce a length-equal Vec. Sweeping 2..=8 forces
+    /// the lockstep push to hold across the whole loop body.
+    ///
+    /// Bounds rationale: 2 = minimum multi-action lockstep (n=1 covered
+    /// by directed fail_fast sibling); 8 = practical ceiling for proptest
+    /// runtime (each case creates a tempdir + runs apply end-to-end).
+    #[test]
+    fn apply_failed_and_failed_undo_logs_share_label_ordering(n in 2usize..=8) {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = make_paths(&tmp);
+        std::fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
+        let actions: Vec<Action> = (0..n)
+            .map(|i| Action::CreateCachePool(make_pool_plan(&format!("p{i}"))))
+            .collect();
+        let plan = Plan {
+            actions,
+            warnings: vec![],
+        };
+        let systemd = TestSystemd::default();
+        *systemd.fail_enable.lock().unwrap() = true;
+        let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+        let tarball = TestTarball::default();
+        let users = TestUsers::default();
+        let config_shell = TestConfigShell::default();
+        let opts = ApplyOptions {
+            fail_fast: false,
+            ..ApplyOptions::default()
+        };
+        let d = deps(&systemd, &auth_map, &tarball, &users, &config_shell);
+        let result = apply(&plan, &d, &paths, &opts).unwrap();
+        // Pre-assertion: prevent trivially-passing proptest by pinning
+        // that all N actions actually failed before checking lockstep.
+        proptest::prop_assert_eq!(result.failed.len(), n, "all N actions must have failed");
+        // Universal length invariant.
+        proptest::prop_assert_eq!(
+            result.failed.len(),
+            result.failed_undo_logs.len(),
+            "failed and failed_undo_logs lengths must agree"
+        );
+        // Pair-ordering invariant — every label in failed[i] matches
+        // the label in failed_undo_logs[i].
+        for i in 0..result.failed.len() {
+            proptest::prop_assert_eq!(
+                &result.failed[i].0,
+                &result.failed_undo_logs[i].0,
+                "label-pair ordering invariant violated at index {}", i
+            );
+        }
+    }
+}
+
+/// Directed sibling to the proptest: with `fail_fast=true` and 3
+/// actions where the first action fails, the per-action arm pushes
+/// to BOTH `failed` and `failed_undo_logs` once and then short-
+/// circuits — so both Vecs end with exactly one entry (the first
+/// action's label) and the actions after it are never attempted.
+/// Pins that the lockstep invariant holds even on the fail-fast
+/// short-circuit return path (apply.rs: the `if opts.fail_fast`
+/// arm returns Ok(result) AFTER both pushes, not before).
+#[test]
+fn apply_fail_fast_pushes_failed_and_undo_logs_in_lockstep() {
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = make_paths(&tmp);
+    std::fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
+    let plan = Plan {
+        actions: vec![
+            Action::CreateCachePool(make_pool_plan("first")),
+            Action::CreateCachePool(make_pool_plan("second")),
+            Action::CreateCachePool(make_pool_plan("third")),
+        ],
+        warnings: vec![],
+    };
+    let systemd = TestSystemd::default();
+    *systemd.fail_enable.lock().unwrap() = true;
+    let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+    let tarball = TestTarball::default();
+    let users = TestUsers::default();
+    let config_shell = TestConfigShell::default();
+    let opts = ApplyOptions {
+        fail_fast: true,
+        ..ApplyOptions::default()
+    };
+    let d = deps(&systemd, &auth_map, &tarball, &users, &config_shell);
+    let result = apply(&plan, &d, &paths, &opts).unwrap();
+    assert_eq!(
+        result.failed.len(),
+        1,
+        "fail_fast must short-circuit at the first failure: {:?}",
+        result.failed
+    );
+    assert_eq!(
+        result.failed_undo_logs.len(),
+        1,
+        "failed_undo_logs must match failed length under fail_fast: {:?}",
+        result
+            .failed_undo_logs
+            .iter()
+            .map(|(l, _)| l)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        result.failed[0].0, result.failed_undo_logs[0].0,
+        "lockstep invariant on the single failed entry under fail_fast"
+    );
+    assert!(
+        result.failed[0].0.contains("CreateCachePool(first)"),
+        "first action's label expected: got {:?}",
+        result.failed[0].0
+    );
+    // Pin that fail_fast's early-return goes through the synthetic
+    // post-loop daemon_reload call before returning — protects against
+    // a future refactor that short-circuits BEFORE daemon_reload, which
+    // would leave systemd state out-of-sync with on-disk units.
+    assert!(
+        systemd
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| c.contains("daemon_reload")),
+        "fail_fast must call daemon_reload before early-return"
+    );
+}
+
+/// Directed sibling: post-loop synthetic `daemon_reload` failure
+/// path. All real actions succeed; the tail call to
+/// `deps.systemd.daemon_reload()` errors. apply.rs's synthetic arm
+/// (apply.rs: post-loop) pushes label="daemon_reload" to BOTH
+/// `failed` and `failed_undo_logs` — the latter with an empty
+/// `Vec<UndoStep>` because the synthetic step has no per-action
+/// UndoLog (every per-action log was consumed at action-end above).
+/// Pins:
+/// (a) lengths still agree post-synthetic-push;
+/// (b) pair-ordering invariant holds (label strings match);
+/// (c) the synthetic UndoLog Vec is empty (not absent) — load-bearing
+///     for the advisory's empty-body filter (`failed_undo_logs.iter()
+///     .filter(|(_, s)| !s.is_empty())`) which strips the synthetic
+///     row from the rendered cleanup checklist.
+#[test]
+fn apply_daemon_reload_failure_pushes_lockstep_with_empty_undo_log() {
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = make_paths(&tmp);
+    std::fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
+    // NoOp succeeds (no host mutation); daemon_reload failure is the
+    // only entry that lands in failed/failed_undo_logs.
+    let plan = Plan {
+        actions: vec![Action::NoOp("idempotent".into())],
+        warnings: vec![],
+    };
+    let systemd = TestSystemd::default();
+    *systemd.fail_daemon_reload.lock().unwrap() = true;
+    let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+    let tarball = TestTarball::default();
+    let users = TestUsers::default();
+    let config_shell = TestConfigShell::default();
+    let opts = ApplyOptions::default();
+    let d = deps(&systemd, &auth_map, &tarball, &users, &config_shell);
+    let result = apply(&plan, &d, &paths, &opts).unwrap();
+    assert_eq!(
+        result.failed.len(),
+        result.failed_undo_logs.len(),
+        "lengths must agree across the synthetic post-loop push"
+    );
+    let daemon_reload_idx = result
+        .failed
+        .iter()
+        .position(|(l, _)| l == "daemon_reload")
+        .expect("daemon_reload entry must be in failed");
+    assert_eq!(
+        result.failed[daemon_reload_idx].0, result.failed_undo_logs[daemon_reload_idx].0,
+        "synthetic daemon_reload label must match across both Vecs"
+    );
+    assert!(
+        result.failed_undo_logs[daemon_reload_idx].1.is_empty(),
+        "synthetic daemon_reload undo log must be empty (no per-action steps): {:?}",
+        result.failed_undo_logs[daemon_reload_idx].1
+    );
+    // Uniqueness pin: daemon_reload must appear exactly once in the
+    // failed Vec — the synthetic post-loop arm fires once per apply()
+    // invocation, even if the per-action loop also produced failures.
+    // A future refactor that double-pushes (e.g. catching the
+    // daemon_reload error in both the loop body and the post-loop arm)
+    // would silently inflate the count.
+    assert_eq!(
+        result
+            .failed
+            .iter()
+            .filter(|(l, _)| l == "daemon_reload")
+            .count(),
+        1,
+        "daemon_reload must appear exactly once in failed Vec"
+    );
+}

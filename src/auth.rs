@@ -1714,7 +1714,9 @@ mod tests {
             )
             .with_status(403)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"message":"Forbidden","documentation_url":"https://docs.github.com/rest"}"#)
+            .with_body(
+                r#"{"message":"Forbidden","documentation_url":"https://docs.github.com/rest"}"#,
+            )
             .expect(1)
             .create();
 
@@ -1931,9 +1933,12 @@ mod tests {
             owner: "actions".into(),
             repo: "runner".into(),
         };
-        let octocrab_err =
-            github::block_on(call_octocrab_token(&client, &scope, TokenKind::Registration))
-                .expect_err("mock returns 401 so call_octocrab_token must error");
+        let octocrab_err = github::block_on(call_octocrab_token(
+            &client,
+            &scope,
+            TokenKind::Registration,
+        ))
+        .expect_err("mock returns 401 so call_octocrab_token must error");
 
         // (a) Direct Display of the upstream error: must not echo
         // any operator-credential or request/response sentinel.

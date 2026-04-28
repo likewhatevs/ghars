@@ -2237,11 +2237,7 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                         // `drop_ins` map is the authoritative
                         // pre-update on-disk view.
                         before_drop_in_basenames: Some(
-                            discovered
-                                .drop_ins
-                                .keys()
-                                .cloned()
-                                .collect(),
+                            discovered.drop_ins.keys().cloned().collect(),
                         ),
                     }));
                 }
@@ -6556,7 +6552,10 @@ labels  = ["alpha", "beta"]
             .iter()
             .find(|fc| fc.path == "auth_name")
             .expect("field_changes must include auth_name entry");
-        assert_eq!(auth_name_change.before, FieldValue::String("pat-old".into()));
+        assert_eq!(
+            auth_name_change.before,
+            FieldValue::String("pat-old".into())
+        );
         assert_eq!(auth_name_change.after, FieldValue::String("pat-new".into()));
     }
 
@@ -6653,8 +6652,14 @@ labels  = ["alpha", "beta"]
             .iter()
             .find(|fc| fc.path == "caches")
             .expect("field_changes must include caches entry");
-        assert_eq!(caches_change.before, FieldValue::List(vec!["pool-old".into()]));
-        assert_eq!(caches_change.after, FieldValue::List(vec!["pool-new".into()]));
+        assert_eq!(
+            caches_change.before,
+            FieldValue::List(vec!["pool-old".into()])
+        );
+        assert_eq!(
+            caches_change.after,
+            FieldValue::List(vec!["pool-new".into()])
+        );
     }
 
     /// #371/#372: a pure caches reorder (operator rewrites
@@ -6958,8 +6963,7 @@ labels  = ["alpha", "beta"]
         // hash that landed in `X-Ghars-Spec-Hash` was computed from
         // the operator's source order, NOT from the canonical sort.
         let mut pre_canonical_spec = desired_spec.clone();
-        pre_canonical_spec.labels =
-            vec!["middle".into(), "alpha".into(), "beta".into()];
+        pre_canonical_spec.labels = vec!["middle".into(), "alpha".into(), "beta".into()];
         pre_canonical_spec.spec_hash = spec_hash(&pre_canonical_spec);
         let old_hash = pre_canonical_spec.spec_hash.clone();
         // Hash-mismatch precondition: the canonical-sort change must
@@ -7704,7 +7708,10 @@ labels  = ["alpha", "beta"]
             .expect("grow must record caches FieldChange");
         // Both sides sorted: before is just ["pool-b"], after is
         // ["pool-a","pool-b"] (sorted, not insertion-order).
-        assert_eq!(caches_change.before, FieldValue::List(vec!["pool-b".into()]));
+        assert_eq!(
+            caches_change.before,
+            FieldValue::List(vec!["pool-b".into()])
+        );
         assert_eq!(
             caches_change.after,
             FieldValue::List(vec!["pool-a".into(), "pool-b".into()])
@@ -8666,13 +8673,26 @@ labels  = ["alpha", "beta"]
         let anns = DiscoveredAnnotations::from_drop_in_body(body);
         assert_eq!(
             anns.labels.as_deref(),
-            Some(&["alpha".to_owned(), "beta".into(), "middle".into(), "zeta".into()][..]),
+            Some(
+                &[
+                    "alpha".to_owned(),
+                    "beta".into(),
+                    "middle".into(),
+                    "zeta".into()
+                ][..]
+            ),
             "X-Ghars-Labels must be sorted at parse time; got {:?}",
             anns.labels,
         );
         assert_eq!(
             anns.caches.as_deref(),
-            Some(&["build-pool".to_owned(), "ccache-pool".into(), "sccache-pool".into()][..]),
+            Some(
+                &[
+                    "build-pool".to_owned(),
+                    "ccache-pool".into(),
+                    "sccache-pool".into()
+                ][..]
+            ),
             "X-Ghars-Caches must be sorted at parse time; got {:?}",
             anns.caches,
         );
@@ -8921,14 +8941,10 @@ labels  = ["alpha", "beta"]
             r.runner_sha256 = Some("b".repeat(64));
         }
         fn tarball_new(r: &mut RunnerSpec) {
-            r.runner_tarball = Some(Utf8PathBuf::from(
-                "/var/lib/ghars/runner-desired.tar.gz",
-            ));
+            r.runner_tarball = Some(Utf8PathBuf::from("/var/lib/ghars/runner-desired.tar.gz"));
         }
         fn tarball_old(r: &mut RunnerSpec) {
-            r.runner_tarball = Some(Utf8PathBuf::from(
-                "/var/lib/ghars/runner-discovered.tar.gz",
-            ));
+            r.runner_tarball = Some(Utf8PathBuf::from("/var/lib/ghars/runner-discovered.tar.gz"));
         }
         fn user_desired(r: &mut RunnerSpec) {
             r.user = Some("ghars-desired".into());
@@ -9132,7 +9148,9 @@ labels  = ["alpha", "beta"]
             assert!(
                 upd.recreate_reasons.contains(&scenario.expected_reason),
                 "[{}] scenario must surface typed `{}` recreate reason; got: {:?}",
-                scenario.label, scenario.expected_reason, upd.recreate_reasons,
+                scenario.label,
+                scenario.expected_reason,
+                upd.recreate_reasons,
             );
         }
 

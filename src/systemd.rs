@@ -2612,11 +2612,7 @@ mod tests {
         // Build the spec DIRECTLY (no merge_defaults) so the test
         // proves the emission-site sort is load-bearing.
         let mut spec = minimal_spec();
-        spec.labels = vec![
-            "zebra".into(),
-            "alpha".into(),
-            "middle".into(),
-        ];
+        spec.labels = vec!["zebra".into(), "alpha".into(), "middle".into()];
         let r = render_runner_unit(&spec).expect("clean spec must render");
         let id = r.drop_ins.get("00-ghars.conf").unwrap();
         // Exact-line pin: `X-Ghars-Labels=alpha,middle,zebra` followed
