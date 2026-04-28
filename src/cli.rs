@@ -17556,4 +17556,159 @@ auth = \"pat\"
             "stderr must be empty for single-Created fixture: {err}",
         );
     }
+
+    /// Line-oriented position pin for the rollback advisory: on stderr
+    /// the per-action `fail:` row MUST precede the advisory header,
+    /// which MUST precede the per-action body sub-block. The sibling
+    /// test `render_apply_emission_advisory_routes_to_stderr` (same
+    /// fixture) pins counts (`label_count >= 2`) but not relative
+    /// position; a regression that flipped the emission order so the
+    /// advisory printed before the per-action loop, or interleaved
+    /// the body sub-block above the advisory header, would still
+    /// satisfy the count assertion. This test catches that drift by
+    /// comparing line indices via `position()`.
+    #[test]
+    fn render_apply_emission_advisory_label_line_position_pin() {
+        let mut result = apply::ApplyResult {
+            details: vec![(
+                "CreateCachePool(a)".into(),
+                apply::ApplyOutcome::Failed {
+                    error_summary: "systemd: enable_unit failed".into(),
+                    plan_disruption: plan::Disruption::Recreate,
+                },
+            )],
+            ..apply::ApplyResult::default()
+        };
+        push_failed(
+            &mut result,
+            "CreateCachePool(a)",
+            vec![apply::UndoStep::CreateDir {
+                path: Utf8PathBuf::from("/etc/systemd/system/ghars-cache@a.service.d"),
+            }],
+        );
+        let (_out, err) = emit_capture(&result);
+        let lines: Vec<&str> = err.lines().collect();
+        let fail_line_idx = lines
+            .iter()
+            .position(|l| l.starts_with("fail: CreateCachePool(a) ["))
+            .unwrap_or_else(|| panic!("fail row missing from stderr: {err}"));
+        let advisory_header_idx = lines
+            .iter()
+            .position(|l| l.starts_with("Rollback advisory:"))
+            .unwrap_or_else(|| panic!("advisory header missing from stderr: {err}"));
+        let label_subblock_idx = lines
+            .iter()
+            .position(|l| *l == "  CreateCachePool(a):")
+            .unwrap_or_else(|| panic!("advisory body sub-block header missing from stderr: {err}"));
+        assert!(
+            fail_line_idx < advisory_header_idx,
+            "fail row must precede advisory header (fail={fail_line_idx}, header={advisory_header_idx}): {err}",
+        );
+        assert!(
+            advisory_header_idx < label_subblock_idx,
+            "advisory header must precede body sub-block (header={advisory_header_idx}, body={label_subblock_idx}): {err}",
+        );
+    }
+
+    /// Prefix-collision pin: full-line exact-equality format
+    /// correctness across two labels that share a common prefix
+    /// (`CreateCachePool(a` is a prefix of `CreateCachePool(ab`).
+    /// The full labels are NOT in a strict substring relationship —
+    /// the closing `)` in the shorter label diverges from `b` at the
+    /// same position in the longer — but the shared prefix means any
+    /// substring-based check that gets applied to a renderer-derived
+    /// fragment (e.g. searching for `"  CreateCachePool(a"` if a
+    /// future regression drops the trailing `:` from the body
+    /// sub-block header, or for `"fail: CreateCachePool(a "` if a
+    /// regression drops the `[` bracket-tag prefix from the fail
+    /// row) folds the shorter into the longer and overcounts.
+    ///
+    /// Exact-line equality (`lines.iter().filter(|l| **l ==
+    /// "...").count() == 1`) is strictly stronger than any
+    /// `contains()` or `matches().count()` shape: it resolves the
+    /// two labels independently regardless of what punctuation the
+    /// surrounding format carries, because the full line bytes
+    /// (including the closing `)` and the trailing `]` / `:` /
+    /// `(...)` produced by the production renderer) must match
+    /// exactly.
+    ///
+    /// This test fails loudly if a future renderer change drops the
+    /// trailing `:` after the body sub-block label, or drops the
+    /// bracket tag / detail parenthetical from the fail row, because
+    /// the assertion's exact-line literal would no longer appear on
+    /// any single line.
+    #[test]
+    fn render_apply_emission_advisory_label_substring_collision_safe() {
+        let mut result = apply::ApplyResult {
+            details: vec![
+                (
+                    "CreateCachePool(a)".into(),
+                    apply::ApplyOutcome::Failed {
+                        error_summary: "fail-a".into(),
+                        plan_disruption: plan::Disruption::Recreate,
+                    },
+                ),
+                (
+                    "CreateCachePool(ab)".into(),
+                    apply::ApplyOutcome::Failed {
+                        error_summary: "fail-ab".into(),
+                        plan_disruption: plan::Disruption::Recreate,
+                    },
+                ),
+            ],
+            ..apply::ApplyResult::default()
+        };
+        push_failed(
+            &mut result,
+            "CreateCachePool(a)",
+            vec![apply::UndoStep::CreateDir {
+                path: Utf8PathBuf::from("/etc/systemd/system/ghars-cache@a.service.d"),
+            }],
+        );
+        push_failed(
+            &mut result,
+            "CreateCachePool(ab)",
+            vec![apply::UndoStep::CreateDir {
+                path: Utf8PathBuf::from("/etc/systemd/system/ghars-cache@ab.service.d"),
+            }],
+        );
+        let (_out, err) = emit_capture(&result);
+        let lines: Vec<&str> = err.lines().collect();
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| **l == "fail: CreateCachePool(a) [recreate] (fail-a)")
+                .count(),
+            1,
+            "exact fail row for (a) must appear exactly once: {err}",
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| **l == "fail: CreateCachePool(ab) [recreate] (fail-ab)")
+                .count(),
+            1,
+            "exact fail row for (ab) must appear exactly once: {err}",
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| **l == "  CreateCachePool(a):")
+                .count(),
+            1,
+            "advisory body sub-block for (a) must appear exactly once: {err}",
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| **l == "  CreateCachePool(ab):")
+                .count(),
+            1,
+            "advisory body sub-block for (ab) must appear exactly once: {err}",
+        );
+        assert!(
+            err.contains("Rollback advisory: 2 action(s) failed."),
+            "advisory header N must equal 2: {err}",
+        );
+    }
 }
