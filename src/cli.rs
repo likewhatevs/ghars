@@ -9943,6 +9943,159 @@ auth = \"pat\"
         assert_eq!(body["summary"]["total_actions"], 1);
     }
 
+    /// Discovered-only runner with POPULATED annotations: extends
+    /// the count=0 sibling above by feeding `plan_from`'s
+    /// discovered-only diff arm a `DiscoveredRunner` whose
+    /// `00-ghars.conf` drop-in carries a full annotation set (the
+    /// fixture renders the bytes that
+    /// `apply.rs::execute_create_runner` would have written to disk;
+    /// `state::discover` in production reads those bytes back via
+    /// `fs::read_to_string`). `reconstruct_identity` reads
+    /// `discovered.drop_ins["00-ghars.conf"]` via
+    /// `DiscoveredAnnotations::from_discovered` and the on-disk
+    /// unit text for `User=` / `WorkingDirectory=`, so a populated
+    /// fixture produces a `RunnerIdentity` with non-empty url +
+    /// auth_name + meaningful prefix/user — matching what
+    /// `apply.rs::execute_remove_runner` needs to mint a
+    /// deregistration token.
+    ///
+    /// The count=0 sibling
+    /// (`plan_from_count_zero_with_discovered_runner_emits_remove_in_summary_recreates`)
+    /// uses an empty fixture (empty on_disk_unit_text + empty
+    /// drop_ins), exercising `reconstruct_identity`'s `unwrap_or_else`
+    /// fallbacks. This test takes the populated path, distinct from
+    /// that fallback.
+    ///
+    /// Distinct config shape: no count block; one explicit runner
+    /// "web" desired, one different-named "old-web" discovered. The
+    /// desired-only arm fires for "web" (CreateRunner), the
+    /// discovered-only arm fires for "old-web" (RemoveRunner). The
+    /// assertion focuses on the RemoveRunner — its identity must
+    /// carry the annotated values, not the fallback empty strings.
+    #[test]
+    fn plan_from_discovered_only_runner_populates_remove_runner_identity() {
+        // Desired: explicit runner "web" (no count block).
+        let cfg = cfg_with_runner_trust_zone("web", "default".into());
+
+        // Discovered: a different runner "old-web" — managed unit
+        // present on disk, no matching desired entry. The
+        // discovered-only arm in plan_from emits RemoveRunner("old-web").
+        // Build the discovered runner's spec + render to populate
+        // on_disk_unit_text + drop_ins["00-ghars.conf"] (the latter
+        // is what DiscoveredAnnotations::from_discovered reads for
+        // url + auth_name).
+        let discovered_spec = crate::config::EffectiveRunnerSpec {
+            name: "old-web".into(),
+            url: "https://github.com/example/old-web".into(),
+            arch: crate::config::Arch::X86_64,
+            user: "ghars-old-web".into(),
+            prefix: Utf8PathBuf::from("/var/lib/ghars"),
+            labels: vec!["old-web".into()],
+            memory_max: None,
+            runner_version: None,
+            runner_sha256: None,
+            runner_tarball: None,
+            auth_name: "pat".into(),
+            caches: vec![],
+            trust_zone: "default".into(),
+            network: None,
+            proxy: None,
+            hooks: None,
+            hardening: crate::config::Hardening::default(),
+            allowed_cpus: None,
+            allowed_memory_nodes: None,
+            spec_hash: "sha256:0".into(),
+            // Non-empty mirrors the post-install steady state: a
+            // prior `apply.rs::execute_create_runner` would have
+            // computed the runsvc.sh digest and written it into the
+            // X-Ghars-Runsvc-Sha256 annotation. The fixture
+            // simulates "this runner has been running since the last
+            // apply" rather than "first apply post-upgrade".
+            // An empty value would also work for this test —
+            // execute_remove_runner does not consult the digest, and
+            // the trampoline check is start-time only — but the
+            // populated-annotation path is the dominant production
+            // shape, and this test is specifically about the
+            // populated path.
+            runsvc_sha256:
+                "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                    .into(),
+            config_source: "/etc/ghars/ghars.toml".into(),
+        };
+        let rendered = crate::systemd::render_runner_unit(&discovered_spec)
+            .expect("render_runner_unit must succeed for valid spec");
+        let mut actual = state::ActualState::default();
+        actual.runners.insert(
+            "old-web".into(),
+            state::DiscoveredRunner {
+                name: "old-web".into(),
+                spec_hash: discovered_spec.spec_hash.clone(),
+                on_disk_unit_text: rendered.template,
+                drop_ins: rendered.drop_ins,
+                running: false,
+                enabled: false,
+                drift: state::Drift::InSync,
+            },
+        );
+        let paths = Paths::default();
+
+        let plan = plan::plan_from(&cfg, &actual, &paths)
+            .expect("discovered-only branch with populated annotations must succeed");
+
+        // The plan must contain a RemoveRunner("old-web") AND a
+        // CreateRunner("web") — both arms fire. Extract the
+        // RemoveRunner's identity for the populated-fields pin.
+        let remove_identity = plan
+            .actions
+            .iter()
+            .find_map(|a| match a {
+                Action::RemoveRunner(id) => Some(id),
+                _ => None,
+            })
+            .expect("discovered-only arm must emit RemoveRunner");
+        assert_eq!(
+            remove_identity.name, "old-web",
+            "RemoveRunner must target the discovered-only runner",
+        );
+        assert_eq!(
+            remove_identity.url, "https://github.com/example/old-web",
+            "RemoveRunner.url must reflect the X-Ghars-Runner-Url \
+             annotation in the discovered 00-ghars.conf, not the \
+             empty fallback that DiscoveredAnnotations::default \
+             would produce on a missing drop-in",
+        );
+        assert_eq!(
+            remove_identity.auth_name, "pat",
+            "RemoveRunner.auth_name must reflect the X-Ghars-Auth-Name \
+             annotation, not the empty fallback",
+        );
+        assert_eq!(
+            remove_identity.user, "ghars-old-web",
+            "RemoveRunner.user must reflect the User= line in the \
+             discovered unit text after %i substitution",
+        );
+        // RemoveRunner.prefix is parse_working_directory_from_unit's
+        // parent, i.e. WorkingDirectory's directory. The renderer
+        // emits `WorkingDirectory=/var/lib/ghars/old-web` — parent
+        // is `/var/lib/ghars`.
+        assert_eq!(
+            remove_identity.prefix.as_str(),
+            "/var/lib/ghars",
+            "RemoveRunner.prefix must be parent of WorkingDirectory= \
+             from the discovered unit text",
+        );
+
+        // Sanity: summary.recreates contains the RemoveRunner label
+        // (RemoveRunner is recreate-class).
+        let body = plan_to_json_value(&plan, false);
+        let recreates = body["summary"]["recreates"].as_array().unwrap();
+        let labels: Vec<&str> = recreates.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(
+            labels.contains(&"RemoveRunner(old-web)"),
+            "summary.recreates must contain RemoveRunner(old-web); got: {labels:?}",
+        );
+    }
+
     // ---------- #285 addendum (D-13): colorized unified diff ------
 
     #[test]

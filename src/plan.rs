@@ -6655,6 +6655,141 @@ labels  = ["alpha", "beta"]
         );
     }
 
+    /// Inverse-pin sibling extending the auth-name in-place contract
+    /// to a real cross-discriminant `AuthSpec` change: the desired
+    /// side is `AuthSpec::GithubApp`, the discovered side was
+    /// registered against an `AuthSpec::Pat` block. The sibling test
+    /// `plan_update_in_place_on_auth_name_change_has_empty_recreate_reasons`
+    /// uses two `AuthSpec::Pat` blocks (auth ref string change with
+    /// matching discriminant); this test exercises a real
+    /// kind-change between the two `AuthSpec` variants the operator
+    /// is most likely to switch between (PAT for personal automation
+    /// → GitHub App for org-scale rollout, or vice versa).
+    ///
+    /// The contract: `merge_defaults` produces an
+    /// `EffectiveRunnerSpec` that records only the auth-name string
+    /// (`auth_name`), not the `AuthSpec` discriminant. The classifier
+    /// at `plan_from`'s spec-hash-mismatch arm therefore sees a
+    /// pure auth_name string diff regardless of which discriminants
+    /// the two `[auth.NAME]` blocks carry. This test pins:
+    ///   - `requires_recreate == false` (unchanged from same-
+    ///     discriminant case);
+    ///   - `recreate_reasons` is empty (same exact-match pin as the
+    ///     sibling — no "uncovered", no "auth_name", no token);
+    ///   - `field_changes` includes an `auth_name` entry with the
+    ///     correct before/after values.
+    ///
+    /// Direction is `pat → github_app` (Pat on discovered side,
+    /// GithubApp on desired side). The auth-block declarations carry
+    /// real cross-discriminant content; the EffectiveRunnerSpec.auth_name
+    /// string the planner sees is "pat" on the before side and
+    /// "github_app" on the after side. PAT was deliberately chosen
+    /// for the discovered side because that's the more common
+    /// "first-deployed" shape — operators promote single-runner PAT
+    /// configs to GitHub Apps as their fleet grows.
+    #[test]
+    fn plan_update_in_place_on_auth_name_change_pat_to_github_app_has_empty_recreate_reasons() {
+        // Two `[auth.NAME]` blocks with REAL cross-discriminant
+        // shape: "pat" is AuthSpec::Pat, "github_app" is
+        // AuthSpec::GithubApp. The runner.auth ref switches from
+        // "pat" (discovered side) to "github_app" (desired side).
+        let mut cfg = config_with_runners(vec![{
+            let mut r = minimal_runner("a");
+            r.auth = Some("github_app".into());
+            r
+        }]);
+        cfg.auth = IndexMap::new();
+        cfg.auth.insert(
+            "pat".into(),
+            AuthSpec::Pat {
+                token_env: Some("GHARS_PAT".into()),
+                token_file: None,
+            },
+        );
+        cfg.auth.insert(
+            "github_app".into(),
+            AuthSpec::GithubApp {
+                app_id: 12345,
+                installation_id: 67890,
+                private_key_path: Utf8PathBuf::from("/etc/ghars/app.pem"),
+            },
+        );
+
+        // Discovered runner was registered against `pat`. Building
+        // the discovered spec via merge_defaults with auth_name="pat"
+        // exercises the production lowering path; the resulting
+        // EffectiveRunnerSpec.auth_name is the bare string "pat",
+        // matching what state.rs would parse out of the on-disk
+        // X-Ghars-Auth-Name annotation.
+        let old_runner = cfg.runners[0].clone();
+        let mut old_spec = merge_defaults(
+            &old_runner,
+            &cfg.defaults,
+            "pat".into(),
+            vec![],
+            None,
+            None,
+            None,
+            Arch::X86_64,
+            cfg_source_default(),
+        );
+        old_spec.spec_hash = spec_hash(&old_spec);
+        let mut actual = empty_actual();
+        actual
+            .runners
+            .insert("a".into(), discovered_for("a", &old_spec, Drift::InSync));
+
+        let plan = plan_from(&cfg, &actual, &empty_paths()).unwrap();
+        let upd = plan
+            .actions
+            .iter()
+            .find_map(|a| match a {
+                Action::UpdateRunner(d) => Some(d),
+                _ => None,
+            })
+            .expect("auth-name change across AuthSpec discriminants must emit UpdateRunner");
+
+        assert_eq!(
+            upd.recreate_reasons,
+            Vec::<&'static str>::new(),
+            "Pat → GithubApp auth-name change must produce empty \
+             recreate_reasons: the planner sees only the auth_name \
+             string diff (merge_defaults strips the AuthSpec \
+             discriminant), so no `uncovered` / `auth_name` token \
+             must be pushed; got: {:?}",
+            upd.recreate_reasons,
+        );
+        assert!(
+            !upd.requires_recreate,
+            "Pat → GithubApp must remain in-place — `requires_recreate` \
+             is derived from `!recreate_reasons.is_empty()` at \
+             plan_from's spec-hash-mismatch arm, so an empty \
+             recreate_reasons implies false here",
+        );
+        assert_eq!(
+            upd.field_changes.len(),
+            1,
+            "auth_name change must be the only field_changes entry; \
+             phantom fields signal regression — got: {:?}",
+            upd.field_changes,
+        );
+        let auth_name_change = upd
+            .field_changes
+            .iter()
+            .find(|fc| fc.path == "auth_name")
+            .expect("field_changes must include auth_name entry");
+        assert_eq!(
+            auth_name_change.before,
+            FieldValue::String("pat".into()),
+            "before must reflect the discovered side's auth_name string",
+        );
+        assert_eq!(
+            auth_name_change.after,
+            FieldValue::String("github_app".into()),
+            "after must reflect the desired side's auth_name string",
+        );
+    }
+
     // ---- caches in-place contract (#271) ----------------------------
 
     /// caches change is in-place per design Part 3 (#271). The
