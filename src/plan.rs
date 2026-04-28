@@ -6559,54 +6559,83 @@ labels  = ["alpha", "beta"]
         assert_eq!(auth_name_change.after, FieldValue::String("pat-new".into()));
     }
 
-    /// Inverse pin for the auth-name in-place contract: when the
-    /// operator switches a runner from one auth ref to another (here
-    /// `pat` → `github_app` — an auth-name string change between two
-    /// `[auth.NAME]` blocks, both `AuthSpec::Pat` under the hood),
-    /// the planner must NOT trip the `uncovered` recreate fallback at
-    /// `plan_from`'s spec-hash-mismatch gate.
+    /// Shared scaffold for the auth-name in-place sibling tests
+    /// (same-discriminant Pat→Pat, cross-discriminant Pat→GithubApp,
+    /// cross-discriminant GithubApp→Pat).
     ///
-    /// `recreate_reasons == vec![]` (exact-match) is strictly tighter
-    /// than the sibling `plan_update_runner_auth_name_change_is_in_place_with_field_change`'s
-    /// `!contains(&"uncovered")` check: any future regression that
-    /// pushes ANY token (not just "uncovered") into `recreate_reasons`
-    /// for an auth-name change fails this assertion. The empty-Vec
-    /// invariant is the load-bearing pin — `requires_recreate` is
-    /// derived from the `requires_recreate = !recreate_reasons.is_empty()`
-    /// gate in `plan_from`'s spec-hash-mismatch arm.
-    #[test]
-    fn plan_update_in_place_on_auth_name_change_has_empty_recreate_reasons() {
-        // Two `[auth.NAME]` blocks named `pat` and `github_app`. Both
-        // are AuthSpec::Pat under the hood — merge_defaults only sees
-        // the auth_name string, so this is an auth-name string change
-        // end-to-end.
+    /// Sets up a `Config` with the operator-supplied `auth_blocks`,
+    /// points the lone runner at `desired_auth_name`, builds a
+    /// `DiscoveredRunner` whose `EffectiveRunnerSpec.auth_name` is
+    /// `discovered_auth_name` (modeling a runner that was previously
+    /// registered against that auth ref), invokes `plan_from`, and
+    /// runs the seven invariants every direction must satisfy:
+    ///
+    /// 1. `recreate_reasons` is exactly `vec![]` — strictly tighter
+    ///    than `!contains(&"uncovered")`. Any token pushed into
+    ///    `recreate_reasons` (whether `uncovered`, `auth_name`, or a
+    ///    new token) fails this pin.
+    /// 2. `requires_recreate == false` — derived from
+    ///    `!recreate_reasons.is_empty()` at `plan_from`'s
+    ///    spec-hash-mismatch arm, so an empty `recreate_reasons`
+    ///    implies false here. Pinned independently because a future
+    ///    refactor could decouple the two.
+    /// 3. `field_changes.len() == 1` — phantom fields signal regression.
+    /// 4. `field_changes` contains an `auth_name` `FieldChange` whose
+    ///    `before` matches `expected_before` and `after` matches
+    ///    `expected_after`.
+    /// 5. `drift_cause == DriftCause::SpecChanged` — the auth_name
+    ///    string diff drives a spec_hash mismatch with no on-disk
+    ///    drift (the discovered drop-in is freshly rendered by
+    ///    `discovered_for`, so DriftDetected cannot fire).
+    /// 6. `auth_kind` does NOT appear in `field_changes` —
+    ///    `merge_defaults` strips the AuthSpec discriminant when
+    ///    lowering to `EffectiveRunnerSpec.auth_name`, so the
+    ///    classifier never observes an `auth_kind` surface and must
+    ///    not synthesize one.
+    /// 7. `drop_in_changes` contains a `Modified` entry for
+    ///    `00-ghars.conf` — `render_identity` emits the auth_name
+    ///    string into the `X-Ghars-Auth-Name` annotation, so an
+    ///    auth-name change always produces an observable drop-in
+    ///    diff. A regression that classifies as in-place but skips
+    ///    the file rewrite would silently leave the annotation
+    ///    pointing at the discovered side after the apply, breaking
+    ///    the next planner cycle's annotation-vs-config comparison.
+    ///
+    /// Each caller passes its own `auth_blocks`
+    /// (`IndexMap<String, AuthSpec>`) so same-discriminant vs
+    /// cross-discriminant fixture shapes stay caller-controlled —
+    /// the helper does not fabricate `AuthSpec` content. The
+    /// `expected_before`/`expected_after` arguments are explicit
+    /// rather than derived from `discovered_auth_name`/
+    /// `desired_auth_name` so each caller documents its own
+    /// before/after contract at its own call site (and a future
+    /// caller that wants to assert something other than literal
+    /// pass-through is supported without re-plumbing the helper).
+    fn assert_auth_name_change_is_in_place(
+        auth_blocks: IndexMap<String, AuthSpec>,
+        discovered_auth_name: &str,
+        desired_auth_name: &str,
+        expected_before: FieldValue,
+        expected_after: FieldValue,
+    ) {
         let mut cfg = config_with_runners(vec![{
             let mut r = minimal_runner("a");
-            r.auth = Some("github_app".into());
+            r.auth = Some(desired_auth_name.into());
             r
         }]);
-        cfg.auth = IndexMap::new();
-        cfg.auth.insert(
-            "pat".into(),
-            AuthSpec::Pat {
-                token_env: Some("GHARS_PAT".into()),
-                token_file: None,
-            },
-        );
-        cfg.auth.insert(
-            "github_app".into(),
-            AuthSpec::Pat {
-                token_env: Some("GHARS_PAT_GHAPP".into()),
-                token_file: None,
-            },
-        );
+        cfg.auth = auth_blocks;
 
-        // Discovered runner was registered against `pat`.
+        // Discovered runner was registered against discovered_auth_name.
+        // Building the discovered spec via merge_defaults exercises the
+        // production lowering path; the resulting
+        // EffectiveRunnerSpec.auth_name is the bare string, matching
+        // what state.rs would parse out of the on-disk
+        // X-Ghars-Auth-Name annotation.
         let old_runner = cfg.runners[0].clone();
         let mut old_spec = merge_defaults(
             &old_runner,
             &cfg.defaults,
-            "pat".into(),
+            discovered_auth_name.into(),
             vec![],
             None,
             None,
@@ -6630,27 +6659,118 @@ labels  = ["alpha", "beta"]
             })
             .expect("auth-name change must emit UpdateRunner");
 
+        // 1. recreate_reasons exactly empty.
         assert_eq!(
             upd.recreate_reasons,
             Vec::<&'static str>::new(),
-            "auth-name change must produce empty recreate_reasons \
-             (no \"uncovered\", no \"auth_name\", nothing); got: {:?}",
+            "auth-name change ({discovered_auth_name} → {desired_auth_name}) must \
+             produce empty recreate_reasons (no \"uncovered\", no \"auth_name\", \
+             nothing); got: {:?}",
             upd.recreate_reasons,
         );
+        // 2. requires_recreate false.
         assert!(
             !upd.requires_recreate,
-            "auth-name change must remain in-place; \
-             requires_recreate must be false (derived from \
+            "auth-name change ({discovered_auth_name} → {desired_auth_name}) must \
+             remain in-place — requires_recreate must be false (derived from \
              plan_from's `requires_recreate = !recreate_reasons.is_empty()` gate)",
         );
+        // 3. field_changes has exactly one entry.
+        assert_eq!(
+            upd.field_changes.len(),
+            1,
+            "auth_name change must be the only field_changes entry; \
+             phantom fields signal regression — got: {:?}",
+            upd.field_changes,
+        );
+        // 4. field_changes contains auth_name with correct before/after.
         let auth_name_change = upd
             .field_changes
             .iter()
             .find(|fc| fc.path == "auth_name")
             .expect("field_changes must include auth_name entry");
-        assert_eq!(auth_name_change.before, FieldValue::String("pat".into()));
         assert_eq!(
-            auth_name_change.after,
+            auth_name_change.before, expected_before,
+            "before must reflect the discovered side's auth_name string",
+        );
+        assert_eq!(
+            auth_name_change.after, expected_after,
+            "after must reflect the desired side's auth_name string",
+        );
+        // 5. drift_cause is SpecChanged.
+        assert_eq!(
+            upd.drift_cause,
+            DriftCause::SpecChanged,
+            "auth-name change ({discovered_auth_name} → {desired_auth_name}) must \
+             classify as SpecChanged: the auth_name string diff drives a \
+             spec_hash mismatch with no on-disk drift",
+        );
+        // 6. auth_kind discriminant must NOT leak into field_changes.
+        assert!(
+            !upd.field_changes.iter().any(|fc| fc.path == "auth_kind"),
+            "auth_kind must NOT appear — discriminant is stripped by \
+             merge_defaults; got field_changes: {:?}",
+            upd.field_changes,
+        );
+        // 7. 00-ghars.conf drop-in is Modified (X-Ghars-Auth-Name rewrite).
+        assert!(
+            upd.drop_in_changes.iter().any(|dc| {
+                dc.basename == "00-ghars.conf"
+                    && matches!(dc.change, DropInChangeKind::Modified { .. })
+            }),
+            "auth-name change ({discovered_auth_name} → {desired_auth_name}) must \
+             produce Modified 00-ghars.conf drop-in change; got: {:?}",
+            upd.drop_in_changes,
+        );
+    }
+
+    /// Inverse pin for the auth-name in-place contract: when the
+    /// operator switches a runner from one auth ref to another (here
+    /// `pat` → `github_app` — an auth-name string change between two
+    /// `[auth.NAME]` blocks, both `AuthSpec::Pat` under the hood),
+    /// the planner must NOT trip the `uncovered` recreate fallback at
+    /// `plan_from`'s spec-hash-mismatch gate.
+    ///
+    /// `recreate_reasons == vec![]` (exact-match) is strictly tighter
+    /// than the sibling `plan_update_runner_auth_name_change_is_in_place_with_field_change`'s
+    /// `!contains(&"uncovered")` check: any future regression that
+    /// pushes ANY token (not just "uncovered") into `recreate_reasons`
+    /// for an auth-name change fails this assertion. The empty-Vec
+    /// invariant is the load-bearing pin — `requires_recreate` is
+    /// derived from the `requires_recreate = !recreate_reasons.is_empty()`
+    /// gate in `plan_from`'s spec-hash-mismatch arm.
+    ///
+    /// Body delegates to `assert_auth_name_change_is_in_place` for the
+    /// shared 7-invariant scaffold; this test contributes the
+    /// same-discriminant fixture (both `[auth.NAME]` blocks are
+    /// `AuthSpec::Pat`, exercising a pure auth-ref string change with
+    /// no underlying discriminant transition).
+    #[test]
+    fn plan_update_in_place_on_auth_name_change_has_empty_recreate_reasons() {
+        // Two `[auth.NAME]` blocks named `pat` and `github_app`. Both
+        // are AuthSpec::Pat under the hood — merge_defaults only sees
+        // the auth_name string, so this is an auth-name string change
+        // end-to-end.
+        let mut auth_blocks = IndexMap::new();
+        auth_blocks.insert(
+            "pat".into(),
+            AuthSpec::Pat {
+                token_env: Some("GHARS_PAT".into()),
+                token_file: None,
+            },
+        );
+        auth_blocks.insert(
+            "github_app".into(),
+            AuthSpec::Pat {
+                token_env: Some("GHARS_PAT_GHAPP".into()),
+                token_file: None,
+            },
+        );
+        assert_auth_name_change_is_in_place(
+            auth_blocks,
+            "pat",
+            "github_app",
+            FieldValue::String("pat".into()),
             FieldValue::String("github_app".into()),
         );
     }
@@ -6693,20 +6813,15 @@ labels  = ["alpha", "beta"]
         // shape: "pat" is AuthSpec::Pat, "github_app" is
         // AuthSpec::GithubApp. The runner.auth ref switches from
         // "pat" (discovered side) to "github_app" (desired side).
-        let mut cfg = config_with_runners(vec![{
-            let mut r = minimal_runner("a");
-            r.auth = Some("github_app".into());
-            r
-        }]);
-        cfg.auth = IndexMap::new();
-        cfg.auth.insert(
+        let mut auth_blocks = IndexMap::new();
+        auth_blocks.insert(
             "pat".into(),
             AuthSpec::Pat {
                 token_env: Some("GHARS_PAT".into()),
                 token_file: None,
             },
         );
-        cfg.auth.insert(
+        auth_blocks.insert(
             "github_app".into(),
             AuthSpec::GithubApp {
                 app_id: 12345,
@@ -6714,123 +6829,12 @@ labels  = ["alpha", "beta"]
                 private_key_path: Utf8PathBuf::from("/etc/ghars/app.pem"),
             },
         );
-
-        // Discovered runner was registered against `pat`. Building
-        // the discovered spec via merge_defaults with auth_name="pat"
-        // exercises the production lowering path; the resulting
-        // EffectiveRunnerSpec.auth_name is the bare string "pat",
-        // matching what state.rs would parse out of the on-disk
-        // X-Ghars-Auth-Name annotation.
-        let old_runner = cfg.runners[0].clone();
-        let mut old_spec = merge_defaults(
-            &old_runner,
-            &cfg.defaults,
-            "pat".into(),
-            vec![],
-            None,
-            None,
-            None,
-            Arch::X86_64,
-            cfg_source_default(),
-        );
-        old_spec.spec_hash = spec_hash(&old_spec);
-        let mut actual = empty_actual();
-        actual
-            .runners
-            .insert("a".into(), discovered_for("a", &old_spec, Drift::InSync));
-
-        let plan = plan_from(&cfg, &actual, &empty_paths()).unwrap();
-        let upd = plan
-            .actions
-            .iter()
-            .find_map(|a| match a {
-                Action::UpdateRunner(d) => Some(d),
-                _ => None,
-            })
-            .expect("auth-name change across AuthSpec discriminants must emit UpdateRunner");
-
-        assert_eq!(
-            upd.recreate_reasons,
-            Vec::<&'static str>::new(),
-            "Pat → GithubApp auth-name change must produce empty \
-             recreate_reasons: the planner sees only the auth_name \
-             string diff (merge_defaults strips the AuthSpec \
-             discriminant), so no `uncovered` / `auth_name` token \
-             must be pushed; got: {:?}",
-            upd.recreate_reasons,
-        );
-        assert!(
-            !upd.requires_recreate,
-            "Pat → GithubApp must remain in-place — `requires_recreate` \
-             is derived from `!recreate_reasons.is_empty()` at \
-             plan_from's spec-hash-mismatch arm, so an empty \
-             recreate_reasons implies false here",
-        );
-        assert_eq!(
-            upd.field_changes.len(),
-            1,
-            "auth_name change must be the only field_changes entry; \
-             phantom fields signal regression — got: {:?}",
-            upd.field_changes,
-        );
-        let auth_name_change = upd
-            .field_changes
-            .iter()
-            .find(|fc| fc.path == "auth_name")
-            .expect("field_changes must include auth_name entry");
-        assert_eq!(
-            auth_name_change.before,
+        assert_auth_name_change_is_in_place(
+            auth_blocks,
+            "pat",
+            "github_app",
             FieldValue::String("pat".into()),
-            "before must reflect the discovered side's auth_name string",
-        );
-        assert_eq!(
-            auth_name_change.after,
             FieldValue::String("github_app".into()),
-            "after must reflect the desired side's auth_name string",
-        );
-        // auth_name strings differ between desired and discovered ⇒
-        // spec_hash differs ⇒ DriftCause::SpecChanged. Pins the
-        // drift-cause classification: the on-disk unit text is fresh
-        // (just rendered by discovered_for) so DriftDetected cannot
-        // fire; only the spec-hash mismatch path applies.
-        assert_eq!(
-            upd.drift_cause,
-            DriftCause::SpecChanged,
-            "Pat → GithubApp auth-name change must classify as SpecChanged: \
-             the auth_name string diff drives a spec_hash mismatch with no \
-             on-disk drift",
-        );
-        // Inverse pin: auth_kind discriminant must NOT leak into
-        // field_changes. merge_defaults strips the AuthSpec
-        // discriminant when lowering to EffectiveRunnerSpec.auth_name,
-        // so the classifier never observes an "auth_kind" surface and
-        // must not synthesize one. A regression that adds
-        // `auth_kind` to field_changes — for example by inspecting
-        // cfg.auth[name] discriminant directly — fails this pin.
-        assert!(
-            !upd.field_changes.iter().any(|fc| fc.path == "auth_kind"),
-            "auth_kind must NOT appear — discriminant is stripped by \
-             merge_defaults; got field_changes: {:?}",
-            upd.field_changes,
-        );
-        // Auth-name change rewrites the X-Ghars-Auth-Name annotation
-        // in the runner's 00-ghars.conf drop-in (render_identity emits
-        // the auth_name string into that file). The on-disk drop-in
-        // body therefore differs from the freshly-rendered desired
-        // body, so the classifier records a Modified change for
-        // 00-ghars.conf. A regression that elides the drop-in diff
-        // (e.g. classifying as in-place but skipping the file rewrite)
-        // would silently cause the X-Ghars-Auth-Name annotation to
-        // drift from the operator's [auth.NAME] reference, breaking
-        // the next planner cycle's annotation-vs-config comparison.
-        assert!(
-            upd.drop_in_changes.iter().any(|dc| {
-                dc.basename == "00-ghars.conf"
-                    && matches!(dc.change, DropInChangeKind::Modified { .. })
-            }),
-            "auth-name change must produce Modified 00-ghars.conf drop-in \
-             change; got: {:?}",
-            upd.drop_in_changes,
         );
     }
 
@@ -6868,20 +6872,15 @@ labels  = ["alpha", "beta"]
         // "github_app" is AuthSpec::GithubApp. The runner.auth ref
         // switches in the OPPOSITE direction: from "github_app"
         // (discovered side) to "pat" (desired side).
-        let mut cfg = config_with_runners(vec![{
-            let mut r = minimal_runner("a");
-            r.auth = Some("pat".into());
-            r
-        }]);
-        cfg.auth = IndexMap::new();
-        cfg.auth.insert(
+        let mut auth_blocks = IndexMap::new();
+        auth_blocks.insert(
             "pat".into(),
             AuthSpec::Pat {
                 token_env: Some("GHARS_PAT".into()),
                 token_file: None,
             },
         );
-        cfg.auth.insert(
+        auth_blocks.insert(
             "github_app".into(),
             AuthSpec::GithubApp {
                 app_id: 12345,
@@ -6889,128 +6888,12 @@ labels  = ["alpha", "beta"]
                 private_key_path: Utf8PathBuf::from("/etc/ghars/app.pem"),
             },
         );
-
-        // Discovered runner was registered against `github_app`.
-        // Building the discovered spec via merge_defaults with
-        // auth_name="github_app" exercises the production lowering
-        // path; the resulting EffectiveRunnerSpec.auth_name is the
-        // bare string "github_app", matching what state.rs would
-        // parse out of the on-disk X-Ghars-Auth-Name annotation.
-        let old_runner = cfg.runners[0].clone();
-        let mut old_spec = merge_defaults(
-            &old_runner,
-            &cfg.defaults,
-            "github_app".into(),
-            vec![],
-            None,
-            None,
-            None,
-            Arch::X86_64,
-            cfg_source_default(),
-        );
-        old_spec.spec_hash = spec_hash(&old_spec);
-        let mut actual = empty_actual();
-        actual
-            .runners
-            .insert("a".into(), discovered_for("a", &old_spec, Drift::InSync));
-
-        let plan = plan_from(&cfg, &actual, &empty_paths()).unwrap();
-        let upd = plan
-            .actions
-            .iter()
-            .find_map(|a| match a {
-                Action::UpdateRunner(d) => Some(d),
-                _ => None,
-            })
-            .expect(
-                "auth-name change across AuthSpec discriminants (inverse) \
-                 must emit UpdateRunner",
-            );
-
-        assert_eq!(
-            upd.recreate_reasons,
-            Vec::<&'static str>::new(),
-            "GithubApp → Pat auth-name change must produce empty \
-             recreate_reasons: the planner sees only the auth_name \
-             string diff (merge_defaults strips the AuthSpec \
-             discriminant), so no `uncovered` / `auth_name` token \
-             must be pushed; got: {:?}",
-            upd.recreate_reasons,
-        );
-        assert!(
-            !upd.requires_recreate,
-            "GithubApp → Pat must remain in-place — `requires_recreate` \
-             is derived from `!recreate_reasons.is_empty()` at \
-             plan_from's spec-hash-mismatch arm, so an empty \
-             recreate_reasons implies false here",
-        );
-        assert_eq!(
-            upd.field_changes.len(),
-            1,
-            "auth_name change must be the only field_changes entry; \
-             phantom fields signal regression — got: {:?}",
-            upd.field_changes,
-        );
-        let auth_name_change = upd
-            .field_changes
-            .iter()
-            .find(|fc| fc.path == "auth_name")
-            .expect("field_changes must include auth_name entry");
-        assert_eq!(
-            auth_name_change.before,
+        assert_auth_name_change_is_in_place(
+            auth_blocks,
+            "github_app",
+            "pat",
             FieldValue::String("github_app".into()),
-            "before must reflect the discovered side's auth_name string",
-        );
-        assert_eq!(
-            auth_name_change.after,
             FieldValue::String("pat".into()),
-            "after must reflect the desired side's auth_name string",
-        );
-        // auth_name strings differ between desired and discovered ⇒
-        // spec_hash differs ⇒ DriftCause::SpecChanged. Pins the
-        // drift-cause classification: the on-disk unit text is fresh
-        // (just rendered by discovered_for) so DriftDetected cannot
-        // fire; only the spec-hash mismatch path applies.
-        assert_eq!(
-            upd.drift_cause,
-            DriftCause::SpecChanged,
-            "GithubApp → Pat auth-name change must classify as SpecChanged: \
-             the auth_name string diff drives a spec_hash mismatch with no \
-             on-disk drift",
-        );
-        // Inverse pin: auth_kind discriminant must NOT leak into
-        // field_changes. merge_defaults strips the AuthSpec
-        // discriminant when lowering to EffectiveRunnerSpec.auth_name,
-        // so the classifier never observes an "auth_kind" surface and
-        // must not synthesize one. Symmetric to the forward sibling's
-        // pin — a regression that adds `auth_kind` to field_changes
-        // (e.g. by inspecting cfg.auth[name] discriminant directly) on
-        // EITHER direction fails its respective sibling.
-        assert!(
-            !upd.field_changes.iter().any(|fc| fc.path == "auth_kind"),
-            "auth_kind must NOT appear — discriminant is stripped by \
-             merge_defaults; got field_changes: {:?}",
-            upd.field_changes,
-        );
-        // Auth-name change rewrites the X-Ghars-Auth-Name annotation
-        // in the runner's 00-ghars.conf drop-in (render_identity emits
-        // the auth_name string into that file). The on-disk drop-in
-        // body therefore differs from the freshly-rendered desired
-        // body, so the classifier records a Modified change for
-        // 00-ghars.conf. A regression that elides the drop-in diff on
-        // the rollback direction (e.g. classifying GithubApp → Pat as
-        // in-place but skipping the file rewrite) would silently leave
-        // the X-Ghars-Auth-Name annotation pointing at "github_app"
-        // after the rollback, breaking the next planner cycle's
-        // annotation-vs-config comparison.
-        assert!(
-            upd.drop_in_changes.iter().any(|dc| {
-                dc.basename == "00-ghars.conf"
-                    && matches!(dc.change, DropInChangeKind::Modified { .. })
-            }),
-            "GithubApp → Pat auth-name change must produce Modified \
-             00-ghars.conf drop-in change; got: {:?}",
-            upd.drop_in_changes,
         );
     }
 
