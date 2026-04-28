@@ -2725,7 +2725,10 @@ pub(crate) fn render_apply_summary_line(result: &apply::ApplyResult) -> String {
 ///      (noop (in sync))` double-tag — the parenthesized REASON
 ///      inside the label is the operator-facing string).
 ///    - `Failed { .. }` → STDERR: `fail: LABEL [disruption] (error)`.
-///    - all other Ok variants → stdout: `ok: LABEL [disruption] (detail)`.
+///    - all 10 non-NoOp non-Failed ApplyOutcome variants → stdout:
+///      `ok: LABEL [disruption] (detail)`. Listed exhaustively in
+///      the per-action match arm (no wildcard), so adding a new
+///      ApplyOutcome variant is a compile error here.
 ///    The `[disruption]` bracket tag (`[none]`/`[restart]`/`[recreate]`)
 ///    reuses the plan-output vocabulary from `render_action_line`
 ///    (Part 5 of the design) so a single `grep [recreate]` matches
@@ -2777,7 +2780,18 @@ pub(crate) fn render_apply_emission(
                     outcome.detail(),
                 )?;
             }
-            _ => {
+            // Success/skip variants — route through ok: template. Exhaustive
+            // so a future variant addition forces a compile-time routing decision.
+            apply::ApplyOutcome::InPlaceSkipped
+            | apply::ApplyOutcome::InPlaceRestarted { .. }
+            | apply::ApplyOutcome::Recreated
+            | apply::ApplyOutcome::Created
+            | apply::ApplyOutcome::Removed
+            | apply::ApplyOutcome::PoolCreated
+            | apply::ApplyOutcome::PoolUpdated
+            | apply::ApplyOutcome::PoolSkipped
+            | apply::ApplyOutcome::PoolRemoved
+            | apply::ApplyOutcome::DryRunSkipped => {
                 writeln!(
                     stdout,
                     "ok: {label} [{}] ({})",
@@ -9621,6 +9635,176 @@ auth = \"pat\"
             "by_disruption.recreate count must equal recreates.len() — \
              plan_summary_value sources both fields from the same Vec",
         );
+        assert_eq!(body["summary"]["any_recreate"], true);
+    }
+
+    /// Count=0 orphan-removal shape (T774-B): a managed runner exists
+    /// on disk (surfaced via `actual.orphans`) with no matching
+    /// `[[runner]]` block, so plan_from emits one `RemoveRunner` action.
+    /// `RemoveRunner` is recreate-class, so its label appears in
+    /// `summary.recreates`.
+    ///
+    /// `actual.orphans` is the upstream-callable orphan path (cmd_status
+    /// populates it inline; `state::discover` itself never does). The
+    /// (false, true) discovery branch in plan_from would cover the same
+    /// ground but requires a fully-built `DiscoveredRunner` fixture.
+    /// Using `orphans` keeps the fixture minimal — only an
+    /// `OrphanedUnit { name }` is needed.
+    #[test]
+    fn plan_from_orphan_remove_runner_lists_label_in_summary_recreates() {
+        // Empty config (no runners) — only the orphan triggers an action.
+        let mut cfg = cfg_with_runner_trust_zone("placeholder", "default".into());
+        cfg.runners.clear();
+
+        let mut actual = state::ActualState::default();
+        actual.orphans.push(state::OrphanedUnit {
+            name: "legacy".into(),
+        });
+        let paths = Paths::default();
+
+        let plan =
+            plan::plan_from(&cfg, &actual, &paths).expect("orphan plan_from must succeed");
+
+        let remove_count = plan
+            .actions
+            .iter()
+            .filter(|a| matches!(a, Action::RemoveRunner(_)))
+            .count();
+        assert_eq!(
+            remove_count, 1,
+            "one orphan must produce one RemoveRunner; got {} actions",
+            plan.actions.len(),
+        );
+
+        let body = plan_to_json_value(&plan, false);
+        let recreates = body["summary"]["recreates"].as_array().unwrap();
+        let labels: Vec<&str> = recreates.iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(
+            labels,
+            vec!["RemoveRunner(legacy)"],
+            "summary.recreates must contain the orphan's RemoveRunner label",
+        );
+        assert_eq!(body["summary"]["by_disruption"]["recreate"], 1);
+        assert_eq!(body["summary"]["any_recreate"], true);
+    }
+
+    /// Empty plan shape (T774-C): no runners in config, no discovered
+    /// state. plan_from emits zero actions; `summary.recreates` is the
+    /// empty array `[]` (stable JSON shape so CI consumers can `jq
+    /// '.summary.recreates | length'` without conditional key checks).
+    /// Pinned via plan_from end-to-end (sibling
+    /// `plan_to_json_value_summary_recreates_empty_when_no_actions`
+    /// pins the same shape from a hand-built `Plan { actions: vec![] }`
+    /// — this test threads through the count-expansion + diff
+    /// pipeline to catch a regression that emits stray actions for
+    /// the empty-vs-empty case).
+    #[test]
+    fn plan_from_no_desired_no_actual_emits_empty_summary_recreates() {
+        let mut cfg = cfg_with_runner_trust_zone("placeholder", "default".into());
+        cfg.runners.clear();
+        let actual = state::ActualState::default();
+        let paths = Paths::default();
+
+        let plan = plan::plan_from(&cfg, &actual, &paths)
+            .expect("empty desired + empty actual plan_from must succeed");
+
+        assert!(
+            plan.actions.is_empty(),
+            "empty desired + empty actual must yield zero actions; got: {:?}",
+            plan.actions
+                .iter()
+                .map(|a| format!("{a:?}"))
+                .collect::<Vec<_>>(),
+        );
+
+        let body = plan_to_json_value(&plan, false);
+        assert_eq!(
+            body["summary"]["recreates"],
+            serde_json::json!([] as [&str; 0]),
+            "empty plan must emit recreates: [] not null/missing",
+        );
+        assert_eq!(body["summary"]["total_actions"], 0);
+        assert_eq!(body["summary"]["by_disruption"]["recreate"], 0);
+        assert_eq!(body["summary"]["any_recreate"], false);
+    }
+
+    /// Count expansion with explicit collision (T774-D): a count block
+    /// `name = "ci" count = 3` plus an explicit `[[runner]] name =
+    /// "ci-1"` produces 3 distinct expanded names — the explicit ci-1
+    /// pre-empts the count-block ci-1, so the plan has CreateRunner
+    /// for ci-1, ci-2, ci-3 (one each, no duplicates). The
+    /// `expand_counts_auto_skips_explicit_collision` test in plan.rs
+    /// pins the expansion-side count; this test extends the contract
+    /// to the rendered `summary.recreates` shape — the count and
+    /// explicit blocks share a single recreates entry per name.
+    #[test]
+    fn plan_from_count_with_explicit_collision_lists_each_name_once_in_recreates() {
+        // Build a config with a count=3 block AND an explicit ci-1.
+        // cfg_with_runner_trust_zone produces one runner — promote it
+        // to a count block, then add an explicit ci-1 alongside.
+        let mut cfg = cfg_with_runner_trust_zone("ci", "default".into());
+        cfg.runners[0].count = Some(3);
+        let explicit = crate::config::RunnerSpec {
+            name: "ci-1".into(),
+            count: None,
+            url: "https://github.com/example/ci-1".into(),
+            auth: Some("pat".into()),
+            labels: Vec::new(),
+            memory_max: Some("8G".into()),
+            runner_version: None,
+            runner_sha256: None,
+            runner_tarball: None,
+            arch: None,
+            user: None,
+            prefix: None,
+            caches: Vec::new(),
+            trust_zone: "default".into(),
+            network: None,
+            proxy: None,
+            hooks: None,
+            hardening: crate::config::Hardening::default(),
+            allowed_cpus: None,
+            allowed_memory_nodes: None,
+        };
+        cfg.runners.push(explicit);
+
+        let actual = state::ActualState::default();
+        let paths = Paths::default();
+
+        let plan =
+            plan::plan_from(&cfg, &actual, &paths).expect("count+explicit plan_from must succeed");
+
+        // 3 expanded names total (ci-1 from explicit, ci-2 + ci-3 from count).
+        let create_count = plan
+            .actions
+            .iter()
+            .filter(|a| matches!(a, Action::CreateRunner(_)))
+            .count();
+        assert_eq!(
+            create_count, 3,
+            "count=3 with explicit ci-1 collision must yield 3 CreateRunner actions \
+             (no duplicate ci-1); got {} actions: {:?}",
+            plan.actions.len(),
+            plan.actions
+                .iter()
+                .map(|a| format!("{a:?}"))
+                .collect::<Vec<_>>(),
+        );
+
+        let body = plan_to_json_value(&plan, false);
+        let recreates = body["summary"]["recreates"].as_array().unwrap();
+        let labels: Vec<&str> = recreates.iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(
+            labels,
+            vec![
+                "CreateRunner(ci-1)",
+                "CreateRunner(ci-2)",
+                "CreateRunner(ci-3)",
+            ],
+            "summary.recreates must contain ci-1 once (explicit pre-empts count) plus \
+             ci-2 and ci-3 from count expansion",
+        );
+        assert_eq!(body["summary"]["by_disruption"]["recreate"], 3);
         assert_eq!(body["summary"]["any_recreate"], true);
     }
 
@@ -16741,11 +16925,11 @@ auth = \"pat\"
         );
     }
 
-    /// `DryRunSkipped` is one of the non-NoOp Ok variants and must
-    /// route to stdout via the catch-all `_` arm of the per-action
-    /// match. Pins that the wildcard arm covers DryRunSkipped (and
-    /// future Ok additions) without falsely matching the `Failed`
-    /// or `NoOp` arms.
+    /// `DryRunSkipped` is one of the non-NoOp non-Failed
+    /// ApplyOutcome variants and must route to stdout via its
+    /// explicit DryRunSkipped arm (one branch of the merged
+    /// success/skip `|`-chain) without falsely matching the
+    /// `Failed` or `NoOp` arms.
     #[test]
     fn render_apply_emission_dry_run_skipped_routes_to_stdout() {
         let result = apply::ApplyResult {

@@ -6559,6 +6559,102 @@ labels  = ["alpha", "beta"]
         assert_eq!(auth_name_change.after, FieldValue::String("pat-new".into()));
     }
 
+    /// Inverse pin for the auth-name in-place contract: when the
+    /// operator switches a runner from one auth ref to another (here
+    /// `pat` → `github_app` — an auth-name string change between two
+    /// `[auth.NAME]` blocks, both `AuthSpec::Pat` under the hood),
+    /// the planner must NOT trip the `uncovered` recreate fallback at
+    /// `plan_from`'s spec-hash-mismatch gate.
+    ///
+    /// `recreate_reasons == vec![]` (exact-match) is strictly tighter
+    /// than the sibling `plan_update_runner_auth_name_change_is_in_place_with_field_change`'s
+    /// `!contains(&"uncovered")` check: any future regression that
+    /// pushes ANY token (not just "uncovered") into `recreate_reasons`
+    /// for an auth-name change fails this assertion. The empty-Vec
+    /// invariant is the load-bearing pin — `requires_recreate` is
+    /// derived from the `requires_recreate = !recreate_reasons.is_empty()`
+    /// gate in `plan_from`'s spec-hash-mismatch arm.
+    #[test]
+    fn plan_update_in_place_on_auth_name_change_has_empty_recreate_reasons() {
+        // Two `[auth.NAME]` blocks named `pat` and `github_app`. Both
+        // are AuthSpec::Pat under the hood — merge_defaults only sees
+        // the auth_name string, so this is an auth-name string change
+        // end-to-end.
+        let mut cfg = config_with_runners(vec![{
+            let mut r = minimal_runner("a");
+            r.auth = Some("github_app".into());
+            r
+        }]);
+        cfg.auth = IndexMap::new();
+        cfg.auth.insert(
+            "pat".into(),
+            AuthSpec::Pat {
+                token_env: Some("GHARS_PAT".into()),
+                token_file: None,
+            },
+        );
+        cfg.auth.insert(
+            "github_app".into(),
+            AuthSpec::Pat {
+                token_env: Some("GHARS_PAT_GHAPP".into()),
+                token_file: None,
+            },
+        );
+
+        // Discovered runner was registered against `pat`.
+        let old_runner = cfg.runners[0].clone();
+        let mut old_spec = merge_defaults(
+            &old_runner,
+            &cfg.defaults,
+            "pat".into(),
+            vec![],
+            None,
+            None,
+            None,
+            Arch::X86_64,
+            cfg_source_default(),
+        );
+        old_spec.spec_hash = spec_hash(&old_spec);
+        let mut actual = empty_actual();
+        actual
+            .runners
+            .insert("a".into(), discovered_for("a", &old_spec, Drift::InSync));
+
+        let plan = plan_from(&cfg, &actual, &empty_paths()).unwrap();
+        let upd = plan
+            .actions
+            .iter()
+            .find_map(|a| match a {
+                Action::UpdateRunner(d) => Some(d),
+                _ => None,
+            })
+            .expect("auth-name change must emit UpdateRunner");
+
+        assert_eq!(
+            upd.recreate_reasons,
+            Vec::<&'static str>::new(),
+            "auth-name change must produce empty recreate_reasons \
+             (no \"uncovered\", no \"auth_name\", nothing); got: {:?}",
+            upd.recreate_reasons,
+        );
+        assert!(
+            !upd.requires_recreate,
+            "auth-name change must remain in-place; \
+             requires_recreate must be false (derived from \
+             plan_from's `requires_recreate = !recreate_reasons.is_empty()` gate)",
+        );
+        let auth_name_change = upd
+            .field_changes
+            .iter()
+            .find(|fc| fc.path == "auth_name")
+            .expect("field_changes must include auth_name entry");
+        assert_eq!(auth_name_change.before, FieldValue::String("pat".into()));
+        assert_eq!(
+            auth_name_change.after,
+            FieldValue::String("github_app".into()),
+        );
+    }
+
     // ---- caches in-place contract (#271) ----------------------------
 
     /// caches change is in-place per design Part 3 (#271). The
