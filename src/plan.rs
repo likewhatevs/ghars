@@ -8804,4 +8804,617 @@ labels  = ["alpha", "beta"]
         assert_eq!(json["values"][0], "a");
         assert_eq!(json["values"][1], "b");
     }
+
+    // ---- recreate_reasons type-level invariant ----------------------
+    //
+    // The two tests below pin the invariants the type system does NOT
+    // enforce on `RunnerDelta`:
+    //   (1) `requires_recreate == true` ⇒ `!recreate_reasons.is_empty()`
+    //   (2) `requires_recreate == false` ⇒ `recreate_reasons.is_empty()`
+    //
+    // Both directions are load-bearing: the construction site at
+    // `plan_from` derives `requires_recreate` from
+    // `!recreate_reasons.is_empty()` (see the
+    // `let requires_recreate = !recreate_reasons.is_empty();` line),
+    // but a future refactor that splits that derivation could break the
+    // invariant silently. The CLI summary path
+    // (`cli.rs::plan_summary_value` → `summary.recreates`) and the
+    // operator-visible "(reasons)" tail in `render_action_line` both
+    // assume the invariant; recreating without a reason would produce
+    // empty parens in the operator output and an empty-string entry
+    // mid-list — confusing for triage.
+    //
+    // Each test drives every path that reaches `Action::UpdateRunner`
+    // through `plan_from` end-to-end (no synthetic delta construction),
+    // collects the resulting deltas, and asserts the invariant holds
+    // for every one. The (path, scenario) labels in assertion messages
+    // identify which scenario a future regression broke.
+    //
+    // The "uncovered" recreate reason — emitted by the spec_hash
+    // mismatch fallback at `plan_from` when neither Stage 1 nor Stage 2
+    // detect the change — is not exercised by any in-tree test
+    // scenario today; retained as defense-in-depth against future
+    // classifier gaps (see plan_from's spec_hash fallback). It is
+    // covered by the invariant by construction: the only site that
+    // pushes `"uncovered"` does so before `requires_recreate` is set
+    // from `!recreate_reasons.is_empty()`, so the Vec is non-empty
+    // whenever that branch fires. No direct scenario drives it here.
+
+    /// Drive every annotation-detected recreate-class path (url,
+    /// runner_version, labels, runner_sha256, runner_tarball, arch,
+    /// user, prefix, network) plus the runsvc_integrity guard through
+    /// `plan_from` end-to-end. For each scenario, assert that the
+    /// resulting `RunnerDelta` satisfies the invariant
+    /// `requires_recreate=true ⇒ !recreate_reasons.is_empty()` AND
+    /// pin the expected typed reason token so a regression that
+    /// drives recreate via a DIFFERENT classifier branch (e.g. arch
+    /// scenario silently routes through `uncovered` when host arch
+    /// happens to match `discovered_arch` on aarch64 CI) still fails
+    /// rather than passing for the wrong reason.
+    ///
+    /// Runs each scenario with a fresh config + actual state pair so
+    /// scenarios don't interfere. The scenario label in each loop
+    /// iteration's assertion identifies which path failed.
+    #[test]
+    fn plan_invariant_recreate_implies_non_empty_reasons_across_all_field_classes() {
+        // Helper: build (cfg, actual) for a desired-vs-discovered
+        // scenario. The mutators take a fresh `RunnerSpec` named "a"
+        // and modify the desired-side / discovered-side specs
+        // independently so each scenario exercises exactly one
+        // recreate path.
+        type SpecMutate = fn(&mut RunnerSpec);
+        type ConfigMutate = fn(&mut Config);
+
+        struct Scenario {
+            label: &'static str,
+            // Apply to the desired-side runner spec (cfg.runners[0]).
+            desired: SpecMutate,
+            // Apply to the discovered-side runner spec used to
+            // synthesize the on-disk fixture. None means "same as
+            // minimal_runner default".
+            discovered: Option<SpecMutate>,
+            // Optional config-level mutation (for network specs). Runs
+            // before the runner-level mutators so cross-references
+            // resolve.
+            cfg: Option<ConfigMutate>,
+            // host_arch parameter for merge_defaults on the discovered
+            // side. The desired side ALWAYS pins
+            // `cfg.runners[0].arch = Some(Arch::X86_64)` so the host
+            // arch never determines the desired side's classifier
+            // input — without this, on aarch64 CI the host_arch fallback
+            // would make the desired side land on Aarch64 and silently
+            // match the discovered side for non-arch scenarios, hiding
+            // bugs. The arch scenario uses `Arch::Aarch64` here to
+            // exercise the arch recreate path.
+            discovered_arch: Arch,
+            // The typed recreate reason this scenario MUST surface.
+            // Pinned per-scenario so the invariant test catches a
+            // regression that drives recreate through the wrong
+            // classifier branch (e.g. a scenario silently routing
+            // through `uncovered` while still asserting non-empty
+            // recreate_reasons).
+            expected_reason: &'static str,
+        }
+
+        fn url_change(r: &mut RunnerSpec) {
+            r.url = "https://github.com/example/desired-url".into();
+        }
+        fn url_old(r: &mut RunnerSpec) {
+            r.url = "https://github.com/example/old-url".into();
+        }
+        fn version_new(r: &mut RunnerSpec) {
+            r.runner_version = Some("2.300.0".into());
+        }
+        fn version_old(r: &mut RunnerSpec) {
+            r.runner_version = Some("2.200.0".into());
+        }
+        fn labels_new(r: &mut RunnerSpec) {
+            r.labels = vec!["beta".into()];
+        }
+        fn labels_old(r: &mut RunnerSpec) {
+            r.labels = vec!["alpha".into()];
+        }
+        fn sha_new(r: &mut RunnerSpec) {
+            r.runner_sha256 = Some("a".repeat(64));
+        }
+        fn sha_old(r: &mut RunnerSpec) {
+            r.runner_sha256 = Some("b".repeat(64));
+        }
+        fn tarball_new(r: &mut RunnerSpec) {
+            r.runner_tarball = Some(Utf8PathBuf::from(
+                "/var/lib/ghars/runner-desired.tar.gz",
+            ));
+        }
+        fn tarball_old(r: &mut RunnerSpec) {
+            r.runner_tarball = Some(Utf8PathBuf::from(
+                "/var/lib/ghars/runner-discovered.tar.gz",
+            ));
+        }
+        fn user_desired(r: &mut RunnerSpec) {
+            r.user = Some("ghars-desired".into());
+        }
+        fn user_discovered(r: &mut RunnerSpec) {
+            r.user = Some("ghars-discovered".into());
+        }
+        fn prefix_desired(r: &mut RunnerSpec) {
+            r.prefix = Some(Utf8PathBuf::from("/var/lib/ghars/desired"));
+        }
+        fn prefix_discovered(r: &mut RunnerSpec) {
+            r.prefix = Some(Utf8PathBuf::from("/var/lib/ghars/discovered"));
+        }
+        fn network_isolated(r: &mut RunnerSpec) {
+            r.network = Some("isolated".into());
+        }
+        fn add_isolated_netns(c: &mut Config) {
+            c.networks.insert(
+                "isolated".into(),
+                NetworkSpec {
+                    mode: NetworkMode::Netns,
+                    allowed_egress: vec![],
+                    ip_allow: vec![],
+                    ip_deny: vec![],
+                    address_families: vec![],
+                    dns: crate::config::DnsMode::Forward,
+                    ipv6: crate::config::Ipv6Mode::Disabled,
+                },
+            );
+        }
+
+        let scenarios = vec![
+            Scenario {
+                label: "url",
+                desired: url_change,
+                discovered: Some(url_old),
+                cfg: None,
+                discovered_arch: Arch::X86_64,
+                expected_reason: "url",
+            },
+            Scenario {
+                label: "runner_version",
+                desired: version_new,
+                discovered: Some(version_old),
+                cfg: None,
+                discovered_arch: Arch::X86_64,
+                expected_reason: "runner_version",
+            },
+            Scenario {
+                label: "labels",
+                desired: labels_new,
+                discovered: Some(labels_old),
+                cfg: None,
+                discovered_arch: Arch::X86_64,
+                expected_reason: "labels",
+            },
+            Scenario {
+                label: "runner_sha256",
+                desired: sha_new,
+                discovered: Some(sha_old),
+                cfg: None,
+                discovered_arch: Arch::X86_64,
+                expected_reason: "runner_sha256",
+            },
+            Scenario {
+                label: "runner_tarball",
+                desired: tarball_new,
+                discovered: Some(tarball_old),
+                cfg: None,
+                discovered_arch: Arch::X86_64,
+                expected_reason: "runner_tarball",
+            },
+            // arch: discovered side renders against Aarch64; desired
+            // side pins X86_64 explicitly via cfg.runners[0].arch
+            // (set in the loop body for ALL scenarios). The mismatch
+            // fires the arch annotation-classifier branch.
+            Scenario {
+                label: "arch",
+                desired: |_| {},
+                discovered: None,
+                cfg: None,
+                discovered_arch: Arch::Aarch64,
+                expected_reason: "arch",
+            },
+            Scenario {
+                label: "user",
+                desired: user_desired,
+                discovered: Some(user_discovered),
+                cfg: None,
+                discovered_arch: Arch::X86_64,
+                expected_reason: "user",
+            },
+            Scenario {
+                label: "prefix",
+                desired: prefix_desired,
+                discovered: Some(prefix_discovered),
+                cfg: None,
+                discovered_arch: Arch::X86_64,
+                expected_reason: "prefix",
+            },
+            Scenario {
+                label: "network",
+                desired: network_isolated,
+                discovered: None,
+                cfg: Some(add_isolated_netns),
+                discovered_arch: Arch::X86_64,
+                expected_reason: "network",
+            },
+        ];
+
+        for scenario in &scenarios {
+            // Build desired-side config (the "after" the operator
+            // wants). Apply config-level mutator first so network
+            // refs resolve, then runner-level desired mutator.
+            let mut cfg = config_with_runners(vec![minimal_runner("a")]);
+            if let Some(cfg_mut) = scenario.cfg {
+                cfg_mut(&mut cfg);
+            }
+            (scenario.desired)(&mut cfg.runners[0]);
+            // Pin desired arch to X86_64 EXPLICITLY for every scenario
+            // (including non-arch ones). plan_from's lower_to_effective
+            // resolves host_arch from RunnerSpec.arch ⇒ defaults.arch
+            // ⇒ Arch::current() — without this pin, on aarch64 CI the
+            // desired side would land on Aarch64 and accidentally
+            // match the discovered side's Arch::X86_64 host_arch input,
+            // making non-arch scenarios silently take the arch
+            // recreate branch (8 of 9 scenarios passing for the wrong
+            // reason). The arch scenario remains correct because its
+            // discovered_arch is Aarch64 — the desired/discovered
+            // mismatch is preserved.
+            cfg.runners[0].arch = Some(Arch::X86_64);
+
+            // Build discovered-side spec ("before" — what's on disk).
+            // Start from minimal, apply discovered mutator if present.
+            let mut discovered_runner = minimal_runner("a");
+            if let Some(disc_mut) = scenario.discovered {
+                disc_mut(&mut discovered_runner);
+            }
+            let mut old_spec = merge_defaults(
+                &discovered_runner,
+                &cfg.defaults,
+                "pat".into(),
+                vec![],
+                None,
+                None,
+                None,
+                scenario.discovered_arch,
+                cfg_source_default(),
+            );
+            old_spec.spec_hash = spec_hash(&old_spec);
+
+            let mut actual = empty_actual();
+            actual
+                .runners
+                .insert("a".into(), discovered_for("a", &old_spec, Drift::InSync));
+
+            let plan = plan_from(&cfg, &actual, &empty_paths()).unwrap();
+            let updates: Vec<&RunnerDelta> = plan
+                .actions
+                .iter()
+                .filter_map(|a| match a {
+                    Action::UpdateRunner(d) => Some(d),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                updates.len(),
+                1,
+                "[{}] scenario must produce exactly 1 UpdateRunner; got {} actions: {:?}",
+                scenario.label,
+                plan.actions.len(),
+                plan.actions
+                    .iter()
+                    .map(|a| format!("{a:?}"))
+                    .collect::<Vec<_>>(),
+            );
+            let upd = updates[0];
+            assert!(
+                upd.requires_recreate,
+                "[{}] scenario must drive recreate-class UpdateRunner; got \
+                 requires_recreate=false with reasons {:?}",
+                scenario.label, upd.recreate_reasons,
+            );
+            // The load-bearing invariant: requires_recreate=true MUST
+            // imply non-empty recreate_reasons.
+            assert!(
+                !upd.recreate_reasons.is_empty(),
+                "[{}] invariant violation: requires_recreate=true MUST imply \
+                 !recreate_reasons.is_empty(); empty Vec produces empty parens \
+                 in render_action_line and confuses operators triaging the \
+                 plan",
+                scenario.label,
+            );
+            // Pin the typed recreate reason: the scenario must drive
+            // recreate via the EXPECTED classifier branch, not via a
+            // different one (e.g. silent `uncovered` fallback). Without
+            // this pin, a host_arch leak on aarch64 CI could make
+            // non-arch scenarios pass with `recreate_reasons = ["arch"]`
+            // and still satisfy `!is_empty()` — false-positive coverage
+            // for the field the scenario claims to test.
+            assert!(
+                upd.recreate_reasons.contains(&scenario.expected_reason),
+                "[{}] scenario must surface typed `{}` recreate reason; got: {:?}",
+                scenario.label, scenario.expected_reason, upd.recreate_reasons,
+            );
+        }
+
+        // Bonus: runsvc_integrity recreate path. The fixture used by
+        // the loop above injects a fake runsvc_sha256 so every
+        // scenario stays in-place on that field. Drive the runsvc-
+        // missing-annotation path explicitly to round out coverage of
+        // every path that pushes a recreate reason.
+        let upd = drive_runsvc_integrity_recreate();
+        assert!(
+            upd.requires_recreate,
+            "[runsvc_integrity] scenario must drive recreate; got \
+             requires_recreate=false with reasons {:?}",
+            upd.recreate_reasons,
+        );
+        assert!(
+            !upd.recreate_reasons.is_empty(),
+            "[runsvc_integrity] invariant violation: requires_recreate=true \
+             MUST imply !recreate_reasons.is_empty()",
+        );
+        assert!(
+            upd.recreate_reasons.contains(&"runsvc_integrity"),
+            "[runsvc_integrity] scenario must surface typed `runsvc_integrity` \
+             recreate reason; got: {:?}",
+            upd.recreate_reasons,
+        );
+    }
+
+    /// Build a plan that drives the runsvc_integrity recreate path
+    /// (missing X-Ghars-Runsvc-Sha256 annotation in 00-ghars.conf)
+    /// and return the resulting `UpdateRunner` delta. Mirrors the
+    /// existing `plan_update_recreate_on_runsvc_integrity_when_annotation_missing`
+    /// fixture: render_identity at systemd.rs only emits the annotation
+    /// when spec.runsvc_sha256 is non-empty; feeding the empty
+    /// original spec produces the wire format that triggers the
+    /// runsvc_integrity recreate guard.
+    fn drive_runsvc_integrity_recreate() -> RunnerDelta {
+        let cfg = config_with_runners(vec![{
+            let mut r = minimal_runner("a");
+            r.memory_max = Some("64G".into());
+            r
+        }]);
+        let mut old_runner = cfg.runners[0].clone();
+        old_runner.memory_max = Some("32G".into());
+        let mut old_spec = merge_defaults(
+            &old_runner,
+            &cfg.defaults,
+            "pat".into(),
+            vec![],
+            None,
+            None,
+            None,
+            Arch::X86_64,
+            cfg_source_default(),
+        );
+        old_spec.spec_hash = spec_hash(&old_spec);
+        let mut discovered = discovered_for("a", &old_spec, Drift::InSync);
+        let rendered_no_digest = crate::systemd::render_runner_unit(&old_spec).unwrap();
+        discovered.drop_ins = rendered_no_digest.drop_ins;
+        let mut actual = empty_actual();
+        actual.runners.insert("a".into(), discovered);
+        let plan = plan_from(&cfg, &actual, &empty_paths()).unwrap();
+        plan.actions
+            .into_iter()
+            .find_map(|a| match a {
+                Action::UpdateRunner(d) => Some(d),
+                _ => None,
+            })
+            .expect("[runsvc_integrity] missing-digest fixture must emit UpdateRunner")
+    }
+
+    /// Drive every in-place classifier path (memory_max, auth_name,
+    /// trust_zone, caches) through `plan_from` end-to-end. For each
+    /// scenario, assert the inverse invariant
+    /// `requires_recreate=false ⇒ recreate_reasons.is_empty()`.
+    ///
+    /// The inverse direction is load-bearing too. A future regression
+    /// that pushed a recreate reason without flipping requires_recreate
+    /// (e.g. by hard-coding `requires_recreate=false` instead of
+    /// deriving it from `!recreate_reasons.is_empty()`) would surface
+    /// here as a non-empty reasons Vec on a non-recreate delta — and
+    /// the operator-facing summary would silently undercount the
+    /// recreate plan disruption tier.
+    #[test]
+    fn plan_invariant_no_recreate_implies_empty_recreate_reasons() {
+        // memory_max: in-place via Stage 2 drop-in body diff.
+        assert_in_place_invariant("memory_max", build_memory_max_in_place_plan());
+
+        // auth_name: in-place per design Part 3. Two PATs registered;
+        // runner moves from pat-old → pat-new. The classifier records
+        // a FieldChange but pushes no recreate reason — apply rebuilds
+        // the auth registry every run, so no host-state migration is
+        // needed.
+        assert_in_place_invariant("auth_name", build_auth_name_in_place_plan());
+
+        // trust_zone: in-place per design Part 3. Mirrors the existing
+        // `plan_update_runner_trust_zone_change_is_in_place_with_field_change`
+        // fixture — once cache-pool cross-references resolve at config
+        // load, the runner unit body has no trust_zone dependency.
+        assert_in_place_invariant("trust_zone", build_trust_zone_in_place_plan());
+
+        // caches: in-place per design Part 3. Two pools in same
+        // trust_zone; runner moves from caches=["pool-old"] →
+        // ["pool-new"]. The classifier records a FieldChange but
+        // apply reconciles supplementary group membership in-place
+        // via gpasswd diffs.
+        assert_in_place_invariant("caches", build_caches_in_place_plan());
+    }
+
+    /// Run a plan-builder, extract the single `UpdateRunner` delta,
+    /// and assert the in-place invariant
+    /// (`requires_recreate=false ⇒ recreate_reasons.is_empty()`).
+    /// Panics with the scenario label if the plan emits no
+    /// UpdateRunner, surfaces requires_recreate=true, or surfaces a
+    /// non-empty recreate_reasons Vec.
+    fn assert_in_place_invariant(label: &str, plan: Plan) {
+        let upd = plan
+            .actions
+            .iter()
+            .find_map(|a| match a {
+                Action::UpdateRunner(d) => Some(d),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("[{label}] must emit UpdateRunner"));
+        assert!(
+            !upd.requires_recreate,
+            "[{label}] scenario must be in-place; got requires_recreate=true \
+             with reasons {:?}",
+            upd.recreate_reasons,
+        );
+        assert!(
+            upd.recreate_reasons.is_empty(),
+            "[{label}] invariant violation: requires_recreate=false MUST imply \
+             recreate_reasons.is_empty(); got {:?}",
+            upd.recreate_reasons,
+        );
+    }
+
+    fn build_memory_max_in_place_plan() -> Plan {
+        let cfg = config_with_runners(vec![{
+            let mut r = minimal_runner("a");
+            r.memory_max = Some("64G".into());
+            r
+        }]);
+        let mut old_runner = cfg.runners[0].clone();
+        old_runner.memory_max = Some("32G".into());
+        let mut old_spec = merge_defaults(
+            &old_runner,
+            &cfg.defaults,
+            "pat".into(),
+            vec![],
+            None,
+            None,
+            None,
+            Arch::X86_64,
+            cfg_source_default(),
+        );
+        old_spec.spec_hash = spec_hash(&old_spec);
+        let mut actual = empty_actual();
+        actual
+            .runners
+            .insert("a".into(), discovered_for("a", &old_spec, Drift::InSync));
+        plan_from(&cfg, &actual, &empty_paths()).unwrap()
+    }
+
+    fn build_auth_name_in_place_plan() -> Plan {
+        let mut cfg = config_with_runners(vec![{
+            let mut r = minimal_runner("a");
+            r.auth = Some("pat-new".into());
+            r
+        }]);
+        cfg.auth = IndexMap::new();
+        cfg.auth.insert(
+            "pat-old".into(),
+            AuthSpec::Pat {
+                token_env: Some("GHARS_PAT_OLD".into()),
+                token_file: None,
+            },
+        );
+        cfg.auth.insert(
+            "pat-new".into(),
+            AuthSpec::Pat {
+                token_env: Some("GHARS_PAT_NEW".into()),
+                token_file: None,
+            },
+        );
+        let old_runner = cfg.runners[0].clone();
+        let mut old_spec = merge_defaults(
+            &old_runner,
+            &cfg.defaults,
+            "pat-old".into(),
+            vec![],
+            None,
+            None,
+            None,
+            Arch::X86_64,
+            cfg_source_default(),
+        );
+        old_spec.spec_hash = spec_hash(&old_spec);
+        let mut actual = empty_actual();
+        actual
+            .runners
+            .insert("a".into(), discovered_for("a", &old_spec, Drift::InSync));
+        plan_from(&cfg, &actual, &empty_paths()).unwrap()
+    }
+
+    fn build_trust_zone_in_place_plan() -> Plan {
+        let cfg = config_with_runners(vec![{
+            let mut r = minimal_runner("a");
+            r.trust_zone = "audited".into();
+            r
+        }]);
+        let mut old_runner = cfg.runners[0].clone();
+        old_runner.trust_zone = "default".into();
+        let mut old_spec = merge_defaults(
+            &old_runner,
+            &cfg.defaults,
+            "pat".into(),
+            vec![],
+            None,
+            None,
+            None,
+            Arch::X86_64,
+            cfg_source_default(),
+        );
+        old_spec.spec_hash = spec_hash(&old_spec);
+        let mut actual = empty_actual();
+        actual
+            .runners
+            .insert("a".into(), discovered_for("a", &old_spec, Drift::InSync));
+        plan_from(&cfg, &actual, &empty_paths()).unwrap()
+    }
+
+    fn build_caches_in_place_plan() -> Plan {
+        let mut cfg = config_with_runners(vec![{
+            let mut r = minimal_runner("a");
+            r.caches = vec!["pool-new".into()];
+            r
+        }]);
+        cfg.cache_pools.insert(
+            "pool-old".into(),
+            CachePoolSpec {
+                kinds: vec![CacheKind::Ccache],
+                size: "10G".into(),
+                mode: CacheMode::Shared,
+                trust_zone: "default".into(),
+            },
+        );
+        cfg.cache_pools.insert(
+            "pool-new".into(),
+            CachePoolSpec {
+                kinds: vec![CacheKind::Ccache],
+                size: "10G".into(),
+                mode: CacheMode::Shared,
+                trust_zone: "default".into(),
+            },
+        );
+        let mut old_runner = cfg.runners[0].clone();
+        old_runner.caches = vec!["pool-old".into()];
+        let old_binding = EffectiveCacheBinding {
+            name: "pool-old".into(),
+            kinds: vec![CacheKind::Ccache],
+            size: "10G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+        };
+        let mut old_spec = merge_defaults(
+            &old_runner,
+            &cfg.defaults,
+            "pat".into(),
+            vec![old_binding],
+            None,
+            None,
+            None,
+            Arch::X86_64,
+            cfg_source_default(),
+        );
+        old_spec.spec_hash = spec_hash(&old_spec);
+        let mut actual = empty_actual();
+        actual
+            .runners
+            .insert("a".into(), discovered_for("a", &old_spec, Drift::InSync));
+        plan_from(&cfg, &actual, &empty_paths()).unwrap()
+    }
 }

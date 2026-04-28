@@ -2257,6 +2257,154 @@ mod tests {
         mock.assert();
     }
 
+    /// Pin: reqwest's gzip auto-decompress is load-bearing for the
+    /// Layer 2 cap defense. Cargo.toml configures reqwest with the
+    /// `gzip` feature; `build_blocking_client` builds the Client
+    /// without an explicit `.gzip(...)` call, relying on the feature
+    /// flag to enable transparent decoding when the upstream sets
+    /// `Content-Encoding: gzip`.
+    ///
+    /// **Cap-defense layers** (matching the `http_get_payload_with_cap`
+    /// implementation): Layer 1 = Content-Length pre-check (rejects
+    /// before reading any body bytes); Layer 2 = streaming
+    /// `read_body_capped` post-decompression (the actual gzip-bomb
+    /// defense — bytes counted are downstream of reqwest's gzip
+    /// decoder, so a small compressed payload that decompresses to
+    /// gigabytes still fires the cap).
+    ///
+    /// This test serves a gzip-compressed body whose plaintext is 128
+    /// bytes (over the 64-byte cap). With gzip auto-decompress active,
+    /// reqwest's `Response: Read` decoder yields 128 plaintext bytes
+    /// downstream of the decoder, so `read_body_capped` sees 128 bytes
+    /// and the cap fires post-decompression.
+    ///
+    /// Layer 1 skip is over-determined here: reqwest's gzip-decompress
+    /// codepath strips the `Content-Length` response header (the
+    /// header reflects the compressed wire size, which is meaningless
+    /// once the body is decoded), so `resp.headers().get(CONTENT_LENGTH)`
+    /// returns `None` regardless of whether the compressed body is
+    /// under or over the cap. The fixture also pins compressed_size
+    /// under cap as belt-and-suspenders insurance against a future
+    /// reqwest version that propagates the on-wire length.
+    ///
+    /// Compression: `flate2` is a production dependency at Cargo.toml
+    /// (production code uses `flate2::read::GzDecoder` at
+    /// `extract.rs::extract_tarball` for tarball decompression), so
+    /// this test reuses the in-tree dependency without adding a
+    /// dev-dep. Plaintext is 128 zero-bytes — highly compressible, so
+    /// the gzip output stays under 64 bytes; this is the same
+    /// compression-ratio pattern a real gzip-bomb would exploit
+    /// (small compressed wire size, large decompressed size), and the
+    /// cap defense at Layer 2 is what blocks it.
+    ///
+    /// Asserts:
+    /// 1. err is GharsError::GitHub(msg, hint) — Layer 2 cap-firing branch.
+    /// 2. msg contains "post-decompression" — Layer 2 framing, distinct
+    ///    from Layer 1's "on-wire" framing.
+    /// 3. msg contains "body exceeds" + "64 B" — pins the cap-firing format.
+    /// 4. msg does NOT contain "Content-Length" — Layer 1 must NOT have fired.
+    /// 5. msg ends with the URL — log-parser stable-suffix parity with
+    ///    Layer 1 / Layer 2 sibling tests.
+    /// 6. msg does NOT contain "not valid JSON" — counterfactual:
+    ///    a regression that disables the reqwest gzip feature would
+    ///    route through the JSON-decode arm (raw gzip bytes fail to
+    ///    parse) instead of the cap-fire arm; this assertion fails in
+    ///    that case rather than the test silently passing on a
+    ///    different error path.
+    /// 7. hint mentions `MAX_RELEASES_BODY_BYTES` — operator escape
+    ///    hatch breadcrumb the cap-fire hint surfaces.
+    /// 8. mock.assert() — confirms the request reached the server.
+    #[test]
+    fn read_body_capped_post_decompression_via_gzip_response_pins_layer_2_decoder_path() {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use std::io::Write;
+
+        // 128-byte plaintext exceeds the 64-byte cap post-decompression.
+        // Zero-bytes are highly compressible: gzip output for 128 zero
+        // bytes is well under 64 bytes (typically ~30). The compressed
+        // < cap pin defends against a future reqwest version that
+        // forwards the on-wire Content-Length on gzip responses (today
+        // it strips the header — the cap defense at Layer 2 is what
+        // blocks gzip-bomb payloads regardless).
+        let plaintext = vec![0u8; 128];
+        assert!(
+            plaintext.len() as u64 > 64,
+            "fixture invariant: plaintext must exceed cap so Layer 2 fires \
+             post-decompression"
+        );
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&plaintext).unwrap();
+        let compressed = encoder.finish().unwrap();
+        assert!(
+            (compressed.len() as u64) < 64,
+            "fixture invariant: compressed length must be < cap=64 to model a \
+             gzip-bomb payload (small wire size, large decompressed size); \
+             with this shape Layer 2 (post-decompression) is the layer that \
+             must fire — Layer 1 cannot see the decompressed size. got {} bytes",
+            compressed.len()
+        );
+
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/repos/actions/runner/releases/latest")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_header("content-encoding", "gzip")
+            .with_body(compressed)
+            .expect(1)
+            .create();
+        let url = format!("{}/repos/actions/runner/releases/latest", server.url());
+        let client = build_blocking_client(None).unwrap();
+        let err = http_get_payload_with_cap(&client, &url, 64).unwrap_err();
+        match err {
+            GharsError::GitHub(msg, hint) => {
+                assert!(
+                    msg.contains("post-decompression"),
+                    "gzip auto-decompress must route to Layer 2 cap (post-\
+                     decompression framing); a regression that drops the \
+                     reqwest gzip feature would surface here as a different \
+                     error path. got: {msg}"
+                );
+                assert!(
+                    msg.contains("body exceeds") && msg.contains("64 B"),
+                    "Layer 2 msg must surface 'body exceeds' + cap value 64 B; got: {msg}"
+                );
+                assert!(
+                    !msg.contains("Content-Length"),
+                    "Layer 1 (Content-Length pre-check) must NOT fire on \
+                     gzip-encoded responses (reqwest strips the header on \
+                     auto-decompress paths); if this assertion fails, the \
+                     cap defense path has shifted away from Layer 2. \
+                     got: {msg}"
+                );
+                assert!(
+                    msg.ends_with(&url),
+                    "URL trailing-position parity with Layer 2 siblings; \
+                     log parsers grep the stable ': {{url}}' suffix. got: {msg}"
+                );
+                assert!(
+                    !msg.contains("not valid JSON"),
+                    "counterfactual: a regression that disables the reqwest \
+                     gzip feature would deliver raw compressed bytes and \
+                     route through the JSON-decode arm (which surfaces \
+                     'not valid JSON'). The cap-fire arm must not produce \
+                     that text; if it does, the gzip auto-decompress path \
+                     is broken and the cap defense weakened. got: {msg}"
+                );
+                assert!(
+                    hint.contains("MAX_RELEASES_BODY_BYTES"),
+                    "Layer 2 cap-fire hint must surface the \
+                     MAX_RELEASES_BODY_BYTES escape-hatch breadcrumb so \
+                     operators can locate the constant if the upstream \
+                     payload is legitimately large. got: {hint}"
+                );
+            }
+            other => panic!("expected GharsError::GitHub, got {other:?}"),
+        }
+        mock.assert();
+    }
+
     /// `read_body_capped` discriminant pin for the I/O-error branch.
     /// A `FailingReader` returns `io::Error` after `fail_after` bytes;
     /// the helper wraps it in `BodyCapError::Io(io_err)` and does NOT

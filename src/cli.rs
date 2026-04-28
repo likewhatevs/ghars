@@ -9528,6 +9528,99 @@ auth = \"pat\"
         assert_eq!(body["summary"]["any_recreate"], true);
     }
 
+    /// End-to-end pin: a count-expanded `[[runner]]` config with no
+    /// discovered runners produces N CreateRunner actions, and every
+    /// expanded label appears in `summary.recreates` (sorted).
+    /// Closes the integration gap between the count expansion at
+    /// `plan::expand_counts` and the recreate listing at
+    /// `plan_summary_value`.
+    ///
+    /// Existing summary.recreates tests synthesize Action vectors
+    /// directly; this test threads through the real plan pipeline:
+    /// build a Config with `count = 3`, run `plan_from`, then call
+    /// `plan_summary_value` on the resulting Vec<Action>. The
+    /// composition has been the load-bearing operator path
+    /// (`ghars plan --json | jq '.summary.recreates'`) since the
+    /// recreates field landed; this test pins the e2e contract so a
+    /// regression at any stage (expand_counts, plan_from's CreateRunner
+    /// emission, summary_value's recreate filter) surfaces here.
+    ///
+    /// **Count-fixture choice**: count=3 is chosen so single-digit
+    /// naming keeps lex-order coincident with natural-order
+    /// (`ci-1, ci-2, ci-3`). For count >= 10 lex-sort produces
+    /// `ci-1, ci-10, ci-2, ...` — operator-confusing but contractually
+    /// correct (sort_unstable on `Vec<String>` is byte-wise). Mixed-
+    /// digit fixtures and additional shapes (count=0, mixed
+    /// Create+Update) are taskified separately as a follow-up.
+    ///
+    /// Asserts:
+    /// - `summary.total_actions == 3` — fan-out arity.
+    /// - `summary.recreates == ["CreateRunner(ci-1)", "CreateRunner(ci-2)",
+    ///   "CreateRunner(ci-3)"]` (sorted by Action::label, which is
+    ///   what plan_summary_value emits).
+    /// - `summary.by_disruption["recreate"] == 3`.
+    /// - `summary.any_recreate == true`.
+    #[test]
+    fn plan_from_count_expanded_recreate_class_lists_all_in_summary_recreates() {
+        // Build a config with `[[runner]] name = "ci" count = 3`. Use
+        // the existing trust_zone fixture as a base, then promote it
+        // to a count block.
+        let mut cfg = cfg_with_runner_trust_zone("ci", "default".into());
+        cfg.runners[0].count = Some(3);
+
+        // No discovered runners ⇒ all 3 expanded names emit
+        // CreateRunner.
+        let actual = state::ActualState::default();
+        let paths = Paths::default();
+
+        let plan = plan::plan_from(&cfg, &actual, &paths)
+            .expect("count-expanded plan_from must succeed");
+
+        // Sanity: 3 CreateRunner actions, no UpdateRunner / RemoveRunner.
+        let create_count = plan
+            .actions
+            .iter()
+            .filter(|a| matches!(a, Action::CreateRunner(_)))
+            .count();
+        assert_eq!(
+            create_count, 3,
+            "count = 3 with no discovered must emit 3 CreateRunner actions; \
+             got {} actions: {:?}",
+            plan.actions.len(),
+            plan.actions
+                .iter()
+                .map(|a| format!("{a:?}"))
+                .collect::<Vec<_>>(),
+        );
+
+        let body = plan_to_json_value(&plan, false);
+        assert_eq!(
+            body["summary"]["total_actions"], 3,
+            "count-expansion fan-out: count=3 must produce 3 actions in \
+             total_actions",
+        );
+        let recreates = body["summary"]["recreates"].as_array().unwrap();
+        let actual_labels: Vec<&str> = recreates.iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(
+            actual_labels,
+            vec![
+                "CreateRunner(ci-1)",
+                "CreateRunner(ci-2)",
+                "CreateRunner(ci-3)",
+            ],
+            "summary.recreates must list every count-expanded CreateRunner \
+             label; sort is plan_summary_value's sort_unstable() pass over \
+             Action::label() output (byte-wise lex; coincides with \
+             operator-readable alphabetical for ci-1/ci-2/ci-3).",
+        );
+        assert_eq!(
+            body["summary"]["by_disruption"]["recreate"], 3,
+            "by_disruption.recreate count must equal recreates.len() — \
+             plan_summary_value sources both fields from the same Vec",
+        );
+        assert_eq!(body["summary"]["any_recreate"], true);
+    }
+
     // ---------- #285 addendum (D-13): colorized unified diff ------
 
     #[test]
