@@ -1,0 +1,14 @@
+---
+source: tests/python_parity_unit_snapshots.rs
+expression: "dropin(&r.drop_ins, \"40-network.conf\")"
+---
+[Unit]
+Requires=ghars-net@buckos.service
+BindsTo=ghars-net@buckos.service
+After=ghars-net@buckos.service
+
+[Service]
+NetworkNamespacePath=/var/run/netns/ghars-buckos
+IPAddressAllow=192.168.2.84/32
+IPAddressDeny=0.0.0.0/0
+RestrictAddressFamilies=AF_UNIX AF_INET

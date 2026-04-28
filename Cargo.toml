@@ -1,0 +1,156 @@
+[package]
+name = "ghars"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "GPL-2.0-only"
+repository = "https://github.com/likewhatevs/ghars"
+description = "Declaratively manage self-hosted GitHub Actions runners (systemd + Linux)."
+readme = "README.md"
+keywords = ["github", "actions", "runner", "systemd", "self-hosted"]
+categories = ["command-line-utilities"]
+
+[lib]
+name = "ghars"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ghars"
+path = "src/main.rs"
+
+# SEC-02 root-owned runsvc trampoline. Compiled binary, NOT shell.
+# Installed at /usr/lib/ghars/runsvc-wrapper (root:root mode 0755).
+# Invoked from the runner unit via `ExecStart=!/usr/lib/ghars/runsvc-wrapper %i`
+# (the `!` prefix bypasses User=/Group= but keeps the unit's full
+# sandboxing — TemporaryFileSystem=/:ro, BindReadOnlyPaths,
+# PrivateDevices, NetworkNamespacePath, SystemCallFilter, etc. — applied
+# to the wrapper and to the runsvc.sh process it execs into.
+# CapabilityBoundingSet=CAP_SETUID CAP_SETGID grants the wrapper just
+# enough to drop privileges. The wrapper integrity-checks
+# /var/lib/ghars/RUNNER/runsvc.sh against the X-Ghars-Runsvc-Sha256
+# annotation, then setgid/setuid to ghars-RUNNER and fexecve's the
+# verified file descriptor (closing the open-then-rename TOCTOU window).
+[[bin]]
+name = "runsvc-wrapper"
+path = "src/bin/runsvc_wrapper.rs"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+
+[dependencies]
+clap = { version = "4", features = ["derive", "wrap_help", "env"] }
+clap_complete = "4"
+clap_mangen = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+thiserror = "2"
+anyhow = "1"
+sha2 = "0.10"
+hex = "0.4"
+tar = "0.4"
+flate2 = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls-native-roots", "json", "stream", "gzip"] }
+# Design Part 1 listed `default-features = false, features = ["blocking-api"]`
+# but zbus 5 requires either `async-io` (default) or `tokio` as the executor
+# backend — `blocking-api` wraps it. We re-enable defaults so async-io is the
+# backend (matches the design's "zbus uses its own executor, NOT tokio"
+# rationale; #46 coexistence verification stands).
+zbus = { version = "5", features = ["blocking-api"] }
+# octocrab 0.42's `rustls` feature pulls hyper-rustls and (per
+# octocrab-0.42.1/src/lib.rs:684-687) calls `with_native_roots()`,
+# which loads the system trust store via `rustls-native-certs`. The
+# design's claim that we'd pass a custom reqwest client via
+# `Octocrab::builder().with_client(...)` is incorrect for this
+# version — 0.42's builder offers `with_service`/`with_layer`, not
+# `with_client`, and uses hyper directly rather than reqwest.
+# `default-client` is required so `OctocrabBuilder::build()` exists
+# (octocrab-0.42.1/src/lib.rs:670-673 is gated on
+# `feature = "default-client"`); `rustls-ring` selects ring as the
+# rustls CryptoProvider.
+octocrab = { version = "0.42", default-features = false, features = ["rustls", "default-client", "rustls-ring"] }
+# tokio: only `rt` feature. main() is sync; we use OnceLock<Runtime> with
+# block_on per call, NOT #[tokio::main] (so no `macros`). octocrab manages
+# its own timeouts via reqwest, so no `time` feature needed. Minimal surface.
+tokio = { version = "1", default-features = false, features = ["rt"] }
+regex = "1"
+url = "2"
+ipnet = { version = "2", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+camino = { version = "1", features = ["serde1"] }
+indexmap = { version = "2", features = ["serde"] }
+similar = "2"
+bytesize = "1"
+fs2 = "0.4"
+rpassword = "7"
+# Used by auth::GithubAppToken to build the EncodingKey that
+# octocrab::OctocrabBuilder::app() requires. octocrab depends on
+# jsonwebtoken transitively but does not re-export it (see
+# octocrab-0.42.1/src/auth.rs:6, where AppAuth holds an EncodingKey).
+jsonwebtoken = { version = "9", default-features = false }
+# libc::O_NOFOLLOW for SEC-06 (open private_key_path with O_NOFOLLOW so
+# the kernel rejects symlinks at open(2) time, closing the lstat-then-open
+# TOCTOU window the design calls out).
+libc = "0.2"
+# nix wraps fexecve(2) and getpwnam_r(3) in safe APIs so the SEC-02
+# trampoline (`runsvc-wrapper` binary) can drop privileges and exec the
+# verified-by-fd runsvc.sh without violating the workspace's
+# `unsafe_code = "forbid"` lint.
+# - `user`    → `unistd::User::from_name`  (getpwnam_r wrapper).
+# - `process` → `unistd::{fexecve, setuid, setgid, setgroups}`.
+# - `fs`      → reserved for renameat2/openat wrapping in adjacent tasks.
+nix = { version = "0.29", features = ["fs", "user", "process"] }
+# chrono is used for RegistrationToken.expires_at (DateTime<Utc>),
+# matching octocrab's SelfHostedRunnerToken.expires_at type so the
+# token round-trip preserves UTC instant precision without
+# SystemTime / nanosecond conversion artifacts. (#269)
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+env = "1"
+# Zeroize-on-drop for `auth::RegistrationToken.value` (#245). The runner
+# registration / removal token is short-lived but plaintext: a panic
+# between mint and consume would leave the value on unwound stack /
+# heap frames in cleartext until the OS reclaims pages. zeroize scrubs
+# the backing memory in `Drop` (including during panic unwind) using
+# volatile-write + compiler-fence to defeat dead-store elimination.
+# Pure-Rust, no_std-compatible, RustCrypto-org curated. The `derive`
+# feature gives the `#[derive(ZeroizeOnDrop)]` macro used on
+# `RegistrationToken` (with `#[zeroize(skip)]` on the non-secret
+# `source` / `expires_at` fields).
+zeroize = { version = "1", features = ["derive"] }
+# #678 Mn-class rejection: `is_disallowed_hidden_char` rejects all
+# Unicode NonspacingMark (Mn) code points uniformly so combining
+# diacriticals (e.g. U+0300 COMBINING GRAVE ACCENT) cannot overlay
+# ASCII characters in token_file paths. unicode-general-category
+# provides the General_Category lookup against the canonical UCD
+# data; it is a small dependency-free crate (MIT/Apache-2.0).
+unicode-general-category = "1"
+
+[dev-dependencies]
+insta = { version = "1", features = ["yaml", "filters"] }
+tempfile = "3"
+mockito = "1"
+proptest = "1"
+rstest = "0.23"
+assert_fs = "1"
+predicates = "3"
+assert_cmd = "2"
+# Captures `tracing` events into per-test buffers so #428's
+# `discover_warns_on_oversize_cache_pool_name` can assert that
+# `state::discover()` emits a structured warning when an oversize
+# cache pool name is found on disk.
+tracing-test = "0.2"
+
+# cargo-mutants profile — disables debug symbols to halve build time
+# during mutation runs. Mutations intentionally fail tests, so loss of
+# stack-trace fidelity is fine. Per https://mutants.rs/performance.html.
+# .cargo/mutants.toml selects this via `profile = "mutants"`.
+[profile.mutants]
+inherits = "test"
+debug = "none"

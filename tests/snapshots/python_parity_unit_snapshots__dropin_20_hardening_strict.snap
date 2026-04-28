@@ -1,0 +1,15 @@
+---
+source: tests/python_parity_unit_snapshots.rs
+expression: "dropin(&r.drop_ins, \"20-hardening.conf\")"
+---
+[Service]
+DeviceAllow=/dev/kvm rw
+RestrictRealtime=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+PrivateDevices=yes
+PrivateIPC=yes
+RestrictAddressFamilies=AF_UNIX AF_INET
+SystemCallFilter=clone3 rseq close_range memfd_create membarrier mknodat chroot
+BindReadOnlyPaths=/opt/gha-hooks
+BindReadOnlyPaths=/etc

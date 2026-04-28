@@ -1,0 +1,161 @@
+name: ci
+# Runs on every push to main and on every PR. Pipeline:
+#
+#   fmt      cargo fmt --check
+#   clippy   cargo clippy with -D clippy::correctness/suspicious/perf
+#   check    cargo check --all-targets --all-features
+#   test     cargo nextest run --no-fail-fast
+#   coverage cargo-llvm-cov + codecov upload + ratcheted line floor
+#   mutants  cargo-mutants --in-diff (PRs only; main pushes use the
+#            scheduled mutants-nightly workflow for full runs)
+#
+# Required repo secrets (operator must add before badges work):
+#   CODECOV_TOKEN — uploaded via codecov-action; without it the upload
+#                   step is a no-op and the codecov badge won't update.
+#
+# fail-under-lines floor is currently 70 because actual coverage is
+# 73% (Apr 2026) and the I/O-heavy modules (cli.rs 11%, preflight.rs
+# 23%, netns.rs 33%) drag the total below the design's 90 target.
+# Ratchet upward as tester tasks #137/#138/#174/#182/#189 land —
+# bump to 75 → 80 → 85 → 90 in lockstep with real coverage growth.
+
+"on":
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  # RUSTFLAGS=-D warnings is intentionally NOT set: Cargo.toml enables
+  # `[lints.clippy] pedantic = warn`, so combining `-D warnings` with
+  # the build steps would promote every pedantic suggestion into a
+  # CI-blocking error. Pedantic stays a local-IDE hint; CI gates on
+  # unwrap_used / expect_used / correctness via the dedicated clippy
+  # step below.
+
+jobs:
+  fmt:
+    name: cargo fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: cargo clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # CI gate denies only the high-signal lint categories (correctness
+      # = bugs, suspicious = likely bugs, perf = performance footguns).
+      # Cargo.toml's `[lints.clippy] pedantic = warn` + `unwrap_used =
+      # warn` + `expect_used = warn` stay as advisory warnings that
+      # show up in IDE + clippy output but don't fail CI; many of those
+      # are correctly suppressed in test modules via `#[allow]` and
+      # would be noise here. If a specific style/pedantic lint is
+      # important enough to gate, escalate it in Cargo.toml.
+      - run: |
+          cargo clippy --all-targets --all-features -- \
+            -D clippy::correctness \
+            -D clippy::suspicious \
+            -D clippy::perf
+
+  check:
+    name: cargo check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --all-targets --all-features
+
+  test:
+    name: cargo nextest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      # SEC-09 install_runner_binary tests skip themselves when not root
+      # (tests/security_scenarios.rs `running_as_root` guard). We run
+      # the suite as the unprivileged GHA user so non-root code paths
+      # exercise the production gate; local-root invocations exercise
+      # the privileged path manually before merging.
+      - run: cargo nextest run --all-features --no-fail-fast
+
+  coverage:
+    name: coverage (llvm-cov)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      # Generate codecov-format report + lcov for codecov-action.
+      # `--fail-under-lines 70` is the regression floor; raise it as
+      # coverage grows. Target is 90 per design Part 13.
+      - name: cargo llvm-cov
+        run: |
+          cargo llvm-cov nextest \
+            --all-features \
+            --no-fail-fast \
+            --lcov \
+            --output-path lcov.info \
+            --fail-under-lines 70
+      - name: upload to codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  mutants-pr:
+    name: cargo-mutants (incremental, PRs only)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    # Mutants on the diff are bounded to ~10-30 min per design Part 13;
+    # full runs go to the scheduled mutants-nightly workflow.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # cargo-mutants --in-diff needs the merge base; fetch full
+          # history so origin/$BASE_REF is locally resolvable.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      # cargo-mutants is not in taiki-e/install-action's prebuilt list
+      # (verified Apr 2026 against the upstream TOOLS.md). cargo-binstall
+      # would download a prebuilt binary if one exists; falling back to
+      # `cargo install --locked` keeps the install reproducible without
+      # adding another action dep.
+      - run: cargo install --locked cargo-mutants
+      - name: cargo mutants --in-diff
+        run: |
+          # Compare against the PR base (origin/main typically). The
+          # `--in-diff` mode only mutates lines changed in the PR, so
+          # untouched code doesn't reblock CI on existing gaps.
+          BASE_REF="${GITHUB_BASE_REF:-main}"
+          git fetch origin "$BASE_REF" --depth=1
+          # Generate the diff once and feed it to mutants. Empty diff =
+          # no-op (mutants exits 0 with "nothing to mutate").
+          git diff "origin/$BASE_REF"...HEAD > pr.diff
+          cargo mutants \
+            --in-diff pr.diff \
+            --no-shuffle \
+            --timeout-multiplier 2.0 \
+            -- --profile mutants

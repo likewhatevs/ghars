@@ -1,0 +1,16 @@
+---
+source: tests/python_parity_unit_snapshots.rs
+expression: body
+---
+[Unit]
+X-Ghars-Spec-Hash=sha256:abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdef0123
+X-Ghars-Pool-Name=build
+X-Ghars-Pool-Kinds=ccache
+X-Ghars-Config-Source=/etc/ghars/ghars.toml
+
+[Service]
+Group=ghars-cache-build
+Environment=CCACHE_DIR=%C/ghars/pools/build/ccache
+Environment=CCACHE_MAXSIZE=200G
+ExecStart=/usr/bin/sleep infinity
+ReadWritePaths=%C/ghars/pools/build

@@ -1,0 +1,108 @@
+name: mutants-nightly
+# Full mutation-test run on a schedule. Computes the score (% caught)
+# and pushes it to a shields.io endpoint via dynamic-badges-action so
+# the README badge stays current.
+#
+# Required repo secrets:
+#   GIST_SECRET — PAT with `gist` scope, used by dynamic-badges-action
+#                 to update the badge gist. Without it the badge step
+#                 errors but the mutation report still uploads as an
+#                 artifact.
+#   GIST_ID     — repo variable (vars.GIST_ID), the target gist ID for
+#                 the mutation-score badge.
+#
+# Schedule: 0700 UTC daily — late enough that day-of commits land,
+# early enough that a regression is visible by US business hours.
+
+"on":
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  mutants-full:
+    name: cargo mutants (full)
+    runs-on: ubuntu-latest
+    # Full mutation runs are CPU-bound — design Part 13 quotes "hours";
+    # cap at 6h to surface runaway mutants instead of silent timeout.
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      # cargo-mutants is not in taiki-e/install-action's prebuilt list;
+      # see ci.yml for rationale. `cargo install --locked` is the
+      # canonical install path.
+      - run: cargo install --locked cargo-mutants
+      # Run mutants. `--no-shuffle` makes the run order deterministic so
+      # a regression in one file doesn't shift mutant indices for
+      # downstream files between nights — easier diffing of nightly
+      # reports.
+      - name: cargo mutants
+        id: mutants
+        # Allow non-zero exit so we still compute a score and update the
+        # badge — `cargo mutants` exits non-zero when any mutant escapes,
+        # which is exactly when the badge needs to drop.
+        continue-on-error: true
+        run: |
+          cargo mutants --no-shuffle -- --profile mutants
+      # Score = caught / total. mutants outputs a summary file in
+      # mutants.out/ that lists each mutant's outcome. Caught means
+      # the test suite killed the mutation; missed means it survived.
+      - name: compute score
+        id: score
+        run: |
+          set -euo pipefail
+          # outcomes.json schema: per-mutant entry with an `outcome` field.
+          # Counts come from the summary file — see cargo-mutants docs.
+          # Using grep + wc (no jq dep on the runner image guaranteed).
+          REPORT="mutants.out/outcomes.json"
+          if [ ! -f "$REPORT" ]; then
+            echo "score=unknown" >> "$GITHUB_OUTPUT"
+            echo "color=lightgrey" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          TOTAL=$({ grep -c '"outcome":' "$REPORT" || true; })
+          CAUGHT=$({ grep -c '"outcome":"Caught"' "$REPORT" || true; })
+          if [ "$TOTAL" -eq 0 ]; then
+            PCT="0"
+          else
+            PCT=$(( CAUGHT * 100 / TOTAL ))
+          fi
+          # Color thresholds match shields.io conventions: 85+ green,
+          # 70-84 yellow, <70 red. Design Part 13 target is 85% caught.
+          if [ "$PCT" -ge 85 ]; then
+            COLOR="brightgreen"
+          elif [ "$PCT" -ge 70 ]; then
+            COLOR="yellow"
+          else
+            COLOR="red"
+          fi
+          echo "score=${PCT}%" >> "$GITHUB_OUTPUT"
+          echo "color=${COLOR}" >> "$GITHUB_OUTPUT"
+      - name: update badge gist
+        # Only run when GIST_SECRET is present so forks without secrets
+        # don't error noisily.
+        if: ${{ env.GIST_SECRET != '' }}
+        env:
+          GIST_SECRET: ${{ secrets.GIST_SECRET }}
+        uses: schneegans/dynamic-badges-action@v1.7.0
+        with:
+          auth: ${{ secrets.GIST_SECRET }}
+          gistID: ${{ vars.GIST_ID }}
+          filename: ghars-mutation-score.json
+          label: mutation
+          message: ${{ steps.score.outputs.score }}
+          color: ${{ steps.score.outputs.color }}
+      # Always upload the report as an artifact so reviewers can pull
+      # the per-mutant detail when investigating a score drop.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutants-report
+          path: mutants.out/
+          retention-days: 30

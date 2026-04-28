@@ -1,0 +1,102 @@
+---
+source: tests/python_parity_unit_snapshots.rs
+assertion_line: 112
+expression: cache_template_text()
+---
+[Unit]
+Description=ghars cache service for pool %i (ccache + sccache)
+After=network.target
+X-Ghars-Managed=true
+X-Ghars-Schema-Version=1
+# StopWhenUnneeded keeps the unit alive only when at least one runner
+# unit Requires= it (per-runner 30-cache-pool.conf adds Requires=).
+StopWhenUnneeded=yes
+
+[Service]
+Type=simple
+# `Group=` is INTENTIONALLY omitted from the template — the per-pool
+# 00-ghars.conf drop-in sets `Group=ghars-cache-<pool>` so each pool's
+# UDS at `/run/ghars/cache-<pool>.sock` is owned by a per-pool group.
+# Runners join only the `ghars-cache-<pool>` groups they're allowed to
+# reach (apply.rs::execute_create_runner adds membership), so a
+# compromised runner cannot connect to ANOTHER pool's UDS even if it
+# can resolve the path. Hardcoding `Group=gha` here would defeat the
+# per-pool ACL because every cache server would run with the same
+# primary group, and the UDS would be world-reachable for every
+# `gha`-group runner. (#200 / SEC-04 mitigation step 1.)
+#
+# `User=gha` stays in the template — every cache service runs as the
+# same uid so the cache directory's contents have a single owner; the
+# DAC boundary between pools is the `Group=` membership set by the
+# drop-in plus the UDS file mode (0660) the cache server writes.
+User=gha
+Slice=system.slice
+
+# UMask=0007 is the kernel-enforced sccache UDS permission gate.
+# AF_UNIX bind() masks the socket inode mode by current_umask() at
+# vfs_mknod time (Linux net/unix/af_unix.c:unix_bind_bsd:1349 —
+# `umode_t mode = S_IFSOCK | (SOCK_INODE(sk->sk_socket)->i_mode & ~current_umask())`).
+# sccache's UnixListener::bind (sccache server.rs:511 +
+# commands.rs:104) performs no chmod after bind, so the kernel-applied
+# mode is final. With UMask=0007, the resulting UDS inode mode is
+# 0660 — owner=User= rw, group=Group= rw, others denied. Combined
+# with the per-pool drop-in's `Group=ghars-cache-<pool>` (the cache
+# server's primary gid is inherited by mknod), this gives the
+# UDS owner=gha:ghars-cache-<pool> mode=0660. Runners that joined the
+# `ghars-cache-<pool>` supplementary group (via apply.rs::execute_create_runner)
+# can connect; non-members get EACCES. UMask= closes the mode at
+# bind() time atomically — unlike a chmod-after-bind shim, there is
+# no TOCTOU window between bind() returning and the chmod landing
+# during which a same-group attacker could connect. (#199 SEC-04
+# step 2.)
+UMask=0007
+
+# CacheDirectory creates /var/cache/ghars/pools/%i with mode 0755
+# (group-traversable; runners run as the same User=gha and connect
+# via UDS or share files within the pool dir).
+CacheDirectory=ghars/pools/%i
+CacheDirectoryMode=0755
+RuntimeDirectory=ghars
+RuntimeDirectoryMode=0755
+
+# Per-kinds env + ExecStart land in the per-pool 00-ghars.conf drop-in
+# (sccache server launches there when kinds includes sccache;
+# ccache-only pools render ExecStart=/usr/bin/sleep infinity to keep
+# the unit active so its CacheDirectory stays mounted).
+
+KillMode=control-group
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+
+# Hardening — narrower than runner. No /dev/kvm, no realtime, no exec.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+ProtectHome=yes
+ProtectSystem=strict
+RemoveIPC=yes
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallFilter=~@mount @clock @keyring @module @raw-io @reboot @swap @obsolete
+
+# Restart on crash (sccache server crashes are recoverable; clients
+# reconnect).
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

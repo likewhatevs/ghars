@@ -1,0 +1,15 @@
+---
+source: tests/python_parity_unit_snapshots.rs
+expression: "dropin(&r.drop_ins, \"60-proxy.conf\")"
+---
+[Service]
+Environment=HTTP_PROXY=http://192.168.2.84:3128
+Environment=http_proxy=http://192.168.2.84:3128
+Environment=HTTPS_PROXY=http://192.168.2.84:3128
+Environment=https_proxy=http://192.168.2.84:3128
+Environment=NO_PROXY=192.168.2.84
+Environment=no_proxy=192.168.2.84
+Environment=NODE_EXTRA_CA_CERTS=/etc/pki/ca-trust/source/anchors/squid-proxy-ca.pem
+Environment=REQUESTS_CA_BUNDLE=/etc/pki/tls/certs/ca-bundle.crt
+Environment=SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.crt
+BindReadOnlyPaths=/etc/pki/ca-trust/source/anchors/squid-proxy-ca.pem /etc/pki/tls/certs/ca-bundle.crt /etc/pki/tls/certs/ca-bundle.crt

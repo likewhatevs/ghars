@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 1e1cd380e617c91128f25fee5f89baa7b9e98017276cdc67bb2c958fd01418f8 # shrinks to name = "aaaaaaaaaaaaaaaaaaaaaaaaaa"
+cc ec549ed20e0d32d32a3da4868e54fd4ce19c1cb206fed5272ecc078551457702 # shrinks to name = "aaaaaaaaaaaaaaaaaaaaaaaaaa", rules = [], subnet = 10.200.0.0/30
+cc b1b68c2b265a5f8c051c897250c7c6843fffbcb22d553b9c41c7d65e06d38ca6 # shrinks to name = "aaaaaaaaaaaaaaaaaaaaaaaaaa", rules = [], subnet = 10.200.0.0/30
+cc 9422d4c2bcab52941890eb07d4a4e1646384574eb275d2f9d59782a7a0d05762 # shrinks to name = "aaaaaaaaaaaaaaaaaaaaaaaaaa", rules = [], subnet = 10.200.0.0/30
+cc eb5812d6d74fd00e4822bec41c9de039cc915eea070479370c72d8774c7d4895 # shrinks to name = "aaaaaaaaaaaaaaaaaaaaaaaaaa", rules = [], subnet = 10.200.0.0/30

@@ -1,0 +1,22 @@
+---
+source: tests/python_parity_unit_snapshots.rs
+assertion_line: 381
+expression: body
+---
+[Unit]
+X-Ghars-Spec-Hash=sha256:abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdef0123
+X-Ghars-Pool-Name=build
+X-Ghars-Pool-Kinds=sccache,ccache
+X-Ghars-Config-Source=/etc/ghars/ghars.toml
+
+[Service]
+Group=ghars-cache-build
+Environment=SCCACHE_DIR=%C/ghars/pools/build/sccache
+Environment=SCCACHE_CACHE_SIZE=200G
+Environment=SCCACHE_SERVER_UDS=%t/ghars/cache-build.sock
+Environment=SCCACHE_NO_DAEMON=1
+Environment=SCCACHE_IDLE_TIMEOUT=0
+Environment=CCACHE_DIR=%C/ghars/pools/build/ccache
+Environment=CCACHE_MAXSIZE=200G
+ExecStart=/usr/bin/sccache --start-server
+ReadWritePaths=%C/ghars/pools/build %t/ghars

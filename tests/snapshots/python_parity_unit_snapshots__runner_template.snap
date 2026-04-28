@@ -1,0 +1,161 @@
+---
+source: tests/python_parity_unit_snapshots.rs
+expression: runner_template_text()
+---
+[Unit]
+Description=GitHub Actions Runner (%i)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/var/lib/ghars/%i/runsvc.sh
+StartLimitIntervalSec=300
+StartLimitBurst=5
+X-Ghars-Managed=true
+X-Ghars-Schema-Version=1
+
+[Service]
+Type=simple
+# SEC-02: ExecStart=! runs the runsvc trampoline as root (User=/Group=
+# bypassed) WHILE the unit's full sandbox stays applied — including
+# TemporaryFileSystem=/:ro, BindReadOnlyPaths, PrivateDevices, the
+# SystemCallFilter allowlist, NetworkNamespacePath, etc. (Per
+# systemd.service(5) the `!` prefix alters only User=/Group=/
+# SupplementaryGroups=; in contrast `+` would also bypass
+# CapabilityBoundingSet AND every filesystem-namespacing directive,
+# which would silently leave the runner unsandboxed.)
+#
+# The trampoline integrity-checks /var/lib/ghars/%i/runsvc.sh against
+# the recorded X-Ghars-Runsvc-Sha256 annotation in
+# /etc/systemd/system/ghars-runner@%i.service.d/00-ghars.conf, then
+# setgid()/setuid()s to ghars-%i and fexecve()s the verified file
+# descriptor (closing the open-then-rename TOCTOU window the runner
+# user could otherwise exploit on a runner-owned runsvc.sh).
+#
+# The trampoline is a separately-packaged compiled binary at
+# /usr/lib/ghars/runsvc-wrapper (root:root mode 0755) — NOT a shell
+# script. CapabilityBoundingSet below is overridden to grant just the
+# CAP_SETUID/CAP_SETGID needed by the privilege drop; runsvc.sh has no
+# file capabilities, so per capabilities(7) its post-exec permitted
+# set is empty regardless of the bounding set.
+ExecStart=!/usr/lib/ghars/runsvc-wrapper %i
+User=ghars-%i
+Group=ghars-%i
+WorkingDirectory=/var/lib/ghars/%i
+# F72: Slice=system.slice unconditional. No operator opt-in.
+Slice=system.slice
+
+# StateDirectory implies BindPaths under TemporaryFileSystem=/:ro and
+# survives across restarts.
+StateDirectory=ghars/%i
+StateDirectoryMode=0700
+CacheDirectory=ghars/%i
+CacheDirectoryMode=0700
+LogsDirectory=ghars/%i
+LogsDirectoryMode=0700
+RuntimeDirectory=ghars/%i
+RuntimeDirectoryMode=0700
+
+# PATH set explicitly. systemd's compile-time DEFAULT_PATH varies and
+# may omit sbin. ccache wrapper dirs come first to shadow real
+# compilers.
+Environment=PATH=/usr/lib64/ccache:/usr/lib/ccache:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=LANG=C.UTF-8
+Environment=HOME=/var/lib/ghars/%i
+
+# Per-runner cache env. Shared cache pools override these via
+# 30-cache-pool.conf drop-in.
+Environment=CCACHE_DIR=%C/ghars/%i/ccache
+Environment=SCCACHE_DIR=%C/ghars/%i/sccache
+Environment=CCACHE_MAXSIZE=200G
+Environment=SCCACHE_CACHE_SIZE=200G
+# SCCACHE_SERVER_UDS lives on tmpfs (RuntimeDirectory) — no stale
+# sockets after crash. (F32)
+Environment=SCCACHE_SERVER_UDS=%t/ghars/%i/sccache.sock
+
+KillMode=control-group
+KillSignal=SIGTERM
+TimeoutStopSec=5min
+
+# Privilege isolation. CapabilityBoundingSet is the smallest set the
+# SEC-02 wrapper needs to drop privileges (CAP_SETUID + CAP_SETGID for
+# the setuid/setgid syscalls — kernel/sys.c:669 enforces CAP_SETUID).
+# After the wrapper fexecve()s into runsvc.sh the kernel computes the
+# new permitted set as `(P_inheritable & F_inheritable) | (F_permitted
+# & P_bounding)`. Inheritable is empty, runsvc.sh is a script with no
+# file capabilities, so the post-exec permitted set is empty regardless
+# of the bounding set. AmbientCapabilities stays empty so the kernel
+# does not raise any cap into permitted at exec time.
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID
+AmbientCapabilities=
+
+# Filesystem allowlist. Optional paths use `-` prefix for merged-usr
+# compat. (F35)
+TemporaryFileSystem=/:ro
+BindReadOnlyPaths=/usr -/lib -/lib64 -/bin -/sbin
+BindReadOnlyPaths=/etc/hosts /etc/nsswitch.conf
+BindReadOnlyPaths=/etc/passwd /etc/group
+BindReadOnlyPaths=/etc/ssl /etc/ca-certificates -/etc/pki
+BindReadOnlyPaths=-/etc/locale.conf /etc/localtime
+BindReadOnlyPaths=/etc/ld.so.cache -/etc/ld.so.conf.d
+BindReadOnlyPaths=-/etc/protocols -/etc/services
+BindReadOnlyPaths=-/etc/alternatives
+BindReadOnlyPaths=-/etc/os-release
+BindReadOnlyPaths=-/etc/gitconfig
+PrivateTmp=yes
+UMask=0077
+
+# Device access. PrivateDevices=yes constructs a clean /dev;
+# DevicePolicy=closed denies everything; DeviceAllow re-adds /dev/kvm
+# for KVM-backed workloads.
+PrivateDevices=yes
+DevicePolicy=closed
+DeviceAllow=/dev/kvm rw
+
+ProtectProc=invisible
+
+# Kernel hardening.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+# ProtectControlGroups=no is INTENTIONAL: workflows create
+# cpuset/memory cgroups on the host (buck2 nested virt, VM test
+# harnesses). yes here would make /sys/fs/cgroup read-only and break
+# those flows. (F33)
+ProtectControlGroups=no
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+
+# Syscall filtering. @system-service is the baseline allowlist; pkey_*
+# and perf_event_open are extras needed by Node, .NET, and KVM
+# workloads.
+SystemCallArchitectures=native
+SystemCallFilter=@system-service pkey_alloc pkey_mprotect pkey_free perf_event_open
+SystemCallErrorNumber=EPERM
+SystemCallFilter=~@mount @clock @keyring @module @raw-io @reboot @swap @obsolete
+SystemCallLog=~@system-service pkey_alloc pkey_mprotect pkey_free perf_event_open
+
+RestrictNamespaces=yes
+PrivateIPC=yes
+
+ProtectHome=yes
+RemoveIPC=yes
+# RestrictRealtime=no is INTENTIONAL: KVM vCPU/watchdog threads need
+# SCHED_FIFO for stable guest latency. LimitRTPRIO=2 caps the
+# priority they can request. (F33)
+RestrictRealtime=no
+RestrictSUIDSGID=yes
+
+# LimitMEMLOCK=infinity required for KVM/buck2 mlock on large guest
+# pages.
+LimitMEMLOCK=infinity
+LimitRTPRIO=2
+
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=10000
+
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

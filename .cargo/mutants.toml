@@ -1,0 +1,52 @@
+# cargo-mutants configuration. Schema: https://mutants.rs/skip_files.html
+#
+# Excludes target adapter modules where the unit tests intentionally
+# don't drive the kernel/D-Bus/network paths. Mutating these files
+# would require either a live D-Bus + systemd + nftables environment
+# (CI runners don't have one wired) or fixtures the design hasn't
+# specified yet. See design Part 13 Tier 4 mutants.toml for the
+# motivating list.
+#
+# Re-include candidates as their tester tasks land:
+#   - preflight.rs once #137 (synthesized /etc/os-release fixtures) +
+#     #174 (preflight test gap) land. Currently 22.71% line coverage.
+#   - netns.rs once #228 (setup/teardown error paths) lands.
+#     Currently 33.01%.
+#   - cli.rs once #138 (status callsite tests) lands. Currently 10.75%.
+#   - bin/runsvc_wrapper.rs once #231 (fexecve mocking strategy)
+#     lands. Currently 58.70% — kept in for now since the parser bits
+#     are already pure-logic.
+#   - main.rs is just CLI dispatch glue; permanent exclude.
+
+profile = "mutants"
+
+exclude_globs = [
+  "src/main.rs",
+  # cli.rs is mostly dispatch + DbusSystemd::new calls; mutating
+  # logic without a live D-Bus produces only timeout-class outcomes.
+  "src/cli.rs",
+  # preflight.rs reads /etc/os-release, /proc/self/status, /sys; tests
+  # need synthesized filesystem fixtures (#137) before mutation is
+  # productive.
+  "src/preflight.rs",
+  # netns.rs shells out to ip / nft / sysctl / systemctl; without a
+  # mocking seam (#52, #228) mutations time out instead of being caught.
+  "src/netns.rs",
+  # systemd.rs DbusSystemd is the live D-Bus adapter — pure-logic
+  # mutation runs would still load it. The render_* + validate_*
+  # functions ARE pure, but cargo-mutants operates at file granularity
+  # in v25.x. Re-include when DbusSystemd is split into its own module
+  # (B3 follow-up).
+  "src/systemd.rs",
+]
+
+# Mutants on a slow runner: nextest's pre-compile pass + the actual
+# mutation cycles can blow past cargo-mutants's default timeout when
+# CI is loaded. Multiply the auto-derived timeout to give headroom
+# for ubuntu-latest (4-core).
+timeout_multiplier = 2.0
+
+# Minimum test timeout (seconds) — lower-bounds the auto-derived
+# value so tests that finish quickly under the baseline run still
+# get enough time when mutated to hang out a full timeout window.
+minimum_test_timeout = 60.0

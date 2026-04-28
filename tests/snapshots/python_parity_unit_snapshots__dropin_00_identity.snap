@@ -1,0 +1,21 @@
+---
+source: tests/python_parity_unit_snapshots.rs
+expression: "dropin(&r.drop_ins, \"00-ghars.conf\")"
+---
+[Unit]
+X-Ghars-Spec-Hash=sha256:0000000000000000000000000000000000000000000000000000000000000000
+X-Ghars-Runner-Name=buckos
+X-Ghars-Runner-Url=https://github.com/example/buckos
+X-Ghars-Auth-Name=pat
+X-Ghars-Labels=self-hosted,linux
+X-Ghars-Arch=x86_64
+X-Ghars-User=ghars-buckos
+X-Ghars-Prefix=/var/lib/ghars
+X-Ghars-Caches=
+X-Ghars-Config-Source=/etc/ghars/ghars.toml
+X-Ghars-Effective-Version=2.334.0
+X-Ghars-Trust-Zone=default
+X-Ghars-Network-Mode=open
+
+[Service]
+X-Ghars-Runsvc-Sha256=sha256:1111111111111111111111111111111111111111111111111111111111111111

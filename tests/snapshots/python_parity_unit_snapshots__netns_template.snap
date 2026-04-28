@@ -1,0 +1,43 @@
+---
+source: tests/python_parity_unit_snapshots.rs
+expression: netns_template_text()
+---
+[Unit]
+Description=ghars netns + veth + nft for runner %i
+X-Ghars-Managed=true
+X-Ghars-Schema-Version=1
+# F79: StopWhenUnneeded=NO. The named netns at /var/run/netns/ghars-%i
+# is bind-mounted (persistent across unit deactivation). ghars-net@
+# stays in active state to symbolize "netns exists"; only torn down by
+# explicit `ghars apply` removal of the runner. Runner restarts do NOT
+# recreate the netns — the bind-mount survives.
+StopWhenUnneeded=no
+After=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# `+` prefix runs as root regardless of User= (per systemd.exec.xml).
+# Required for: ip netns add, ip link, sysctl writes, nft -f.
+ExecStart=+/usr/bin/ghars _netns-setup %i
+ExecStart=+/usr/sbin/nft -f /etc/ghars/nft.d/%i-host.nft
+ExecStart=+/usr/bin/ghars _netns-veth %i /usr/sbin/nft -f /etc/ghars/nft.d/%i-ns.nft
+
+# LOAD-BEARING: ExecStop= MUST be present. systemd's
+# service.c:1364-1383 destroys runtime data on SERVICE_EXITED when no
+# ExecStop=, ExecReload=, or ExecStopPost= is defined — even with
+# RemainAfterExit=yes. The named netns is its own bind-mount so we
+# don't rely on systemd's runtime data, but having ExecStop= ensures
+# cleanup helpers run on unit deactivation. (F49)
+ExecStop=+/usr/sbin/nft destroy table inet ghars_%i
+ExecStop=+/usr/bin/ghars _netns-veth %i /usr/sbin/nft destroy table inet ghars_%i_ns
+ExecStop=+/usr/bin/ghars _netns-teardown %i
+
+User=root
+Slice=system.slice
+KillMode=control-group
+TimeoutSec=30s
+
+[Install]
+# Pulled in by runner units' Requires=; never enabled standalone.
