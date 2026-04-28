@@ -98,44 +98,59 @@ fn http_download_with_cap(
         .connect_timeout(timeout)
         .build()
         .map_err(|e| {
-            GharsError::Tarball(format!(
-                "download failed: client build: {chain}: {url}",
-                chain = format_error_chain(&e)
-            ))
+            GharsError::Tarball(
+                format!(
+                    "download failed: client build: {chain}: {url}",
+                    chain = format_error_chain(&e)
+                ),
+                None,
+            )
         })?;
 
     let mut resp = client.get(url).send().map_err(|e| {
-        GharsError::Tarball(format!(
-            "download failed: {chain}: {url}",
-            chain = format_error_chain(&e)
-        ))
+        GharsError::Tarball(
+            format!(
+                "download failed: {chain}: {url}",
+                chain = format_error_chain(&e)
+            ),
+            None,
+        )
     })?;
 
     let resp = resp
         .error_for_status_ref()
         .map(|_| ())
         .map_err(|e| {
-            GharsError::Tarball(format!(
-                "download failed: HTTP {chain}: {url}",
-                chain = format_error_chain(&e)
-            ))
+            GharsError::Tarball(
+                format!(
+                    "download failed: HTTP {chain}: {url}",
+                    chain = format_error_chain(&e)
+                ),
+                None,
+            )
         })
         .map(|()| &mut resp)?;
 
     let mut out = File::create(dest).map_err(|e| {
-        GharsError::Tarball(format!(
-            "download failed: create {dest}: {chain}: {url}",
-            chain = format_error_chain(&e)
-        ))
+        GharsError::Tarball(
+            format!(
+                "download failed: create {dest}: {chain}: {url}",
+                chain = format_error_chain(&e)
+            ),
+            None,
+        )
     })?;
     let mut buf = vec![0u8; CHUNK_SIZE];
     let mut total: u64 = 0;
     loop {
         let n = resp.read(&mut buf).map_err(|e| {
-            GharsError::Tarball(format!(
-                "download failed: read: {chain}: {url}",
-                chain = format_error_chain(&e)
-            ))
+            GharsError::Tarball(
+                format!(
+                    "download failed: read: {chain}: {url}",
+                    chain = format_error_chain(&e)
+                ),
+                None,
+            )
         })?;
         if n == 0 {
             break;
@@ -166,28 +181,37 @@ fn http_download_with_cap(
                      partial file remains on disk"
                 );
             }
-            return Err(GharsError::Tarball(format!(
-                "download failed: {url}: response body exceeds {max_h} ({max_bytes} bytes) \
-                 post-decompression; the post-decompression body is larger than expected; \
-                 this can indicate a deliberately-crafted payload OR a legitimately large \
-                 upstream response; verify network path (compromised mirror, hostile proxy \
-                 CA, or non-GitHub origin); if the upstream payload is legitimately this \
-                 large, file a ghars issue to raise MAX_TARBALL_DOWNLOAD_BYTES",
-                max_h = human_bytes(max_bytes)
-            )));
+            return Err(GharsError::Tarball(
+                format!(
+                    "download failed: {url}: response body exceeds {max_h} ({max_bytes} bytes) \
+                     post-decompression; the post-decompression body is larger than expected; \
+                     this can indicate a deliberately-crafted payload OR a legitimately large \
+                     upstream response; verify network path (compromised mirror, hostile proxy \
+                     CA, or non-GitHub origin); if the upstream payload is legitimately this \
+                     large, file a ghars issue to raise MAX_TARBALL_DOWNLOAD_BYTES",
+                    max_h = human_bytes(max_bytes)
+                ),
+                None,
+            ));
         }
         out.write_all(&buf[..n]).map_err(|e| {
-            GharsError::Tarball(format!(
-                "download failed: write {dest}: {chain}: {url}",
-                chain = format_error_chain(&e)
-            ))
+            GharsError::Tarball(
+                format!(
+                    "download failed: write {dest}: {chain}: {url}",
+                    chain = format_error_chain(&e)
+                ),
+                None,
+            )
         })?;
     }
     out.flush().map_err(|e| {
-        GharsError::Tarball(format!(
-            "download failed: flush {dest}: {chain}: {url}",
-            chain = format_error_chain(&e)
-        ))
+        GharsError::Tarball(
+            format!(
+                "download failed: flush {dest}: {chain}: {url}",
+                chain = format_error_chain(&e)
+            ),
+            None,
+        )
     })?;
     Ok(())
 }
@@ -298,28 +322,31 @@ pub fn safe_member_filter<R: Read>(entry: &tar::Entry<'_, R>) -> Result<FilterDe
 
     match kind {
         E::Char | E::Block | E::Fifo => {
-            return Err(GharsError::Tarball(format!(
-                "tarball contains unsupported special file: {name} (type={kind:?})"
-            )));
+            return Err(GharsError::Tarball(
+                format!("tarball contains unsupported special file: {name} (type={kind:?})"),
+                None,
+            ));
         }
         _ => {}
     }
 
     if !is_safe_relative_path(&path_bytes) {
-        return Err(GharsError::Tarball(format!(
-            "tarball contains unsafe member path: {name}"
-        )));
+        return Err(GharsError::Tarball(
+            format!("tarball contains unsafe member path: {name}"),
+            None,
+        ));
     }
 
     if kind.is_symlink() || kind.is_hard_link() {
-        let link_bytes = entry
-            .link_name_bytes()
-            .ok_or_else(|| GharsError::Tarball(format!("link entry without target: {name}")))?;
+        let link_bytes = entry.link_name_bytes().ok_or_else(|| {
+            GharsError::Tarball(format!("link entry without target: {name}"), None)
+        })?;
         if !is_safe_relative_path(&link_bytes) {
             let target = String::from_utf8_lossy(&link_bytes);
-            return Err(GharsError::Tarball(format!(
-                "tarball contains unsafe link target in {name}: {target}"
-            )));
+            return Err(GharsError::Tarball(
+                format!("tarball contains unsafe link target in {name}: {target}"),
+                None,
+            ));
         }
     }
 
@@ -387,7 +414,10 @@ pub fn extract_tarball(tarball: &Utf8Path, dest: &Utf8Path) -> Result<()> {
     archive.set_overwrite(true);
 
     let canon_dest = fs::canonicalize(dest.as_std_path()).map_err(|e| {
-        GharsError::Tarball(format!("cannot canonicalize extraction root {dest}: {e}"))
+        GharsError::Tarball(
+            format!("cannot canonicalize extraction root {dest}: {e}"),
+            None,
+        )
     })?;
 
     let entries = archive.entries()?;
@@ -401,12 +431,15 @@ pub fn extract_tarball(tarball: &Utf8Path, dest: &Utf8Path) -> Result<()> {
         let path_bytes = entry.path_bytes().into_owned();
         let unpacked = entry
             .unpack_in(dest.as_std_path())
-            .map_err(|e| GharsError::Tarball(format!("unpack: {e}")))?;
+            .map_err(|e| GharsError::Tarball(format!("unpack: {e}"), None))?;
         if !unpacked {
-            return Err(GharsError::Tarball(format!(
-                "entry rejected by tar crate path normalization: {}",
-                String::from_utf8_lossy(&path_bytes)
-            )));
+            return Err(GharsError::Tarball(
+                format!(
+                    "entry rejected by tar crate path normalization: {}",
+                    String::from_utf8_lossy(&path_bytes)
+                ),
+                None,
+            ));
         }
         verify_extracted_inside_dest(&canon_dest, dest, &path_bytes)?;
     }
@@ -434,10 +467,13 @@ fn verify_extracted_inside_dest(
         match part {
             Component::Prefix(..) | Component::RootDir | Component::CurDir => {}
             Component::ParentDir => {
-                return Err(GharsError::Tarball(format!(
-                    "post-extract verify: member path contains `..` after filter accepted it: {}",
-                    String::from_utf8_lossy(member_path_bytes)
-                )));
+                return Err(GharsError::Tarball(
+                    format!(
+                        "post-extract verify: member path contains `..` after filter accepted it: {}",
+                        String::from_utf8_lossy(member_path_bytes)
+                    ),
+                    None,
+                ));
             }
             Component::Normal(p) => rendered.push(p),
         }
@@ -446,21 +482,27 @@ fn verify_extracted_inside_dest(
         return Ok(());
     };
     let canon_parent = fs::canonicalize(parent).map_err(|e| {
-        GharsError::Tarball(format!(
-            "post-extract verify: canonicalize {} failed: {e}",
-            parent.display()
-        ))
+        GharsError::Tarball(
+            format!(
+                "post-extract verify: canonicalize {} failed: {e}",
+                parent.display()
+            ),
+            None,
+        )
     })?;
     if !canon_parent.starts_with(canon_dest) {
         let escaped_path = String::from_utf8_lossy(member_path_bytes).into_owned();
         let _ = fs::remove_file(&rendered);
         let _ = fs::remove_dir(&rendered);
-        return Err(GharsError::Tarball(format!(
-            "post-extract verify: member {escaped_path} escaped extraction root \
-             (canonical parent {} not under {})",
-            canon_parent.display(),
-            canon_dest.display()
-        )));
+        return Err(GharsError::Tarball(
+            format!(
+                "post-extract verify: member {escaped_path} escaped extraction root \
+                 (canonical parent {} not under {})",
+                canon_parent.display(),
+                canon_dest.display()
+            ),
+            None,
+        ));
     }
     Ok(())
 }
@@ -475,17 +517,22 @@ fn verify_extracted_inside_dest(
 /// regular file.
 pub fn verify_local_tarball(path: &Utf8Path) -> Result<()> {
     let meta = fs::symlink_metadata(path).map_err(|e| {
-        GharsError::Tarball(format!("--runner-tarball cannot be stat'd: {path}: {e}"))
+        GharsError::Tarball(
+            format!("--runner-tarball cannot be stat'd: {path}: {e}"),
+            None,
+        )
     })?;
     if meta.file_type().is_symlink() {
-        return Err(GharsError::Tarball(format!(
-            "--runner-tarball is now a symlink (was not at validation time): {path}"
-        )));
+        return Err(GharsError::Tarball(
+            format!("--runner-tarball is now a symlink (was not at validation time): {path}"),
+            None,
+        ));
     }
     if !meta.is_file() {
-        return Err(GharsError::Tarball(format!(
-            "--runner-tarball is no longer a regular file: {path}"
-        )));
+        return Err(GharsError::Tarball(
+            format!("--runner-tarball is no longer a regular file: {path}"),
+            None,
+        ));
     }
     Ok(())
 }
@@ -611,9 +658,12 @@ pub fn swap_bin_symlink(runner_home: &Utf8Path, version: &str) -> Result<()> {
     let target_name = format!("bin.{version}");
     let target_dir = runner_home.join(&target_name);
     if !target_dir.exists() {
-        return Err(GharsError::Tarball(format!(
-            "swap_bin_symlink: target {target_dir} does not exist; install bin.{version}/ first"
-        )));
+        return Err(GharsError::Tarball(
+            format!(
+                "swap_bin_symlink: target {target_dir} does not exist; install bin.{version}/ first"
+            ),
+            None,
+        ));
     }
     let bin = runner_home.join("bin");
     let tmp = runner_home.join("bin.tmp");
@@ -1022,8 +1072,16 @@ mod tests {
 
         let err = http_download(&url, &dest, Duration::from_secs(10)).unwrap_err();
         match err {
-            GharsError::Tarball(msg) => {
+            GharsError::Tarball(msg, hint) => {
                 assert!(msg.contains("download failed"), "msg={msg}");
+                // http_download error sites pre-date the structured-hint
+                // surface; they encode operator guidance into the message
+                // body. The hint field stays None so the message keeps
+                // its existing single-line shape and log-scrape behavior.
+                assert!(
+                    hint.is_none(),
+                    "http_download Tarball variants must keep hint=None; got: {hint:?}"
+                );
             }
             other => panic!("expected Tarball, got {other:?}"),
         }
@@ -1776,7 +1834,7 @@ mod tests {
         // Either is a valid outcome — what we're testing is that the
         // call did NOT hang past `timeout`.
         match result.unwrap_err() {
-            GharsError::Io(_) | GharsError::Tarball(_) => {}
+            GharsError::Io(_) | GharsError::Tarball(_, _) => {}
             other => panic!("expected Io or Tarball error on timeout, got {other:?}"),
         }
         // Hard upper bound: must have returned well before the mock's
@@ -1915,7 +1973,7 @@ mod tests {
         let url = format!("{}/over-test-cap.bin", server.url());
         let err = http_download_with_cap(&url, &dest, Duration::from_secs(5), 64).unwrap_err();
         match err {
-            GharsError::Tarball(msg) => {
+            GharsError::Tarball(msg, _hint) => {
                 // Pin operator-visible format prefix.
                 assert!(
                     msg.starts_with("download failed:"),

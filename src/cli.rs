@@ -454,7 +454,7 @@ pub fn err_to_exit_code(err: &GharsError) -> i32 {
         GharsError::Systemd(_, _) => 1,
         GharsError::Apply { .. } => 1,
         GharsError::Io(_) => 1,
-        GharsError::Tarball(_) => 1,
+        GharsError::Tarball(_, _) => 1,
         GharsError::Sha256Mismatch { .. } => 1,
         GharsError::ApplyLocked { .. } => 1,
     }
@@ -4197,7 +4197,21 @@ mod tests {
     /// issue, not config-shape.
     #[test]
     fn err_to_exit_code_tarball_returns_one() {
-        let err = GharsError::Tarball("HTTP 502".into());
+        let err = GharsError::Tarball("HTTP 502".into(), None);
+        assert_eq!(err_to_exit_code(&err), 1);
+    }
+
+    /// `GharsError::Tarball` with a structured hint must map to the
+    /// same exit code 1 — the new optional hint field is purely a
+    /// rendering surface and must not influence exit-code mapping.
+    /// Pin against a regression that adds a hint-aware exit-code
+    /// branch (e.g. 0 for "expected" vs 1 for "unexpected").
+    #[test]
+    fn err_to_exit_code_tarball_with_hint_returns_one() {
+        let err = GharsError::Tarball(
+            "HTTP 502".into(),
+            Some("retry; if persistent, check status.github.com".into()),
+        );
         assert_eq!(err_to_exit_code(&err), 1);
     }
 

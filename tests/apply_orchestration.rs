@@ -170,13 +170,16 @@ impl Tarball for TestTarball {
         _expected_sha256: &str,
     ) -> ghars::Result<()> {
         if *self.fail_fetch.lock().unwrap() {
-            return Err(GharsError::Tarball("test: fetch failure".into()));
+            return Err(GharsError::Tarball("test: fetch failure".into(), None));
         }
         Ok(())
     }
     fn verify_local(&self, _path: &Utf8Path) -> ghars::Result<()> {
         if *self.fail_verify_local.lock().unwrap() {
-            return Err(GharsError::Tarball("test: verify_local failure".into()));
+            return Err(GharsError::Tarball(
+                "test: verify_local failure".into(),
+                None,
+            ));
         }
         Ok(())
     }
@@ -189,7 +192,7 @@ impl Tarball for TestTarball {
         version: &str,
     ) -> ghars::Result<Utf8PathBuf> {
         if *self.fail_install.lock().unwrap() {
-            return Err(GharsError::Tarball("test: install failure".into()));
+            return Err(GharsError::Tarball("test: install failure".into(), None));
         }
         let bin = runner_home.join(format!("bin.{version}"));
         std::fs::create_dir_all(bin.as_std_path())?;

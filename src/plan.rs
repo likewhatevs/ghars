@@ -1239,11 +1239,22 @@ impl DiscoveredAnnotations {
                     // Empty annotation value ⇒ empty label vec
                     // (consistent with the renderer emitting
                     // `X-Ghars-Labels=` for spec.labels.is_empty()).
-                    let parsed: Vec<String> = if v.is_empty() {
+                    //
+                    // Centralize set-semantic canonicalization at the
+                    // parse boundary: labels are byte-sorted on emission
+                    // (render_identity defense-in-depth at systemd.rs)
+                    // and on classifier comparison (sorted_set_field_diff
+                    // upstream). Sorting here makes those downstream
+                    // sorts true defense-in-depth — every caller that
+                    // reads `out.labels` sees canonical order, so a
+                    // future caller that skips its own sort still gets
+                    // the right answer.
+                    let mut parsed: Vec<String> = if v.is_empty() {
                         Vec::new()
                     } else {
                         v.split(',').map(str::to_owned).collect()
                     };
+                    parsed.sort_unstable();
                     out.labels = Some(parsed);
                 }
                 "X-Ghars-Arch" => out.arch = Some(v),
@@ -1273,11 +1284,20 @@ impl DiscoveredAnnotations {
                     //   at apply time. render_identity emits the line
                     //   unconditionally, so None means the runner
                     //   predates that unconditional-emit change.
-                    let parsed: Vec<String> = if v.is_empty() {
+                    //
+                    // Sort at parse time (matches labels above):
+                    // caches are set-semantic (supplementary-group
+                    // membership is unordered) and the renderer +
+                    // classifier both sort. Canonicalizing here keeps
+                    // those downstream sorts true defense-in-depth so
+                    // any future caller of `out.caches` sees stable
+                    // order without an extra sort.
+                    let mut parsed: Vec<String> = if v.is_empty() {
                         Vec::new()
                     } else {
                         v.split(',').map(str::to_owned).collect()
                     };
+                    parsed.sort_unstable();
                     out.caches = Some(parsed);
                 }
                 _ => {}
@@ -8147,6 +8167,46 @@ labels  = ["alpha", "beta"]
             anns.labels.is_none(),
             "absent X-Ghars-Labels line must yield None; got {:?}",
             anns.labels,
+        );
+    }
+
+    /// Parse-time sort pin for `from_drop_in_body`. The
+    /// `X-Ghars-Labels=` and `X-Ghars-Caches=` annotation values are
+    /// CSV-joined at render time but set-semantic at the apply layer
+    /// (GitHub matches labels order-independently; supplementary-group
+    /// membership is unordered). Sorting at the parse boundary makes
+    /// the classifier's sort and the renderer's sort defense-in-depth
+    /// rather than load-bearing.
+    ///
+    /// Feeds an unsorted CSV to `from_drop_in_body` for both fields and
+    /// asserts both `caches` and `labels` Vec come out sorted by
+    /// byte-wise Ord (matches the `sort_unstable` + ASCII-only charset
+    /// invariant validators enforce). A regression that drops the
+    /// sort at the parse boundary (e.g. a refactor that bypasses
+    /// `from_drop_in_body` and round-trips through `extract_x_ghars`
+    /// directly) would surface here.
+    #[test]
+    fn from_drop_in_body_sorts_labels_and_caches_at_parse_time() {
+        // Unsorted-on-the-wire body: operator may have been registered
+        // with these comma-orders, or a pre-canonicalization renderer
+        // may have written them. Either way, the parse boundary must
+        // deliver them sorted.
+        let body = "[Unit]\n\
+                    X-Ghars-Managed=true\n\
+                    X-Ghars-Labels=zeta,alpha,middle,beta\n\
+                    X-Ghars-Caches=ccache-pool,sccache-pool,build-pool\n";
+        let anns = DiscoveredAnnotations::from_drop_in_body(body);
+        assert_eq!(
+            anns.labels.as_deref(),
+            Some(&["alpha".to_owned(), "beta".into(), "middle".into(), "zeta".into()][..]),
+            "X-Ghars-Labels must be sorted at parse time; got {:?}",
+            anns.labels,
+        );
+        assert_eq!(
+            anns.caches.as_deref(),
+            Some(&["build-pool".to_owned(), "ccache-pool".into(), "sccache-pool".into()][..]),
+            "X-Ghars-Caches must be sorted at parse time; got {:?}",
+            anns.caches,
         );
     }
 

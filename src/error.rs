@@ -106,9 +106,30 @@ pub enum GharsError {
     /// Plain io errors.
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
-    /// Tarball extraction errors.
-    #[error("tarball: {0}")]
-    Tarball(String),
+    /// Tarball extraction / download errors.
+    ///
+    /// Carries an optional hint for parity with the other operator-
+    /// facing variants (`GitHub`, `Auth`, `Validation`, …). The hint
+    /// renders on a `\n  hint:` continuation line when `Some`, and is
+    /// elided entirely when `None`. Construction sites that already
+    /// stuff hint-grade text into the message (the long-form
+    /// `download failed: …` body in `extract.rs::http_download_with_cap`)
+    /// can pass `None` to preserve the existing single-line shape;
+    /// new sites that want the structured hint surface should pass
+    /// `Some` so the operator sees it on the dedicated line that
+    /// log shippers and CI scrapers can grep.
+    ///
+    /// Modeled as a tuple variant for ergonomic parity with the
+    /// other tuple message variants (`Config`, `Validation`,
+    /// `Interactive`, `Preflight`, `GitHub`, `Systemd`, `Auth`).
+    /// Display routing through a function-returning-String keeps the
+    /// thiserror attribute parseable: `match .1` directly inside the
+    /// attribute confuses the tuple-variant positional-argument
+    /// ordering rule, but a function call with named-arg aliases
+    /// (the same pattern other tuple variants use to expose `hint =
+    /// .1`) compiles cleanly.
+    #[error("tarball: {0}{suffix}", suffix = format_tarball_hint_suffix(.1))]
+    Tarball(String, Option<String>),
     /// SHA256 mismatch on a downloaded or local tarball.
     #[error(
         "sha256 mismatch on {path}: expected {expected} got {actual}\n  hint: re-download via `ghars apply --refresh-releases` or pass --runner-tarball with a verified file"
@@ -149,6 +170,18 @@ pub enum GharsError {
         /// [`crate::apply::pid_is_alive`].
         stale: bool,
     },
+}
+
+/// Format the optional hint suffix for `GharsError::Tarball`'s Display.
+/// Returns `"\n  hint: <text>"` when the hint is present and the empty
+/// string otherwise. Single-sourced here so the thiserror attribute on
+/// the variant can reference it by name and so future variants needing
+/// the same conditional-suffix shape have a precedent to copy.
+fn format_tarball_hint_suffix(hint: &Option<String>) -> String {
+    match hint {
+        Some(h) => format!("\n  hint: {h}"),
+        None => String::new(),
+    }
 }
 
 /// Convenience `Result` alias for the library surface.
@@ -440,9 +473,53 @@ mod tests {
     }
 
     #[test]
-    fn tarball_display_is_clean() {
-        let e = GharsError::Tarball("download failed: HTTP 502".into());
+    fn tarball_display_is_clean_no_hint() {
+        let e = GharsError::Tarball("download failed: HTTP 502".into(), None);
         assert_clean("Tarball", &format!("{e}"));
+    }
+
+    #[test]
+    fn tarball_display_is_clean_with_hint() {
+        let e = GharsError::Tarball(
+            "download failed: HTTP 502".into(),
+            Some("retry; if persistent, check status.github.com".into()),
+        );
+        let msg = format!("{e}");
+        assert_clean("Tarball(hint)", &msg);
+        // Hint must render on a dedicated continuation line so log
+        // shippers and CI scrapers can match `^  hint:` to surface
+        // operator-actionable text alongside the tag prefix.
+        assert!(
+            msg.contains("\n  hint: "),
+            "hint must render on a `\\n  hint: ` continuation line; got: {msg}"
+        );
+        assert!(
+            msg.contains("retry; if persistent, check status.github.com"),
+            "hint body must surface verbatim; got: {msg}"
+        );
+        // Tag prefix must remain `tarball:` so existing log-scrape
+        // rules continue to match the message-class line.
+        assert!(
+            msg.starts_with("tarball: "),
+            "Tarball Display must keep the `tarball:` tag prefix; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn tarball_display_omits_hint_line_when_none() {
+        // The `\n  hint:` continuation MUST NOT appear when the hint
+        // is None — the elision is what lets long-form `download
+        // failed: …` messages keep their existing single-line shape.
+        let e = GharsError::Tarball("download failed: HTTP 502".into(), None);
+        let msg = format!("{e}");
+        assert!(
+            !msg.contains("\n  hint:"),
+            "Tarball(_, None) must not emit a hint continuation line; got: {msg}"
+        );
+        // Round-trip: the message must be exactly the tag-prefixed
+        // body. A regression that injects an empty hint line (e.g.
+        // `\n  hint: `) would surface here.
+        assert_eq!(msg, "tarball: download failed: HTTP 502");
     }
 
     #[test]
