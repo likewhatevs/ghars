@@ -9,30 +9,29 @@
 //! - 0 success
 //! - 1 generic error (default mode; full-failure apply with no auth
 //!   cause; routes here from `GharsError::GitHub` / `Systemd` / `Io` /
-//!   `Tarball` / `Sha256Mismatch` / `ApplyLocked` / `Apply` per #357)
+//!   `Tarball` / `Sha256Mismatch` / `ApplyLocked` / `Apply`)
 //! - 2 with `--detailed-exitcode`, plan diff non-empty (terraform):
 //!   emitted by `apply --dry-run --detailed-exitcode` when the plan
-//!   has any non-NoOp action (#389), by `apply --detailed-exitcode`
-//!   after a successful apply against a non-empty plan, and when the
-//!   operator cancels at the apply prompt (`y/N`) with
-//!   `--detailed-exitcode` set, to signal "changes still pending"
-//!   rather than "success" (#358)
+//!   has any non-NoOp action, by `apply --detailed-exitcode` after a
+//!   successful apply against a non-empty plan, and when the operator
+//!   cancels at the apply prompt (`y/N`) with `--detailed-exitcode`
+//!   set, to signal "changes still pending" rather than "success"
 //! - 3 preflight failure — emitted by `cmd_apply` / `cmd_status` via
-//!   `Ok(3)` and by `err_to_exit_code` from `GharsError::Preflight` (#357)
+//!   `Ok(3)` and by `err_to_exit_code` from `GharsError::Preflight`
 //! - 4 partial apply failure (some actions succeeded, some failed) —
-//!   wins over 5 even when an Auth error is among the failures (#251)
+//!   wins over 5 even when an Auth error is among the failures
 //! - 5 full-failure apply where at least one failure was an Auth error;
 //!   also returned by `err_to_exit_code` from a top-level
 //!   `GharsError::Auth` (auth-resolve failure before the apply loop
 //!   runs — e.g. `build_auth_registry` rejecting a missing PAT env
-//!   var or unreadable token file, #357)
-//! - 6 config-class rejection — `GharsError::Config` (#275: TOML parse,
-//!   shape mismatch) and `GharsError::Validation` (#357: same
+//!   var or unreadable token file)
+//! - 6 config-class rejection — `GharsError::Config` (TOML parse,
+//!   shape mismatch) and `GharsError::Validation` (same
 //!   operator-actionable class — trust_zone charset, duplicate caches,
 //!   render_identity gates). Wrapping scripts can branch on it without
 //!   parsing stderr.
 //! - 7 interactive prompting required but unavailable —
-//!   `GharsError::Interactive` (#390): emitted when `cmd_apply` reaches
+//!   `GharsError::Interactive`: emitted when `cmd_apply` reaches
 //!   `confirm_apply()` with non-TTY stdin and `--auto-approve` not set.
 //!   Distinct from 6 so wrapping scripts can tell "config is broken"
 //!   from "apply needs --auto-approve" without parsing stderr.
@@ -40,8 +39,8 @@
 //!   class action — emitted by 5 surfaces: `cmd_plan`, `apply
 //!   --dry-run`, the `apply` pre-confirm gate (fires BEFORE
 //!   `confirm_apply` runs, regardless of `--auto-approve`), the
-//!   apply-cancel path, and post-apply when `result.failed` is empty
-//!   (#464). Recreate-class actions are those whose
+//!   apply-cancel path, and post-apply when `result.failed` is empty.
+//!   Recreate-class actions are those whose
 //!   [`crate::plan::Action::disruption`] returns
 //!   [`crate::plan::Disruption::Recreate`]: `CreateRunner`,
 //!   `UpdateRunner` with `requires_recreate=true`, `RemoveRunner`,
@@ -127,7 +126,7 @@ pub enum Command {
     /// Tabular state of managed runners + system health.
     Status(StatusArgs),
     /// Scaffold ghars.toml. Per-runner system users are created at
-    /// apply time (SEC-27); init no longer provisions a shared user.
+    /// apply time (SEC-27); init does not provision a shared user.
     Init(InitArgs),
     /// Add one runner interactively (prompts then runs apply).
     Add(AddArgs),
@@ -199,7 +198,7 @@ pub struct PlanArgs {
     /// returns 2 — matches `ApplyArgs::detailed_exitcode` semantics
     /// for symmetry, and lets CI gating workflows ("apply iff plan
     /// shows changes") drop a redundant `ghars apply --dry-run
-    /// --detailed-exitcode` pre-step. (#391)
+    /// --detailed-exitcode` pre-step.
     #[arg(long)]
     pub detailed_exitcode: bool,
     /// Make exit code 8 mean "recreate-class action present". When set,
@@ -221,12 +220,12 @@ pub struct PlanArgs {
     /// codes always win over 8. Specifically 1 (full failure, no auth),
     /// 4 (partial apply failure), and 5 (full failure with auth) all
     /// override 8. Recreate is a plan-shape signal; structural /
-    /// post-execution failures are stronger. (#464)
+    /// post-execution failures are stronger.
     #[arg(long)]
     pub detailed_exitcode_recreate: bool,
-    /// Show full drop-in body content. Default off (pre-#285
-    /// behavior, byte-identical). When set, each `Modified`
-    /// drop-in renders as a unified text diff via
+    /// Show full drop-in body content. Default off (no body content
+    /// emitted). When set, each `Modified` drop-in renders as a
+    /// unified text diff via
     /// `similar::udiff::unified_diff` (Myers algorithm, 3 lines
     /// of context); `Created` and `Removed` drop-ins emit the
     /// full body of the surviving side; `Preserved` drop-ins
@@ -251,7 +250,7 @@ pub struct PlanArgs {
     /// likewise embed sensitive `Environment=` values; proxy
     /// auth is the canonical case but not the only one. Default
     /// off precisely so the secret-bearing body never reaches
-    /// stdout unless the operator opts in. (#461)
+    /// stdout unless the operator opts in.
     ///
     /// Examples:
     ///   `ghars plan --diff`
@@ -286,7 +285,7 @@ pub struct ApplyArgs {
     /// pre-confirm (so CI can block on recreate plans before any
     /// human y/N prompt) AND post-apply when no actions failed.
     /// Independent of `--detailed-exitcode`. Failure precedence
-    /// preserved: 4 (partial) and 5 (auth) win over 8. (#464)
+    /// preserved: 4 (partial) and 5 (auth) win over 8.
     #[arg(long)]
     pub detailed_exitcode_recreate: bool,
     /// Best-effort undo: when an action's `execute_*` handler fails,
@@ -303,8 +302,7 @@ pub struct ApplyArgs {
     /// doc for the secret-leakage caveat. Affects both `--dry-run`
     /// output and the pre-confirm preview rendered to stdout
     /// before the y/N prompt. Per-action output during apply
-    /// itself uses the `ok:`/`fail:` shape regardless of `--diff`
-    /// (#340 scope, not #285).
+    /// itself uses the `ok:`/`fail:` shape regardless of `--diff`.
     #[arg(long)]
     pub diff: bool,
 }
@@ -404,8 +402,7 @@ impl ColorMode {
     }
 }
 
-/// Map a top-level `GharsError` to its Part 5 process exit code
-/// (#275 / #357).
+/// Map a top-level `GharsError` to its Part 5 process exit code.
 ///
 /// Called by `main.rs` when `dispatch` returns `Err`. Extracted as a
 /// pub function so the mapping can be unit-tested against every
@@ -418,7 +415,7 @@ impl ColorMode {
 ///   charset, duplicate caches, render_identity defense-in-depth —
 ///   operator must edit the TOML to recover, same actionable class
 ///   as Config)
-/// - `Interactive(_, _)`      → 7 (#390: confirm_apply on non-TTY
+/// - `Interactive(_, _)`      → 7 (confirm_apply on non-TTY
 ///   stdin; distinct from 6 so wrapping scripts can branch on
 ///   "config is broken" vs "apply needs --auto-approve" without
 ///   parsing the error message)
@@ -500,14 +497,13 @@ pub fn verbose_to_filter_level(quiet: bool, verbose: u8) -> &'static str {
 /// Returns `GharsError` from any subcommand handler that fails. The
 /// caller in `main.rs` maps the variant to a Part 5 exit code via
 /// `err_to_exit_code` — see that function's doc-comment for the full
-/// per-variant table (#275 + #357: Config / Validation → 6,
-/// Auth → 5, Preflight → 3, every other variant → 1). Subcommand
-/// handlers themselves return `Ok(N)` for non-success exits in the
+/// per-variant table (Config / Validation → 6, Auth → 5,
+/// Preflight → 3, every other variant → 1). Subcommand handlers
+/// themselves return `Ok(N)` for non-success exits in the
 /// per-command code-table (preflight = 3, partial apply = 4,
 /// full-failure auth = 5, detailed-exitcode = 2 including the
-/// cancel-with-`--detailed-exitcode` path per #358). Note that 4
-/// wins over 5 when some actions succeeded — see the cmd_apply
-/// tail (#251 ruling).
+/// cancel-with-`--detailed-exitcode` path). Note that 4 wins over 5
+/// when some actions succeeded — see the cmd_apply tail.
 pub fn dispatch(cli: Cli) -> Result<i32> {
     let paths = Paths::default();
     let color = ColorMode::from_cli(cli.no_color);
@@ -557,7 +553,7 @@ fn load_config(path: &Utf8Path) -> Result<Config> {
             "fix the TOML syntax / schema; see `ghars validate`".into(),
         )
     })?;
-    // SEC-30 + #283: deserialize-time serde validation only enforces
+    // SEC-30: deserialize-time serde validation only enforces
     // structural shape (#[serde(deny_unknown_fields)] + the typed
     // EgressRule fields). The semantic validators below live behind
     // post-load helpers — running them eagerly here means every CLI
@@ -588,22 +584,22 @@ fn load_config(path: &Utf8Path) -> Result<Config> {
     // configured, the validator is shape-only.
     //
     // --- validate_identity_fields ---
-    // #344/#346 trust_zone control-char rejection.
+    // trust_zone control-char rejection.
     //
     // --- validate_no_duplicate_caches ---
-    // #370 dedup-loop trap.
+    // Dedup-loop trap.
     //
     // --- validate_cache_pool_names ---
-    // #402 + #407 length cap (pool keys + runner.caches refs).
+    // Length cap on pool keys + runner.caches refs.
     //
     // --- validate_runner_names ---
-    // #427 length cap (derived ghars-{name} system user).
+    // Length cap (derived ghars-{name} system user).
     //
     // --- validate_user_overrides ---
-    // #434 length + charset cap on operator-supplied User= values.
+    // Length + charset cap on operator-supplied User= values.
     //
     // --- validate_prefix_overrides ---
-    // #591 charset / traversal / reserved-root / symlink gate on
+    // Charset / traversal / reserved-root / symlink gate on
     // operator-supplied `[defaults.prefix]` and per-runner `prefix`
     // paths. The pure-string checks (regex, `..`, reserved-root) fire
     // before the lstat, so a hostile string fails fast without
@@ -611,22 +607,21 @@ fn load_config(path: &Utf8Path) -> Result<Config> {
     // filesystem when the pure-string checks pass.
     //
     // --- validate_pat_xor ---
-    // #613 AuthSpec::Pat shape-only XOR check on token_env /
+    // AuthSpec::Pat shape-only XOR check on token_env /
     // token_file (re-validated by PatToken::new at apply). Shape-only
     // (no filesystem access). PatToken::new runs SEC-25 (mode / owner
     // / symlink) at apply.
     //
     // --- validate_runner_tarballs ---
-    // #349 lstat / regular-file gate on operator-supplied
-    // runner_tarball paths. Filesystem-touching (alongside
-    // validate_prefix_overrides, and validate_security_overrides
-    // when hooks are configured). Placed after the pure-shape /
-    // length-cap gates so an operator hitting a typo in
-    // [defaults.user] sees that error before a separate "tarball
-    // missing" error from a per-runner override.
+    // lstat / regular-file gate on operator-supplied runner_tarball
+    // paths. Filesystem-touching (alongside validate_prefix_overrides,
+    // and validate_security_overrides when hooks are configured).
+    // Placed after the pure-shape / length-cap gates so an operator
+    // hitting a typo in [defaults.user] sees that error before a
+    // separate "tarball missing" error from a per-runner override.
     //
     // --- validate_netns_runner_name_lengths ---
-    // #432 IFNAMSIZ (kernel veth name) cap (= NETNS_RUNNER_NAME_MAX_LEN,
+    // IFNAMSIZ (kernel veth name) cap (= NETNS_RUNNER_NAME_MAX_LEN,
     // 7) on operator-chosen runner names whose effective network mode
     // resolves to Netns. Runs LAST because it depends on
     // validate_networks having already accepted the [network.NAME] map
@@ -727,7 +722,7 @@ fn validate_hooks_block(h: &HooksSpec) -> Result<()> {
     Ok(())
 }
 
-// ---------- duplicate-cache validator (#370) ----------------------------
+// ---------- duplicate-cache validator -----------------------------------
 
 /// Reject `[[runner]] caches = ["a", "a"]` at config load. A duplicate
 /// in the source `Vec<String>` would render two identical
@@ -768,7 +763,7 @@ fn validate_no_duplicate_caches(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-// ---------- cache-pool-name length cap (#402, #407) ---------------------
+// ---------- cache-pool-name length cap ----------------------------------
 
 /// Reject `[cache_pools.NAME]` keys and `[[runner]] caches = [...]`
 /// entries whose length would push the derived group name
@@ -781,7 +776,7 @@ fn validate_no_duplicate_caches(cfg: &Config) -> Result<()> {
 /// at config load surfaces a scoped error (`cache_pool "NAME": ...`
 /// or `runner "NAME" caches[]: ...`) before any side effects.
 ///
-/// #407 defense-in-depth: runner.caches Vec entries are also validated
+/// Defense-in-depth: runner.caches Vec entries are also validated
 /// here. The plan-time cross-reference in `plan::lower_to_effective`
 /// matches the entry against `cfg.cache_pools.keys()`, so an unknown
 /// `> CACHE_POOL_NAME_MAX_LEN`-char string normally fails at "unknown
@@ -818,7 +813,7 @@ fn validate_cache_pool_names(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-// ---------- runner-name length cap (#427) -------------------------------
+// ---------- runner-name length cap --------------------------------------
 
 /// Reject `[[runner]] name = "..."` keys whose length would push the
 /// derived system user `"ghars-{name}"` past systemd's strict-mode name
@@ -844,7 +839,7 @@ fn validate_runner_names(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-// ---------- user-override length + charset cap (#434) -------------------
+// ---------- user-override length + charset cap --------------------------
 
 /// Reject `[defaults] user = "..."` and `[[runner]] user = "..."` values
 /// that would push systemd's strict-mode `valid_user_group_name` check
@@ -895,7 +890,7 @@ fn validate_user_overrides(cfg: &Config) -> Result<()> {
 ///
 /// Defense-in-depth: the path-charset rejection here covers prefix
 /// values that later participate in `UndoStep::WriteFile` describe()
-/// output (sanitized in #552) and any future code that joins
+/// output (sanitized at the renderer) and any future code that joins
 /// `<prefix>/<name>/...` into shell-visible diagnostics. The
 /// renderer-side scrubs are the last line of defense — the validator
 /// is the first.
@@ -953,7 +948,7 @@ const TOKEN_FILE_HINT: &str = "set token_file to the absolute path of a 0600 roo
 /// trim/whitespace gate but break apply-time lookups (`std::env::var`
 /// returning `NotPresent` on a name with an embedded BOM, `open(2)`
 /// failing on a path with an embedded NUL, etc.). Three classes:
-///   - explicit codepoints (#659/#672): NUL (U+0000), SOFT HYPHEN
+///   - explicit codepoints: NUL (U+0000), SOFT HYPHEN
 ///     (U+00AD), Arabic Letter Mark (U+061C), Mongolian Vowel
 ///     Separator (U+180E), the ZWSP/ZWNJ/ZWJ/LRM/RLM block
 ///     (U+200B..=U+200F), the bidi embedding controls including
@@ -967,8 +962,8 @@ const TOKEN_FILE_HINT: &str = "set token_file to the absolute path of a 0600 roo
 ///     `is_control()` arm below); listing it explicitly keeps the
 ///     diagnostic tight on the well-known invisible chars even if a
 ///     future regression narrows the control-char arm.
-///   - ALL control chars (`char::is_control()`) — #676 dropped the
-///     prior `\t` `\n` `\r` carve-out. Pre-#676 those three were
+///   - ALL control chars (`char::is_control()`). The `\t` `\n` `\r`
+///     trio is rejected too — there is no carve-out. They could be
 ///     whitelisted on the speculative grounds that paths or env-var
 ///     names might contain them. Unix permits these chars in paths,
 ///     but PAT-token deployment paths never legitimately contain
@@ -977,15 +972,16 @@ const TOKEN_FILE_HINT: &str = "set token_file to the absolute path of a 0600 roo
 ///     identifiers, not arbitrary Unix file names. Rejecting all Cc
 ///     chars in both fields closes the gap that an embedded `\n` in
 ///     token_file would survive every other shape gate.
-///   - ALL Mn-class combining marks (#678): Mn-class combining marks
+///   - ALL Mn-class combining marks: Mn-class combining marks
 ///     (Unicode NonspacingMark) are rejected uniformly — they can
 ///     produce visually deceptive paths via combining diacritical
 ///     marks that overlay ASCII characters. Token paths are
 ///     operator-authored config identifiers, not arbitrary file
 ///     paths; operators with internationalized paths should use
-///     precomposed (NFC) forms. This subsumes the prior explicit
-///     entries for Combining Grapheme Joiner (U+034F) and variation
-///     selectors VS1..=VS16 (U+FE00..=U+FE0F), which are all Mn.
+///     precomposed (NFC) forms. The Mn-class arm subsumes Combining
+///     Grapheme Joiner (U+034F) and variation selectors VS1..=VS16
+///     (U+FE00..=U+FE0F), which are all Mn — no per-codepoint entry
+///     for them is needed.
 ///
 /// `char::is_control()` covers the Unicode general-category Cc class
 /// (ASCII 0x00-0x1F + 0x7F + various U+0080-U+009F C1 controls); the
@@ -1015,24 +1011,24 @@ fn is_disallowed_hidden_char(c: char) -> bool {
 /// `token_file` MUST be set. `PatToken::new` re-validates this at
 /// apply time.
 ///
-/// Wiring landscape — which CLI commands previously caught the
-/// violation, and which silently accepted misconfigured PAT entries:
+/// Wiring landscape — which CLI commands rely on this gate vs the
+/// registry-construction backstop:
 ///   - `cmd_validate` and `cmd_apply` unconditionally call
 ///     `build_auth_registry`, which constructs every `PatToken`
-///     eagerly — these would ALREADY surface the XOR error before
-///     this gate existed (note: `--deep` only gates the
+///     eagerly — these surface the XOR error via the registry path
+///     even without this gate (note: `--deep` only gates the
 ///     registration-token MINT step, not auth construction).
 ///   - `cmd_plan`, `cmd_status`, and `cmd_add` do NOT call
-///     `build_auth_registry`; without this gate, they accepted
-///     misconfigured `[auth.NAME]` entries and the failure first
-///     surfaced at apply time, by which point state may already
-///     have changed (`ghars plan` printed an Ok plan that would
-///     immediately fail `ghars apply`).
+///     `build_auth_registry`; without this gate they would accept
+///     misconfigured `[auth.NAME]` entries and the failure would
+///     first surface at apply time, by which point state may have
+///     changed (`ghars plan` printing an Ok plan that immediately
+///     fails `ghars apply`).
 ///
 /// Wiring at `load_config` means every entry point sees the same
 /// gate uniformly — the gate is load-bearing for cmd_plan /
 /// cmd_status / cmd_add, redundant-but-harmless for cmd_validate /
-/// cmd_apply (the registry construction would catch it anyway).
+/// cmd_apply (the registry construction catches it anyway).
 ///
 /// This is a SHAPE-ONLY check. It does NOT lstat `token_file` —
 /// `PatToken::new` runs the SEC-25 mode-0600 + owner-root + not-
@@ -1066,19 +1062,20 @@ fn is_disallowed_hidden_char(c: char) -> bool {
 /// Gate ordering for each field (independent — each field walks the
 /// sequence on its own value, with no cross-field interaction):
 ///   1. trim().is_empty() — empty / all-whitespace.
-///   2. hidden-char scan (#659) — surface byte offset + codepoint.
+///   2. hidden-char scan — surface byte offset + codepoint.
 ///      Fires BEFORE the edge-whitespace and shape checks so an
 ///      embedded BOM in a value that would also fail trim-mismatch
 ///      or charset surfaces as a hidden-char diagnostic (more
 ///      actionable than the downstream check).
 ///   3. trim-mismatch on BOTH fields — value is non-empty and
 ///      contains no hidden chars but its edges carry whitespace.
-///      token_env's #669 fires here; token_file's #660 fires here.
+///      Fires for both fields when the value is non-empty and
+///      contains no hidden chars but its edges carry whitespace.
 ///      Both produce "leading or trailing whitespace". Fires BEFORE
 ///      the POSIX charset gate so `"X "` / `" X"` surface as
 ///      whitespace-mismatch rather than the less-specific "POSIX env
 ///      var name" diagnostic.
-///   4. POSIX charset (#658) — token_env only. Catches dashes, dots,
+///   4. POSIX charset — token_env only. Catches dashes, dots,
 ///      embedded whitespace, and other punctuation that pass the
 ///      trim/hidden/edge gates but break env var name shape.
 ///      token_file has no analogous step-4 gate; filesystem paths
@@ -1175,13 +1172,14 @@ fn validate_pat_xor(cfg: &Config) -> Result<()> {
                 // Leading / trailing whitespace on real content
                 // (e.g. `"X "`, `" X"`, `" X "`) rejects with a
                 // dedicated diagnostic before the POSIX charset gate.
-                // Pre-fix these inputs fell through to the POSIX
-                // gate, which surfaced "is not a valid POSIX
-                // environment variable name" — technically correct
-                // but misleading: the operator's intent was almost
-                // certainly a shell-quoting hiccup, not a charset
-                // violation. The dedicated diagnostic names the
-                // condition. This fires only for non-empty values
+                // Without this dedicated branch, those inputs would
+                // fall through to the POSIX gate which surfaces "is
+                // not a valid POSIX environment variable name" —
+                // technically correct but misleading: the operator's
+                // intent is almost certainly a shell-quoting hiccup,
+                // not a charset violation. The dedicated diagnostic
+                // names the condition. This fires only for non-empty
+                // values
                 // (trim-empty already short-circuited inside
                 // check_empty_or_hidden) whose edges carry extra
                 // whitespace.
@@ -1319,8 +1317,8 @@ fn validate_auth_keys(cfg: &Config) -> Result<()> {
 /// the same shape `extract::install_runner_binary` requires before
 /// extraction. Wiring it into `load_config` means cmd_validate /
 /// cmd_plan / cmd_apply / cmd_status / cmd_add all see the same gate;
-/// the prior surface where the validator existed but was never called
-/// (#349) had no callsite.
+/// without this wiring the validator would be orphaned (defined
+/// but with no callsite).
 ///
 /// `defaults.runner_tarball` does NOT exist in the schema — see
 /// `config::Defaults` (only auth / prefix / user / labels / arch /
@@ -1347,7 +1345,7 @@ fn validate_runner_tarballs(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-// ---------- netns runner-name length cap (#432) -------------------------
+// ---------- netns runner-name length cap --------------------------------
 
 /// Reject runner names whose rendered veth interface name
 /// `"ghars-{name}-h"` would exceed the kernel's `IFNAMSIZ - 1 = 15`
@@ -1369,7 +1367,7 @@ fn validate_runner_tarballs(cfg: &Config) -> Result<()> {
 ///      the cap.
 /// When the resolved key exists in `cfg.networks`, we check
 /// `mode == Netns`. An unresolved key does NOT short-circuit the
-/// gate here — `validate_networks` (validator #1) is responsible
+/// gate here — `validate_networks` is responsible
 /// for surfacing the unknown-network error; the lookup miss in this
 /// validator falls through to "no netns gating" so a single
 /// rejection (the unknown key) surfaces without piggybacking an
@@ -1399,7 +1397,7 @@ fn validate_netns_runner_name_lengths(cfg: &Config) -> Result<()> {
             .or(cfg.defaults.network.as_deref());
         let Some(key) = net_key else { continue };
         // Look up the [network.NAME] block. A missing key here means
-        // validate_networks (validator #1) will reject upstream — we
+        // validate_networks will reject upstream — we
         // skip this runner so we don't double-report the unknown-
         // network error with an irrelevant length cap. (validate_
         // networks runs first so in practice load_config's
@@ -1472,14 +1470,14 @@ fn validate_netns_runner_name_lengths(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-// ---------- identity-field validators (#344/#346) -----------------------
+// ---------- identity-field validators -----------------------------------
 
 /// Reject control characters in TOML fields that flow into
 /// `render_identity` X-Ghars-* annotations. Today the only operator-
 /// controllable surface that lands in render_identity without
 /// per-character validation upstream is `trust_zone` (RunnerSpec +
 /// CachePoolSpec). `render_identity` itself runs `check_identity_field`
-/// at render time as defense-in-depth (#286), but rejecting at config
+/// at render time as defense-in-depth, but rejecting at config
 /// load lets the operator see the error WITH the offending block name
 /// (`runner "NAME"` / `cache_pool "NAME"`) instead of an opaque
 /// "field \"trust_zone\" contains forbidden newline" surfacing during
@@ -1490,7 +1488,7 @@ fn validate_netns_runner_name_lengths(cfg: &Config) -> Result<()> {
 /// is not a TOML field.
 /// That validation lives at the plan-time composition site so it
 /// covers any future caller that synthesizes a `config_source` value
-/// without going through this load-time gate (#345).
+/// without going through this load-time gate.
 ///
 /// # Errors
 ///
@@ -1580,9 +1578,9 @@ fn cmd_plan(
     let cfg = load_config(config_path)?;
     let plan = compute_plan(&cfg, paths, &args.only)?;
     render_plan(&plan, color, args.json, quiet, args.diff)?;
-    // #391: `--detailed-exitcode` opts into terraform-plan parity:
+    // `--detailed-exitcode` opts into terraform-plan parity:
     // exit 2 when the plan contains any non-NoOp action, 0 otherwise.
-    // #464: `--detailed-exitcode-recreate` opts in independently:
+    // `--detailed-exitcode-recreate` opts in independently:
     // exit 8 when the plan contains a recreate-class action.
     // Mirrors `dry_run_exit_code` and `apply_exit_code` so all three
     // paths (`plan`, `apply --dry-run`, `apply`) emit the same code
@@ -1606,7 +1604,7 @@ fn cmd_plan(
 /// next. The wrapper preserves the underlying message but rewrites
 /// the hint so `Display` of the resulting `GharsError::Validation`
 /// includes the actionable instruction (run as root or grant a
-/// polkit policy). (#258)
+/// polkit policy).
 fn open_dbus() -> Result<DbusSystemd> {
     DbusSystemd::new().map_err(|e| match e {
         GharsError::Systemd(msg, _) => GharsError::Validation(
@@ -1665,7 +1663,7 @@ fn render_plan(plan: &Plan, color: ColorMode, json: bool, quiet: bool, diff: boo
     Ok(())
 }
 
-/// #569: shared filter for #468 recreate-class Removed entries.
+/// Shared filter for recreate-class Removed entries.
 /// Both the text renderer (`render_action_line`) and JSON renderer
 /// (`plan_to_json_value`) iterate `delta.before_drop_in_basenames`
 /// and emit one entry per basename absent from `delta.after.drop_ins`.
@@ -1678,8 +1676,8 @@ fn render_plan(plan: &Plan, color: ColorMode, json: bool, quiet: bool, diff: boo
 /// when `before_drop_in_basenames` is `None` ("unknown pre-state");
 /// the caller MUST suppress the Removed section in that case rather
 /// than emit a misleading silence (see plan.rs
-/// `RunnerDelta::before_drop_in_basenames` field doc and the
-/// original #468 contract). `Some(empty_iter)` ⇒ the discovered
+/// `RunnerDelta::before_drop_in_basenames` field doc for the full
+/// contract). `Some(empty_iter)` ⇒ the discovered
 /// drop-in directory was present but empty / fully reused, no
 /// Removed entries.
 fn recreate_removed_basenames(d: &plan::RunnerDelta) -> Option<impl Iterator<Item = &String>> {
@@ -1737,13 +1735,12 @@ fn recreate_reason_note(reason: &str) -> Option<&'static str> {
 /// - ` ` ⇒ `NoOp`
 ///
 /// `^~ runner` matches Restart-class `UpdateRunner` only — recreate-
-/// class `UpdateRunner` uses `!` as of the sigil split. Operators who
-/// previously grepped `^~ runner` to count "all UpdateRunner" must
-/// switch to either `^[~!] runner` (sigil-class union) or
-/// `^.* runner .* update:` (verb-based, sigil-agnostic). For the
-/// "all destructive actions" pipeline, grep `[recreate]` on the
-/// trailing bracket tag instead — that matches `+`/`-`/`!` lines plus
-/// `[recreate]`-tagged pool actions in one pass.
+/// class `UpdateRunner` uses `!`. To count "all UpdateRunner" use
+/// either `^[~!] runner` (sigil-class union) or `^.* runner .*
+/// update:` (verb-based, sigil-agnostic). For the "all destructive
+/// actions" pipeline, grep `[recreate]` on the trailing bracket tag
+/// instead — that matches `+`/`-`/`!` lines plus `[recreate]`-tagged
+/// pool actions in one pass.
 fn render_action_line(action: &Action, color: ColorMode, diff: bool) -> String {
     let (sigil, summary, ansi) = match action {
         Action::CreateRunner(p) => ('+', format!("runner {} (create)", p.spec.name), "\x1b[32m"),
@@ -1847,7 +1844,7 @@ fn render_action_line(action: &Action, color: ColorMode, diff: bool) -> String {
     // colored — color is reserved for the action sigil line so
     // `grep`-on-color pipelines stay clean. Body diffs (Created /
     // Removed full body, Modified unified diff, Preserved marker) are
-    // surfaced only under `--diff` (#285).
+    // surfaced only under `--diff`.
     if let Action::UpdateRunner(d) = action {
         let mut out = header;
         for fc in &d.field_changes {
@@ -2045,9 +2042,8 @@ fn render_action_line(action: &Action, color: ColorMode, diff: bool) -> String {
 /// authenticated proxy. Text output of `ghars plan --diff` should
 /// not be uploaded to shared artifacts (CI logs, pastebins, ticket
 /// attachments) without redaction. Symmetric with the `# Security`
-/// caveat on `plan_to_json_value`. Tracked as task #461 (SEC-NEW:
-/// --diff body output may expose proxy credentials from
-/// 60-proxy.conf).
+/// caveat on `plan_to_json_value`. SEC-NEW: --diff body output may
+/// expose proxy credentials from 60-proxy.conf.
 fn render_drop_in_body_block(kind: &plan::DropInChangeKind, color: ColorMode) -> String {
     let mut out = String::new();
     match kind {
@@ -2201,13 +2197,13 @@ fn push_indented_unified_diff(out: &mut String, body: &str, color: ColorMode) {
 /// so tests assert the in-memory shape and `render_plan_json` shares
 /// the exact construction the operator sees through stdout (no test
 /// mirror to drift). Inner `drop_in_changes[].change_kind` is the
-/// per-entry discriminator (#305 — distinct from the per-action
-/// `kind` so consumers can disambiguate without context).
+/// per-entry discriminator — distinct from the per-action `kind`
+/// so consumers can disambiguate without context.
 ///
 /// `diff` controls whether each `drop_in_changes` entry carries the
 /// drop-in body content (`true`) or only the basename + change_kind
-/// (`false`, pre-#285 shape — backward compatible with existing
-/// consumers).
+/// (`false`, the body-omitting shape — backward compatible with
+/// existing consumers).
 ///
 /// When `diff = true`:
 /// - `Created` adds `after` (full body string).
@@ -2233,9 +2229,9 @@ fn push_indented_unified_diff(out: &mut String, body: &str, color: ColorMode) {
 /// http://user:pass@host` when the operator configures an
 /// authenticated proxy. JSON output of `ghars plan --diff`
 /// should not be uploaded to shared artifacts (CI logs,
-/// pastebins, ticket attachments) without redaction. Tracked as
-/// task #461 (SEC-NEW: --diff body output may expose proxy
-/// credentials from 60-proxy.conf).
+/// pastebins, ticket attachments) without redaction. SEC-NEW:
+/// --diff body output may expose proxy credentials from
+/// 60-proxy.conf.
 ///
 /// # Schema v1 → v2 migration
 ///
@@ -2327,7 +2323,7 @@ pub(crate) fn plan_to_json_value(plan: &Plan, diff: bool) -> serde_json::Value {
                         // in-place Removed JSON shape: no `before`
                         // body field — basename + change_kind +
                         // `body_suppressed: true` marker. Body would
-                        // re-introduce #461's credential-leakage
+                        // re-introduce the credential-leakage
                         // surface for any drop-in that embedded
                         // `Environment=` lines (e.g. `60-proxy.conf`
                         // with an authenticated proxy URL).
@@ -2469,9 +2465,9 @@ pub(crate) fn plan_to_json_value(plan: &Plan, diff: bool) -> serde_json::Value {
 /// - `recreates` — array of `Action::label()` strings, one per
 ///   `Recreate`-class action, sorted lexicographically. Always
 ///   present, emitted as `[]` when the plan has no recreate-class
-///   actions. (#469)
+///   actions.
 ///
-/// **`recreates` element contract** (#469):
+/// **`recreates` element contract**:
 /// - Each element matches the verbatim `Action::label()` output —
 ///   the same string cmd_apply emits in `ok: LABEL` and
 ///   `fail: LABEL` lines, so a single grep on the label spans
@@ -2500,7 +2496,7 @@ pub(crate) fn plan_to_json_value(plan: &Plan, diff: bool) -> serde_json::Value {
 ///   static PascalCase variant prefix and parens), this coincides
 ///   with operator-readable alphabetical order.
 ///
-/// **Invariants** (#469, pinned by tests at
+/// **Invariants** (pinned by tests at
 /// `plan_to_json_value_summary_recreates_*`):
 /// - `recreates.len() == by_disruption["recreate"]` (same Vec
 ///   sourced both fields from).
@@ -2622,7 +2618,7 @@ fn format_disruption_tail(none: u64, restart: u64, recreate: u64) -> String {
     )
 }
 
-/// #476: build the text-mode apply summary footer. Symmetric with
+/// Build the text-mode apply summary footer. Symmetric with
 /// `render_plan_summary_line` on the disruption parenthetical and
 /// `any_recreate` suffix; the headline triple
 /// (`applied/failed/skipped`) is apply-specific.
@@ -2632,7 +2628,7 @@ fn format_disruption_tail(none: u64, restart: u64, recreate: u64) -> String {
 ///
 /// **Outcome-class buckets** (the headline `A applied, F failed, S
 /// skipped` triple):
-/// - `failed` — `ApplyOutcome::Failed` rows (#474). Includes both
+/// - `failed` — `ApplyOutcome::Failed` rows. Includes both
 ///   per-action handler failures and the synthetic `daemon_reload`
 ///   Failed row when Manager.Reload itself errored.
 /// - `skipped` — outcomes that returned `Ok` but performed no host
@@ -2650,8 +2646,9 @@ fn format_disruption_tail(none: u64, restart: u64, recreate: u64) -> String {
 /// derived from each outcome's `disruption()` method. Same vocabulary
 /// as the plan footer so operators reading both surfaces get
 /// consistent terminology. Includes BOTH successful and failed rows
-/// (Failed.disruption() returns the action's plan-time worst-case
-/// per #474), so a partially-applied recreate-class action that
+/// (Failed.disruption() returns the action's plan-time worst-case —
+/// recreate-class actions stay tagged recreate even when they
+/// errored), so a partially-applied recreate-class action that
 /// errored mid-way still contributes to the `recreate` count.
 /// Delegated to `format_disruption_tail` (CLN-2) — single source of
 /// truth for the format string shared with `render_plan_summary_line`.
@@ -2714,10 +2711,10 @@ pub(crate) fn render_apply_summary_line(result: &apply::ApplyResult) -> String {
 /// `fail:` + rollback advisory → stderr.
 ///
 /// **Error semantics**: Returns `Err` on the first write failure to
-/// either stream; remaining lines are NOT emitted. This is a behavior
-/// shift from the prior inline pattern which attempted each writeln
-/// independently. The sole production caller swallows the error
-/// (`let _ = ...`) matching the prior best-effort semantics.
+/// either stream; remaining lines are NOT emitted. The sole
+/// production caller swallows the error (`let _ = ...`) so the
+/// effective semantics at the call site stay best-effort even though
+/// this function short-circuits on first error.
 ///
 /// 1. **Per-action detail loop** (`result.details`, in execution order):
 ///    - `NoOp(REASON)` → stdout: `noop: REASON [none]` (label-strip
@@ -2754,8 +2751,8 @@ pub(crate) fn render_apply_summary_line(result: &apply::ApplyResult) -> String {
 ///
 /// `result.failed` retains the typed `GharsError` chain for
 /// programmatic consumers (exit-code mapping, undo log advisory); the
-/// per-action rendering loop reads `result.details` exclusively now,
-/// per the contract documented at [`apply::ApplyResult::details`].
+/// per-action rendering loop reads `result.details` exclusively, per
+/// the contract documented at [`apply::ApplyResult::details`].
 pub(crate) fn render_apply_emission(
     result: &apply::ApplyResult,
     stdout: &mut impl std::io::Write,
@@ -2893,12 +2890,12 @@ fn cmd_apply(
     color: ColorMode,
     quiet: bool,
 ) -> Result<i32> {
-    // load_config runs the full post-load validator sweep — the
-    // pre-batch-18 per-cmd repeats (validate_security_overrides,
-    // validate_identity_fields, validate_no_duplicate_caches,
-    // validate_cache_pool_names, validate_runner_names,
-    // validate_user_overrides, validate_runner_tarballs) all live in
-    // load_config now. Apply therefore inherits the same gate every
+    // load_config runs the full post-load validator sweep
+    // (validate_security_overrides, validate_identity_fields,
+    // validate_no_duplicate_caches, validate_cache_pool_names,
+    // validate_runner_names, validate_user_overrides,
+    // validate_runner_tarballs) so cmd_apply does not need to
+    // repeat any of them — apply inherits the same gate every
     // other cmd_* enforces.
     let cfg = load_config(config_path)?;
 
@@ -3145,9 +3142,9 @@ pub(crate) fn render_rollback_advisory(result: &apply::ApplyResult) -> Option<St
 /// production code. Extracting the format string behind a named
 /// function means a future text change ("Rollback advisory:" /
 /// "Manual cleanup may be required:") happens in one place at the
-/// call site, not scattered across every renderer that used to
-/// inline the literal (mirrors the pattern that lifted
-/// Disruption-label tokens behind `Disruption::label()`). Tests
+/// call site, not scattered across every renderer (mirrors the
+/// pattern that lifted Disruption-label tokens behind
+/// `Disruption::label()`). Tests
 /// continue to hardcode the operator-visible substrings — that's
 /// correct for contract pinning: a test that calls this helper
 /// would silently pass after a header rename, while a substring
@@ -3167,7 +3164,7 @@ fn format_rollback_advisory_header(n: usize) -> String {
 /// - otherwise → 0
 ///
 /// Pure function (no I/O); pulled out so tests can synthesize health
-/// vectors without a real preflight scan (#237). Both
+/// vectors without a real preflight scan. Both
 /// `render_status_text` and `render_status_json` delegate to keep the
 /// same exit-code contract regardless of output format.
 #[must_use]
@@ -3210,7 +3207,7 @@ pub(crate) fn status_exit_code(health: &[preflight::CheckResult]) -> i32 {
 ///
 /// Returning `Option` instead of a plain `i32` lets the caller chain
 /// `.or_else(|| ...)` with the existing helpers without sprinkling
-/// early returns across the command-dispatch path. (#464)
+/// early returns across the command-dispatch path.
 #[must_use]
 pub(crate) fn recreate_exit_code(detailed_exitcode_recreate: bool, plan: &Plan) -> Option<i32> {
     if detailed_exitcode_recreate && plan.has_recreate() {
@@ -3224,14 +3221,14 @@ pub(crate) fn recreate_exit_code(detailed_exitcode_recreate: bool, plan: &Plan) 
 /// (`y/N` answered N). Pulled out so tests can pin the contract
 /// without driving the cmd_apply path through a TTY mock.
 ///
-/// Precedence (#464):
+/// Precedence:
 /// - `--detailed-exitcode-recreate` set + recreate-class action in
 ///   `plan` → 8. "Plan contains a recreate the operator must
 ///   review; do not auto-merge."
 /// - else `--detailed-exitcode` set → 2. The plan had pending
 ///   changes the operator chose not to apply; 2 communicates "diff
 ///   present, not applied" — terraform-class signal that wrapping
-///   scripts can branch on without parsing stderr (#358).
+///   scripts can branch on without parsing stderr.
 /// - else → 0. Cancelling an interactive prompt is the established
 ///   CLI convention for "user aborted; not an error".
 ///
@@ -3256,9 +3253,9 @@ pub(crate) fn cancel_exit_code(
 /// `--detailed-exitcode`, exit 2 when the plan has any non-NoOp
 /// action — terraform `plan -detailed-exitcode` parity. Pulled out
 /// so tests pin the contract without spinning up a real D-Bus or
-/// the apply runtime (#389).
+/// the apply runtime.
 ///
-/// Precedence (#464):
+/// Precedence:
 /// - `detailed_exitcode_recreate = true`, plan has recreate         → 8
 /// - else `detailed_exitcode = false`                                → 0
 /// - else `detailed_exitcode = true`, plan all-NoOp                  → 0
@@ -3281,11 +3278,11 @@ pub(crate) fn dry_run_exit_code(
 
 /// Map an `ApplyResult` to the process exit code per Part 5.
 ///
-/// Precedence (Part 5 + #251 + #464 rulings):
+/// Precedence (Part 5):
 /// - partial failure         → 4  (some succeeded, some failed)
 /// - total failure, any auth → 5
 /// - total failure, no auth  → 1
-/// - no failures, recreate-class action present + flag set → 8 (#464)
+/// - no failures, recreate-class action present + flag set → 8
 /// - no failures             → 0  (or 2 with `--detailed-exitcode`)
 ///
 /// Partial failure (4) wins over auth (5) when both apply because 4
@@ -3293,9 +3290,9 @@ pub(crate) fn dry_run_exit_code(
 /// others did not — go look at the per-action log". 5 is narrower
 /// ("nothing landed, and at least one Auth error explains why");
 /// collapsing a partial-success run to 5 would hide the partial
-/// progress. (#251)
+/// progress.
 ///
-/// Failure precedence trumps recreate (#464): both 4 and 5 are
+/// Failure precedence trumps recreate: both 4 and 5 are
 /// stronger than 8. A partial apply leaves the operator with a
 /// concrete cleanup task ("some actions landed"); a recreate flag
 /// is a plan-shape signal about what the apply WOULD have done.
@@ -3312,7 +3309,7 @@ pub(crate) fn dry_run_exit_code(
 ///
 /// Pulled out as a pure function so tests synthesize `ApplyResult`
 /// values and pin the precedence directly without spinning up D-Bus or
-/// the apply runtime (#237).
+/// the apply runtime.
 ///
 /// Parameter order matches the sibling `cancel_exit_code` /
 /// `dry_run_exit_code` / `recreate_exit_code` helpers: detailed-exit
@@ -3671,7 +3668,7 @@ fn cmd_init(config_path: &Utf8Path, args: &InitArgs, quiet: bool) -> Result<i32>
     f.write_all(INIT_EXAMPLE_CONFIG.as_bytes())?;
     f.flush()?;
 
-    // SEC-27: ghars no longer creates a shared `ghars` system user at
+    // SEC-27: ghars does not create a shared `ghars` system user at
     // init time. Per-runner system users (`ghars-RUNNERNAME`) are
     // provisioned by `apply::execute_create_runner` via
     // `RealUsers::useradd_if_missing` — that's where they belong, since
@@ -4177,7 +4174,7 @@ mod tests {
         assert_eq!(err_to_exit_code(&err), 6);
     }
 
-    /// `GharsError::Validation` → exit code 6 (#357). Validation
+    /// `GharsError::Validation` → exit code 6. Validation
     /// errors are config-shape rejections (trust_zone charset,
     /// duplicate caches, render_identity defense-in-depth) — the
     /// operator must edit the TOML to recover, same actionable
@@ -4188,7 +4185,7 @@ mod tests {
         assert_eq!(err_to_exit_code(&err), 6);
     }
 
-    /// `GharsError::Interactive` → exit code 7 (#390). Distinct
+    /// `GharsError::Interactive` → exit code 7. Distinct
     /// from `Validation` (6) because the operator-actionable
     /// answer is "pass `--auto-approve` or run from a TTY", not
     /// "edit the TOML". Wrapper scripts and CI gating need a
@@ -4205,9 +4202,9 @@ mod tests {
         assert_eq!(err_to_exit_code(&err), 7);
     }
 
-    /// `GharsError::Auth` → exit code 5 (#357). Per-action auth
-    /// failures during apply already route to 5 via `apply_exit_code`
-    /// (#251); a top-level `Auth` Err is an auth-resolve failure
+    /// `GharsError::Auth` → exit code 5. Per-action auth
+    /// failures during apply already route to 5 via `apply_exit_code`;
+    /// a top-level `Auth` Err is an auth-resolve failure
     /// outside per-action accounting and routes to the same code so
     /// scripts can branch uniformly on auth-class failures.
     #[test]
@@ -4216,7 +4213,7 @@ mod tests {
         assert_eq!(err_to_exit_code(&err), 5);
     }
 
-    /// `GharsError::Preflight` → exit code 3 (#357). Same code
+    /// `GharsError::Preflight` → exit code 3. Same code
     /// `cmd_apply` / `cmd_status` emit via `Ok(3)` for preflight
     /// failures, so wrapping scripts see "preflight failed" uniformly
     /// regardless of whether the failure surfaced via Err or via the
@@ -4234,7 +4231,7 @@ mod tests {
         assert_eq!(err_to_exit_code(&err), 1);
     }
 
-    /// `GharsError::GitHub` → exit code 1 (#357). GitHub API errors
+    /// `GharsError::GitHub` → exit code 1. GitHub API errors
     /// are operator-environment problems (network, rate-limit,
     /// upstream outage), not config-shape — they don't route to 6.
     #[test]
@@ -4243,7 +4240,7 @@ mod tests {
         assert_eq!(err_to_exit_code(&err), 1);
     }
 
-    /// `GharsError::Systemd` → exit code 1 (#357). D-Bus / unit
+    /// `GharsError::Systemd` → exit code 1. D-Bus / unit
     /// errors are runtime-environment failures, not config-shape.
     #[test]
     fn err_to_exit_code_systemd_returns_one() {
@@ -4251,7 +4248,7 @@ mod tests {
         assert_eq!(err_to_exit_code(&err), 1);
     }
 
-    /// `GharsError::Tarball` → exit code 1 (#357). Tarball
+    /// `GharsError::Tarball` → exit code 1. Tarball
     /// extraction failure (download, unpack) is a runtime/network
     /// issue, not config-shape.
     #[test]
@@ -4274,7 +4271,7 @@ mod tests {
         assert_eq!(err_to_exit_code(&err), 1);
     }
 
-    /// `GharsError::Sha256Mismatch` → exit code 1 (#357). Digest
+    /// `GharsError::Sha256Mismatch` → exit code 1. Digest
     /// mismatch on a downloaded tarball — runtime-class.
     #[test]
     fn err_to_exit_code_sha256_mismatch_returns_one() {
@@ -4286,7 +4283,7 @@ mod tests {
         assert_eq!(err_to_exit_code(&err), 1);
     }
 
-    /// `GharsError::ApplyLocked` → exit code 1 (#357). Lock
+    /// `GharsError::ApplyLocked` → exit code 1. Lock
     /// contention is operator-actionable but doesn't fit any of
     /// 3/4/5/6 semantics; routes to generic 1.
     #[test]
@@ -4299,7 +4296,7 @@ mod tests {
         assert_eq!(err_to_exit_code(&err), 1);
     }
 
-    /// `GharsError::Apply { .. }` → exit code 1 (#357). The Apply
+    /// `GharsError::Apply { .. }` → exit code 1. The Apply
     /// variant should never reach `err_to_exit_code` in practice
     /// (apply collects per-action failures into `ApplyResult` and
     /// routes via `apply_exit_code`); the arm exists as the
@@ -4319,9 +4316,9 @@ mod tests {
 
     /// Cancellation without `--detailed-exitcode` → 0. Cancelling
     /// an interactive prompt is a non-error per established CLI
-    /// convention. With #464, `cancel_exit_code` also takes a
-    /// recreate flag + `&Plan`; we pass `false` + an empty plan
-    /// to pin the pre-#464 behavior.
+    /// convention. `cancel_exit_code` takes a recreate flag +
+    /// `&Plan`; passing `false` + an empty plan exercises the
+    /// no-recreate branch.
     #[test]
     fn cancel_exit_code_without_detailed_returns_zero() {
         let plan = Plan::default();

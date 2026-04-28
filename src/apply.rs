@@ -5836,7 +5836,7 @@ mod tests {
                 .iter()
                 .any(|c| c.contains("enable_unit(ghars-cache@b.service)"))
         );
-        // #478: pin that the per-action UndoLog was plumbed through to
+        // Pin that the per-action UndoLog was plumbed through to
         // `result.failed_undo_logs` on the Err path. The label/order
         // invariant is `failed[i].0 == failed_undo_logs[i].0` for
         // every i — same labels, same insertion order.
@@ -5873,7 +5873,7 @@ mod tests {
         );
     }
 
-    /// #511: `result.details` filtered to the [`ApplyOutcome::Failed`] rows
+    /// `result.details` filtered to the [`ApplyOutcome::Failed`] rows
     /// MUST equal `result.failed` in label set, count, AND positional
     /// alignment for any multi-failure plan. The invariant is enforced at
     /// `apply()`'s `Err` arm push site: every failure pushes BOTH a
@@ -5990,10 +5990,11 @@ mod tests {
              details_failed={details_failed_labels:?}",
         );
 
-        // ADD-1 (#478 ordering invariant — see apply.rs:2052
-        // construction comment): `failed[i].0 == failed_undo_logs[i].0`
-        // for every i. The two Vecs are pushed in lockstep at the
-        // per-action `Err` arm; cmd_apply's #478 rollback advisory
+        // ADD-1 (ordering invariant — see the construction comment in
+        // the per-action `Err` arm of `apply()` above):
+        // `failed[i].0 == failed_undo_logs[i].0` for every i. The two
+        // Vecs are pushed in lockstep at the per-action `Err` arm;
+        // cmd_apply's rollback advisory
         // walks `failed_undo_logs` and renders one block per entry,
         // labelled by the tuple's first element. Divergence here
         // would produce a mislabelled advisory pointing the operator
@@ -6044,7 +6045,7 @@ mod tests {
         assert!(paths.unit_file("a").as_std_path().exists());
         let drop_in_path = paths.drop_in_dir("a").join("00-ghars.conf");
         assert!(drop_in_path.as_std_path().exists());
-        // SEC-02 (BLOCKER #210): the freshly-rendered 00-ghars.conf
+        // SEC-02: the freshly-rendered 00-ghars.conf
         // MUST carry an `X-Ghars-Runsvc-Sha256=sha256:HEX` line under
         // `[Service]`. Without this, runsvc-wrapper exits
         // ANNOTATION_MISSING on every restart and the runner unit
@@ -6067,8 +6068,7 @@ mod tests {
             drop_in_body.contains(&format!("X-Ghars-Runsvc-Sha256={expected_hash}")),
             "annotation digest does not match on-disk runsvc.sh ({expected_hash}): {drop_in_body}"
         );
-        // Unit text written to disk is the canonical template (closes
-        // BLOCKER #216: plan-emitted effective_unit_text was empty).
+        // Unit text written to disk is the canonical template.
         let unit_text = fs::read_to_string(paths.unit_file("a").as_std_path()).unwrap();
         assert!(unit_text.contains("[Unit]"));
         assert!(unit_text.contains("ExecStart=!/usr/lib/ghars/runsvc-wrapper %i"));
@@ -6184,7 +6184,7 @@ mod tests {
             recreate_reasons: vec![],
             drift_cause: crate::plan::DriftCause::DriftDetected,
             field_changes: Vec::new(),
-            // #337: the deletion pass reads from `drop_in_changes`
+            // The deletion pass reads from `drop_in_changes`
             // (Stage 2 byte-comparison result), not from a fresh
             // on-disk dir scan. Stage 2 walks the union of rendered
             // + discovered keys, so an operator-edited
@@ -6431,7 +6431,7 @@ mod tests {
         execute_remove_cache_pool("build", &deps, &paths, &mut UndoLog::new()).unwrap();
         // Drop-in dir gone.
         assert!(!drop_in_dir.as_std_path().exists());
-        // Pool dir gone (#192 — backing storage no longer leaks).
+        // Pool dir gone — backing storage no longer leaks.
         assert!(!pool_dir.as_std_path().exists());
         // Group removed.
         assert!(
@@ -6928,7 +6928,7 @@ mod tests {
         );
     }
 
-    // ---- #189: verify_runner_netns_at happy + fail paths --------------
+    // ---- verify_runner_netns_at happy + fail paths --------------------
     //
     // These tests use `verify_runner_netns_at` with a tempdir-rooted
     // proc layout so they can exercise both the happy path (distinct
@@ -6998,12 +6998,12 @@ mod tests {
     }
 
     /// MockSystemd variant whose MainPID property changes after the
-    /// first `flip_after` calls. Used by #225's retry-recovery test:
+    /// first `flip_after` calls. Used by the retry-recovery test:
     /// the first reads return the host-netns'd PID; subsequent reads
     /// return the freshly-joined PID, mimicking the kernel-side setns
-    /// race that triggered #225. Post-#147 MainPID flows through
-    /// get_unit_property_u64 on the Service interface; the mock
-    /// stores u64 directly, no String round-trip.
+    /// race. MainPID flows through get_unit_property_u64 on the
+    /// Service interface; the mock stores u64 directly, no String
+    /// round-trip.
     struct FlippingMockSystemd {
         unit: String,
         first_pid: u64,
@@ -7063,7 +7063,7 @@ mod tests {
 
     #[test]
     fn verify_runner_netns_at_recovers_when_kernel_join_lands_mid_retry() {
-        // #225: the kernel-side setns(NetworkNamespacePath=) call lands
+        // The kernel-side setns(NetworkNamespacePath=) call lands
         // during the runner's exec, AFTER systemd's StartUnit returns.
         // A single readlink at StartUnit-return-time can observe the
         // still-host symlink target. The retry loop must recover when
@@ -7104,7 +7104,7 @@ mod tests {
 
     #[test]
     fn verify_runner_netns_at_treats_enoent_on_proc_pid_as_transient() {
-        // #225: ENOENT on /proc/PID/ns/net is a transient race condition
+        // ENOENT on /proc/PID/ns/net is a transient race condition
         // (the PID was just exec'd by systemd and recorded via
         // service_set_main_pidref before the kernel made /proc/PID
         // visible, OR the PID was reaped between the get_unit_property
@@ -7143,7 +7143,7 @@ mod tests {
 
     #[test]
     fn verify_runner_netns_at_persistent_enoent_on_proc_pid_errors_systemd() {
-        // #225: if /proc/PID/ns/net stays missing for the entire
+        // If /proc/PID/ns/net stays missing for the entire
         // deadline (e.g. systemd recorded MainPID but the unit failed
         // to start past fork), surface a Systemd error — not Ok (which
         // would be a fail-open). The error message must mention the
@@ -7196,7 +7196,7 @@ mod tests {
         let msg = format!("{err}");
         assert!(msg.contains("HOST network namespace"), "{msg}");
         assert!(msg.contains("5678"), "{msg}");
-        // #225: error message must record that we polled before giving
+        // Error message must record that we polled before giving
         // up — operator triaging an F79 fail-open needs to know the
         // verify ran multiple readlinks against the deadline, not a
         // single shot.
@@ -7296,7 +7296,7 @@ mod tests {
         }
     }
 
-    // ---------- BATCH D / #281: UndoLog + rollback-on-failure tests ------
+    // ---------- BATCH D: UndoLog + rollback-on-failure tests ------------
 
     #[test]
     fn undo_log_starts_empty() {
@@ -7995,7 +7995,7 @@ mod tests {
         );
     }
 
-    // ---- #284: gc_stale_temp_files ---------------------------------------
+    // ---- gc_stale_temp_files ---------------------------------------------
 
     /// Plant a synthetic `.NAME.tmp.PID.COUNTER` file in `dir`,
     /// optionally back-dating its mtime past STALE_TEMP_AGE_SECS.
@@ -8188,7 +8188,7 @@ mod tests {
         // Reaching here = pass.
     }
 
-    // ---- #343: gc_stale_staging_dirs --------------------------------------
+    // ---- gc_stale_staging_dirs --------------------------------------------
 
     /// Plant a synthetic `<state_dir>/.staging/<name>-<version>-<pid>/`
     /// directory, optionally back-dating its mtime past
@@ -8300,15 +8300,6 @@ mod tests {
         );
     }
 
-    // gc_stale_staging_dirs_preserves_dir_for_alive_pid was removed
-    // in #437 ADV-5 / pass-1: the previous behavior gated on
-    // `pid_is_alive(embedded_pid)`, which permanently leaked the
-    // staging tree once the dead PID slot was recycled by an
-    // unrelated process. Under apply.lock the own-PID skip + age
-    // gate are sufficient and the alive-PID test pinned the wrong
-    // contract. See gc_stale_staging_dirs's doc-comment for
-    // rationale.
-
     #[test]
     fn gc_stale_staging_dirs_preserves_unparseable_dir_names() {
         let tmp = tempfile::tempdir().unwrap();
@@ -8353,7 +8344,7 @@ mod tests {
         // Reaching here = pass.
     }
 
-    /// #437 pass-1 FIX-6: pin that gc removes the entire staging tree
+    /// Pin that gc removes the entire staging tree
     /// (not just the leaf directory). extract.rs's partial-extract
     /// state typically contains nested files and subdirectories — the
     /// distinction between `fs::remove_dir` (refuses non-empty dirs)
@@ -8424,7 +8415,7 @@ mod tests {
         );
     }
 
-    /// #437 pass-1 FIX-7: pin the no-op contract on an empty
+    /// Pin the no-op contract on an empty
     /// `.staging/`. After a previous gc pass the parent stays as an
     /// empty dir; subsequent gc invocations must NOT remove the
     /// parent (extract.rs::install_runner_binary calls
@@ -8467,7 +8458,7 @@ mod tests {
         );
     }
 
-    /// What this test pins (#444 honest restatement): a symlink under
+    /// What this test pins: a symlink under
     /// `.staging/` whose name parses as `<name>-<version>-<pid>` —
     /// with a dead PID and a back-dated mtime past
     /// `STALE_TEMP_AGE_SECS` so neither own-PID nor age can cause the
@@ -8647,7 +8638,7 @@ mod tests {
         );
     }
 
-    // ---- #271 / #272: in-place caches reconciliation --------------------
+    // ---- in-place caches reconciliation ---------------------------------
 
     /// Build a delta with `before_caches` populated and the spec
     /// `caches` set to `after`.
@@ -8799,7 +8790,7 @@ mod tests {
         );
     }
 
-    /// #473: pin that `execute_update_runner` populates the
+    /// Pin that `execute_update_runner` populates the
     /// `InPlaceRestarted.pools_added` / `pools_removed` Vecs from the
     /// caches diff so cmd_apply's per-action detail line surfaces the
     /// pool NAMES (not just a count). This is the construction-side
@@ -8879,7 +8870,7 @@ mod tests {
         }
     }
 
-    /// #473: pin the detail-string surface end-to-end — feed a
+    /// Pin the detail-string surface end-to-end — feed a
     /// real-world replace into execute_update_runner, assert the
     /// outcome's `detail()` output reads "(added: m; removed: a, z)".
     /// This is the integration counterpart to
@@ -8927,7 +8918,7 @@ mod tests {
         );
     }
 
-    /// #352 SEC: when `gpasswd -d` (the remove half of the diff) fails
+    /// SEC: when `gpasswd -d` (the remove half of the diff) fails
     /// partway through reconciliation, execute_update_runner must
     /// return Err WITHOUT having written the new 00-ghars.conf. Drop-in
     /// rewrites must be gated behind successful supplementary-group
@@ -9023,7 +9014,7 @@ mod tests {
         );
     }
 
-    /// #412 SEC: symmetric with the fail_remove_group test above. When
+    /// SEC: symmetric with the fail_remove_group test above. When
     /// `gpasswd -a` (the add half of the diff) fails, execute_update_
     /// runner must return Err WITHOUT recording the add, never running
     /// the subsequent remove, and never writing the new 00-ghars.conf.
@@ -9118,7 +9109,7 @@ mod tests {
 
     #[test]
     fn execute_update_runner_in_place_recreate_path_ignores_before_caches() {
-        // T-#325 item 6: recreate path goes through
+        // Recreate path goes through
         // execute_remove_runner + execute_create_runner, which
         // rebuild group membership from scratch (the create path's
         // 1b block calls add_user_to_group for every binding in
@@ -9208,7 +9199,7 @@ mod tests {
 
     #[test]
     fn apply_dry_run_with_caches_change_skips_group_ops() {
-        // T-#325 item 7: dry_run=true at the apply() level short-
+        // dry_run=true at the apply() level short-
         // circuits each action before execute_*. A caches-list change
         // routed through dry-run apply MUST NOT call add_user_to_group
         // or remove_user_from_group — even though the in-place
@@ -9249,16 +9240,16 @@ mod tests {
             added.is_empty() && removed.is_empty(),
             "dry-run must produce zero group ops; got add={added:?} remove={removed:?}",
         );
-        // #340: dry-run-skipped actions still land in `details` so
+        // Dry-run-skipped actions still land in `details` so
         // cmd_apply can render the per-action `dry-run (skipped)`
         // line. The label tracks the skipped action verbatim.
         assert_eq!(result.details.len(), 1);
         assert!(matches!(result.details[0].1, ApplyOutcome::DryRunSkipped));
     }
 
-    // ---------- #340: ApplyOutcome::detail() string contracts -----------
+    // ---------- ApplyOutcome::detail() string contracts -----------------
 
-    /// #340: pin the per-variant detail string vocabulary so a future
+    /// Pin the per-variant detail string vocabulary so a future
     /// rename of the strings is a single-place audit. cmd_apply renders
     /// `ok: LABEL ({detail})` and downstream operators may grep on
     /// these tokens.
@@ -9268,10 +9259,10 @@ mod tests {
             ApplyOutcome::InPlaceSkipped.detail(),
             "noop (bytes + groups match)"
         );
-        // #473: pool-membership Vecs empty ⇒ no parenthetical
-        // suffix, preserving the pre-#473 detail-string shape so
-        // operators with downstream parsers see no churn on plans
-        // that rewrite files but don't touch caches.
+        // Pool-membership Vecs empty ⇒ no parenthetical
+        // suffix, preserving the no-suffix shape so operators with
+        // downstream parsers see no churn on plans that rewrite
+        // files but don't touch caches.
         assert_eq!(
             ApplyOutcome::InPlaceRestarted {
                 files_changed: 2,
@@ -9281,7 +9272,7 @@ mod tests {
             .detail(),
             "in-place: 2 file(s) changed, 0 group op(s)"
         );
-        // #473: added-only ⇒ `(added: ...)` suffix, comma-separated
+        // Added-only ⇒ `(added: ...)` suffix, comma-separated
         // names in BTreeSet::difference (alphabetical) order.
         assert_eq!(
             ApplyOutcome::InPlaceRestarted {
@@ -9292,7 +9283,7 @@ mod tests {
             .detail(),
             "in-place: 1 file(s) changed, 2 group op(s) (added: build-cache, ccache)"
         );
-        // #473: removed-only ⇒ `(removed: ...)` suffix.
+        // Removed-only ⇒ `(removed: ...)` suffix.
         assert_eq!(
             ApplyOutcome::InPlaceRestarted {
                 files_changed: 0,
@@ -9302,7 +9293,7 @@ mod tests {
             .detail(),
             "in-place: 0 file(s) changed, 1 group op(s) (removed: old-cache)"
         );
-        // #473: both-non-empty ⇒ semicolon-separated added/removed
+        // Both-non-empty ⇒ semicolon-separated added/removed
         // groups so the suffix parses unambiguously even when pool
         // names contain commas (cache_pool name validator rejects
         // commas, so this is defensive — semicolon delimiter still
@@ -9346,7 +9337,7 @@ mod tests {
         );
         assert_eq!(ApplyOutcome::NoOp.detail(), "noop (in sync)");
         assert_eq!(ApplyOutcome::DryRunSkipped.detail(), "dry-run (skipped)");
-        // #474: Failed.detail() returns the captured error_summary
+        // Failed.detail() returns the captured error_summary
         // verbatim — no rewrapping, no prefix.
         assert_eq!(
             ApplyOutcome::Failed {
@@ -9358,11 +9349,12 @@ mod tests {
         );
     }
 
-    /// #545: pin `InPlaceRestarted.detail()` output for the
-    /// `before_caches = None` short-circuit path (pre-#271 runner with
-    /// no `X-Ghars-Caches` annotation). Empty `pools_added`/`pools_removed`
-    /// MUST render "0 group op(s)" with NO parenthetical, preserving
-    /// the pre-#473 shape. Construction-side coverage lives at
+    /// Pin `InPlaceRestarted.detail()` output for the
+    /// `before_caches = None` short-circuit path (pre-annotation runner
+    /// with no `X-Ghars-Caches` annotation). Empty
+    /// `pools_added`/`pools_removed` MUST render "0 group op(s)" with NO
+    /// parenthetical, preserving the no-suffix shape.
+    /// Construction-side coverage lives at
     /// `execute_update_runner_in_place_before_caches_none_skips_diff`
     /// (sibling — verifies the construction-site short-circuit produces
     /// the empty Vecs this test consumes).
@@ -9374,7 +9366,7 @@ mod tests {
             pools_removed: Vec::new(),
         };
         // Empty Vecs ⇒ detail() must NOT include any `(added:...)` or
-        // `(removed:...)` parenthetical. Pre-#473 shape preserved.
+        // `(removed:...)` parenthetical. No-suffix shape preserved.
         assert_eq!(
             outcome.detail(),
             "in-place: 1 file(s) changed, 0 group op(s)",
@@ -9383,7 +9375,7 @@ mod tests {
         );
     }
 
-    /// #546: multi-element detail() coverage for InPlaceRestarted.
+    /// Multi-element detail() coverage for InPlaceRestarted.
     /// Existing `apply_outcome_detail_strings_are_stable` covers the
     /// 1-element and 2-element add cases. Defense-in-depth format
     /// pin for multi-element pool lists (3+ adds / 2+ removes).
@@ -9405,11 +9397,11 @@ mod tests {
         );
     }
 
-    /// #340: pin the ApplyOutcome → Disruption mapping. The mapping
+    /// Pin the ApplyOutcome → Disruption mapping. The mapping
     /// must mirror plan-time `Action::disruption` so cmd_apply's
     /// `[disruption]` bracket tag uses the same vocabulary as
-    /// plan output (#285). Operator grep on `[recreate]` matches
-    /// both surfaces.
+    /// plan output. Operator grep on `[recreate]` matches both
+    /// surfaces.
     #[test]
     fn apply_outcome_disruption_mapping_mirrors_plan_vocabulary() {
         use crate::plan::Disruption;
@@ -9435,7 +9427,7 @@ mod tests {
         assert_eq!(ApplyOutcome::Removed.disruption(), Disruption::Recreate);
         assert_eq!(ApplyOutcome::PoolCreated.disruption(), Disruption::Recreate,);
         assert_eq!(ApplyOutcome::PoolRemoved.disruption(), Disruption::Recreate,);
-        // #474: Failed.disruption() returns the action's plan-time
+        // Failed.disruption() returns the action's plan-time
         // worst-case disruption stored in `plan_disruption`. All
         // three variants must round-trip — apply-time impact is
         // unknown, so we report the plan-time bound.
@@ -9452,7 +9444,7 @@ mod tests {
         }
     }
 
-    /// #478: pin the `UndoStep::describe()` output for every variant.
+    /// Pin the `UndoStep::describe()` output for every variant.
     /// cmd_apply's rollback-state advisory greps these strings in tests
     /// and operators may grep them in production output, so the
     /// vocabulary is stable. Past-tense per the doc-comment ("wrote",
@@ -9556,7 +9548,7 @@ mod tests {
         );
     }
 
-    /// #478: pin that `UndoLog::into_steps` returns the recorded steps
+    /// Pin that `UndoLog::into_steps` returns the recorded steps
     /// in insertion order (matches `steps()` semantics) and consumes
     /// the log. The Err path in `apply()` calls this to plumb the
     /// per-action mutation manifest into `ApplyResult.failed_undo_logs`,
@@ -9582,7 +9574,7 @@ mod tests {
         assert!(matches!(&steps[2], UndoStep::StartUnit { name } if name == "x.service"),);
     }
 
-    /// #340: pin that `apply()` pushes a `(label, NoOp)` row into
+    /// Pin that `apply()` pushes a `(label, NoOp)` row into
     /// `details` for `Action::NoOp` actions, NOT a Created or other
     /// real-action variant. Defends against a future refactor that
     /// drops the NoOp short-circuit and routes through `execute()`.
@@ -9619,7 +9611,7 @@ mod tests {
     }
 
     /// Build a delta whose `drop_in_changes` matches the rendered drop-in
-    /// set with every basename marked Preserved. Used by the #337 skip
+    /// set with every basename marked Preserved. Used by the skip
     /// tests to express "every byte on disk already equals what we
     /// would render".
     fn delta_with_all_preserved_drop_ins(paths: &Paths) -> RunnerDelta {
@@ -9664,7 +9656,7 @@ mod tests {
     /// Pre-populate `paths.unit_dir` with the rendered unit + every
     /// drop-in body that `delta.after` would emit. Mirrors what
     /// `execute_update_runner` would have written on a successful
-    /// prior apply. Used by the #337 skip tests.
+    /// prior apply. Used by the skip tests.
     fn prepopulate_on_disk(paths: &Paths, delta: &RunnerDelta) {
         std::fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
         let unit_file = paths.unit_file(&delta.identity.name);
@@ -9681,7 +9673,7 @@ mod tests {
         }
     }
 
-    /// #337: when every managed file on disk byte-matches what we would
+    /// When every managed file on disk byte-matches what we would
     /// render AND the supplementary-group set is unchanged, the
     /// in-place path skips daemon-reload + stop + start entirely.
     #[test]
@@ -9704,7 +9696,7 @@ mod tests {
         prepopulate_on_disk(&paths, &delta);
         let mut log = UndoLog::new();
         let outcome = execute_update_runner(&delta, &deps, &paths, &mut log).unwrap();
-        // #340: the byte-equality short-circuit (#337) must surface
+        // The byte-equality short-circuit must surface
         // as `InPlaceSkipped` so cmd_apply renders the per-action
         // detail line as `no-op (bytes match)`.
         assert_eq!(outcome, ApplyOutcome::InPlaceSkipped);
@@ -9727,7 +9719,7 @@ mod tests {
         );
     }
 
-    /// #337: when the on-disk unit-file bytes drift from the rendered
+    /// When the on-disk unit-file bytes drift from the rendered
     /// effective_unit_text, the helper writes through and the
     /// daemon-reload + stop + start cycle fires as before.
     #[test]
@@ -9777,7 +9769,7 @@ mod tests {
         );
     }
 
-    /// #337: when one drop-in's on-disk body drifts (and Stage 2 marks
+    /// When one drop-in's on-disk body drifts (and Stage 2 marks
     /// it Modified instead of Preserved), the write happens and the
     /// restart cycle fires.
     #[test]
@@ -9845,9 +9837,9 @@ mod tests {
         assert_eq!(after_disk, after_body.as_bytes());
     }
 
-    // ---------- #466: cache-pool byte-equality short-circuit -----------
+    // ---------- cache-pool byte-equality short-circuit -----------------
     //
-    // execute_update_cache_pool mirrors execute_update_runner's #337
+    // execute_update_cache_pool mirrors execute_update_runner's
     // skip gate: if the 00-ghars.conf drop-in already matches the
     // rendered body byte-for-byte AND the drop-in directory existed
     // before this apply, return ApplyOutcome::PoolSkipped without
@@ -9872,11 +9864,11 @@ mod tests {
         }
     }
 
-    /// #466: when the 00-ghars.conf drop-in on disk byte-matches what
+    /// When the 00-ghars.conf drop-in on disk byte-matches what
     /// `execute_update_cache_pool` would render AND the drop-in
     /// directory already existed (CreateDir wouldn't fire), the
     /// in-place pool path skips daemon-reload + stop + start entirely
-    /// and returns `PoolSkipped`. Symmetric with #337's runner-side
+    /// and returns `PoolSkipped`. Symmetric with the runner-side
     /// `execute_update_runner_in_place_skips_restart_when_bytes_match`.
     #[test]
     fn execute_update_cache_pool_skips_restart_when_bytes_match() {
@@ -9923,7 +9915,7 @@ mod tests {
         );
     }
 
-    /// #466: when the 00-ghars.conf drop-in on disk diverges from the
+    /// When the 00-ghars.conf drop-in on disk diverges from the
     /// rendered body, `read_then_write_if_changed` writes through and
     /// the daemon-reload + stop + start cycle fires. Returns
     /// `PoolUpdated`, never `PoolSkipped`.
@@ -9983,7 +9975,7 @@ mod tests {
         assert_eq!(after_disk, delta.drop_in_body.as_bytes());
     }
 
-    /// #466: first-time pool update where the drop-in directory does
+    /// First-time pool update where the drop-in directory does
     /// NOT exist beforehand. CreateDir is itself a mutation, so even
     /// if the (yet-to-be-written) 00-ghars.conf would byte-match a
     /// hypothetical prior body, the skip gate must NOT fire on this
@@ -10035,7 +10027,7 @@ mod tests {
         );
     }
 
-    /// #337: when a managed drop-in is present on disk but absent from
+    /// When a managed drop-in is present on disk but absent from
     /// `delta.after.drop_ins` (Stage 2 classifies it as Removed), the
     /// file is deleted, `files_changed` increments, and the restart
     /// cycle fires. Operator drop-ins CAN appear in `drop_in_changes`
@@ -10097,7 +10089,7 @@ mod tests {
 
     #[test]
     fn execute_update_runner_in_place_before_caches_none_skips_diff() {
-        // before_caches == None ⇒ pre-#271 runner. Skip the diff;
+        // before_caches == None ⇒ pre-annotation runner. Skip the diff;
         // neither add nor remove must fire even though `after.caches`
         // is non-empty (a fresh apply will land annotations and a
         // future edit can reconcile).
@@ -10128,7 +10120,7 @@ mod tests {
         );
     }
 
-    // ---- #336: cache_pool_group naming ----------------------------
+    // ---- cache_pool_group naming ----------------------------------
 
     /// `cache_pool_group` returns the canonical "ghars-cache-{pool}"
     /// pattern. Pinned so future call sites can't drift to a different
@@ -10147,9 +10139,9 @@ mod tests {
     /// `CACHE_POOL_NAME_MAX_LEN` pool + `CACHE_GROUP_PREFIX` prefix =
     /// `SYSTEMD_GROUP_NAME_MAX`. Pool names longer than
     /// `CACHE_POOL_NAME_MAX_LEN` chars produce group names that exceed
-    /// systemd's `SYSTEMD_GROUP_NAME_MAX`-char limit (#336 + #402 + #426
-    /// — input cap at `validators::validate_cache_pool_name`; this
-    /// property test pins the output invariant as defense-in-depth).
+    /// systemd's `SYSTEMD_GROUP_NAME_MAX`-char limit — input cap at
+    /// `validators::validate_cache_pool_name`; this property test pins
+    /// the output invariant as defense-in-depth.
     ///
     /// The proptest regex literal cannot reference `CACHE_POOL_NAME_MAX_LEN`
     /// directly because `string_regex` is a const-time string template;
@@ -10195,9 +10187,9 @@ mod tests {
         }
     }
 
-    // ---------- #597: call-site sanitization wiring pins (apply.rs) ------
+    // ---------- call-site sanitization wiring pins (apply.rs) -----------
 
-    /// #597 (a): pin that `UndoStep::WriteFile::describe()` runs the
+    /// Pin that `UndoStep::WriteFile::describe()` runs the
     /// path through `escape_control_chars`. Helper-level coverage
     /// already lives in `lib.rs`; this test drives the real production
     /// `describe()` method with a hostile path containing `\x1b[31m`,
@@ -10211,7 +10203,7 @@ mod tests {
     /// arm would compile and pass other describe() tests, but
     /// re-introduce the ANSI-hijack attack surface for that variant.
     /// WriteFile is the canary — symmetric coverage is one assertion
-    /// chain across all 13 (#589 covers the field-set audit).
+    /// chain across all 13 (a separate field-set audit covers the rest).
     #[test]
     fn undo_step_write_file_describe_escapes_hostile_path() {
         let hostile = Utf8PathBuf::from("/etc/ghars/\x1b[31mshim.conf");
@@ -10238,11 +10230,11 @@ mod tests {
         );
     }
 
-    /// #597 (b): pin that the `apply()` per-action error path runs
+    /// Pin that the `apply()` per-action error path runs
     /// the inner `e.to_string()` through `escape_control_chars`
     /// before storing the result in
     /// `ApplyOutcome::Failed.error_summary`. The assertion is
-    /// load-bearing for the entire #516 contract — every consumer
+    /// load-bearing for the entire control-char escape contract — every consumer
     /// of `error_summary` (cmd_apply stderr render, JSON output,
     /// programmatic exit-code mapping) inherits the
     /// already-sanitized string from this construction site.
@@ -10323,7 +10315,7 @@ mod tests {
         );
     }
 
-    // ---------- #221: execute_update_runner recreate-branch tests -------
+    // ---------- execute_update_runner recreate-branch tests ------------
     //
     // These tests drive the recreate path through
     // `execute_update_runner` (which dispatches to
@@ -10333,7 +10325,7 @@ mod tests {
     // contracts (remove-fail short-circuits create; create-fail
     // bubbles after remove succeeded).
 
-    /// #221 T1: recreate full-success log ordering pin. When
+    /// T1: recreate full-success log ordering pin. When
     /// `delta.requires_recreate=true`, the ordered side-effect log
     /// must be: stop_unit → disable_unit (remove) → useradd → unit
     /// + drop-in writes → enable_unit → start_unit (create). Pin
@@ -10418,7 +10410,7 @@ mod tests {
         );
     }
 
-    /// #221 T2: remove-failure short-circuits create. When the
+    /// T2: remove-failure short-circuits create. When the
     /// recreate path's first half (`execute_remove_runner`) errors
     /// out, the second half (`execute_create_runner`) MUST NOT fire
     /// — the `?` operator on line 2646 propagates the Err. Pin via
@@ -10496,7 +10488,7 @@ mod tests {
         );
     }
 
-    /// #221 T3: create-failure-after-remove. Remove succeeds, then
+    /// T3: create-failure-after-remove. Remove succeeds, then
     /// create errors out at the "no runner_tarball and no resolved
     /// release" Validation gate (line 2354). The function returns
     /// Err with the create-side failure; execute_remove_runner's
@@ -10577,7 +10569,7 @@ mod tests {
         );
     }
 
-    /// #221 T4: orphan-skip-token-mint inside the recreate path.
+    /// T4: orphan-skip-token-mint inside the recreate path.
     /// `execute_remove_runner`'s deregister branch checks
     /// `identity.auth_name.is_empty() || identity.url.is_empty()`
     /// and skips `mint_token` + `run_remove` when either is empty.
@@ -10658,11 +10650,11 @@ mod tests {
         );
     }
 
-    /// #221 T5: outcome-is-Recreated. The recreate path explicitly
+    /// T5: outcome-is-Recreated. The recreate path explicitly
     /// returns `Ok(ApplyOutcome::Recreated)` (line 2648) — NOT
     /// the inner remove's `Removed` or create's `Created`. Pin
-    /// because cmd_apply rendering (#340) and the apply summary
-    /// footer (#476) both branch on the outcome variant; a
+    /// because cmd_apply rendering and the apply summary
+    /// footer both branch on the outcome variant; a
     /// refactor that returned `Created` instead would silently
     /// re-classify recreate actions and break the operator-visible
     /// disruption-class accounting.
@@ -10705,13 +10697,13 @@ mod tests {
             ApplyOutcome::Recreated => {}
             ApplyOutcome::Removed | ApplyOutcome::Created => panic!(
                 "recreate path must collapse inner Removed+Created into the Recreated \
-                 variant (#340 coordinator ruling); got {outcome:?}"
+                 variant; got {outcome:?}"
             ),
             other => panic!("expected Recreated; got {other:?}"),
         }
     }
 
-    /// #221 T6: runsvc_sha256-after-register pin. The recreate
+    /// T6: runsvc_sha256-after-register pin. The recreate
     /// path's create branch hashes `<runner_home>/runsvc.sh` AFTER
     /// `config.sh run_register` writes that file (line 2438), then
     /// re-renders the unit text + drop-ins with the populated
@@ -10719,7 +10711,7 @@ mod tests {
     /// `00-ghars.conf` match the SHA256 of the runsvc.sh body the
     /// MockConfigShell wrote at register time. A regression where
     /// the hash is computed BEFORE register (or skipped entirely)
-    /// would re-introduce SEC-02 (#214) — runsvc-wrapper's
+    /// would re-introduce SEC-02 — runsvc-wrapper's
     /// annotation comparison would fail at every unit start.
     #[test]
     fn execute_update_runner_recreate_writes_runsvc_sha256_from_post_register_bytes() {
@@ -10783,7 +10775,7 @@ mod tests {
         );
     }
 
-    /// #221 T7 (teammate's item 2): MockSystemd `stop_unit` failure
+    /// T7: MockSystemd `stop_unit` failure
     /// short-circuits the entire recreate path. The recreate branch
     /// dispatches `execute_remove_runner` first; that function's very
     /// first systemd call is `deps.systemd.stop_unit(&unit_name)?` —
@@ -10863,11 +10855,11 @@ mod tests {
         );
     }
 
-    /// #221 T8 (teammate's item 3 enhancement): on the create-failure-
+    /// T8: on the create-failure-
     /// after-remove recreate path, the per-action `UndoLog` MUST contain
     /// the remove-side mutation steps recorded BEFORE create errored.
-    /// Pinned because the rollback advisory (#478) and the rollback-on-
-    /// failure walk (#281) both consume that log; if the create-fail
+    /// Pinned because the rollback advisory and the rollback-on-
+    /// failure walk both consume that log; if the create-fail
     /// path inadvertently reset / dropped the remove-side steps, the
     /// operator would see a misleading "no mutations recorded" advisory
     /// despite a half-removed runner on disk.
@@ -10984,9 +10976,9 @@ mod tests {
         );
     }
 
-    // ---------- #597: ApplyOutcome::Failed.detail() with newline -------
+    // ---------- ApplyOutcome::Failed.detail() with newline -------------
 
-    /// #597 (item 2): pin that `ApplyOutcome::Failed.detail()` returns
+    /// Pin that `ApplyOutcome::Failed.detail()` returns
     /// the pre-sanitized `error_summary` verbatim with no raw newline
     /// surviving. The escape happens at construction time inside
     /// `apply()` (apply.rs `escape_control_chars(&e.to_string()).into_owned()`,
@@ -11003,8 +10995,9 @@ mod tests {
     ///       `char::escape_default('\n')` emits.
     ///   (ii) Round-trip integrity: detail() returns the same bytes
     ///        that were stored in error_summary (no double-escape, no
-    ///        mutation). #595 doc says detail() is verbatim from
-    ///        error_summary.
+    ///        mutation). The doc-comment on
+    ///        `ApplyOutcome::Failed.error_summary` says detail() is
+    ///        verbatim from error_summary.
     #[test]
     fn apply_outcome_failed_detail_has_no_raw_newline_when_pre_sanitized() {
         // Simulate what the apply()-loop construction site does:
@@ -11045,7 +11038,7 @@ mod tests {
         );
 
         // (ii) Round-trip with error_summary: detail() returns the
-        // stored bytes verbatim, no double-escape. The #595 doc on
+        // stored bytes verbatim, no double-escape. The doc-comment on
         // ApplyOutcome::Failed.error_summary specifies
         // pre-sanitized-at-construction; detail() simply clones.
         assert_eq!(
@@ -11171,7 +11164,7 @@ mod tests {
     /// WO-S11C item 5: per-variant `UndoStep::describe()` escape pin.
     /// Helper-level coverage already lives in `lib.rs`; the WriteFile
     /// arm is pinned at
-    /// `undo_step_write_file_describe_escapes_hostile_path` (#597 a).
+    /// `undo_step_write_file_describe_escapes_hostile_path`.
     /// This test extends the wiring pin to the remaining variants and
     /// the second interpolated field of `GitHubRegistration`.
     ///
@@ -11401,8 +11394,7 @@ mod tests {
     /// discriminator: without `rollback_on_failure=true` the count
     /// would be 1 (remove-side only); with rollback it must be 2
     /// (remove-side + undo-walk inverse). Asserting `contains` alone
-    /// would pass the no-rollback path silently — see Adversary C /
-    /// Tester F1 finding from #599 pass 1.
+    /// would pass the no-rollback path silently.
     #[test]
     fn execute_update_runner_recreate_create_failure_with_rollback() {
         let tmp = tempfile::tempdir().unwrap();
@@ -11506,8 +11498,7 @@ mod tests {
         //
         // Without rollback this count would be 1 (remove-side only);
         // with rollback it must be 2 (remove-side + undo walk).
-        // Asserting `contains` alone is NOT a valid discriminator —
-        // see Adversary C / Tester F1 finding from #599 pass 1.
+        // Asserting `contains` alone is NOT a valid discriminator.
         let added = users.added.lock().unwrap().clone();
         let removed = users.removed.lock().unwrap().clone();
         assert!(
