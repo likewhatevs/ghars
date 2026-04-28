@@ -2588,6 +2588,37 @@ mod tests {
         );
     }
 
+    /// `render_identity` sorts `spec.labels` alphabetically before
+    /// emitting the `X-Ghars-Labels=` annotation, regardless of the
+    /// order they arrive in. `merge_defaults` already sorts (plan.rs
+    /// line 924); this test pins the defense-in-depth re-sort at the
+    /// emission site (line 1334) so a direct EffectiveRunnerSpec
+    /// constructor that bypasses `merge_defaults` still produces a
+    /// canonical on-disk annotation. A regression dropping the sort
+    /// at the emission site would surface here as the line carrying
+    /// the unsorted construction order.
+    #[test]
+    fn render_identity_emits_labels_sorted() {
+        // Build the spec DIRECTLY (no merge_defaults) so the test
+        // proves the emission-site sort is load-bearing.
+        let mut spec = minimal_spec();
+        spec.labels = vec![
+            "zebra".into(),
+            "alpha".into(),
+            "middle".into(),
+        ];
+        let r = render_runner_unit(&spec).expect("clean spec must render");
+        let id = r.drop_ins.get("00-ghars.conf").unwrap();
+        // Exact-line pin: `X-Ghars-Labels=alpha,middle,zebra` followed
+        // by `\n`. Any other order (insertion: zebra,alpha,middle;
+        // reverse: zebra,middle,alpha) would not contain this exact
+        // substring.
+        assert!(
+            id.contains("\nX-Ghars-Labels=alpha,middle,zebra\n"),
+            "X-Ghars-Labels= must emit values in alphabetical order; got drop-in:\n{id}"
+        );
+    }
+
     /// #286 propagation: render_runner_unit must surface the
     /// `check_identity_field` error verbatim (it's not swallowed
     /// or wrapped with a layer that obscures the offending field).

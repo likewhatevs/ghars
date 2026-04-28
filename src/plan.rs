@@ -5240,6 +5240,86 @@ mod tests {
             proptest::prop_assert_eq!(eff.labels, expected);
         }
 
+        // Property: labels sort is stable across the FULL LABEL_RE
+        // charset (`^[a-zA-Z0-9._-]+$` per validators.rs:173), not
+        // just the lowercase-alphanumeric subset the sibling
+        // `prop_merge_defaults_labels_concat_dedup_sorted` uses.
+        // `merge_defaults` calls `labels.sort_unstable()` (plan.rs
+        // line 924), which uses byte-wise `Ord`. The byte-wise Ord
+        // agrees with operator intent ONLY for the ASCII subset the
+        // validator allows; this property pins that expectation by
+        // exercising uppercase + digits + `._-` separators
+        // alongside lowercase letters. A mutation that swaps the
+        // sort to a locale-dependent collation or that elides the
+        // sort entirely surfaces here as inputs whose merged output
+        // is non-monotonic in byte order.
+        #[test]
+        fn prop_merge_defaults_labels_sorted_full_charset(
+            // Generate label strings drawing from the full LABEL_RE
+            // alphabet. ASCII byte-wise Ord on this charset matches
+            // the canonical contract.
+            run_labels in prop::collection::vec(
+                "[a-zA-Z0-9._-]{1,8}",
+                0..5,
+            ),
+            def_labels in prop::collection::vec(
+                "[a-zA-Z0-9._-]{1,8}",
+                0..5,
+            ),
+        ) {
+            let runner = {
+                let mut r = minimal_runner("rt");
+                r.labels = run_labels.clone();
+                r
+            };
+            let defaults = Defaults {
+                labels: def_labels.clone(),
+                ..Defaults::default()
+            };
+            let eff = merge_defaults(
+                &runner,
+                &defaults,
+                "pat".into(),
+                vec![],
+                None,
+                None,
+                None,
+                Arch::X86_64,
+                "/etc/ghars/ghars.toml".into(),
+            );
+            // Monotonic in byte order: every adjacent pair must
+            // satisfy `prev <= next`. A regression that drops the
+            // sort would produce an unsorted Vec; a regression that
+            // sorts via a different collation would fail on inputs
+            // where the two orders diverge (e.g. uppercase before
+            // lowercase under ASCII byte order; opposite under
+            // case-folded collation).
+            for w in eff.labels.windows(2) {
+                proptest::prop_assert!(
+                    w[0] <= w[1],
+                    "labels must be byte-wise sorted; got pair: {:?}, {:?} in {:?}",
+                    w[0],
+                    w[1],
+                    eff.labels
+                );
+            }
+            // Defense-in-depth: result must equal a manual sort of
+            // the dedup'd union of both inputs (or the singleton
+            // [name] fallback if both were empty).
+            let mut expected: Vec<String> = Vec::new();
+            let mut seen: HashSet<String> = HashSet::new();
+            for l in def_labels.iter().chain(run_labels.iter()) {
+                if seen.insert(l.clone()) {
+                    expected.push(l.clone());
+                }
+            }
+            if expected.is_empty() {
+                expected.push("rt".to_string());
+            }
+            expected.sort();
+            proptest::prop_assert_eq!(eff.labels, expected);
+        }
+
         // Property: Hardening Option<bool> fields use `.or()` —
         // runner Some wins, runner None inherits defaults.
         #[test]
@@ -7183,6 +7263,234 @@ labels  = ["alpha", "beta"]
         assert_eq!(
             caches_change.after,
             FieldValue::List(vec!["pool-b".into(), "pool-d".into()])
+        );
+    }
+
+    // ---- labels classifier edge cases (parity with caches) ------------
+    //
+    // These tests exercise the `labels` branch of
+    // `classify_recreate_reasons_from_annotations` directly. Labels are
+    // set-semantic for GitHub Actions registration (workflow `runs-on:`
+    // matches the registered label set order-independently), so the
+    // classifier sorts BOTH sides before comparison — a pure reorder
+    // must not surface as a `labels` recreate reason / FieldChange.
+
+    /// Helper: build a `DiscoveredAnnotations` with labels set to the
+    /// given list (Some) or unset (None for the post-upgrade fixture).
+    /// All other fields default; the classifier reads each branch
+    /// independently so this isolates the labels comparison.
+    fn anns_with_labels(labels: Option<&[&str]>) -> DiscoveredAnnotations {
+        DiscoveredAnnotations {
+            labels: labels.map(|s| s.iter().map(|c| (*c).to_owned()).collect()),
+            ..DiscoveredAnnotations::default()
+        }
+    }
+
+    /// Helper: build an `EffectiveRunnerSpec` whose `labels` is the
+    /// given list. `spec_with_url` invokes `merge_defaults`, which
+    /// already sorts labels — but the helper accepts a Vec the caller
+    /// has set explicitly so tests can control the ordering at the
+    /// pre-classifier boundary. Mirrors `spec_with_cache_names` for
+    /// the caches edge cases above.
+    fn spec_with_label_names(names: &[&str]) -> EffectiveRunnerSpec {
+        let mut spec = spec_with_url("a", "https://github.com/example/repo");
+        spec.labels = names.iter().map(|n| (*n).to_owned()).collect();
+        spec
+    }
+
+    /// Pure reorder (discovered = ["beta","alpha"], desired = ["alpha","beta"])
+    /// MUST be silent. Mirrors `classify_caches_reorder_is_silent` —
+    /// labels share the set-semantic treatment per the comment block
+    /// above the labels branch in `classify_recreate_reasons_from_annotations`.
+    /// A regression that drops the sort on either side would surface
+    /// here as a spurious `labels` reason + FieldChange.
+    #[test]
+    fn classify_labels_reorder_is_silent() {
+        let anns = anns_with_labels(Some(&["beta", "alpha"]));
+        let desired = spec_with_label_names(&["alpha", "beta"]);
+        let mut changes = Vec::new();
+        let reasons = classify_recreate_reasons_from_annotations(&anns, &desired, &mut changes);
+        assert!(
+            !reasons.iter().any(|r| *r == "labels"),
+            "reorder is set-equal ⇒ no labels recreate reason; got {reasons:?}"
+        );
+        assert!(
+            !changes.iter().any(|c| c.path == "labels"),
+            "reorder is set-equal ⇒ no FieldChange; got {changes:?}"
+        );
+    }
+
+    /// Grow from N to N+1 labels. Membership change MUST surface as a
+    /// FieldChange with both before/after rendered in sorted order
+    /// (the canonical form GitHub will see at registration time).
+    /// Symmetric with `classify_caches_grow_emits_field_change_sorted`.
+    #[test]
+    fn classify_labels_grow_emits_field_change_sorted() {
+        let anns = anns_with_labels(Some(&["a"]));
+        let desired = spec_with_label_names(&["b", "a"]);
+        let mut changes = Vec::new();
+        let reasons = classify_recreate_reasons_from_annotations(&anns, &desired, &mut changes);
+        // Labels are recreate-class per the classifier — record the
+        // typed reason AND the FieldChange.
+        assert!(
+            reasons.iter().any(|r| *r == "labels"),
+            "grow must record `labels` recreate reason; got {reasons:?}"
+        );
+        let labels_change = changes
+            .iter()
+            .find(|c| c.path == "labels")
+            .expect("grow must record labels FieldChange");
+        // Both sides sorted: before is ["a"]; after is ["a","b"]
+        // (sorted, NOT desired's insertion order ["b","a"]).
+        assert_eq!(labels_change.before, FieldValue::List(vec!["a".into()]));
+        assert_eq!(
+            labels_change.after,
+            FieldValue::List(vec!["a".into(), "b".into()])
+        );
+    }
+
+    /// `discovered.labels = None` (pre-upgrade runner that predates the
+    /// X-Ghars-Labels emit, or a runner whose 00-ghars.conf was
+    /// hand-edited to drop the line). Classifier MUST skip the labels
+    /// comparison — comparing None against any desired Vec would
+    /// falsely fire on the first apply post-upgrade. Mirrors
+    /// `classify_caches_none_annotation_skips_diff`.
+    #[test]
+    fn classify_labels_none_annotation_skips() {
+        let anns = anns_with_labels(None);
+        let desired = spec_with_label_names(&["a", "b"]);
+        let mut changes = Vec::new();
+        let reasons = classify_recreate_reasons_from_annotations(&anns, &desired, &mut changes);
+        assert!(
+            !reasons.iter().any(|r| *r == "labels"),
+            "None annotation must skip labels comparison; got {reasons:?}"
+        );
+        assert!(
+            !changes.iter().any(|c| c.path == "labels"),
+            "None annotation must NOT emit labels FieldChange; got {changes:?}"
+        );
+    }
+
+    // ---- delta.before_caches sort site (plan.rs:2074) ------------------
+
+    /// `RunnerDelta.before_caches` is sorted at the population site in
+    /// `plan_from`'s intersection branch so operator-facing surfaces
+    /// (--diff output, plan JSON, error messages naming "removed
+    /// pools") see canonical alphabetical order regardless of the
+    /// order the on-disk `X-Ghars-Caches=` annotation happened to be
+    /// written in. Drive plan_from end-to-end with a discovered
+    /// annotation in non-canonical order; assert the populated
+    /// `delta.before_caches` is sorted. A regression that drops the
+    /// sort would surface here as Vec equality against the unsorted
+    /// input order.
+    #[test]
+    fn delta_before_caches_is_sorted_for_display() {
+        // Strategy: synthesize an old EffectiveRunnerSpec with caches
+        // ["pool-a","pool-m","pool-z"] (canonical order so render
+        // produces a clean drop-in body), then overwrite the
+        // X-Ghars-Caches annotation in the discovered drop-in with a
+        // non-canonical order (`pool-z,pool-a,pool-m`). The
+        // intersection branch in plan_from reads this annotation and
+        // populates `delta.before_caches` after sorting at the
+        // population site (plan.rs:2080 — `sort_unstable()`). New
+        // desired spec adds a `pool-new` cache, forcing an
+        // UpdateRunner whose `before_caches` we inspect.
+        let mut cfg = config_with_runners(vec![{
+            let mut r = minimal_runner("a");
+            r.caches = vec![
+                "pool-a".into(),
+                "pool-m".into(),
+                "pool-new".into(),
+                "pool-z".into(),
+            ];
+            r
+        }]);
+        // Inject the cache pool definitions so lower_to_effective can
+        // resolve the bindings.
+        for name in ["pool-a", "pool-m", "pool-new", "pool-z"] {
+            cfg.cache_pools.insert(
+                name.into(),
+                crate::config::CachePoolSpec {
+                    kinds: vec![CacheKind::Sccache],
+                    size: "5G".into(),
+                    mode: CacheMode::Shared,
+                    trust_zone: "default".into(),
+                },
+            );
+        }
+        // Old runner had only 3 caches (no pool-new) so the desired
+        // diff is "grow by one new pool" — in-place UpdateRunner.
+        let mut old_runner = cfg.runners[0].clone();
+        old_runner.caches.retain(|n| n != "pool-new");
+        let old_bindings: Vec<EffectiveCacheBinding> = ["pool-a", "pool-m", "pool-z"]
+            .iter()
+            .map(|n| EffectiveCacheBinding {
+                name: (*n).into(),
+                kinds: vec![CacheKind::Sccache],
+                size: "5G".into(),
+                mode: CacheMode::Shared,
+                trust_zone: "default".into(),
+            })
+            .collect();
+        let mut old_spec = merge_defaults(
+            &old_runner,
+            &cfg.defaults,
+            "pat".into(),
+            old_bindings,
+            None,
+            None,
+            None,
+            Arch::X86_64,
+            cfg_source_default(),
+        );
+        old_spec.spec_hash = spec_hash(&old_spec);
+        // Build a discovered runner whose 00-ghars.conf body lists the
+        // caches in non-canonical order. parse-side accepts whatever
+        // is on disk; the sort happens at the population site.
+        let mut discovered = discovered_for("a", &old_spec, Drift::InSync);
+        let body = discovered
+            .drop_ins
+            .get("00-ghars.conf")
+            .expect("renderer always emits 00-ghars.conf")
+            .clone();
+        let new_body = body
+            .lines()
+            .map(|line| {
+                if line.starts_with("X-Ghars-Caches=") {
+                    "X-Ghars-Caches=pool-z,pool-a,pool-m".to_string()
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        discovered.drop_ins.insert("00-ghars.conf".into(), new_body);
+
+        let mut actual = empty_actual();
+        actual.runners.insert("a".into(), discovered);
+        let plan = plan_from(&cfg, &actual, &empty_paths()).expect("plan must succeed");
+        let delta = plan
+            .actions
+            .iter()
+            .find_map(|a| match a {
+                Action::UpdateRunner(d) => Some(d),
+                _ => None,
+            })
+            .expect("caches grow must emit UpdateRunner");
+        let before = delta
+            .before_caches
+            .as_ref()
+            .expect("intersection branch must populate before_caches");
+        // Sorted (alphabetical), NOT the on-disk order ["pool-z","pool-a","pool-m"].
+        assert_eq!(
+            before,
+            &vec![
+                "pool-a".to_string(),
+                "pool-m".to_string(),
+                "pool-z".to_string()
+            ],
+            "before_caches must be sorted; got: {before:?}"
         );
     }
 
