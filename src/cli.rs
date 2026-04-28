@@ -13211,7 +13211,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #663: the (false,false) "exactly one" hint includes both
+    /// The (false,false) "exactly one" hint includes both
     /// canonical example values. Symmetric with the (true,true) pin.
     #[test]
     fn validate_pat_xor_rejects_neither_set_with_concrete_example_hints() {
@@ -13225,7 +13225,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #631: precedence — `(Some(""), Some(""))` is BOTH XOR-violating
+    /// Precedence — `(Some(""), Some(""))` is BOTH XOR-violating
     /// (both fields set) AND empty (each value is empty). The
     /// validator emits the empty-token_env diagnostic FIRST because
     /// the empty/whitespace gate fires before the XOR tuple match.
@@ -13250,7 +13250,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #631 (whitespace variant): `(Some(" "), Some(" "))` — same
+    /// Whitespace variant: `(Some(" "), Some(" "))` — same
     /// precedence as the (Some(""), Some("")) case. Both fields are
     /// whitespace-only AND both are set. The empty-or-whitespace
     /// gate fires first; the XOR gate is unreachable. Pinned so the
@@ -13271,7 +13271,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #631 (token_file precedence): `(None, Some(""))` — only
+    /// Token_file precedence: `(None, Some(""))` — only
     /// token_file is set, and it is empty. The empty-token_file arm
     /// must fire and emit the "token_file is empty or whitespace-
     /// only" diagnostic, NOT the (false, false) "exactly one"
@@ -13294,12 +13294,12 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #638: loop continuation — when `[auth.interactive]` (a non-Pat
+    /// Loop continuation — when `[auth.interactive]` (a non-Pat
     /// variant) precedes a misconfigured `[auth.pat]` in source
     /// order, the validator must walk past the non-Pat entry and
-    /// surface the Pat error. Pre-fix this was implicit (the loop
-    /// no-ops on non-Pat variants), but no test pinned the
-    /// continuation contract — a regression that early-returned on
+    /// surface the Pat error. The loop no-ops on non-Pat variants,
+    /// but without this test the continuation contract is unpinned —
+    /// a regression that early-returned on
     /// the first non-Pat variant would silently let bad Pat configs
     /// flow through cmd_plan/cmd_status. IndexMap preserves insert
     /// order, so the fixture builds [interactive, pat] in that
@@ -13327,7 +13327,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #638 reverse direction: bad Pat FIRST, non-Pat variant after.
+    /// Reverse direction: bad Pat FIRST, non-Pat variant after.
     /// The validator must surface the Pat error on the first iteration
     /// (early return) without examining the trailing non-Pat entry.
     /// Pinned alongside the [interactive, pat] direction so a
@@ -13357,7 +13357,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #639: multi-Pat — when one `[auth.NAME]` is a valid Pat and a
+    /// Multi-Pat — when one `[auth.NAME]` is a valid Pat and a
     /// second `[auth.NAME]` is a bad Pat, the validator surfaces only
     /// the bad one (and scopes the error to its name). Pinned so a
     /// regression that aborts on the first Pat regardless of shape
@@ -13396,7 +13396,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #639 reverse direction: bad Pat FIRST, good Pat SECOND. The
+    /// Reverse direction: bad Pat FIRST, good Pat SECOND. The
     /// validator iterates in IndexMap insert order and must early-
     /// return on the bad Pat without examining the trailing good
     /// one. Pins the early-return contract: the loop fires on the
@@ -13437,7 +13437,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #639 both-bad-Pat: when BOTH Pat entries are misconfigured,
+    /// Both-bad-Pat: when BOTH Pat entries are misconfigured,
     /// the validator early-returns on the FIRST bad Pat (insert
     /// order) and never examines the second. Pinned so a regression
     /// that "accumulates" failures across multiple Pat entries (or
@@ -13467,13 +13467,13 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #613/#640: non-Pat AuthSpec variants (`Interactive`, `TokenFile`,
+    /// Non-Pat AuthSpec variants (`Interactive`, `TokenFile`,
     /// `GithubApp`) have no XOR shape to validate. The validator
     /// loop walks every entry but no-ops on non-Pat variants. Pinned
     /// so a future regression that fires on non-Pat variants is
     /// caught.
     ///
-    /// Renamed from `_skips_` to `_accepts_` (#640) for naming
+    /// Named `_accepts_` for naming
     /// consistency with sibling positive tests
     /// (`_accepts_token_env_only`, `_accepts_token_file_only`) —
     /// "accepts" describes the observable contract (Ok return);
@@ -13496,9 +13496,9 @@ token_env = \"GHARS_PAT\"";
         validate_pat_xor(&cfg).expect("non-Pat AuthSpec variants must pass validation");
     }
 
-    // -------- WO-S16A new tests (#669/#672/#674/#675/#676) -------------
+    // -------- token_env / token_file shape gate tests -----------------
 
-    /// #672 (RLO Trojan Source): `token_env` containing U+202E
+    /// RLO Trojan Source: `token_env` containing U+202E
     /// (Right-to-Left Override) rejects via the hidden-char gate.
     /// Load-bearing for the security claim that bidi-override
     /// attacks (Boucher & Anderson 2021) cannot reach apply-time
@@ -13517,7 +13517,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #672 (RLO Trojan Source on token_file): symmetric with the
+    /// RLO Trojan Source on token_file: symmetric with the
     /// token_env RLO pin above. A `token_file` path containing U+202E
     /// (Right-to-Left Override) rejects via the hidden-char gate.
     /// RLO inside a path is a credible attack surface — bidi-rendered
@@ -13538,9 +13538,9 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #672: `token_env` containing U+200E (LRM, Left-to-Right Mark)
+    /// `token_env` containing U+200E (LRM, Left-to-Right Mark)
     /// rejects via the hidden-char gate. LRM is in the U+200B..U+200F
-    /// block expanded in #672. Pinned to catch a regression that
+    /// block. Pinned to catch a regression that
     /// re-narrows the explicit set to just ZWSP/ZWNJ/ZWJ.
     #[test]
     fn validate_pat_xor_rejects_token_env_with_left_to_right_mark() {
@@ -13554,9 +13554,9 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #672: `token_env` containing U+2066 (LRI, Left-to-Right
+    /// `token_env` containing U+2066 (LRI, Left-to-Right
     /// Isolate) rejects via the hidden-char gate. Bidi isolate from
-    /// the U+2066..U+2069 block expanded in #672.
+    /// the U+2066..U+2069 block.
     #[test]
     fn validate_pat_xor_rejects_token_env_with_bidi_isolate() {
         let cfg = cfg_with_pat_auth("pat", Some("FOO\u{2066}BAR"), None);
@@ -13731,9 +13731,9 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #672: `token_env` containing U+061C (Arabic Letter Mark)
+    /// `token_env` containing U+061C (Arabic Letter Mark)
     /// rejects via the hidden-char gate. ALM is one of the
-    /// individually-listed Cf-class chars expanded in #672.
+    /// individually-listed Cf-class chars.
     #[test]
     fn validate_pat_xor_rejects_token_env_with_arabic_letter_mark() {
         let cfg = cfg_with_pat_auth("pat", Some("FOO\u{061C}BAR"), None);
@@ -13746,16 +13746,16 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #676: `token_file = "/etc/ghars/with\nnewline"` (embedded
-    /// newline in a path) now rejects via the hidden-char gate.
-    /// Pre-#676 the `\t` `\n` `\r` carve-out whitelisted these
-    /// chars, so a path with a literal newline survived the
-    /// hidden-char scan and the trim-mismatch gate (the path's
-    /// edges had no whitespace) — flowing through to apply where
-    /// `open(2)` would either succeed on a bizarre path or fail
-    /// with confusing diagnostics. Post-#676 the carve-out is
-    /// dropped: ALL Cc chars reject in token_file. Defense-in-depth
-    /// pin against operator typos and attacker-injected paths.
+    /// `token_file = "/etc/ghars/with\nnewline"` (embedded
+    /// newline in a path) rejects via the hidden-char gate.
+    /// ALL Cc chars reject in token_file — there is no `\t`
+    /// `\n` `\r` carve-out, so a path with a literal newline
+    /// cannot survive the hidden-char scan and slip past the
+    /// trim-mismatch gate (which only catches whitespace at the
+    /// path's edges) into apply where `open(2)` would either
+    /// succeed on a bizarre path or fail with confusing
+    /// diagnostics. Defense-in-depth pin against operator typos
+    /// and attacker-injected paths.
     #[test]
     fn validate_pat_xor_rejects_token_file_with_embedded_newline() {
         let cfg = cfg_with_pat_auth("pat", None, Some("/etc/ghars/with\nnewline"));
@@ -13768,10 +13768,10 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #676: `token_file` with embedded TAB (U+0009) rejects
-    /// post-#676. Symmetric with the embedded-newline pin; the
-    /// pre-#676 carve-out covered all three of \t \n \r. Pinned so
-    /// a regression that re-introduces any one of the three is
+    /// `token_file` with embedded TAB (U+0009) rejects via the
+    /// control-char arm. Symmetric with the embedded-newline pin;
+    /// the all-Cc rejection covers \t \n \r uniformly. Pinned
+    /// so a regression that carves out any one of the three is
     /// caught.
     #[test]
     fn validate_pat_xor_rejects_token_file_with_embedded_tab() {
@@ -13785,7 +13785,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #674: `token_env = "_"` (single underscore) — the shortest
+    /// `token_env = "_"` (single underscore) — the shortest
     /// legal POSIX env var name MUST pass. Boundary check on the
     /// regex's first-char class `[A-Za-z_]` paired with the `*`
     /// quantifier on the trailing chars (zero-or-more allows a
@@ -13796,7 +13796,7 @@ token_env = \"GHARS_PAT\"";
         validate_pat_xor(&cfg).expect("single-underscore POSIX token_env must pass shape gate");
     }
 
-    /// #674: multi-Pat where the first bad Pat fails on charset and
+    /// Multi-Pat where the first bad Pat fails on charset and
     /// the second bad Pat fails on hidden-char. The validator
     /// early-returns on the FIRST bad Pat — the diagnostic must
     /// surface the charset gate's text, never the hidden-char text.
@@ -13821,7 +13821,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #674 reverse-ordering pin: multi-Pat where the lexicographically
+    /// Reverse-ordering pin: multi-Pat where the lexicographically
     /// FIRST entry (BTreeMap iteration order) fails on hidden-char and
     /// the second entry fails on charset. The validator early-returns
     /// on the first bad Pat — the diagnostic must surface the
@@ -13848,7 +13848,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #675: `token_env` with a Cyrillic letter (U+0411 CYRILLIC
+    /// `token_env` with a Cyrillic letter (U+0411 CYRILLIC
     /// CAPITAL LETTER BE) rejects via the POSIX charset gate. The
     /// regex's `[A-Za-z]` class is ASCII-only; non-ASCII letters
     /// fail. Pinned so a regression that loosens the regex to
@@ -13865,7 +13865,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #675: `token_env` with a fullwidth digit (U+FF11 FULLWIDTH
+    /// `token_env` with a fullwidth digit (U+FF11 FULLWIDTH
     /// DIGIT ONE) rejects via the POSIX charset gate. Fullwidth
     /// digits are Unicode `Nd` general category but outside the
     /// ASCII `[0-9]` class. Pinned alongside Cyrillic so a future
@@ -13882,7 +13882,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #675: `token_env = "FOO.BAR"` (embedded dot) rejects via the
+    /// `token_env = "FOO.BAR"` (embedded dot) rejects via the
     /// POSIX charset gate. Dot is a common shell-config typo for
     /// underscore — operators sometimes write `MY.VAR` thinking
     /// it's valid. The regex anchors charset to `[A-Za-z0-9_]` so
@@ -13899,7 +13899,7 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #675: `token_env = "FOO$BAR"` (embedded dollar) rejects via
+    /// `token_env = "FOO$BAR"` (embedded dollar) rejects via
     /// the POSIX charset gate. Dollar is the shell variable
     /// expansion sigil — operators sometimes paste the SHELL
     /// REFERENCE form instead of the NAME. Pinned so the gate
@@ -13916,11 +13916,11 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    // -------- #678: Mn-class combining-mark rejection -------------------
+    // -------- Mn-class combining-mark rejection ------------------------
 
-    /// #678: `is_disallowed_hidden_char(U+0300)` (COMBINING GRAVE
+    /// `is_disallowed_hidden_char(U+0300)` (COMBINING GRAVE
     /// ACCENT, general category Mn — Mark, nonspacing) returns
-    /// true via the new Mn-class arm. Pre-#678 only the explicit
+    /// true via the Mn-class arm. Without this arm only the explicit
     /// listed Mn codepoints (CGJ U+034F, variation selectors
     /// U+FE00..=U+FE0F) rejected; arbitrary combining marks like
     /// U+0300..=U+036F passed through. Pinned to catch a regression
@@ -13930,7 +13930,7 @@ token_env = \"GHARS_PAT\"";
         assert!(is_disallowed_hidden_char('\u{0300}'));
     }
 
-    /// #678: `is_disallowed_hidden_char(U+0301)` (COMBINING ACUTE
+    /// `is_disallowed_hidden_char(U+0301)` (COMBINING ACUTE
     /// ACCENT, also Mn) returns true. Pinned alongside U+0300 so
     /// the property is exercised at both ends of the
     /// combining-diacritical-marks block (U+0300..=U+036F).
@@ -13939,7 +13939,7 @@ token_env = \"GHARS_PAT\"";
         assert!(is_disallowed_hidden_char('\u{0301}'));
     }
 
-    /// #678: `is_disallowed_hidden_char('a')` returns false — base
+    /// `is_disallowed_hidden_char('a')` returns false — base
     /// ASCII letters are not Mn, not Cc, not in the explicit list.
     /// Negative pin so a regression that broadens the
     /// general-category check (e.g. accidentally rejects all
@@ -13949,7 +13949,7 @@ token_env = \"GHARS_PAT\"";
         assert!(!is_disallowed_hidden_char('a'));
     }
 
-    /// #678: `is_disallowed_hidden_char(U+00E0)` (LATIN SMALL LETTER
+    /// `is_disallowed_hidden_char(U+00E0)` (LATIN SMALL LETTER
     /// A WITH GRAVE, the precomposed NFC form of `a + U+0300`)
     /// returns false. U+00E0 is `Ll` (Letter, lowercase) — NOT Mn —
     /// so the precomposed form is safe to use in
@@ -13961,13 +13961,13 @@ token_env = \"GHARS_PAT\"";
         assert!(!is_disallowed_hidden_char('\u{00E0}'));
     }
 
-    /// #678: `token_file = "pa\u{0300}t"` (path containing a base
+    /// `token_file = "pa\u{0300}t"` (path containing a base
     /// `t` overlaid with COMBINING GRAVE ACCENT) rejects via the
     /// hidden-char gate. The Mn arm catches the U+0300 codepoint;
-    /// pre-#678 this would have flowed through every shape gate
+    /// without the Mn-class arm this would flow through every shape gate
     /// because `is_control()` doesn't catch combining marks and
-    /// the explicit list didn't cover the generic combining-
-    /// diacriticals block. Post-#694 the diagnostic is the
+    /// the explicit list doesn't cover the generic combining-
+    /// diacriticals block. The diagnostic is the
     /// dedicated "combining mark" + "precomposed (NFC)" form, not
     /// the generic "hidden character" framing — pinned alongside
     /// codepoint + byte offset so a regression that reverts the
@@ -13991,30 +13991,30 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// #693: regression pin — CGJ (U+034F COMBINING GRAPHEME JOINER)
-    /// was explicitly listed in `is_disallowed_hidden_char` pre-#678
-    /// and is now subsumed by the Mn-class arm. If the
-    /// `unicode-general-category` crate ever misclassifies U+034F
-    /// (e.g. via a UCD-table regeneration bug), this test surfaces
-    /// the regression — without an explicit codepoint listing the
-    /// Mn arm is the only line of defense.
+    /// Regression pin — CGJ (U+034F COMBINING GRAPHEME JOINER)
+    /// is rejected via the Mn-class arm of
+    /// `is_disallowed_hidden_char`. There is no explicit codepoint
+    /// listing for U+034F, so the Mn arm is the only line of
+    /// defense. If the `unicode-general-category` crate ever
+    /// misclassifies U+034F (e.g. via a UCD-table regeneration
+    /// bug), this test surfaces the regression.
     #[test]
     fn is_disallowed_hidden_char_rejects_combining_grapheme_joiner() {
         assert!(is_disallowed_hidden_char('\u{034F}'));
     }
 
-    /// #693: regression pin — VS-16 (U+FE0F VARIATION SELECTOR-16,
-    /// the emoji variant selector) was explicitly listed in
-    /// `is_disallowed_hidden_char` pre-#678 (as part of the
-    /// U+FE00..=U+FE0F range) and is now subsumed by the Mn-class
-    /// arm. If the unicode-general-category crate ever misclassifies
-    /// U+FE0F, this test surfaces it.
+    /// Regression pin — VS-16 (U+FE0F VARIATION SELECTOR-16,
+    /// the emoji variant selector) is rejected via the Mn-class
+    /// arm of `is_disallowed_hidden_char`. There is no explicit
+    /// codepoint listing for U+FE0F, so the Mn arm is the only
+    /// line of defense. If the unicode-general-category crate
+    /// ever misclassifies U+FE0F, this test surfaces it.
     #[test]
     fn is_disallowed_hidden_char_rejects_variation_selector() {
         assert!(is_disallowed_hidden_char('\u{FE0F}'));
     }
 
-    /// #696: negative pin — U+0903 DEVANAGARI SIGN VISARGA is Mc
+    /// Negative pin — U+0903 DEVANAGARI SIGN VISARGA is Mc
     /// (Spacing_Mark), NOT Mn. Defends against accidentally
     /// broadening the check to all Mark class (Mn+Mc+Me). Without
     /// this pin a future regression that swaps the
@@ -14026,9 +14026,9 @@ token_env = \"GHARS_PAT\"";
         assert!(!is_disallowed_hidden_char('\u{0903}'));
     }
 
-    // -------- #673: validate_auth_keys tests ----------------------------
+    // -------- validate_auth_keys tests ---------------------------------
 
-    /// #673: a properly-shaped auth key (matches IDENTIFIER_REGEX:
+    /// A properly-shaped auth key (matches IDENTIFIER_REGEX:
     /// lowercase letters + digits + dashes, starts with letter,
     /// ends with letter/digit) MUST pass validate_auth_keys. The
     /// canonical "pat" key from cfg_with_runner_trust_zone is the
@@ -14039,7 +14039,7 @@ token_env = \"GHARS_PAT\"";
         validate_auth_keys(&cfg).expect("canonical 'pat' auth key must pass");
     }
 
-    /// #673: an auth key matching the kebab-case identifier shape
+    /// An auth key matching the kebab-case identifier shape
     /// (multi-segment with internal dashes) MUST pass. Pinned so
     /// the regex `^[a-z]([a-z0-9-]*[a-z0-9])?$` is exercised at the
     /// multi-segment boundary, not just the single-word case.
@@ -14049,7 +14049,7 @@ token_env = \"GHARS_PAT\"";
         validate_auth_keys(&cfg).expect("kebab-case multi-segment auth key must pass");
     }
 
-    /// #673: an auth key with an underscore (e.g. "alpha_zone_creds")
+    /// An auth key with an underscore (e.g. "alpha_zone_creds")
     /// rejects via validate_identifier — IDENTIFIER_REGEX is
     /// kebab-only (`[a-z0-9-]`), no underscores. Operators
     /// migrating from snake_case TOML conventions need a clear
@@ -14081,7 +14081,7 @@ token_env = \"GHARS_PAT\"";
         }
     }
 
-    /// #673: an auth key with an uppercase letter rejects.
+    /// An auth key with an uppercase letter rejects.
     /// IDENTIFIER_REGEX is lowercase-only.
     #[test]
     fn validate_auth_keys_rejects_uppercase() {
@@ -14098,7 +14098,7 @@ token_env = \"GHARS_PAT\"";
         assert!(matches!(err, GharsError::Validation(..)));
     }
 
-    /// #673: an auth key starting with a dash rejects.
+    /// An auth key starting with a dash rejects.
     /// IDENTIFIER_REGEX requires a leading letter.
     #[test]
     fn validate_auth_keys_rejects_dash_leading() {
@@ -14115,7 +14115,7 @@ token_env = \"GHARS_PAT\"";
         assert!(matches!(err, GharsError::Validation(..)));
     }
 
-    /// #673: an empty auth key rejects via the empty-input arm of
+    /// An empty auth key rejects via the empty-input arm of
     /// validate_identifier. TOML allows empty quoted keys
     /// (`[auth.""]`), so this is reachable from operator input.
     #[test]
@@ -14133,7 +14133,7 @@ token_env = \"GHARS_PAT\"";
         assert!(matches!(err, GharsError::Validation(..)));
     }
 
-    /// #673: an auth key with embedded whitespace rejects. Pinned
+    /// An auth key with embedded whitespace rejects. Pinned
     /// to catch the case where TOML's quoted-key syntax allows
     /// `[auth."FOO BAR"]` as a literal string but the validator
     /// still surfaces a clear rejection.
@@ -14152,7 +14152,7 @@ token_env = \"GHARS_PAT\"";
         assert!(matches!(err, GharsError::Validation(..)));
     }
 
-    /// #673: validate_auth_keys walks every entry. When the first
+    /// validate_auth_keys walks every entry. When the first
     /// entry passes and the second fails, the validator surfaces
     /// the second's error. Pinned to catch a regression that early-
     /// returns on the first entry (only checking entry 0).
@@ -14186,7 +14186,7 @@ token_env = \"GHARS_PAT\"";
         }
     }
 
-    /// #673 load_config integration pin: a TOML config that has a
+    /// Load_config integration pin: a TOML config that has a
     /// shape-valid `[auth.NAME]` Pat block but uses a quoted key
     /// containing whitespace (`[auth."bad key"]`) MUST reject at
     /// load_config time via the validate_auth_keys gate, BEFORE the
@@ -14277,7 +14277,7 @@ auth = \"bad key\"
                      derived group prefix), not the identifier-cap layer; \
                      got: {msg}"
                 );
-                // #425 / #431-DA-1: hint covers BOTH callsite contexts —
+                // Hint covers BOTH callsite contexts —
                 // the [cache_pools.NAME] TOML key AND the [[runner]].caches
                 // reference list — so the operator isn't misdirected when
                 // the offender is a runner.caches entry rather than a
@@ -14297,7 +14297,7 @@ auth = \"bad key\"
         );
     }
 
-    /// #407 acceptance boundary: a runner.caches entry whose length
+    /// Acceptance boundary: a runner.caches entry whose length
     /// exactly equals `CACHE_POOL_NAME_MAX_LEN` must pass — and
     /// the same name as a cache_pools key must also pass. Pins the
     /// inclusive-of-MAX_LEN contract so a future tightening of the
@@ -14329,7 +14329,7 @@ auth = \"bad key\"
         });
     }
 
-    // -------- #434 (FIX 3): validate_user_overrides direct unit tests ------
+    // -------- validate_user_overrides direct unit tests ---------------
     //
     // The end-to-end variants
     // (`cmd_status_rejects_oversize_runner_user_via_load_config` /
@@ -14344,7 +14344,7 @@ auth = \"bad key\"
 
     /// `validate_user_overrides` direct call: a `[defaults] user = "..."`
     /// over the cap rejects with the `defaults:` scope prefix (no
-    /// per-runner scope). Pinned because pre-#434 the regex `{0,31}`
+    /// per-runner scope). Pinned because the regex `{0,31}`
     /// accepted 32-char names; the explicit length gate is what
     /// rejects them now, and this test exercises that gate at the
     /// defaults surface.
@@ -14406,7 +14406,7 @@ auth = \"bad key\"
         }
     }
 
-    // -------- #591: validate_prefix_overrides direct unit tests ------
+    // -------- validate_prefix_overrides direct unit tests -------------
     //
     // `validators::validate_prefix` existed but had no caller in the
     // config-load pipeline before this fix; an
@@ -14535,7 +14535,7 @@ auth = \"bad key\"
     /// End-to-end via `load_config`: a TOML fixture with a hostile
     /// `[defaults] prefix` containing a control char must reach
     /// `cmd_status` as a `Validation` error scoped to `defaults`
-    /// mentioning `prefix`. Pins the load_config wiring (#591) — a
+    /// mentioning `prefix`. Pins the load_config wiring — a
     /// future refactor that drops `validate_prefix_overrides` from
     /// the `load_config` dispatch chain would surface here.
     #[test]
@@ -14603,7 +14603,7 @@ auth = \"pat\"
         );
     }
 
-    /// #407 defense-in-depth: a runner.caches entry whose length exceeds
+    /// Defense-in-depth: a runner.caches entry whose length exceeds
     /// `CACHE_POOL_NAME_MAX_LEN` must reject at config load even when
     /// the cache_pools map itself is empty / valid. Today the planner's
     /// cross-reference rejects unknown names earlier, but that error
@@ -14634,10 +14634,10 @@ auth = \"pat\"
                     "msg must come from the cache-pool-cap layer (mentions \
                      derived group prefix); got: {msg}"
                 );
-                // #425 / #431-DA-1: same generic-hint pin as the
+                // Same generic-hint pin as the
                 // pool-key sibling test. Pinned BOTH callsite contexts
                 // because this is the runner.caches surface — the hint
-                // would have been actively misleading pre-#425 if it
+                // would otherwise be actively misleading if it
                 // only mentioned [cache_pools.NAME].
                 assert!(
                     hint.contains("[cache_pools.NAME]") && hint.contains("[[runner]].caches"),
@@ -14709,7 +14709,7 @@ auth = \"pat\"
         );
     }
 
-    /// #533: yellow ANSI color for recreate-class UpdateRunner.
+    /// Yellow ANSI color for recreate-class UpdateRunner.
     /// `render_action_line` selects ANSI prefix by Action variant; both
     /// recreate and in-place UpdateRunner paths share `\x1b[33m`
     /// (yellow). Sigil distinction (`!` vs `~`) is the column-0 signal;
@@ -14733,7 +14733,7 @@ auth = \"pat\"
         );
     }
 
-    /// #536: ColorMode.enabled=false produces zero ANSI escapes. This
+    /// ColorMode.enabled=false produces zero ANSI escapes. This
     /// is the path taken by both `--no-color` and `NO_COLOR` env (and
     /// non-TTY stdout) — see `ColorMode::from_cli`. Sigil placement at
     /// column 0 is independent of color mode.
@@ -14749,7 +14749,7 @@ auth = \"pat\"
         assert!(line.contains("[recreate]"), "got: {line}");
     }
 
-    /// #537: operator-grep parity — `^! ` line count == count of
+    /// Operator-grep parity — `^! ` line count == count of
     /// recreate-class UpdateRunner actions, NOT `summary.recreates.len()`.
     ///
     /// `summary.recreates` is the JSON sibling of the Recreate-class
@@ -14805,11 +14805,11 @@ auth = \"pat\"
         );
     }
 
-    /// #538: `!` column-0 sigil holds under `--diff=true`. The recreate
+    /// `!` column-0 sigil holds under `--diff=true`. The recreate
     /// branch in `render_action_line` synthesizes Created drop-in
     /// blocks from `delta.after.drop_ins` AND emits `- basename` lines
     /// for entries in `before_drop_in_basenames` that are absent from
-    /// `after.drop_ins` (#468 Removed-line surface). Both shapes use a
+    /// `after.drop_ins` (recreate-class Removed-line surface). Both shapes use a
     /// 4-space indent on the basename line (`    + name` / `    -
     /// name`) per `format!("    + {basename}")` / `format!("    -
     /// {basename}")` in `render_action_line`. Body content (when
@@ -14829,7 +14829,7 @@ auth = \"pat\"
             .drop_ins
             .insert("10-memory.conf".into(), "[Service]\nMemoryMax=2G\n".into());
         // Populate before_drop_in_basenames with a basename absent
-        // from after.drop_ins so the Removed branch fires (#468).
+        // from after.drop_ins so the Removed branch fires.
         delta.before_drop_in_basenames =
             Some(vec!["00-ghars.conf".into(), "99-custom.conf".into()]);
         let line = render_action_line(
@@ -14852,7 +14852,7 @@ auth = \"pat\"
             line.contains("    + 10-memory.conf"),
             "Created basename line missing; got: {line}",
         );
-        // 4-space indent on basename lines (Removed branch — #468).
+        // 4-space indent on basename lines (Removed branch).
         assert!(
             line.contains("    - 99-custom.conf"),
             "Removed basename line missing (before_drop_in_basenames \
@@ -14860,7 +14860,7 @@ auth = \"pat\"
         );
     }
 
-    /// #539: defense-in-depth — `!` MUST NOT appear at column 0 on any
+    /// Defense-in-depth — `!` MUST NOT appear at column 0 on any
     /// non-recreate-UpdateRunner variant. Sigil vocabulary per
     /// `render_action_line`:
     /// - CreateRunner / CreateCachePool → `+`
@@ -14927,7 +14927,7 @@ auth = \"pat\"
         }
     }
 
-    /// #540: F-DA2 shell-safety contract — `!` is followed by a space.
+    /// F-DA2 shell-safety contract — `!` is followed by a space.
     /// Bash interprets `!word` as history expansion (e.g. `!1234`
     /// recalls a history entry); `! ` prevents that when an operator
     /// pastes a plan line into a shell. Two cases cover both format
@@ -14966,14 +14966,14 @@ auth = \"pat\"
         }
     }
 
-    // ---------- #506: detail/exit-code tests ----------------------------
+    // ---------- detail/exit-code tests ---------------------------------
 
-    /// #506: pins that ApplyResult.details can carry multiple Failed
+    /// Pins that ApplyResult.details can carry multiple Failed
     /// rows interleaved with non-Failed rows. The fixture mirrors what
     /// the apply() loop produces under non-fail_fast: every action's
     /// outcome lands in details, and the success/failure split lives
     /// in `succeeded` / `failed` Vecs (which mirror details by label).
-    /// This test pins the data shape; #583 covers integration via the
+    /// This test pins the data shape; integration coverage via the
     /// real apply() loop.
     #[test]
     fn details_carries_multiple_failed_rows_with_independent_summaries() {
@@ -15042,11 +15042,11 @@ auth = \"pat\"
         assert_eq!(apply_exit_code(false, false, &result), 4);
     }
 
-    /// #507: pin the per-action prefix shapes cmd_apply emits for each
+    /// Pin the per-action prefix shapes cmd_apply emits for each
     /// outcome class. cmd_apply's per-action loop routes by variant to
     /// stdout (NoOp, success) or stderr (Failed); the stream routing
     /// itself is not directly testable without helper extraction
-    /// (#581 tracks that refactor). This test reproduces the exact
+    /// (a separate refactor tracks that). This test reproduces the exact
     /// format!() invocations from the cmd_apply per-action loop and
     /// pins the prefix-shape contract:
     /// - `noop: REASON [none]` (NoOp arm)
@@ -15114,9 +15114,9 @@ auth = \"pat\"
         assert!(!noop_rendered.starts_with("ok: "));
     }
 
-    /// #509: exit-code regression pin — `apply_exit_code` failure
+    /// Exit-code regression pin — `apply_exit_code` failure
     /// precedence (1 / 4 / 5) is unaffected by the addition of Failed
-    /// rows to `result.details` (#474). Keys off `result.failed`
+    /// rows to `result.details`. Keys off `result.failed`
     /// (typed-error Vec, source of truth) and `result.succeeded`,
     /// not details. Covers all three failure branches and the four
     /// (detailed-exitcode, detailed-exitcode-recreate) flag combos
@@ -15173,13 +15173,13 @@ auth = \"pat\"
         assert_eq!(apply_exit_code(false, false, &total_non_auth), 1);
     }
 
-    // ---------- #492: cmd_apply summary footer tests --------------------
+    // ---------- cmd_apply summary footer tests -------------------------
 
-    /// #492: cmd_apply summary footer mixed-outcome shape.
+    /// cmd_apply summary footer mixed-outcome shape.
     /// `render_apply_summary_line` emits the headline triple
     /// (`A applied, F failed, S skipped`) followed by the disruption
     /// parenthetical + `any_recreate` suffix produced by the shared
-    /// `format_disruption_tail` (CLN-2 / #471). Disruption labels come
+    /// `format_disruption_tail` (CLN-2). Disruption labels come
     /// from `Disruption::label()` (not hardcoded literals). This test
     /// pins the apply side only — for plan-side label sourcing see
     /// `render_plan_summary_line_uses_disruption_label_not_hardcoded`.
@@ -15215,12 +15215,12 @@ auth = \"pat\"
         assert_eq!(line, expected);
     }
 
-    /// #522 + #532: applied-bucket coverage for Removed / Recreated /
-    /// PoolCreated / PoolRemoved. The pre-#522 test
+    /// Applied-bucket coverage for Removed / Recreated /
+    /// PoolCreated / PoolRemoved. The sibling test
     /// `render_apply_summary_line_buckets_every_variant_correctly`
-    /// only exercises Created / InPlaceRestarted / PoolUpdated /
-    /// NoOp / InPlaceSkipped / Failed. This test covers the four
-    /// remaining `applied`-bucket variants — all of which are
+    /// exercises Created / InPlaceRestarted / PoolUpdated / NoOp /
+    /// InPlaceSkipped / Failed. This test covers the four remaining
+    /// `applied`-bucket variants — all of which are
     /// `Disruption::Recreate` per `ApplyOutcome::disruption` at
     /// apply.rs.
     #[test]
@@ -15253,7 +15253,7 @@ auth = \"pat\"
         assert_eq!(line, expected);
     }
 
-    /// #524: multi-failure-only plan (all-failed, no successes, no
+    /// Multi-failure-only plan (all-failed, no successes, no
     /// skips). Pins the headline triple `0 applied, N failed, 0
     /// skipped` and that Failed rows whose `plan_disruption =
     /// Recreate` flip `any_recreate: true` even with zero successful
@@ -15298,11 +15298,11 @@ auth = \"pat\"
         assert_eq!(line, expected);
     }
 
-    /// #525: synthetic `daemon_reload` Failed row — verifies the data
+    /// Synthetic `daemon_reload` Failed row — verifies the data
     /// shape apply() produces for the daemon_reload synthetic row, not
     /// apply() behavior directly. apply.rs's post-loop daemon_reload
     /// synthesis pushes a Failed row with `plan_disruption =
-    /// Disruption::None` (per #520; Manager.Reload is a cache-flush
+    /// Disruption::None` (Manager.Reload is a cache-flush
     /// with zero blast radius, hand-set explicitly because no `Action`
     /// exists to derive from). The summary footer counts the row as
     /// `failed` in the headline triple AND `none` in the disruption
@@ -15337,7 +15337,7 @@ auth = \"pat\"
         );
     }
 
-    /// #526: inverse pin — Restart-class Failed must NOT flip
+    /// Inverse pin — Restart-class Failed must NOT flip
     /// `any_recreate`. `Failed.disruption()` delegates to
     /// `plan_disruption`; for an in-place UpdateRunner that fails
     /// mid-execution, plan-time disruption is Restart, so the row
@@ -15369,14 +15369,14 @@ auth = \"pat\"
         assert_eq!(line, expected);
     }
 
-    // ---------- #547: rollback advisory tests ---------------------------
+    // ---------- rollback advisory tests --------------------------------
 
-    /// #547: ordering invariant pin —
+    /// Ordering invariant pin —
     /// `failed_undo_logs[i].0 == failed[i].0` for every `i` in a
     /// multi-failure non-fail_fast scenario. apply::apply pushes
     /// to both Vecs in the same execute-order loop iteration; the
     /// advisory renderer walks `failed_undo_logs` for both the body
-    /// blocks and the header count (post-#618: header N is the count
+    /// blocks and the header count (header N is the count
     /// of non-empty step lists, derived directly from
     /// `failed_undo_logs`). Pinning here catches a future refactor
     /// that decouples the two Vecs (e.g. moves the typed-error push
@@ -15429,7 +15429,7 @@ auth = \"pat\"
         assert!(pos_b < pos_c, "b must precede c: {advisory}");
     }
 
-    /// #549: step ordering pin — within a single failed action's
+    /// Step ordering pin — within a single failed action's
     /// per-action body, steps render in REVERSE (LIFO) order so the
     /// most-recent mutation appears first. Matches `apply::undo`'s
     /// `log.steps().iter().rev()` walk direction. Operator reading
@@ -15486,13 +15486,13 @@ auth = \"pat\"
         );
     }
 
-    /// #550 / #551: daemon_reload-only failure renders NO ADVISORY at all.
+    /// Daemon_reload-only failure renders NO ADVISORY at all.
     /// The daemon_reload synthesis at apply::apply pushes to
     /// `result.failed` AND `result.failed_undo_logs` with an EMPTY
     /// step Vec (no per-action UndoLog exists for the synthetic
     /// post-loop step).
     ///
-    /// Per #551, when EVERY entry in `failed_undo_logs` has an empty
+    /// When EVERY entry in `failed_undo_logs` has an empty
     /// step list, `render_rollback_advisory` returns `None` instead
     /// of emitting a header that promises actionable cleanup with
     /// no body underneath. Silence is more honest than a header
@@ -15509,14 +15509,14 @@ auth = \"pat\"
     fn render_rollback_advisory_daemon_reload_only_failure_returns_none() {
         let mut result = apply::ApplyResult::default();
         push_failed(&mut result, "daemon_reload", Vec::new());
-        // #551: all-empty step lists ⇒ no advisory at all.
+        // All-empty step lists ⇒ no advisory at all.
         assert!(
             render_rollback_advisory(&result).is_none(),
             "all-empty failed_undo_logs must suppress the advisory entirely",
         );
     }
 
-    /// #616 / #551: multi-failure all-empty pin — verify the
+    /// Multi-failure all-empty pin — verify the
     /// `filter(!is_empty()).count() == 0` gate scales beyond the
     /// single-entry daemon_reload case. Three failed actions, all
     /// with empty `UndoStep` Vecs (e.g. each errored before recording
@@ -15528,7 +15528,7 @@ auth = \"pat\"
     /// pins the single-entry isolated case; this multi-entry fixture
     /// catches a future regression that special-cases N==1 (e.g. if
     /// `result.failed_undo_logs.len() == 1 && ...` — falling back to
-    /// emit-anyway when N>=2). Post-#618 the gate is
+    /// emit-anyway when N>=2). The gate is
     /// `failed_undo_logs.iter().filter(|(_, s)| !s.is_empty()).count() == 0`;
     /// 3 uniformly-empty entries make the filter yield 0, matching
     /// the single-entry case. Pinning N>=2 here generalizes the
@@ -15539,8 +15539,8 @@ auth = \"pat\"
         push_failed(&mut result, "CreateRunner(a)", Vec::new());
         push_failed(&mut result, "UpdateRunner(b)", Vec::new());
         push_failed(&mut result, "RemoveRunner(c)", Vec::new());
-        // #551 multi-entry: all-empty step lists ⇒ no advisory.
-        // Pins the post-#618 non-empty-count gate
+        // Multi-entry: all-empty step lists ⇒ no advisory.
+        // Pins the non-empty-count gate
         // (`filter(!is_empty()).count() == 0`) beyond the single
         // daemon_reload entry. This fixture is hand-constructed
         // (production apply.rs:2147-2149 always pushes the per-action
@@ -15554,7 +15554,7 @@ auth = \"pat\"
         );
     }
 
-    /// #553: positive-control test for the
+    /// Positive-control test for the
     /// `result.failed.len() == result.failed_undo_logs.len()`
     /// invariant pin at the top of `render_rollback_advisory`. Equal
     /// lengths satisfy the `debug_assert_eq!`; rendering proceeds
@@ -15583,7 +15583,7 @@ auth = \"pat\"
         );
     }
 
-    /// #553: negative-control test for the length-mismatch invariant.
+    /// Negative-control test for the length-mismatch invariant.
     /// `apply::apply` pushes to `result.failed` and
     /// `result.failed_undo_logs` in lockstep on every Err arm
     /// (apply.rs:2123/2147-2149 per-action; apply.rs:2188/2201
@@ -15702,7 +15702,7 @@ auth = \"pat\"
         );
     }
 
-    /// #651 / #611: direct unit test at N=5 — the typical
+    /// Direct unit test at N=5 — the typical
     /// multi-failure case (e.g. an apply run with five actions all
     /// of which left non-empty UndoLogs). Pin the `{n}` interpolation
     /// renders the integer as a decimal without padding or
@@ -15719,7 +15719,7 @@ auth = \"pat\"
         );
     }
 
-    /// #651 / #611 / #618 / #551: documents that the N=0 case is
+    /// Documents that the N=0 case is
     /// gated UPSTREAM — `render_rollback_advisory` returns `None`
     /// when `n == 0` (the
     /// `failed_undo_logs.iter().filter(!is_empty).count() == 0`
@@ -15754,11 +15754,11 @@ auth = \"pat\"
         );
     }
 
-    // ---------- #648 / #649 / #650: render_rollback_advisory N coverage --
+    // ---------- render_rollback_advisory N coverage -------------------
 
-    /// #648 / #618: mixed case — two failed actions with EMPTY step
+    /// Mixed case — two failed actions with EMPTY step
     /// lists + one failed action with a NON-EMPTY step list. The
-    /// post-#618 header gate counts only entries with non-empty
+    /// header gate counts only entries with non-empty
     /// step lists, so N=1 (not N=3). The body must contain exactly
     /// ONE per-action sub-block (the non-empty entry).
     ///
@@ -15786,7 +15786,7 @@ auth = \"pat\"
         );
         let advisory =
             render_rollback_advisory(&result).expect("non-empty entry must yield an advisory");
-        // Header: N counts ONLY the non-empty entry (post-#618 gate),
+        // Header: N counts ONLY the non-empty entry (per the gate),
         // not all 3 failed actions.
         assert!(
             advisory.starts_with("Rollback advisory: 1 action(s) failed."),
@@ -15822,12 +15822,12 @@ auth = \"pat\"
         );
     }
 
-    /// #649 / #618: all-non-empty case — three failed actions, every
+    /// All-non-empty case — three failed actions, every
     /// one with a non-empty step list. Header N must equal the total
     /// failure count (3) because no entry is filtered out by the
     /// `!is_empty()` predicate. Body must have exactly 3 per-action
     /// sub-blocks. Pins the contract that under uniformly-non-empty
-    /// input the post-#618 filter is a no-op vs the pre-#618
+    /// input the filter is a no-op vs the pre-gate
     /// `failed_undo_logs.len()` count.
     ///
     /// Sibling: `render_rollback_advisory_failed_and_failed_undo_logs_share_label_ordering`
@@ -15862,7 +15862,7 @@ auth = \"pat\"
         let advisory =
             render_rollback_advisory(&result).expect("all-non-empty must yield an advisory");
         // Header N == total failure count (3) under all-non-empty
-        // input; the post-#618 filter is a no-op here.
+        // input; the filter is a no-op here.
         assert!(
             advisory.starts_with("Rollback advisory: 3 action(s) failed."),
             "header N must equal total non-empty-step entries (3); got: {advisory}",
@@ -15894,7 +15894,7 @@ auth = \"pat\"
         );
     }
 
-    /// #650 / #618: alternating order — `failed_undo_logs` Vec ordered
+    /// Alternating order — `failed_undo_logs` Vec ordered
     /// `[non-empty, empty, non-empty]`. Header N=2 (only the two
     /// non-empty entries pass the filter); body must have exactly
     /// two per-action sub-blocks, and they must appear in the
@@ -16224,9 +16224,9 @@ auth = \"pat\"
         );
     }
 
-    // ---------- #486: summary.recreates serde round-trip -----------------
+    // ---------- summary.recreates serde round-trip ---------------------
 
-    /// #486: round-trip the rendered `summary.recreates` array through
+    /// Round-trip the rendered `summary.recreates` array through
     /// `serde_json::to_string` + `from_str` and verify both the
     /// per-element labels and the relative ordering survive the trip.
     /// `plan_to_json_value` produces `serde_json::Value` directly; the
@@ -16280,9 +16280,9 @@ auth = \"pat\"
         );
     }
 
-    // ---------- #489: all-recreate-only plan apply-exit pin -------------
+    // ---------- all-recreate-only plan apply-exit pin -----------------
 
-    /// #489: every action recreate-class — `summary.by_disruption.recreate`
+    /// Every action recreate-class — `summary.by_disruption.recreate`
     /// equals `actions.len()`, `none` and `restart` are zero,
     /// `any_recreate` is true. Strengthens the existing
     /// `plan_to_json_value_summary_recreates_only_recreate_class_actions`
@@ -16329,7 +16329,7 @@ auth = \"pat\"
         assert_eq!(recreates.len(), 5);
     }
 
-    // ---------- #490: summary.recreates proptest invariant --------------
+    // ---------- summary.recreates proptest invariant ------------------
 
     /// Strategy: generate an arbitrary Action variant. Each arm
     /// synthesizes a fresh fixture using the deterministic test
@@ -16400,7 +16400,7 @@ auth = \"pat\"
     }
 
     proptest::proptest! {
-        /// #490: cross-field invariant on `plan_summary_value` output.
+        /// Cross-field invariant on `plan_summary_value` output.
         /// The function builds `summary.recreates` (Vec<String>) and
         /// `summary.by_disruption.recreate` (u64) from two SEPARATE
         /// passes over `actions` (CLN-469-1 sources both from the same
@@ -16422,7 +16422,7 @@ auth = \"pat\"
         ///    Catches a future change that derives `any_recreate` from
         ///    a different filter than the list construction.
         /// 3. `summary.recreates` is sorted ascending (canonical
-        ///    `recreates.sort_unstable()` invariant per #503). Catches
+        ///    `recreates.sort_unstable()` invariant). Catches
         ///    a future change that drops the sort or reorders steps.
         ///
         /// Symmetric example-based coverage:
@@ -16473,9 +16473,9 @@ auth = \"pat\"
         }
     }
 
-    // ---------- #494: pool-only plan no-runner fixture ------------------
+    // ---------- pool-only plan no-runner fixture ----------------------
 
-    /// #494: pool-only plan (zero runner actions). Symmetric guard
+    /// Pool-only plan (zero runner actions). Symmetric guard
     /// against a future refactor that scoped `summary.recreates` to
     /// runners by accident. Existing
     /// `plan_to_json_value_summary_recreates_pool_only_plan` covers
@@ -16518,9 +16518,9 @@ auth = \"pat\"
         }
     }
 
-    // ---------- #504: disruption_summary_variants() exhaustiveness ------
+    // ---------- disruption_summary_variants() exhaustiveness ----------
 
-    /// #504: pin `disruption_summary_variants()` lists every variant of
+    /// Pin `disruption_summary_variants()` lists every variant of
     /// the `Disruption` enum exactly once, in canonical least-→-most-
     /// disruptive order. Catches a future variant addition (e.g. an
     /// apply-time `Disruption::Skipped`) that fails to update the
@@ -16550,9 +16550,9 @@ auth = \"pat\"
         );
     }
 
-    // ---------- #576: FieldValue::List end-to-end JSON round-trip -------
+    // ---------- FieldValue::List end-to-end JSON round-trip ----------
 
-    /// #576: round-trip `FieldValue::List` through wire-format JSON
+    /// Round-trip `FieldValue::List` through wire-format JSON
     /// (`to_string` + `from_str`) and verify the tagged-object shape
     /// `{"type":"list","values":[...]}` survives. Strengthens the
     /// existing in-memory pin
@@ -16605,9 +16605,9 @@ auth = \"pat\"
         );
     }
 
-    // ---------- #584: apply_exit_code recreate-flag-on no-recreate-out --
+    // ---------- apply_exit_code recreate-flag-on no-recreate-out -----
 
-    /// #584: `apply_exit_code` with `detailed_exitcode_recreate=true`
+    /// `apply_exit_code` with `detailed_exitcode_recreate=true`
     /// and a successful apply that produced ZERO recreate-class
     /// outcomes must return 0 (not 8). Strengthens existing
     /// `apply_exit_code_recreate_flag_without_recreate_outcome_returns_zero`
@@ -16658,9 +16658,9 @@ auth = \"pat\"
         );
     }
 
-    // ---------- #583: fail_fast=true multi-failure detail-row pin -------
+    // ---------- fail_fast=true multi-failure detail-row pin ----------
 
-    /// #583: under `fail_fast=true`, `apply()` short-circuits on the
+    /// Under `fail_fast=true`, `apply()` short-circuits on the
     /// first failure — so `details` carries exactly one Failed row
     /// regardless of how many actions remained in the plan. Strengthens
     /// `apply::tests::fail_fast_short_circuits_on_first_failure` by
@@ -16722,9 +16722,9 @@ auth = \"pat\"
         );
     }
 
-    // ---------- #597: call-site sanitization wiring pins -----------
+    // ---------- call-site sanitization wiring pins ----------------
 
-    /// #597: pin that the recreate-Removed text path at
+    /// Pin that the recreate-Removed text path at
     /// `render_action_line` actually runs the basename through
     /// `escape_control_chars`. Helper-level coverage already lives in
     /// `lib.rs` (Cow allocation, escape_default semantics); this test
@@ -16739,7 +16739,7 @@ auth = \"pat\"
     /// `format!` call to a path that bypasses `escape_control_chars`
     /// would compile and pass other recreate-Removed render tests
     /// (which use sanitized basenames) but reintroduce the ANSI-
-    /// hijack vector that #567 closed.
+    /// hijack vector that escape_control_chars closes.
     #[test]
     fn render_action_line_recreate_removed_text_path_escapes_hostile_basename() {
         let mut after_plan = fake_runner_plan("buckos");
@@ -16789,7 +16789,7 @@ auth = \"pat\"
         );
     }
 
-    /// #597: pin that the recreate-Removed JSON path at
+    /// Pin that the recreate-Removed JSON path at
     /// `plan_to_json_value` runs the basename through
     /// `escape_control_chars` before serialization. JSON serializers
     /// already encode ESC as a JSON 4-hex-digit escape, but a downstream `jq` pipeline
@@ -16837,7 +16837,7 @@ auth = \"pat\"
         // escape_control_chars ran — (b) below is the load-bearing
         // discriminator. Symmetric with the in-place JSON test
         // `plan_to_json_value_inplace_json_path_escapes_hostile_drop_in_basename`
-        // (#599 / Adversary A2).
+        // (Adversary A2 verification).
         assert!(
             !serialized.contains('\x1b'),
             "raw ESC must not survive JSON serialization; got: {serialized:?}"
@@ -17107,11 +17107,11 @@ auth = \"pat\"
 
     /// pin that `render_rollback_advisory` runs the
     /// per-failure label through `escape_control_chars` before
-    /// stderr emission. Previously the label was emitted via
-    /// `format!("\n  {label}:")` without escaping; the per-step
-    /// bullets at the step-bullet escape inside
-    /// `render_rollback_advisory`'s rev-walk loop were already
-    /// escaped, so this fix closes the asymmetry. Today's `IDENTIFIER_REGEX` rejects
+    /// stderr emission. Without this escape, the label would be
+    /// emitted via `format!("\n  {label}:")` without escaping while
+    /// the per-step bullets in `render_rollback_advisory`'s rev-walk
+    /// loop ARE already escaped, producing an asymmetry. Today's
+    /// `IDENTIFIER_REGEX` rejects
     /// control chars at config-load, so a hostile label cannot
     /// reach this site through normal inputs — but the
     /// failed_undo_logs key is constructed from `Action::label()`
