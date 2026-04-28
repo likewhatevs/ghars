@@ -1145,13 +1145,17 @@ mod tests {
         github_mock.assert();
 
         assert!(
-            extract_msg.contains(PARENTHETICAL),
-            "extract.rs msg must contain identical parenthetical {PARENTHETICAL:?}; got: {extract_msg}"
+            extract_msg.starts_with("download failed (404 Not Found):"),
+            "extract.rs msg must start with 'download failed (404 Not Found):'; got: {extract_msg}"
         );
         assert!(
-            github_msg.contains(PARENTHETICAL),
-            "github.rs msg must contain identical parenthetical {PARENTHETICAL:?}; got: {github_msg}"
+            github_msg.starts_with("GitHub API request failed (404 Not Found):"),
+            "github.rs msg must start with 'GitHub API request failed (404 Not Found):'; got: {github_msg}"
         );
+        // Both surfaces emit the same `(404 Not Found)` parenthetical
+        // — log-scrape regex parity.
+        assert!(extract_msg.contains(PARENTHETICAL));
+        assert!(github_msg.contains(PARENTHETICAL));
     }
 
     #[test]
