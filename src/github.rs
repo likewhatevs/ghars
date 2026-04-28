@@ -41,7 +41,7 @@ use tokio::runtime::Runtime;
 use crate::Result;
 use crate::USER_AGENT;
 use crate::config::{Arch, ProxySpec};
-use crate::error::GharsError;
+use crate::error::{GharsError, format_error_chain};
 
 /// GitHub releases-API endpoint for the latest actions/runner release.
 const API_LATEST: &str = "https://api.github.com/repos/actions/runner/releases/latest";
@@ -105,13 +105,6 @@ const MAX_RELEASES_BODY_BYTES: u64 = 4 * 1024 * 1024;
 /// `read_to_end`. A small-cap test (e.g. 64 bytes) caps the
 /// allocation at the cap so it never over-allocates.
 const INITIAL_BODY_CAPACITY: u64 = 64 * 1024;
-
-/// Depth cap for `format_error_chain` traversal. Defends against
-/// pathological cyclic source chains that would otherwise loop
-/// forever. 16 layers exceeds any realistic nesting (reqwest →
-/// hyper → rustls → io::Error is 4 layers; doubling that again
-/// covers any future wrapper additions).
-const FORMAT_IO_CHAIN_MAX_DEPTH: usize = 16;
 
 /// URL scope: a runner URL points either at a single repo or at an org.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -537,38 +530,6 @@ enum BodyCapError {
     CapExceeded { cap: u64 },
 }
 
-/// Walk the `std::error::Error::source()` chain of an arbitrary error
-/// and concatenate each layer's Display with ": " separators. The
-/// outer Display of types like `std::io::Error` and `reqwest::Error`
-/// only formats the outermost layer, so nested causes (e.g.
-/// reqwest::Error wrapping hyper::Error wrapping a rustls error, or
-/// reqwest::Error wrapping a TLS/DNS error) are dropped if the
-/// operator only sees `format!("{err}")`. This helper preserves the
-/// full chain so an operator triaging a
-/// connection-reset-during-TLS-handshake sees both the outer "request
-/// failed" framing and the inner rustls reason code. The depth cap
-/// `FORMAT_IO_CHAIN_MAX_DEPTH` defends against cyclic source chains.
-///
-/// Accepts `&dyn std::error::Error` so the same helper covers both the
-/// `io::Error` post-decompression path (`read_body_capped`) and the
-/// `reqwest::Error` send-failure path — `reqwest::Error` is not an
-/// `io::Error`, so a separate walker would be required otherwise.
-fn format_error_chain(err: &(dyn std::error::Error + 'static)) -> String {
-    let mut out = err.to_string();
-    let mut source = err.source();
-    let mut depth = 0;
-    while let Some(cause) = source {
-        if depth >= FORMAT_IO_CHAIN_MAX_DEPTH {
-            break;
-        }
-        out.push_str(": ");
-        out.push_str(&cause.to_string());
-        depth += 1;
-        source = cause.source();
-    }
-    out
-}
-
 /// Bounded read helper. Exists so unit tests can inject a small cap
 /// (e.g. 64 bytes) without HTTP plumbing.
 ///
@@ -792,6 +753,7 @@ pub(crate) fn fetch_release_at(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::error::FORMAT_ERROR_CHAIN_MAX_DEPTH;
     use rstest::rstest;
 
     // ---- arch_token / tarball_name_for / tarball_url_for --------------
@@ -2489,7 +2451,7 @@ mod tests {
     /// after format_error_chain, the output must contain exactly 16
     /// ": " separators (= 17 layers of Display joined by 16 separators
     /// would be the unbounded case, but the cap stops the walk at
-    /// FORMAT_IO_CHAIN_MAX_DEPTH = 16 source-chain hops, producing
+    /// FORMAT_ERROR_CHAIN_MAX_DEPTH = 16 source-chain hops, producing
     /// outermost + 16 hops = 17 emitted layers separated by 16 ": ").
     /// The cap fires *before* the 17th hop, so the 18th-and-beyond
     /// layers are dropped. This defends against regressions that
@@ -2498,7 +2460,7 @@ mod tests {
     ///
     /// Note on counting: format_error_chain emits the outermost layer's
     /// Display first (no leading ": "), then walks `.source()` up to
-    /// FORMAT_IO_CHAIN_MAX_DEPTH (16) more levels, prepending ": "
+    /// FORMAT_ERROR_CHAIN_MAX_DEPTH (16) more levels, prepending ": "
     /// before each. So a chain with depth >= 17 produces exactly 16
     /// ": " separators in output.
     #[test]
@@ -2533,22 +2495,22 @@ mod tests {
         let chain = format_error_chain(head.as_ref());
         let separator_count = chain.matches(": ").count();
         assert_eq!(
-            separator_count, FORMAT_IO_CHAIN_MAX_DEPTH,
-            "depth cap must stop walk at FORMAT_IO_CHAIN_MAX_DEPTH (= 16) hops, producing exactly 16 ': ' separators; got {separator_count} in chain: {chain}"
+            separator_count, FORMAT_ERROR_CHAIN_MAX_DEPTH,
+            "depth cap must stop walk at FORMAT_ERROR_CHAIN_MAX_DEPTH (= 16) hops, producing exactly 16 ': ' separators; got {separator_count} in chain: {chain}"
         );
         assert!(
             chain.contains("layer-0"),
             "chain must include outermost layer; got: {chain}"
         );
         assert!(
-            chain.contains(&format!("layer-{}", FORMAT_IO_CHAIN_MAX_DEPTH)),
+            chain.contains(&format!("layer-{}", FORMAT_ERROR_CHAIN_MAX_DEPTH)),
             "chain must include the last layer reached by the cap (layer-{}); got: {chain}",
-            FORMAT_IO_CHAIN_MAX_DEPTH
+            FORMAT_ERROR_CHAIN_MAX_DEPTH
         );
         assert!(
-            !chain.contains(&format!("layer-{}", FORMAT_IO_CHAIN_MAX_DEPTH + 1)),
+            !chain.contains(&format!("layer-{}", FORMAT_ERROR_CHAIN_MAX_DEPTH + 1)),
             "chain must NOT include layers beyond the cap (layer-{}); got: {chain}",
-            FORMAT_IO_CHAIN_MAX_DEPTH + 1
+            FORMAT_ERROR_CHAIN_MAX_DEPTH + 1
         );
     }
 }

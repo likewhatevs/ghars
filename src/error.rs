@@ -195,6 +195,50 @@ pub(crate) fn prepend_validation_scope(scope: &str, err: GharsError) -> GharsErr
     }
 }
 
+/// Depth cap for `format_error_chain` traversal. Defends against
+/// pathological cyclic source chains that would otherwise loop
+/// forever. 16 layers exceeds any realistic nesting (reqwest →
+/// hyper → rustls → io::Error is 4 layers; doubling that again
+/// covers any future wrapper additions).
+pub(crate) const FORMAT_ERROR_CHAIN_MAX_DEPTH: usize = 16;
+
+/// Walk the `std::error::Error::source()` chain of an arbitrary error
+/// and concatenate each layer's Display with ": " separators. The
+/// outer Display of types like `std::io::Error` and `reqwest::Error`
+/// only formats the outermost layer, so nested causes (e.g.
+/// reqwest::Error wrapping hyper::Error wrapping a rustls error, or
+/// reqwest::Error wrapping a TLS/DNS error) are dropped if the
+/// operator only sees `format!("{err}")`. This helper preserves the
+/// full chain so an operator triaging a
+/// connection-reset-during-TLS-handshake sees both the outer "request
+/// failed" framing and the inner rustls reason code. The depth cap
+/// `FORMAT_ERROR_CHAIN_MAX_DEPTH` defends against cyclic source
+/// chains.
+///
+/// Accepts `&dyn std::error::Error` so the same helper covers both
+/// the `io::Error` post-decompression path (`read_body_capped` in
+/// `github.rs`), the `reqwest::Error` send-failure path, and the
+/// `?`-propagation paths in `extract.rs`'s `http_download_with_cap`
+/// where `io::Error` is wrapped via `From<io::Error> for GharsError`
+/// — `reqwest::Error` is not an `io::Error`, so a separate walker
+/// would be required otherwise.
+#[must_use]
+pub(crate) fn format_error_chain(err: &(dyn std::error::Error + 'static)) -> String {
+    let mut out = err.to_string();
+    let mut source = err.source();
+    let mut depth = 0;
+    while let Some(cause) = source {
+        if depth >= FORMAT_ERROR_CHAIN_MAX_DEPTH {
+            break;
+        }
+        out.push_str(": ");
+        out.push_str(&cause.to_string());
+        depth += 1;
+        source = cause.source();
+    }
+    out
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

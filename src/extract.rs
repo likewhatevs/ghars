@@ -20,6 +20,7 @@
 //!   at use time, refusing if it has become a symlink or non-regular file
 //!   between validation and use.
 
+use crate::error::format_error_chain;
 use crate::{GharsError, Result, USER_AGENT};
 use camino::{Utf8Path, Utf8PathBuf};
 use sha2::{Digest, Sha256};
@@ -84,29 +85,58 @@ fn http_download_with_cap(
     timeout: Duration,
     max_bytes: u64,
 ) -> Result<()> {
+    // Walk the full source chain on every io::Error / reqwest::Error so
+    // an operator triaging a TLS/DNS/transport failure on tarball
+    // download sees the inner cause (e.g. rustls reason code,
+    // hyper transport reason) and not just the outer Display layer.
+    // Bare `?` on `io::Error` invokes `From<io::Error> for GharsError`
+    // which uses the default Display — that drops nested causes. Each
+    // I/O site below wraps explicitly via `format_error_chain`.
     let client = reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
         .timeout(timeout)
         .connect_timeout(timeout)
         .build()
-        .map_err(|e| GharsError::Tarball(format!("download failed: {url}: client build: {e}")))?;
+        .map_err(|e| {
+            GharsError::Tarball(format!(
+                "download failed: client build: {chain}: {url}",
+                chain = format_error_chain(&e)
+            ))
+        })?;
 
-    let mut resp = client
-        .get(url)
-        .send()
-        .map_err(|e| GharsError::Tarball(format!("download failed: {url}: {e}")))?;
+    let mut resp = client.get(url).send().map_err(|e| {
+        GharsError::Tarball(format!(
+            "download failed: {chain}: {url}",
+            chain = format_error_chain(&e)
+        ))
+    })?;
 
     let resp = resp
         .error_for_status_ref()
         .map(|_| ())
-        .map_err(|e| GharsError::Tarball(format!("download failed: {url}: HTTP {e}")))
+        .map_err(|e| {
+            GharsError::Tarball(format!(
+                "download failed: HTTP {chain}: {url}",
+                chain = format_error_chain(&e)
+            ))
+        })
         .map(|()| &mut resp)?;
 
-    let mut out = File::create(dest)?;
+    let mut out = File::create(dest).map_err(|e| {
+        GharsError::Tarball(format!(
+            "download failed: create {dest}: {chain}: {url}",
+            chain = format_error_chain(&e)
+        ))
+    })?;
     let mut buf = vec![0u8; CHUNK_SIZE];
     let mut total: u64 = 0;
     loop {
-        let n = resp.read(&mut buf)?;
+        let n = resp.read(&mut buf).map_err(|e| {
+            GharsError::Tarball(format!(
+                "download failed: read: {chain}: {url}",
+                chain = format_error_chain(&e)
+            ))
+        })?;
         if n == 0 {
             break;
         }
@@ -119,7 +149,23 @@ fn http_download_with_cap(
             // released cleanly on every Unix; otherwise the unlink
             // succeeds but disk space stays held until the fd closes.
             drop(out);
-            let _ = fs::remove_file(dest);
+            // tracing::warn! on cleanup failure so the operator knows
+            // the partial download remains on disk. Returning the
+            // cap-fire error is more important than the cleanup
+            // error — a stale partial file is recoverable, but the
+            // operator must see why the download was rejected — so we
+            // log rather than propagate. Without this log the
+            // ENOSPC / EACCES that prevented cleanup vanishes
+            // silently and the operator wonders why a `dest` that
+            // "should" be gone is still occupying space.
+            if let Err(rm_err) = fs::remove_file(dest) {
+                tracing::warn!(
+                    dest = %dest,
+                    error = %format_error_chain(&rm_err),
+                    "failed to remove partial download after cap fire; \
+                     partial file remains on disk"
+                );
+            }
             return Err(GharsError::Tarball(format!(
                 "download failed: {url}: response body exceeds {max_bytes} bytes \
                  post-decompression (possible compression bomb); the \
@@ -129,9 +175,19 @@ fn http_download_with_cap(
                  file a ghars issue to raise MAX_TARBALL_DOWNLOAD_BYTES"
             )));
         }
-        out.write_all(&buf[..n])?;
+        out.write_all(&buf[..n]).map_err(|e| {
+            GharsError::Tarball(format!(
+                "download failed: write {dest}: {chain}: {url}",
+                chain = format_error_chain(&e)
+            ))
+        })?;
     }
-    out.flush()?;
+    out.flush().map_err(|e| {
+        GharsError::Tarball(format!(
+            "download failed: flush {dest}: {chain}: {url}",
+            chain = format_error_chain(&e)
+        ))
+    })?;
     Ok(())
 }
 
