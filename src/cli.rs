@@ -7769,6 +7769,40 @@ auth = \"pat\"
         assert_eq!(plan::Disruption::Recreate.label(), "recreate");
     }
 
+    /// Defense-in-depth invariant pin: every `Disruption::label()`
+    /// output must be free of `,`, `(`, and `)`. Those three
+    /// characters are STRUCTURAL in `format_disruption_tail`'s
+    /// `(N restart, N recreate, N none)` parenthetical — a label
+    /// that contained any of them would render an unparseable
+    /// summary line that scripted CI parsers cannot tokenize.
+    /// The vocabulary is pinned by `disruption_labels_are_snake_case_stable`
+    /// today, but a future contributor adding a new variant
+    /// (e.g. `Disruption::DnsRotate`) and reaching for a
+    /// human-friendly label like `dns(rotate)` would silently
+    /// break operator log parsing. The exhaustive iteration via
+    /// `disruption_summary_variants()` covers every variant
+    /// (pinned exhaustive by
+    /// `disruption_summary_variants_contains_all_disruption_variants`),
+    /// so adding a variant without updating that helper fails
+    /// compilation upstream of this test.
+    #[test]
+    fn disruption_labels_contain_no_parens_or_comma() {
+        for variant in disruption_summary_variants() {
+            let label = variant.label();
+            assert!(
+                !label.is_empty(),
+                "Disruption::{variant:?}::label() must be non-empty; got empty string"
+            );
+            assert!(
+                label.chars().all(|c| !",()".contains(c)),
+                "Disruption::{variant:?}::label() = {label:?} contains a forbidden \
+                 char (one of `,`, `(`, `)`); these are structural in \
+                 format_disruption_tail's `(N restart, N recreate, N none)` \
+                 parenthetical and would break operator log parsing"
+            );
+        }
+    }
+
     #[test]
     fn disruption_ordering_is_least_to_most() {
         // CLN-6/ADV-2: pin the derived PartialOrd/Ord ordering so

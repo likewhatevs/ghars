@@ -555,7 +555,24 @@ enum BodyCapError {
 /// `read_body` no-cap sibling that doesn't exist. The current name
 /// describes the OUTPUT invariant (the returned body is bounded by
 /// `cap`), which matches the function's actual contract.
+///
+/// ## `cap == u64::MAX` silently disables the cap
+///
+/// `cap.saturating_add(1)` at `u64::MAX` returns `u64::MAX`, so
+/// `Read::take(u64::MAX)` never short-circuits the read; the
+/// post-read check `buf.len() as u64 > cap` then requires
+/// `buf.len() > u64::MAX`, which is unreachable on any 64-bit
+/// `usize`. The sole production caller fixes
+/// `cap = MAX_RELEASES_BODY_BYTES` (4 MiB), so this edge case has
+/// no production exposure today. The debug-build `debug_assert!`
+/// below traps it during development to surface any future caller
+/// that passes `u64::MAX` (or a value computed to it) before it
+/// ships.
 fn read_body_capped<R: Read>(reader: R, cap: u64) -> std::result::Result<Vec<u8>, BodyCapError> {
+    debug_assert!(
+        cap < u64::MAX,
+        "read_body_capped: cap == u64::MAX silently disables the cap (saturating_add(1) returns u64::MAX, take never fires); pass a finite cap"
+    );
     let initial = std::cmp::min(cap, INITIAL_BODY_CAPACITY) as usize;
     let mut buf = Vec::with_capacity(initial);
     let limit = cap.saturating_add(1);
@@ -695,6 +712,19 @@ fn http_get_payload_with_cap(
                 .into(),
         ),
     })?;
+    // Empty-body pre-check: routes the surprising-but-success class
+    // (HTTP 204/205, or a misbehaving proxy that returns 200 with a
+    // zero-byte body) to a self-explanatory error before
+    // `serde_json::from_slice` would emit the unhelpful "EOF while
+    // parsing a value at line 1 column 0". The releases-API contract
+    // requires a non-empty JSON object on success; an empty body is
+    // never a legitimate payload here.
+    if buf.is_empty() {
+        return Err(GharsError::GitHub(
+            format!("GitHub API response had empty body on a {status} response: {url}"),
+            "the releases API returns a JSON object on success; a 204 No Content / 205 Reset Content / zero-byte 200 response indicates either an HTTP-method-rewriting proxy, a captive portal stripping the body, or an upstream contract change; verify the URL with curl -v and check status.github.com for incidents".into(),
+        ));
+    }
     serde_json::from_slice::<ReleaseApiPayload>(&buf).map_err(|e| {
         GharsError::GitHub(
             format!("GitHub API response not valid JSON: {e}: {url}"),
@@ -2748,5 +2778,125 @@ mod tests {
             "chain must NOT include layers beyond the cap (layer-{}); got: {chain}",
             FORMAT_ERROR_CHAIN_MAX_DEPTH + 1
         );
+    }
+
+    /// Pin: `cap == u64::MAX` trips the debug-build assertion in
+    /// `read_body_capped`. Documents the silent-disable footgun:
+    /// `cap.saturating_add(1)` saturates at `u64::MAX`, so
+    /// `Read::take(u64::MAX)` never short-circuits, and the
+    /// post-read check `buf.len() as u64 > cap` requires
+    /// `buf.len() > u64::MAX` (impossible on 64-bit `usize`). The
+    /// `debug_assert!` is the development-time tripwire; in release
+    /// builds the cap is silently a no-op. Production callers fix
+    /// `cap = MAX_RELEASES_BODY_BYTES` (4 MiB) so this edge has no
+    /// production exposure today.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "u64::MAX silently disables the cap")]
+    fn read_body_capped_panics_on_u64_max_cap_in_debug_builds() {
+        let _ = read_body_capped(std::io::Cursor::new(vec![b'x'; 8]), u64::MAX);
+    }
+
+    /// Pin: `http_get_payload_with_cap` rejects an HTTP 204 No
+    /// Content response (success status, empty body) with a
+    /// targeted error before `serde_json::from_slice` would emit
+    /// the unhelpful "EOF while parsing a value at line 1 column 0".
+    /// 204/205 are valid HTTP success codes; the releases-API
+    /// contract requires a JSON body on success, so an empty body
+    /// indicates either a method-rewriting proxy, a captive portal
+    /// stripping the payload, or an upstream contract change.
+    #[test]
+    fn http_get_payload_with_cap_rejects_204_no_content_with_empty_body_hint() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/repos/actions/runner/releases/latest")
+            .with_status(204)
+            .with_body("")
+            .expect(1)
+            .create();
+        let url = format!("{}/repos/actions/runner/releases/latest", server.url());
+        let client = build_blocking_client(None).unwrap();
+        let err = http_get_payload_with_cap(&client, &url, MAX_RELEASES_BODY_BYTES).unwrap_err();
+        match err {
+            GharsError::GitHub(msg, hint) => {
+                assert!(
+                    msg.contains("empty body"),
+                    "msg must surface 'empty body' framing; got: {msg}"
+                );
+                assert!(
+                    msg.contains("204"),
+                    "msg must include the offending status code; got: {msg}"
+                );
+                // URL trailing-position pin: matches Layer 1 / Layer 2
+                // / HTTP-status arms so log parsers grep all four
+                // error classes with the same suffix shape.
+                assert!(
+                    msg.ends_with(&format!(": {url}")),
+                    "empty-body msg must end with ': {{url}}'; got: {msg}"
+                );
+                assert!(
+                    hint.contains("204") && hint.contains("No Content"),
+                    "hint must name 204 No Content; got: {hint}"
+                );
+                assert!(
+                    hint.contains("proxy") || hint.contains("captive portal"),
+                    "hint must surface proxy / captive-portal triage breadcrumb; got: {hint}"
+                );
+                // Anti-confusion pin: this error class must NOT
+                // delegate to the JSON-decode arm's wording, which
+                // would mislead the operator into looking for
+                // malformed JSON when the body is actually empty.
+                assert!(
+                    !msg.contains("not valid JSON"),
+                    "empty-body msg must NOT route through the JSON-decode arm; got: {msg}"
+                );
+                assert!(
+                    !msg.contains("EOF while parsing"),
+                    "empty-body msg must NOT surface the cryptic serde EOF error; got: {msg}"
+                );
+            }
+            other => panic!("expected GharsError::GitHub, got {other:?}"),
+        }
+        mock.assert();
+    }
+
+    /// Pin: a successful 200 response with a zero-byte body (e.g. a
+    /// proxy stripping the payload while preserving the status code)
+    /// hits the same empty-body branch as 204. Pinning the 200 case
+    /// alongside 204 defends against a regression that scopes the
+    /// check to the 204-status arm specifically — the gate is on the
+    /// post-cap buffer length, not the status code, so any
+    /// success-status zero-byte body must trip the same diagnostic.
+    #[test]
+    fn http_get_payload_with_cap_rejects_200_with_empty_body_via_proxy_strip() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/repos/actions/runner/releases/latest")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body("")
+            .expect(1)
+            .create();
+        let url = format!("{}/repos/actions/runner/releases/latest", server.url());
+        let client = build_blocking_client(None).unwrap();
+        let err = http_get_payload_with_cap(&client, &url, MAX_RELEASES_BODY_BYTES).unwrap_err();
+        match err {
+            GharsError::GitHub(msg, _hint) => {
+                assert!(
+                    msg.contains("empty body"),
+                    "200 + zero-byte body must hit the empty-body arm; got: {msg}"
+                );
+                assert!(
+                    msg.contains("200"),
+                    "msg must include the 200 status; got: {msg}"
+                );
+                assert!(
+                    !msg.contains("not valid JSON"),
+                    "200 + empty body must NOT route through the JSON-decode arm; got: {msg}"
+                );
+            }
+            other => panic!("expected GharsError::GitHub, got {other:?}"),
+        }
+        mock.assert();
     }
 }
