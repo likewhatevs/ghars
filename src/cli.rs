@@ -10244,14 +10244,16 @@ auth = \"pat\"
     /// Discovered-only runner with POPULATED annotations: extends
     /// the count=0 sibling above by feeding `plan_from`'s
     /// discovered-only diff arm a `DiscoveredRunner` whose
-    /// `00-ghars.conf` drop-in carries a full annotation set and
-    /// whose unit body carries non-default `User=` / `WorkingDirectory=`
-    /// values. `reconstruct_identity` reads
+    /// `00-ghars.conf` drop-in carries a full annotation set —
+    /// including the X-Ghars-User / X-Ghars-Prefix annotations
+    /// emitted by `render_identity` from the operator's `spec.user`
+    /// / `spec.prefix`. `reconstruct_identity` reads
     /// `discovered.drop_ins["00-ghars.conf"]` via
-    /// `DiscoveredAnnotations::from_discovered` for url + auth_name
-    /// and the on-disk unit text via `parse_user_from_unit` /
-    /// `parse_working_directory_from_unit` for user + prefix, so a
-    /// populated fixture produces a `RunnerIdentity` with non-empty
+    /// `DiscoveredAnnotations::from_discovered` for url, auth_name,
+    /// user, and prefix; the on-disk unit body's `User=` /
+    /// `WorkingDirectory=` lines are template fallbacks consulted
+    /// only when the annotations are absent. A populated fixture
+    /// therefore produces a `RunnerIdentity` with non-empty
     /// url + auth_name + meaningful prefix/user — matching what
     /// `apply.rs::execute_remove_runner` needs to mint a
     /// deregistration token and to `userdel` the right account on
@@ -10264,25 +10266,30 @@ auth = \"pat\"
     /// fallbacks. This test takes the populated path, distinct from
     /// that fallback.
     ///
-    /// To make the user/prefix assertions load-bearing, the unit
-    /// body emits `User=custom-old-web` and
-    /// `WorkingDirectory=/opt/ghars/old-web` rather than the runner
-    /// template's hardcoded `User=ghars-%i` /
-    /// `WorkingDirectory=/var/lib/ghars/%i`. The fallback paths in
-    /// `reconstruct_identity` would produce `ghars-old-web` (from
+    /// To make the user/prefix assertions load-bearing, the
+    /// discovered spec sets `user = "alice"` and
+    /// `prefix = "/srv/runners-old"` — non-default values that
+    /// `render_identity` writes to `00-ghars.conf` as `X-Ghars-User=alice`
+    /// and `X-Ghars-Prefix=/srv/runners-old`. `reconstruct_identity`
+    /// reads the annotations from the drop-in (annotation-first
+    /// contract); the on-disk unit body's `User=` /
+    /// `WorkingDirectory=` lines are template fallbacks consulted
+    /// only when the annotations are absent. The fallback paths
+    /// would produce `ghars-old-web` (from
     /// `format!("{RUNNER_USER_PREFIX}{name}")`) and `/var/lib/ghars`
     /// (from `paths.state_dir`), so an `assert_eq!` against the
-    /// non-default values fails the moment the parse path stops
-    /// firing — pinning that the populated body, not the fallback,
-    /// produced the identity.
+    /// non-default annotation values fails the moment the annotation
+    /// path stops firing — pinning that the X-Ghars-User /
+    /// X-Ghars-Prefix annotations, not the fallback, produced the
+    /// identity.
     ///
     /// Distinct config shape: no count block; one explicit runner
     /// "web" desired, one different-named "old-web" discovered. The
     /// desired-only arm fires for "web" (CreateRunner), the
     /// discovered-only arm fires for "old-web" (RemoveRunner). The
     /// assertion focuses on the RemoveRunner — its identity must
-    /// carry the parsed values, not the fallback empty strings or
-    /// derived defaults.
+    /// carry the annotation values, not the fallback empty strings
+    /// or derived defaults.
     #[test]
     fn plan_from_discovered_only_runner_populates_remove_runner_identity() {
         // Desired: explicit runner "web" (no count block).
@@ -10298,8 +10305,13 @@ auth = \"pat\"
             name: "old-web".into(),
             url: "https://github.com/example/old-web".into(),
             arch: crate::config::Arch::X86_64,
-            user: "ghars-old-web".into(),
-            prefix: Utf8PathBuf::from("/var/lib/ghars"),
+            // Non-default user + prefix values flow into
+            // X-Ghars-User / X-Ghars-Prefix annotations so the
+            // assertions below can distinguish annotation-path
+            // values from `reconstruct_identity`'s fallback values
+            // (`ghars-old-web` / `/var/lib/ghars`).
+            user: "alice".into(),
+            prefix: Utf8PathBuf::from("/srv/runners-old"),
             labels: vec!["old-web".into()],
             memory_max: None,
             runner_version: None,
@@ -10322,30 +10334,17 @@ auth = \"pat\"
         };
         let rendered = crate::systemd::render_runner_unit(&discovered_spec)
             .expect("render_runner_unit must succeed for valid spec");
-        // Synthesize the on-disk unit body with non-default User=
-        // and WorkingDirectory= lines so the parse path produces
-        // values distinct from `reconstruct_identity`'s fallbacks.
-        // The runner template (`crate::systemd::runner_template_text`)
-        // hardcodes `User=ghars-%i` and
-        // `WorkingDirectory=/var/lib/ghars/%i` — substituting %i to
-        // "old-web" yields `ghars-old-web` and `/var/lib/ghars`,
-        // identical to what the `unwrap_or_else` arms would produce
-        // (RUNNER_USER_PREFIX + name and `paths.state_dir`
-        // respectively). Without a divergent unit body, an
-        // assert_eq! against either value would pass whether parsing
-        // succeeded or the fallback fired — no falsifiability for
-        // the populated-vs-fallback distinction this test exists to
-        // verify. The drop-in body in `rendered.drop_ins` is kept
-        // unchanged: that's where url + auth_name annotations live,
-        // and they read through `DiscoveredAnnotations::
-        // from_discovered`, which targets the 00-ghars.conf drop-in
-        // (not the unit body).
-        let on_disk_unit_text = "[Unit]\n\
-             Description=GitHub Actions Runner (old-web)\n\
-             [Service]\n\
-             User=custom-old-web\n\
-             WorkingDirectory=/opt/ghars/old-web\n"
-            .to_string();
+        // Use the production-shape unit body (the runner template
+        // verbatim — `User=ghars-%i`,
+        // `WorkingDirectory=/var/lib/ghars/%i`). After `%i` →
+        // `"old-web"` substitution, the parse path would produce
+        // `ghars-old-web` and `/var/lib/ghars` — identical to
+        // `reconstruct_identity`'s fallback output, so the
+        // assertions below cannot pass via the parse path. They
+        // pass only when the annotation path fires and reads
+        // X-Ghars-User=alice / X-Ghars-Prefix=/srv/runners-old from
+        // `rendered.drop_ins["00-ghars.conf"]`.
+        let on_disk_unit_text = crate::systemd::runner_template_text();
         let mut actual = state::ActualState::default();
         actual.runners.insert(
             "old-web".into(),
@@ -10392,29 +10391,28 @@ auth = \"pat\"
              annotation, not the empty fallback",
         );
         assert_eq!(
-            remove_identity.user, "custom-old-web",
-            "RemoveRunner.user must reflect the User= line parsed \
-             from the discovered unit body, not \
-             reconstruct_identity's RUNNER_USER_PREFIX+name fallback. \
-             The synthetic on_disk_unit_text emits \
-             `User=custom-old-web` (distinct from the fallback \
-             `ghars-old-web`), so this assertion fails the moment \
-             parse_user_from_unit stops firing or the parse->fallback \
-             order inverts.",
+            remove_identity.user, "alice",
+            "RemoveRunner.user must reflect the X-Ghars-User \
+             annotation in `00-ghars.conf` (\"alice\" — set on \
+             discovered_spec and emitted by render_identity), not \
+             reconstruct_identity's RUNNER_USER_PREFIX+name fallback \
+             (which would yield `ghars-old-web`). The on-disk unit \
+             body's `User=ghars-%i` line resolves to the same \
+             fallback value, so this assertion is falsified the \
+             moment the annotation path stops firing.",
         );
         assert_eq!(
             remove_identity.prefix.as_str(),
-            "/opt/ghars",
-            "RemoveRunner.prefix must be the parent of the \
-             WorkingDirectory= line parsed from the discovered unit \
-             body. The synthetic on_disk_unit_text emits \
-             `WorkingDirectory=/opt/ghars/old-web`; \
-             parse_working_directory_from_unit returns the path, \
-             reconstruct_identity takes its parent (/opt/ghars). \
-             The fallback would produce `paths.state_dir` \
-             (`/var/lib/ghars` for Paths::default()) — distinct from \
-             `/opt/ghars`, so this assertion is load-bearing and \
-             fails if the parse path stops firing.",
+            "/srv/runners-old",
+            "RemoveRunner.prefix must reflect the X-Ghars-Prefix \
+             annotation in `00-ghars.conf` (\"/srv/runners-old\" — \
+             set on discovered_spec and emitted by render_identity), \
+             not `paths.state_dir` (`/var/lib/ghars` for \
+             Paths::default()). The on-disk unit body's \
+             `WorkingDirectory=/var/lib/ghars/%i` line resolves to \
+             the same fallback value via parse + parent, so this \
+             assertion is falsified the moment the annotation path \
+             stops firing.",
         );
 
         // Pin the docstring's "desired-only arm fires for 'web'

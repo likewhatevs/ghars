@@ -2537,31 +2537,66 @@ fn reconstruct_identity(
     discovered: &DiscoveredRunner,
     paths: &Paths,
 ) -> RunnerIdentity {
-    // Annotations live in `00-ghars.conf` drop-in body, not in the
-    // template. parse_user_from_unit / parse_working_directory_from_unit
-    // continue to read on_disk_unit_text because User= and
-    // WorkingDirectory= ARE in the [Service] section of the template
-    // (or operator-edited unit body) — those are NOT X-Ghars-* keys.
+    // The X-Ghars-User and X-Ghars-Prefix annotations in `00-ghars.conf`
+    // are AUTHORITATIVE: render_identity emits them unconditionally,
+    // carrying the operator's `spec.user` and `spec.prefix` literally
+    // — the same values apply.rs used at create time when calling
+    // `useradd_if_missing(&spec.user, ...)` and the same prefix the
+    // operator declared. Reading the on-disk template body would only
+    // expose `User=ghars-%i` and `WorkingDirectory=/var/lib/ghars/%i`
+    // because the template is invariant: render_runner_unit always
+    // returns `template: runner_template_text()` regardless of spec.
     //
-    // The unit body comes from `crate::systemd::runner_template_text`
-    // which contains literal `%i` specifiers (systemd substitutes
-    // these at unit-parse time, but state.rs reads the file bytes
-    // verbatim). Substitute `%i` → instance name here so callers see
-    // the resolved values rather than the template form. Without this,
-    // apply.rs::execute_remove_runner would `userdel ghars-%i` which
-    // is not a real user (SEC-27 per-runner UID is `ghars-INSTANCE`).
+    // Resolution order: annotation first; fall back to template parse
+    // (with `%i` → name substitution) when the annotation is missing
+    // or empty (older ghars-applied unit, or operator-edited
+    // 00-ghars.conf with the line stripped). Empty annotation values
+    // are treated as missing — render_identity always writes a
+    // non-empty value for these fields, so an empty annotation is a
+    // best-effort fallback signal rather than "intentionally blank".
+    //
+    // Final fallback when neither annotation nor template parse
+    // yields a value: the SEC-27 default `ghars-NAME` for user and
+    // `paths.state_dir` for prefix.
+    //
+    // # Consumers
+    //
+    // The returned `RunnerIdentity.user` and `.prefix` flow into
+    // `apply::execute_remove_runner`, which uses them as inputs to:
+    //
+    // - `apply::guard_home_dir_rmrf(&runner_home, &identity.prefix,
+    //   &identity.name)` — the rmrf safety guard that refuses to
+    //   delete anything outside the operator-declared prefix. A
+    //   wrong `prefix` here causes either a refused-but-valid
+    //   teardown or (worse) an accepted teardown whose path does
+    //   not match the original create-time prefix.
+    // - `apply::Users::userdel_if_present(&identity.user)` — the
+    //   per-runner system-user cleanup. A wrong `user` here leaks
+    //   the actually-created account on disk because `userdel`
+    //   would be invoked on a user that never existed.
     let annotations = DiscoveredAnnotations::from_discovered(discovered);
-    let user = parse_user_from_unit(&discovered.on_disk_unit_text)
-        .map(|u| u.replace("%i", name))
+    let user = annotations
+        .user
+        .filter(|u| !u.is_empty())
+        .or_else(|| {
+            parse_user_from_unit(&discovered.on_disk_unit_text)
+                .map(|u| u.replace("%i", name))
+        })
         .unwrap_or_else(|| {
             format!(
                 "{prefix}{name}",
                 prefix = crate::validators::RUNNER_USER_PREFIX,
             )
         });
-    let prefix = parse_working_directory_from_unit(&discovered.on_disk_unit_text)
-        .map(|wd| Utf8PathBuf::from(wd.as_str().replace("%i", name)))
-        .and_then(|wd| wd.parent().map(Utf8Path::to_path_buf))
+    let prefix = annotations
+        .prefix
+        .filter(|p| !p.is_empty())
+        .map(Utf8PathBuf::from)
+        .or_else(|| {
+            parse_working_directory_from_unit(&discovered.on_disk_unit_text)
+                .map(|wd| Utf8PathBuf::from(wd.as_str().replace("%i", name)))
+                .and_then(|wd| wd.parent().map(Utf8Path::to_path_buf))
+        })
         .unwrap_or_else(|| paths.state_dir.clone());
     RunnerIdentity {
         name: name.to_owned(),
@@ -4362,17 +4397,19 @@ mod tests {
     }
 
     /// `RunnerDelta.identity.user` reflects the OLD user from the
-    /// discovered unit text (`parse_user_from_unit`, called from
-    /// `reconstruct_identity`). This matters because
+    /// discovered runner's `X-Ghars-User` annotation in
+    /// `00-ghars.conf` (read by `reconstruct_identity` via
+    /// `DiscoveredAnnotations`). This matters because
     /// `apply::Users::userdel_if_present` uses identity.user for
     /// userdel — if it took the desired (new) user instead, the
     /// actual on-disk user would never get cleaned up after a
     /// user-rename recreate.
     ///
-    /// We construct a discovered runner whose unit text carries
-    /// `User=ghars-old`, then change the desired spec to user=ghars-new,
-    /// and assert the resulting RunnerDelta.identity.user is "ghars-old"
-    /// (NOT "ghars-new").
+    /// The discovered fixture is built from old_spec via the
+    /// production renderer, so its `00-ghars.conf` carries
+    /// `X-Ghars-User=ghars-old`. We then change the desired spec to
+    /// user=ghars-new and assert the resulting
+    /// `RunnerDelta.identity.user` is "ghars-old" (NOT "ghars-new").
     #[test]
     fn plan_update_runner_delta_identity_user_reflects_old_user_not_new() {
         let cfg = config_with_runners(vec![{
@@ -4394,18 +4431,12 @@ mod tests {
             cfg_source_default(),
         );
         old_spec.spec_hash = spec_hash(&old_spec);
-        let mut discovered = discovered_for("a", &old_spec, Drift::InSync);
-        // Override the test fixture's hardcoded User= line with the
-        // explicit old-user value so parse_user_from_unit picks it up.
-        discovered.on_disk_unit_text = format!(
-            "[Unit]\nX-Ghars-Managed=true\nX-Ghars-Runner-Name=a\n\
-             X-Ghars-Runner-Url={url}\nX-Ghars-Auth-Name={auth}\n\
-             X-Ghars-Effective-Version={ver}\n\
-             [Service]\nUser=ghars-old\nWorkingDirectory=/var/lib/ghars/a\n",
-            url = old_spec.url,
-            auth = old_spec.auth_name,
-            ver = old_spec.runner_version.clone().unwrap_or_default(),
-        );
+        let discovered = discovered_for("a", &old_spec, Drift::InSync);
+        // The fixture's `00-ghars.conf` carries
+        // `X-Ghars-User=ghars-old` because `discovered_for` runs the
+        // production renderer over old_spec. reconstruct_identity
+        // reads that annotation rather than the invariant template
+        // body's `User=ghars-%i` line.
         let mut actual = empty_actual();
         actual.runners.insert("a".into(), discovered);
         let plan = plan_from(&cfg, &actual, &empty_paths()).unwrap();
@@ -4420,19 +4451,22 @@ mod tests {
         assert_eq!(updates.len(), 1);
         assert_eq!(
             updates[0].identity.user, "ghars-old",
-            "identity.user must reflect the OLD discovered user, not the desired new user"
+            "identity.user must reflect the OLD discovered user (from \
+             X-Ghars-User annotation), not the desired new user"
         );
     }
 
     /// `RunnerDelta.identity.prefix` reflects the OLD prefix from the
-    /// discovered unit text (`parse_working_directory_from_unit`,
-    /// called from `reconstruct_identity`). apply.rs uses
-    /// identity.prefix to clean home directories on recreate — taking
-    /// the new prefix would orphan the old home dir.
+    /// discovered runner's `X-Ghars-Prefix` annotation in
+    /// `00-ghars.conf` (read by `reconstruct_identity` via
+    /// `DiscoveredAnnotations`). apply.rs uses identity.prefix to
+    /// clean home directories on recreate — taking the new prefix
+    /// would orphan the old home dir.
     ///
-    /// Discovered WorkingDirectory= points at a custom prefix; the
-    /// resulting identity.prefix must be its parent (per the
-    /// `parent()` call inside `reconstruct_identity`), not the
+    /// The discovered fixture is built from old_spec via the
+    /// production renderer, so its `00-ghars.conf` carries
+    /// `X-Ghars-Prefix=/srv/runners-old`. The resulting
+    /// `identity.prefix` must reflect that value, not the
     /// desired-side prefix.
     #[test]
     fn plan_update_runner_delta_identity_prefix_reflects_old_prefix_not_new() {
@@ -4455,20 +4489,13 @@ mod tests {
             cfg_source_default(),
         );
         old_spec.spec_hash = spec_hash(&old_spec);
-        let mut discovered = discovered_for("a", &old_spec, Drift::InSync);
-        // The fixture's parse_working_directory_from_unit reads the
-        // WorkingDirectory= line; reconstruct_identity then takes the
-        // parent. We point the WD at /srv/runners-old/a so the parent
-        // is /srv/runners-old (matching the OLD prefix).
-        discovered.on_disk_unit_text = format!(
-            "[Unit]\nX-Ghars-Managed=true\nX-Ghars-Runner-Name=a\n\
-             X-Ghars-Runner-Url={url}\nX-Ghars-Auth-Name={auth}\n\
-             X-Ghars-Effective-Version={ver}\n\
-             [Service]\nUser=ghars-a\nWorkingDirectory=/srv/runners-old/a\n",
-            url = old_spec.url,
-            auth = old_spec.auth_name,
-            ver = old_spec.runner_version.clone().unwrap_or_default(),
-        );
+        let discovered = discovered_for("a", &old_spec, Drift::InSync);
+        // The fixture's `00-ghars.conf` carries
+        // `X-Ghars-Prefix=/srv/runners-old` because `discovered_for`
+        // runs the production renderer over old_spec.
+        // reconstruct_identity reads that annotation rather than
+        // the invariant template body's
+        // `WorkingDirectory=/var/lib/ghars/%i` line.
         let mut actual = empty_actual();
         actual.runners.insert("a".into(), discovered);
         let plan = plan_from(&cfg, &actual, &empty_paths()).unwrap();
@@ -4485,6 +4512,208 @@ mod tests {
             updates[0].identity.prefix,
             Utf8PathBuf::from("/srv/runners-old"),
             "identity.prefix must reflect the OLD discovered prefix, not the desired new prefix"
+        );
+    }
+
+    /// `reconstruct_identity` returns the X-Ghars-User annotation
+    /// value verbatim when present, regardless of what the on-disk
+    /// unit body's `User=` line says. Production unit body always
+    /// carries the literal `User=ghars-%i` template form; the
+    /// operator's actual user lives in the annotation.
+    #[test]
+    fn reconstruct_identity_prefers_x_ghars_user_annotation_over_template_parse() {
+        let mut drop_ins = BTreeMap::new();
+        drop_ins.insert(
+            "00-ghars.conf".to_owned(),
+            "[Unit]\nX-Ghars-User=alice\nX-Ghars-Prefix=/var/lib/ghars\n".to_owned(),
+        );
+        // Production-shape unit body: literal `%i` specifier.
+        let unit_text = "[Service]\nUser=ghars-%i\nWorkingDirectory=/var/lib/ghars/%i\n";
+        let discovered = DiscoveredRunner {
+            name: "buckos".to_owned(),
+            spec_hash: String::new(),
+            on_disk_unit_text: unit_text.to_owned(),
+            drop_ins,
+            running: false,
+            enabled: false,
+            drift: Drift::InSync,
+        };
+        let identity = reconstruct_identity("buckos", &discovered, &empty_paths());
+        assert_eq!(
+            identity.user, "alice",
+            "annotation must win over template parse (which would have \
+             yielded `ghars-buckos`)"
+        );
+    }
+
+    /// `reconstruct_identity` returns the X-Ghars-Prefix annotation
+    /// value verbatim when present, regardless of what the on-disk
+    /// unit body's `WorkingDirectory=` line says. Production unit body
+    /// always carries the literal `WorkingDirectory=/var/lib/ghars/%i`
+    /// template form; the operator's actual prefix lives in the
+    /// annotation.
+    #[test]
+    fn reconstruct_identity_prefers_x_ghars_prefix_annotation_over_template_parse() {
+        let mut drop_ins = BTreeMap::new();
+        drop_ins.insert(
+            "00-ghars.conf".to_owned(),
+            "[Unit]\nX-Ghars-User=ghars-buckos\nX-Ghars-Prefix=/srv/runners\n".to_owned(),
+        );
+        // Production-shape unit body: literal `%i` specifier with the
+        // hardcoded `/var/lib/ghars` prefix.
+        let unit_text = "[Service]\nUser=ghars-%i\nWorkingDirectory=/var/lib/ghars/%i\n";
+        let discovered = DiscoveredRunner {
+            name: "buckos".to_owned(),
+            spec_hash: String::new(),
+            on_disk_unit_text: unit_text.to_owned(),
+            drop_ins,
+            running: false,
+            enabled: false,
+            drift: Drift::InSync,
+        };
+        let identity = reconstruct_identity("buckos", &discovered, &empty_paths());
+        assert_eq!(
+            identity.prefix,
+            Utf8PathBuf::from("/srv/runners"),
+            "annotation must win over template parse (which would have \
+             yielded `/var/lib/ghars`)"
+        );
+    }
+
+    /// When `00-ghars.conf` carries no `X-Ghars-User` annotation
+    /// (older ghars-applied runner predating annotation emission, or
+    /// operator-stripped 00-ghars.conf), `reconstruct_identity`
+    /// falls back to parsing `User=` from the unit body and
+    /// substituting the `%i` specifier with the runner name.
+    #[test]
+    fn reconstruct_identity_falls_back_to_template_user_when_annotation_absent() {
+        let mut drop_ins = BTreeMap::new();
+        // Drop-in present but missing X-Ghars-User entirely.
+        drop_ins.insert(
+            "00-ghars.conf".to_owned(),
+            "[Unit]\nX-Ghars-Prefix=/var/lib/ghars\n".to_owned(),
+        );
+        let unit_text = "[Service]\nUser=ghars-%i\nWorkingDirectory=/var/lib/ghars/%i\n";
+        let discovered = DiscoveredRunner {
+            name: "buckos".to_owned(),
+            spec_hash: String::new(),
+            on_disk_unit_text: unit_text.to_owned(),
+            drop_ins,
+            running: false,
+            enabled: false,
+            drift: Drift::InSync,
+        };
+        let identity = reconstruct_identity("buckos", &discovered, &empty_paths());
+        assert_eq!(
+            identity.user, "ghars-buckos",
+            "template parse + %i substitution must yield `ghars-buckos`"
+        );
+    }
+
+    /// When `00-ghars.conf` carries no `X-Ghars-Prefix` annotation,
+    /// `reconstruct_identity` falls back to parsing
+    /// `WorkingDirectory=` from the unit body, substituting `%i`
+    /// with the runner name, and taking the parent directory.
+    #[test]
+    fn reconstruct_identity_falls_back_to_template_prefix_when_annotation_absent() {
+        let mut drop_ins = BTreeMap::new();
+        // Drop-in present but missing X-Ghars-Prefix entirely.
+        drop_ins.insert(
+            "00-ghars.conf".to_owned(),
+            "[Unit]\nX-Ghars-User=ghars-buckos\n".to_owned(),
+        );
+        let unit_text = "[Service]\nUser=ghars-%i\nWorkingDirectory=/var/lib/ghars/%i\n";
+        let discovered = DiscoveredRunner {
+            name: "buckos".to_owned(),
+            spec_hash: String::new(),
+            on_disk_unit_text: unit_text.to_owned(),
+            drop_ins,
+            running: false,
+            enabled: false,
+            drift: Drift::InSync,
+        };
+        let identity = reconstruct_identity("buckos", &discovered, &empty_paths());
+        assert_eq!(
+            identity.prefix,
+            Utf8PathBuf::from("/var/lib/ghars"),
+            "template parse + %i substitution + parent must yield \
+             `/var/lib/ghars`"
+        );
+    }
+
+    /// When `00-ghars.conf` emits `X-Ghars-User=` (key present but
+    /// empty value), `reconstruct_identity` MUST treat that as
+    /// "missing" and fall through to the template parse path. An
+    /// empty value cannot be a valid system user (useradd/userdel
+    /// reject empty names), and `render_identity` always writes a
+    /// non-empty value for `spec.user`, so an empty annotation is a
+    /// best-effort fallback signal — it cannot be honored verbatim.
+    #[test]
+    fn reconstruct_identity_demotes_empty_user_annotation_to_template_fallback() {
+        let mut drop_ins = BTreeMap::new();
+        // Empty `X-Ghars-User=` — the key is present but carries no
+        // value. `DiscoveredAnnotations::from_drop_in_body` parses
+        // this as `Some("")`; the `.filter(|u| !u.is_empty())` arm
+        // in reconstruct_identity demotes it to None so the parse
+        // path fires.
+        drop_ins.insert(
+            "00-ghars.conf".to_owned(),
+            "[Unit]\nX-Ghars-User=\nX-Ghars-Prefix=/var/lib/ghars\n".to_owned(),
+        );
+        let unit_text = "[Service]\nUser=ghars-%i\nWorkingDirectory=/var/lib/ghars/%i\n";
+        let discovered = DiscoveredRunner {
+            name: "buckos".to_owned(),
+            spec_hash: String::new(),
+            on_disk_unit_text: unit_text.to_owned(),
+            drop_ins,
+            running: false,
+            enabled: false,
+            drift: Drift::InSync,
+        };
+        let identity = reconstruct_identity("buckos", &discovered, &empty_paths());
+        assert_eq!(
+            identity.user, "ghars-buckos",
+            "empty `X-Ghars-User=` must demote to template parse + \
+             %i substitution (`ghars-buckos`), not propagate as the \
+             empty string"
+        );
+    }
+
+    /// Symmetric to the user-empty test: when `00-ghars.conf` emits
+    /// `X-Ghars-Prefix=` (key present but empty value),
+    /// `reconstruct_identity` MUST fall through to the template
+    /// parse path. An empty path cannot be a valid working
+    /// directory, and `render_identity` always writes a non-empty
+    /// value for `spec.prefix`, so an empty annotation is treated
+    /// as missing.
+    #[test]
+    fn reconstruct_identity_demotes_empty_prefix_annotation_to_template_fallback() {
+        let mut drop_ins = BTreeMap::new();
+        // Empty `X-Ghars-Prefix=` — the key is present but carries
+        // no value. The `.filter(|p| !p.is_empty())` arm in
+        // reconstruct_identity demotes it to None so the parse path
+        // fires.
+        drop_ins.insert(
+            "00-ghars.conf".to_owned(),
+            "[Unit]\nX-Ghars-User=ghars-buckos\nX-Ghars-Prefix=\n".to_owned(),
+        );
+        let unit_text = "[Service]\nUser=ghars-%i\nWorkingDirectory=/var/lib/ghars/%i\n";
+        let discovered = DiscoveredRunner {
+            name: "buckos".to_owned(),
+            spec_hash: String::new(),
+            on_disk_unit_text: unit_text.to_owned(),
+            drop_ins,
+            running: false,
+            enabled: false,
+            drift: Drift::InSync,
+        };
+        let identity = reconstruct_identity("buckos", &discovered, &empty_paths());
+        assert_eq!(
+            identity.prefix,
+            Utf8PathBuf::from("/var/lib/ghars"),
+            "empty `X-Ghars-Prefix=` must demote to template parse + \
+             %i substitution + parent (`/var/lib/ghars`), not \
+             propagate as the empty path"
         );
     }
 
