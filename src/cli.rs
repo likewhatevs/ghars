@@ -4265,6 +4265,7 @@ mod tests {
         let plan = Plan {
             actions: vec![Action::CreateRunner(fake_runner_plan("a"))],
             warnings: vec![],
+            keep_versions: 2,
         };
         assert_eq!(dry_run_exit_code(false, false, &plan), 0);
     }
@@ -4278,6 +4279,7 @@ mod tests {
         let plan = Plan {
             actions: vec![Action::CreateRunner(fake_runner_plan("a"))],
             warnings: vec![],
+            keep_versions: 2,
         };
         assert_eq!(dry_run_exit_code(true, false, &plan), 2);
     }
@@ -4293,6 +4295,7 @@ mod tests {
                 Action::NoOp("b: in sync".into()),
             ],
             warnings: vec![],
+            keep_versions: 2,
         };
         assert_eq!(dry_run_exit_code(true, false, &plan), 0);
     }
@@ -4316,6 +4319,7 @@ mod tests {
         let plan = Plan {
             actions: vec![Action::CreateRunner(fake_runner_plan("a"))],
             warnings: vec![],
+            keep_versions: 2,
         };
         assert!(plan.has_recreate());
     }
@@ -4328,6 +4332,7 @@ mod tests {
         let all_noop = Plan {
             actions: vec![Action::NoOp("a: in sync".into())],
             warnings: vec![],
+            keep_versions: 2,
         };
         assert!(!all_noop.has_recreate());
         assert!(!Plan::default().has_recreate());
@@ -4340,6 +4345,7 @@ mod tests {
         let plan = Plan {
             actions: vec![Action::CreateRunner(fake_runner_plan("a"))],
             warnings: vec![],
+            keep_versions: 2,
         };
         assert_eq!(recreate_exit_code(true, &plan), Some(8));
     }
@@ -4352,6 +4358,7 @@ mod tests {
         let plan = Plan {
             actions: vec![Action::CreateRunner(fake_runner_plan("a"))],
             warnings: vec![],
+            keep_versions: 2,
         };
         assert_eq!(recreate_exit_code(false, &plan), None);
     }
@@ -4365,6 +4372,7 @@ mod tests {
         let all_noop = Plan {
             actions: vec![Action::NoOp("a: in sync".into())],
             warnings: vec![],
+            keep_versions: 2,
         };
         assert_eq!(recreate_exit_code(true, &all_noop), None);
     }
@@ -4377,6 +4385,7 @@ mod tests {
         let plan = Plan {
             actions: vec![Action::CreateRunner(fake_runner_plan("a"))],
             warnings: vec![],
+            keep_versions: 2,
         };
         assert_eq!(dry_run_exit_code(true, true, &plan), 8);
     }
@@ -4391,6 +4400,7 @@ mod tests {
         let plan = Plan {
             actions: vec![Action::CreateRunner(fake_runner_plan("a"))],
             warnings: vec![],
+            keep_versions: 2,
         };
         assert_eq!(cancel_exit_code(true, true, &plan), 8);
     }
@@ -4512,6 +4522,7 @@ mod tests {
         let plan = Plan {
             actions: vec![Action::CreateRunner(fake_runner_plan("a"))],
             warnings: vec![],
+            keep_versions: 2,
         };
         assert_eq!(cancel_exit_code(false, true, &plan), 8);
     }
@@ -4523,6 +4534,7 @@ mod tests {
         let all_noop = Plan {
             actions: vec![Action::NoOp("a: in sync".into())],
             warnings: vec![],
+            keep_versions: 2,
         };
         assert_eq!(cancel_exit_code(true, true, &all_noop), 2);
     }
@@ -4534,6 +4546,7 @@ mod tests {
         let all_noop = Plan {
             actions: vec![Action::NoOp("a: in sync".into())],
             warnings: vec![],
+            keep_versions: 2,
         };
         assert_eq!(cancel_exit_code(false, true, &all_noop), 0);
     }
@@ -4547,6 +4560,7 @@ mod tests {
         let plan = Plan {
             actions: vec![Action::CreateRunner(fake_runner_plan("a"))],
             warnings: vec![],
+            keep_versions: 2,
         };
         assert_eq!(dry_run_exit_code(false, true, &plan), 8);
     }
@@ -4572,6 +4586,7 @@ mod tests {
         let plan = Plan {
             actions: vec![Action::UpdateRunner(in_place_delta)],
             warnings: vec![],
+            keep_versions: 2,
         };
         assert_eq!(dry_run_exit_code(true, true, &plan), 2);
     }
@@ -4583,6 +4598,7 @@ mod tests {
         let all_noop = Plan {
             actions: vec![Action::NoOp("a: in sync".into())],
             warnings: vec![],
+            keep_versions: 2,
         };
         assert_eq!(dry_run_exit_code(false, true, &all_noop), 0);
     }
@@ -4643,6 +4659,7 @@ mod tests {
         let plan = Plan {
             actions: vec![Action::RemoveRunner(fake_identity("legacy"))],
             warnings: vec![],
+            keep_versions: 2,
         };
         assert!(plan.has_recreate());
     }
@@ -8657,6 +8674,7 @@ auth = \"pat\"
         let plan = Plan {
             actions: vec![Action::UpdateRunner(delta)],
             warnings: vec![],
+            keep_versions: 2,
         };
         let body = plan_to_json_value(&plan, true);
         let actions = body["actions"].as_array().expect("actions array");
@@ -8710,6 +8728,7 @@ auth = \"pat\"
         let plan = Plan {
             actions: vec![Action::UpdateRunner(delta)],
             warnings: vec![],
+            keep_versions: 2,
         };
         let body = plan_to_json_value(&plan, true);
         let actions = body["actions"].as_array().expect("actions array");
@@ -8760,6 +8779,7 @@ auth = \"pat\"
                 Action::NoOp("d: in sync".into()),
             ],
             warnings: vec![],
+            keep_versions: 2,
         };
         let body = plan_to_json_value(&plan, false);
         let actions = body["actions"].as_array().unwrap();
@@ -8804,6 +8824,7 @@ auth = \"pat\"
                 before_drop_in_basenames: None,
             })],
             warnings: vec![],
+            keep_versions: 2,
         };
         let body = plan_to_json_value(&plan, false);
         assert_eq!(body["actions"][0]["disruption"], "recreate");
@@ -8831,6 +8852,7 @@ auth = \"pat\"
                 before_drop_in_basenames: None,
             })],
             warnings: vec![],
+            keep_versions: 2,
         };
         let body = plan_to_json_value(&plan, false);
         let entry = &body["actions"][0]["drop_in_changes"][0];
@@ -8873,6 +8895,7 @@ auth = \"pat\"
                 before_drop_in_basenames: None,
             })],
             warnings: vec![],
+            keep_versions: 2,
         };
         let body = plan_to_json_value(&plan, true);
         let entry = &body["actions"][0]["drop_in_changes"][0];
@@ -8906,6 +8929,7 @@ auth = \"pat\"
                 before_drop_in_basenames: None,
             })],
             warnings: vec![],
+            keep_versions: 2,
         };
         let body = plan_to_json_value(&plan, true);
         let entry = &body["actions"][0]["drop_in_changes"][0];
@@ -8934,6 +8958,7 @@ auth = \"pat\"
                 before_drop_in_basenames: None,
             })],
             warnings: vec![],
+            keep_versions: 2,
         };
         let body = plan_to_json_value(&plan, true);
         let entry = &body["actions"][0]["drop_in_changes"][0];
@@ -8971,6 +8996,7 @@ auth = \"pat\"
         let plan = Plan {
             actions: vec![Action::UpdateRunner(delta)],
             warnings: vec![],
+            keep_versions: 2,
         };
         let body = plan_to_json_value(&plan, true);
         let entries = body["actions"][0]["drop_in_changes"].as_array().unwrap();
@@ -9014,6 +9040,7 @@ auth = \"pat\"
         let plan = Plan {
             actions: vec![Action::NoOp("a: in sync".into())],
             warnings: vec![],
+            keep_versions: 2,
         };
         for diff in [false, true] {
             let body = plan_to_json_value(&plan, diff);
@@ -9030,6 +9057,7 @@ auth = \"pat\"
         let plan = Plan {
             actions: vec![],
             warnings: vec![],
+            keep_versions: 2,
         };
         let body = plan_to_json_value(&plan, false);
         assert_eq!(body["schema_version"], "2");
@@ -9067,6 +9095,7 @@ auth = \"pat\"
                 Action::RemoveCachePool("p".into()),
             ],
             warnings: vec![],
+            keep_versions: 2,
         };
         let body = plan_to_json_value(&plan, false);
         let s = &body["summary"];
@@ -9103,6 +9132,7 @@ auth = \"pat\"
                 }),
             ],
             warnings: vec![],
+            keep_versions: 2,
         };
         let body = plan_to_json_value(&plan, false);
         let s = &body["summary"];
@@ -9123,6 +9153,7 @@ auth = \"pat\"
                 Action::CreateRunner(fake_runner_plan("c")),
             ],
             warnings: vec![],
+            keep_versions: 2,
         };
         let body = plan_to_json_value(&plan, false);
         assert_eq!(body["summary"]["any_recreate"], true);
@@ -9139,6 +9170,7 @@ auth = \"pat\"
         let plan = Plan {
             actions: vec![],
             warnings: vec![],
+            keep_versions: 2,
         };
         let body = plan_to_json_value(&plan, false);
         assert_eq!(
@@ -9206,6 +9238,7 @@ auth = \"pat\"
                 }),
             ],
             warnings: vec![],
+            keep_versions: 2,
         };
         let body = plan_to_json_value(&plan, false);
         let recreates = body["summary"]["recreates"].as_array().unwrap();
@@ -9265,6 +9298,7 @@ auth = \"pat\"
                 }),
             ],
             warnings: vec![],
+            keep_versions: 2,
         };
         let body = plan_to_json_value(&plan, false);
         assert_eq!(
@@ -9291,6 +9325,7 @@ auth = \"pat\"
                 Action::RemoveCachePool("alpha".into()),
             ],
             warnings: vec![],
+            keep_versions: 2,
         };
         let body = plan_to_json_value(&plan, false);
         let recreates = body["summary"]["recreates"].as_array().unwrap();
@@ -9339,6 +9374,7 @@ auth = \"pat\"
                 Action::RemoveCachePool("gamma".into()),
             ],
             warnings: vec![],
+            keep_versions: 2,
         };
         let no_diff = plan_to_json_value(&plan, false);
         let with_diff = plan_to_json_value(&plan, true);
@@ -9376,6 +9412,7 @@ auth = \"pat\"
                 Action::RemoveCachePool("c".into()),
             ],
             warnings: vec![],
+            keep_versions: 2,
         };
         let body = plan_to_json_value(&plan, false);
         let s = &body["summary"];
@@ -9418,6 +9455,7 @@ auth = \"pat\"
                 Action::RemoveCachePool("y".into()),
             ],
             warnings: vec![],
+            keep_versions: 2,
         };
         let body = plan_to_json_value(&plan, false);
         let recreates = body["summary"]["recreates"].as_array().unwrap();
@@ -10500,6 +10538,7 @@ auth = \"pat\"
                 Action::NoOp("d: in sync".into()),
             ],
             warnings,
+            keep_versions: 2,
         };
         // Drive the production Value-construction directly. No test
         // mirror — `plan_to_json_value` IS the production code.
@@ -10542,6 +10581,7 @@ auth = \"pat\"
         let plan = Plan {
             actions: vec![Action::CreateRunner(fake_runner_plan("a"))],
             warnings: vec![],
+            keep_versions: 2,
         };
         render_plan(&plan, ColorMode { enabled: false }, false, true, false)
     }
@@ -10563,6 +10603,7 @@ auth = \"pat\"
         let plan = Plan {
             actions: vec![Action::CreateRunner(fake_runner_plan("a"))],
             warnings: vec!["shared user".into()],
+            keep_versions: 2,
         };
         render_plan(&plan, ColorMode { enabled: false }, true, false, false)
     }
@@ -10631,6 +10672,7 @@ auth = \"pat\"
         let plan = Plan {
             actions: vec![Action::UpdateRunner(delta)],
             warnings: vec!["mixed signal: hash + drift".into()],
+            keep_versions: 2,
         };
         // Production renderer writes to stdout; the test assertion is
         // that the call succeeds (no panic, no Err). Output-shape
@@ -10650,6 +10692,7 @@ auth = \"pat\"
                 "shared user disables isolation".into(),
                 "memory_max in defaults overridden by runner".into(),
             ],
+            keep_versions: 2,
         };
         render_plan(&plan, ColorMode { enabled: false }, false, false, false)
     }
@@ -10739,6 +10782,7 @@ auth = \"pat\"
         let plan = Plan {
             actions: vec![Action::CreateRunner(fake_runner_plan("a"))],
             warnings: vec![],
+            keep_versions: 2,
         };
         let v = plan_to_json_value(&plan, false);
         let actions = v["actions"].as_array().expect("actions array");
@@ -10759,6 +10803,7 @@ auth = \"pat\"
         let plan = Plan {
             actions: vec![Action::RemoveRunner(fake_identity("legacy"))],
             warnings: vec![],
+            keep_versions: 2,
         };
         let v = plan_to_json_value(&plan, false);
         let actions = v["actions"].as_array().unwrap();
@@ -10775,6 +10820,7 @@ auth = \"pat\"
                 spec_hash: "sha256:0".into(),
             })],
             warnings: vec![],
+            keep_versions: 2,
         };
         let v = plan_to_json_value(&plan, false);
         let actions = v["actions"].as_array().unwrap();
@@ -10791,6 +10837,7 @@ auth = \"pat\"
                 spec_hash: "sha256:0".into(),
             })],
             warnings: vec![],
+            keep_versions: 2,
         };
         let v = plan_to_json_value(&plan, false);
         let actions = v["actions"].as_array().unwrap();
@@ -10802,6 +10849,7 @@ auth = \"pat\"
         let plan = Plan {
             actions: vec![Action::RemoveCachePool("build".into())],
             warnings: vec![],
+            keep_versions: 2,
         };
         let v = plan_to_json_value(&plan, false);
         let actions = v["actions"].as_array().unwrap();
@@ -10848,6 +10896,7 @@ auth = \"pat\"
                 before_drop_in_basenames: None,
             })],
             warnings: vec![],
+            keep_versions: 2,
         };
         let v = plan_to_json_value(&plan, false);
         // Assert schema_version on the full-payload smoke test
@@ -10912,6 +10961,7 @@ auth = \"pat\"
         let plan = Plan {
             actions: vec![Action::UpdateRunner(delta)],
             warnings: vec![],
+            keep_versions: 2,
         };
         let v = plan_to_json_value(&plan, false);
         let fcs = v["actions"][0]["field_changes"].as_array().unwrap();
@@ -10950,6 +11000,7 @@ auth = \"pat\"
         let plan = Plan {
             actions: vec![Action::NoOp("a: in sync".into())],
             warnings: vec![],
+            keep_versions: 2,
         };
         let v = plan_to_json_value(&plan, false);
         let actions = v["actions"].as_array().unwrap();
@@ -10962,6 +11013,7 @@ auth = \"pat\"
         let plan = Plan {
             actions: vec![],
             warnings: vec!["w1".into(), "w2".into(), "w3".into()],
+            keep_versions: 2,
         };
         let v = plan_to_json_value(&plan, false);
         let warnings = v["warnings"].as_array().unwrap();
@@ -10992,6 +11044,7 @@ auth = \"pat\"
                 }),
             ],
             warnings: vec![],
+            keep_versions: 2,
         };
         let serialized = serde_json::to_string(&plan_to_json_value(&plan, false)).unwrap();
         for forbidden in ["token", "secret", "private_key", "password"] {
@@ -15710,6 +15763,7 @@ auth = \"bad key\"
                 Action::RemoveCachePool("aaa".into()),
             ],
             warnings: vec![],
+            keep_versions: 2,
         };
         let body = plan_to_json_value(&plan, false);
         // Serialize to wire-format JSON string and back.
@@ -15774,6 +15828,7 @@ auth = \"bad key\"
                 Action::RemoveCachePool("rcp".into()),
             ],
             warnings: vec![],
+            keep_versions: 2,
         };
         let body = plan_to_json_value(&plan, false);
         let s = &body["summary"];
@@ -15951,6 +16006,7 @@ auth = \"bad key\"
                 Action::RemoveCachePool("beta".into()),
             ],
             warnings: vec![],
+            keep_versions: 2,
         };
         let body = plan_to_json_value(&plan, false);
         // recreates contains both pool actions, sorted.
@@ -16038,6 +16094,7 @@ auth = \"bad key\"
         let plan = Plan {
             actions: vec![Action::UpdateRunner(delta)],
             warnings: vec![],
+            keep_versions: 2,
         };
         let body = plan_to_json_value(&plan, false);
         // Round-trip through wire-format JSON.
@@ -16282,6 +16339,7 @@ auth = \"bad key\"
         let plan_obj = plan::Plan {
             actions: vec![Action::UpdateRunner(delta)],
             warnings: vec![],
+            keep_versions: 2,
         };
         // diff=true so the recreate path emits the Removed-suppressed
         // entries (the only path through the hostile-basename JSON
@@ -16426,6 +16484,7 @@ auth = \"bad key\"
         let plan_obj = plan::Plan {
             actions: vec![Action::UpdateRunner(delta)],
             warnings: vec![],
+            keep_versions: 2,
         };
         // diff=false routes through the in-place path's per-entry
         // `d.drop_in_changes.iter().map(...)` inside

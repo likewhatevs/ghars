@@ -50,6 +50,17 @@ impl Default for Paths {
 }
 
 impl Paths {
+    /// `<logs_dir>/apply.log` — append-only structured audit log of
+    /// every apply action (SEC-36). One JSON object per line with
+    /// fields: `timestamp`, `action`, `target`, `outcome`. Written
+    /// at mode 0600 (root:root); operators tail/rotate via
+    /// logrotate (recommended config in
+    /// `apply::write_audit_log_entry`'s doc-comment).
+    #[must_use]
+    pub fn apply_log(&self) -> Utf8PathBuf {
+        self.logs_dir.join("apply.log")
+    }
+
     /// `<state_dir>/<trust_zone>/ghars-<name>` — runner state directory
     /// (e.g. `/var/lib/ghars/default/ghars-buckos`). Per design Part 3 +
     /// the DynamicUser pivot: runners that share a `trust_zone` share
