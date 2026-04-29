@@ -1989,11 +1989,33 @@ fn render_hooks(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
     // Bind the parent directory of each hook script (deduped if pre and
     // post share the parent). Hook scripts must be reachable through
     // the runner's mount namespace.
+    //
+    // SEC-12 defense-in-depth: refuse to emit `BindReadOnlyPaths=/`
+    // if any hook's parent resolves to the filesystem root. The
+    // validator (`validators::validate_hook_script`) already rejects
+    // root-parent paths at config-load time, but the renderer is the
+    // last gate before the directive lands on disk; keep the check
+    // here so any caller that bypasses the validator (programmatic
+    // EffectiveRunnerSpec construction, future test harnesses)
+    // cannot regress this surface into a host-exposing bind.
     let mut parents: Vec<String> = Vec::new();
     for p in [&h.pre_job, &h.post_job].into_iter().flatten() {
         if let Some(parent) = p.parent() {
             let parent_str = parent.to_string();
-            if !parent_str.is_empty() && !parents.contains(&parent_str) {
+            if parent_str.is_empty() {
+                continue;
+            }
+            if parent_str == "/" {
+                return Err(GharsError::Validation(
+                    format!(
+                        "hook script {p}: parent directory is `/` (SEC-12); \
+                         BindReadOnlyPaths=/ would expose the entire host"
+                    ),
+                    "place the hook under a dedicated subdirectory \
+                     (e.g. /usr/local/lib/ghars-hooks/<name>.sh)".into(),
+                ));
+            }
+            if !parents.contains(&parent_str) {
                 parents.push(parent_str);
             }
         }
@@ -2998,6 +3020,38 @@ mod tests {
             "msg must name field: {msg}"
         );
         assert!(msg.contains("newline"), "msg must name class: {msg}");
+    }
+
+    /// `render_hooks`: SEC-12 defense-in-depth. The validator
+    /// (`validators::validate_hook_script`) rejects root-parent
+    /// hook paths at config load time, but the renderer is the
+    /// last gate before `BindReadOnlyPaths=<parent>` lands on
+    /// disk. A hook at `/foo.sh` whose parent is `/` would emit
+    /// `BindReadOnlyPaths=/`, mounting the entire host into the
+    /// runner sandbox. The render-time check refuses to emit such
+    /// a directive even if the validator was bypassed
+    /// (programmatic spec construction, future test surfaces).
+    #[test]
+    fn render_hooks_rejects_root_parent_pre_job_path() {
+        let mut spec = minimal_spec();
+        spec.hooks = Some(crate::config::HooksSpec {
+            pre_job: Some(camino::Utf8PathBuf::from("/foo.sh")),
+            post_job: None,
+        });
+        let err = render_runner_unit(&spec).unwrap_err();
+        assert!(
+            matches!(err, GharsError::Validation(_, _)),
+            "expected Validation, got {err:?}"
+        );
+        let msg = format!("{err}");
+        assert!(msg.contains("parent directory is `/`"), "msg: {msg}");
+        assert!(msg.contains("SEC-12"), "msg must label SEC-12: {msg}");
+        // Defense in depth: ensure the hint points operators at the
+        // subdirectory remediation, not just "remove the hook".
+        assert!(
+            msg.contains("subdirectory") || msg.contains("ghars-hooks"),
+            "remediation hint must point at subdir layout: {msg}"
+        );
     }
 
     /// `render_hooks`: `hooks.pre_job` is an operator-supplied path

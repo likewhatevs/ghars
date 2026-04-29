@@ -3612,6 +3612,46 @@ fn cmd_init(config_path: &Utf8Path, args: &InitArgs, quiet: bool) -> Result<i32>
 
 // ---------- add ---------------------------------------------------------
 
+/// Escape a string for safe interpolation into a TOML basic string
+/// (`"..."`). Per TOML spec, basic strings may not contain raw `"` or
+/// `\`, and control characters (U+0000..U+001F, U+007F) MUST appear
+/// only via Unicode escape sequences. This helper substitutes every
+/// such byte with its TOML-canonical escape so the output is
+/// guaranteed parseable when wrapped in `"..."`.
+///
+/// Used by `cmd_add` to defend the manual `[[runner]]` block-emit
+/// path against operator-supplied strings (label tokens, --name,
+/// --auth, --url) that would otherwise inject TOML keys / break the
+/// quote balance. Validators upstream (validate_runner_name,
+/// validate_url, validate_labels) already reject the offending
+/// characters, but defense-in-depth — a future relaxation of any of
+/// those regexes must not regress into TOML injection here.
+fn toml_basic_string_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\x08' => out.push_str("\\b"),
+            '\x0c' => out.push_str("\\f"),
+            // Other C0 control characters and DEL: TOML requires
+            // \uXXXX form for U+0000..U+001F (except the named
+            // escapes above) and U+007F.
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                let _ = std::fmt::Write::write_fmt(
+                    &mut out,
+                    format_args!("\\u{:04X}", c as u32),
+                );
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 fn cmd_add(
     config_path: &Utf8Path,
     paths: &Paths,
@@ -3664,19 +3704,45 @@ fn cmd_add(
     // IDENTIFIER_REGEX so apply downstream accepts it.
     validators::validate_runner_name(&name)?;
 
+    // Filter empty entries from clap's value_delimiter parse — a
+    // trailing or adjacent comma in `--labels foo,,bar` produces a
+    // zero-length string that downstream merge logic would fold into
+    // an unlabeled runner.
+    let labels: Vec<&str> = args
+        .labels
+        .iter()
+        .map(String::as_str)
+        .filter(|s| !s.is_empty())
+        .collect();
+    // Validate every label against LABEL_RE before interpolation.
+    // `validate_labels` takes a CSV string for parity with the TOML
+    // surface; join into the same shape it expects. After this gate,
+    // every entry is `[a-zA-Z0-9._-]+` — no TOML metacharacters
+    // (quote / backslash / control char) can survive.
+    if !labels.is_empty() {
+        validators::validate_labels(&labels.join(","))?;
+    }
+
     // Build the [[runner]] TOML block manually. We avoid round-tripping
     // the full config because that would erase comments + key order.
     use std::fmt::Write as _;
     let mut block = String::new();
     block.push_str("\n[[runner]]\n");
-    let _ = writeln!(block, "name = \"{name}\"");
-    let _ = writeln!(block, "url = \"{url}\"");
-    if !args.labels.is_empty() {
-        let labels: Vec<String> = args.labels.iter().map(|l| format!("\"{l}\"")).collect();
-        let _ = writeln!(block, "labels = [{}]", labels.join(", "));
+    let _ = writeln!(block, "name = \"{}\"", toml_basic_string_escape(&name));
+    let _ = writeln!(block, "url = \"{}\"", toml_basic_string_escape(&url));
+    if !labels.is_empty() {
+        // Defense in depth: even though validate_labels above rejects
+        // quote / backslash / control chars, escape on the way out so
+        // a future relaxation of LABEL_RE cannot regress this surface
+        // into TOML injection.
+        let escaped: Vec<String> = labels
+            .iter()
+            .map(|l| format!("\"{}\"", toml_basic_string_escape(l)))
+            .collect();
+        let _ = writeln!(block, "labels = [{}]", escaped.join(", "));
     }
     if cfg.defaults.auth.as_deref() != Some(auth.as_str()) {
-        let _ = writeln!(block, "auth = \"{auth}\"");
+        let _ = writeln!(block, "auth = \"{}\"", toml_basic_string_escape(&auth));
     }
 
     let mut existing = fs::read_to_string(config_path.as_std_path())?;
@@ -5043,6 +5109,90 @@ token_env = \"GHARS_PAT\"
         assert!(after.contains("[[runner]]"));
         assert!(after.contains("name = \"owner-repo-1\""));
         assert!(after.contains("url = \"https://github.com/owner/repo\""));
+    }
+
+    #[test]
+    fn cmd_add_rejects_label_with_quote_injection() {
+        // Operator passes a label whose body contains an embedded
+        // quote + `\n` + a bogus key → the original code would
+        // produce TOML that parses as a NEW key/value pair
+        // injected into the runner block. validate_labels must
+        // reject the byte before interpolation reaches the file.
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
+            .unwrap()
+            .join("ghars.toml");
+        write_minimal_config(&config_path);
+        let paths = Paths::default();
+        let mut args = add_args_for("owner/repo", Some("owner-repo-1"), Some("pat"));
+        args.labels = vec!["self-hosted".into(), "evil\"\nuser = \"root".into()];
+        let err = cmd_add(
+            &config_path,
+            &paths,
+            &args,
+            ColorMode { enabled: false },
+            true,
+        )
+        .expect_err("must reject label with quote injection");
+        assert!(
+            matches!(err, GharsError::Validation(_, _)),
+            "expected Validation error; got {err:?}"
+        );
+        // Defense in depth: even though the validator should fire,
+        // verify the file was NOT mutated (no partial write).
+        let after = fs::read_to_string(config_path.as_std_path()).unwrap();
+        assert!(!after.contains("user = \"root\""));
+        assert!(!after.contains("[[runner]]"));
+    }
+
+    #[test]
+    fn cmd_add_filters_empty_labels_from_clap_value_delimiter_artifact() {
+        // clap's `value_delimiter = ','` produces zero-length entries
+        // for `--labels foo,,bar` or `--labels ,foo`. The empty
+        // entries would land in the labels Vec literal as `""` — a
+        // plain `[Tag]` runner with no value. cmd_add must filter
+        // them so the rendered TOML matches operator intent.
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
+            .unwrap()
+            .join("ghars.toml");
+        write_minimal_config(&config_path);
+        let paths = Paths::default();
+        let mut args = add_args_for("owner/repo", Some("owner-repo-1"), Some("pat"));
+        args.labels = vec!["".into(), "self-hosted".into(), "".into(), "linux".into()];
+        let rc = cmd_add(
+            &config_path,
+            &paths,
+            &args,
+            ColorMode { enabled: false },
+            true,
+        )
+        .unwrap();
+        assert_eq!(rc, 0);
+        let after = fs::read_to_string(config_path.as_std_path()).unwrap();
+        // Final TOML carries only the two non-empty labels — no
+        // stray `""` placeholder.
+        assert!(after.contains("labels = [\"self-hosted\", \"linux\"]"));
+        assert!(!after.contains("\"\","));
+        assert!(!after.contains("[\"\""));
+    }
+
+    #[test]
+    fn toml_basic_string_escape_handles_quote_backslash_and_controls() {
+        // Per TOML spec, basic strings escape: `"` → `\"`, `\` →
+        // `\\`, named C0 codepoints → `\n` / `\r` / `\t` / `\b` /
+        // `\f`, other C0 + DEL → `\uXXXX`.
+        assert_eq!(toml_basic_string_escape("hello"), "hello");
+        assert_eq!(toml_basic_string_escape(r#"a"b"#), r#"a\"b"#);
+        assert_eq!(toml_basic_string_escape(r"a\b"), r"a\\b");
+        assert_eq!(toml_basic_string_escape("a\nb"), "a\\nb");
+        assert_eq!(toml_basic_string_escape("a\tb"), "a\\tb");
+        // Bell (U+0007) is C0 but unnamed; emits .
+        assert_eq!(toml_basic_string_escape("a\x07b"), "a\\u0007b");
+        // DEL (U+007F) — also escaped.
+        assert_eq!(toml_basic_string_escape("a\x7fb"), "a\\u007Fb");
+        // Non-ASCII printable passes through unchanged.
+        assert_eq!(toml_basic_string_escape("café"), "café");
     }
 
     // -------- confirm_apply on non-TTY --------------------------------

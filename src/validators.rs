@@ -1090,6 +1090,27 @@ pub fn validate_hook_script(path: &Utf8Path) -> Result<()> {
              runner's cwd at exec time, which is operator-controllable",
         ));
     }
+    // SEC-12 hardening: reject hook scripts whose parent is `/`
+    // (i.e. paths like `/foo.sh`). The runner unit binds the hook's
+    // parent directory into the sandbox via `BindReadOnlyPaths=`;
+    // a hook at `/foo.sh` would emit `BindReadOnlyPaths=/`, exposing
+    // the entire host filesystem to the runner. Operators should
+    // place hooks under a dedicated subdirectory (e.g.
+    // `/usr/local/lib/ghars-hooks/foo.sh`) so the bind targets a
+    // narrow tree.
+    if let Some(parent) = path.parent() {
+        if parent.as_str() == "/" || parent.as_str().is_empty() {
+            return Err(validation(
+                format!(
+                    "hook script {path}: parent directory is `/` (SEC-12); \
+                     BindReadOnlyPaths=/ would expose the entire host to the runner"
+                ),
+                "place the hook under a dedicated subdirectory \
+                 (e.g. /usr/local/lib/ghars-hooks/<name>.sh) so the \
+                 BindReadOnlyPaths bind targets a narrow tree",
+            ));
+        }
+    }
     let std_path: &Path = path.as_std_path();
     let (_file, meta) = open_no_follow_with_meta(std_path).map_err(|e| {
         // ELOOP from O_NOFOLLOW is the symlink-rejection path; report
@@ -1132,6 +1153,23 @@ pub fn validate_hook_script(path: &Utf8Path) -> Result<()> {
             ),
             "chown root: the script (sudo chown root:root <path>) so the \
              runner user cannot rewrite the file under itself",
+        ));
+    }
+    // SEC-12 hardening: reject group-writable and world-writable
+    // hook scripts. Owner-only mutation is the trust premise — if
+    // any non-root principal can rewrite the script, the
+    // root-owned-script gate above is moot. `0o022` covers both
+    // S_IWGRP (0o020) and S_IWOTH (0o002). Operator remediation:
+    // `chmod go-w <path>`. We do NOT also reject the setuid /
+    // setgid bits here — the file is invoked via the unit's
+    // ExecStart= which runs at the runner's DynamicUser identity
+    // regardless of file-mode bits, so set[ug]id has no effect.
+    if mode & 0o022 != 0 {
+        return Err(validation(
+            format!(
+                "hook script {path}: mode {mode:o} has group/world-writable bits set (SEC-12)",
+            ),
+            "chmod go-w <path> so only root can modify the script",
         ));
     }
     Ok(())
@@ -2471,6 +2509,122 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let p = mk_hook(&dir, "good.sh", b"#!/bin/sh\nexit 0\n", 0o700);
         validate_hook_script(&p).expect("root + 0700 + non-symlink must pass");
+    }
+
+    #[test]
+    fn hook_script_rejects_world_writable() {
+        // SEC-12 hardening: a world-writable hook script (mode &
+        // 0o002 != 0) lets any local user rewrite the script body.
+        // The root-owned-script check above is moot if the runner
+        // user can chmod its content. We must reject before the
+        // unit's hook ExecStart= reads the file.
+        if !running_as_root() {
+            // The function rejects on uid != 0 first; we'd never
+            // reach the mode check.
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        let p = mk_hook(&dir, "ww.sh", b"#!/bin/sh\nexit 0\n", 0o707);
+        let err = validate_hook_script(&p)
+            .expect_err("world-writable hook script must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("group/world-writable") && msg.contains("SEC-12"),
+            "expected world-writable rejection message; got {msg}"
+        );
+    }
+
+    #[test]
+    fn hook_script_rejects_group_writable() {
+        // Group-writable (0o020) is the same trust break as
+        // world-writable: any member of the file's group can
+        // rewrite the body. SEC-12 demands owner-only mutation.
+        if !running_as_root() {
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        let p = mk_hook(&dir, "gw.sh", b"#!/bin/sh\nexit 0\n", 0o770);
+        let err = validate_hook_script(&p)
+            .expect_err("group-writable hook script must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("group/world-writable"),
+            "expected group-writable rejection message; got {msg}"
+        );
+    }
+
+    #[test]
+    fn hook_script_rejects_mode_0777_explicitly() {
+        // The audit finding cites "mode 0777 passes" as the
+        // regression baseline. Pin: 0777 must NOT pass under the
+        // new rule.
+        if !running_as_root() {
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        let p = mk_hook(&dir, "777.sh", b"#!/bin/sh\nexit 0\n", 0o777);
+        let err = validate_hook_script(&p)
+            .expect_err("mode 0777 hook script must be rejected");
+        let msg = format!("{err}");
+        assert!(msg.contains("group/world-writable"), "{msg}");
+    }
+
+    #[test]
+    fn hook_script_accepts_owner_writable_only() {
+        // 0700 passes the root-owned check above and the new
+        // group/world-write check (the bits below 0o100 are zero).
+        // 0o755 (group/world readable, NOT writable) also passes —
+        // owner-write is fine; only group/world-WRITE is forbidden.
+        if !running_as_root() {
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        let p = mk_hook(&dir, "ok.sh", b"#!/bin/sh\nexit 0\n", 0o755);
+        validate_hook_script(&p)
+            .expect("0755 (g/w readable + executable, NOT writable) must pass");
+    }
+
+    #[test]
+    fn hook_script_rejects_root_parented_absolute_path() {
+        // SEC-12 hardening: a hook at `/foo.sh` would have parent
+        // `/`, and the renderer's `BindReadOnlyPaths=<parent>`
+        // line would mount the entire host into the runner
+        // sandbox. Reject pre-render so the operator gets a clear
+        // remediation hint pointing at "use a subdirectory".
+        // Construct a concrete path under /tmp first to verify the
+        // file-existence checks don't reject it before we get to
+        // the parent-check, then re-route via a /-parent string.
+        let path = camino::Utf8PathBuf::from("/foo.sh");
+        let err = validate_hook_script(&path)
+            .expect_err("hook with parent=`/` must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("parent directory is `/`") && msg.contains("SEC-12"),
+            "expected root-parent rejection; got {msg}"
+        );
+    }
+
+    #[test]
+    fn hook_script_accepts_subdir_parented_path() {
+        // Positive control: the same script body under a real
+        // subdirectory passes the new parent check (assuming root
+        // ownership + correct mode). When not running as root, the
+        // validator rejects on uid != 0 first; we just verify the
+        // root-parent check is NOT what fires.
+        let dir = TempDir::new().unwrap();
+        let p = mk_hook(&dir, "ok.sh", b"#!/bin/sh\nexit 0\n", 0o700);
+        // The temp dir parent path is `/tmp/...` (not `/`), so
+        // the parent check passes. Subsequent checks may reject
+        // (uid != 0 when not root), but that's fine — we just
+        // assert the root-parent message does NOT appear.
+        let result = validate_hook_script(&p);
+        if let Err(err) = &result {
+            let msg = format!("{err}");
+            assert!(
+                !msg.contains("parent directory is `/`"),
+                "subdir-parented path must NOT trigger root-parent rejection; got {msg}"
+            );
+        }
     }
 
     // ---- expanded SEC-01 path denylist -------------------------------
