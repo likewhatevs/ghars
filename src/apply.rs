@@ -468,17 +468,16 @@ impl ApplyResult {
 ///
 /// Variants split into two directions:
 /// - **Forward (Create-direction)** — `WriteFile`, `CreateDir`,
-///   `StartUnit`, `EnableUnit`, `GroupAdd`, `UserAdd`,
-///   `GitHubRegistration`. These have lossless inverses (`remove_file`,
-///   `remove_dir`, `stop_unit`, `disable_unit`, `groupdel_if_present`,
-///   `userdel_if_present`, `config.sh remove --token <fresh>`). The
-///   undo path attempts each and continues on per-step error.
+///   `StartUnit`, `EnableUnit`, `GitHubRegistration`. These have
+///   lossless inverses (`remove_file`, `remove_dir`, `stop_unit`,
+///   `disable_unit`, `config.sh remove --token <fresh>`). The undo
+///   path attempts each and continues on per-step error.
 /// - **Reverse (Remove-direction)** — `RemoveFile`, `RemoveDir`,
-///   `StopUnit`, `DisableUnit`, `GroupDel`, `UserDel`. These are
-///   recorded for audit-trail completeness but their undo is
-///   genuinely lossy (recursive removals lose content; restarting a
-///   stopped service might be wrong if the operator wanted it down).
-///   Undo logs the variant + warns + continues.
+///   `StopUnit`, `DisableUnit`. These are recorded for audit-trail
+///   completeness but their undo is genuinely lossy (recursive
+///   removals lose content; restarting a stopped service might be
+///   wrong if the operator wanted it down). Undo logs the variant +
+///   warns + continues.
 ///
 /// `WriteFile.prior_content` carries the bytes the file held before the
 /// write so the undo can restore an overwrite (in-place update path).
@@ -543,34 +542,6 @@ pub enum UndoStep {
         /// Unit name.
         name: String,
     },
-    /// Recorded after `users.groupadd_if_missing(name)` succeeds. Undo
-    /// is `groupdel_if_present`.
-    GroupAdd {
-        /// Group name.
-        name: String,
-    },
-    /// Recorded after `users.groupdel_if_present(name)` succeeds. Undo
-    /// is best-effort `groupadd_if_missing` (guarded reverse-direction;
-    /// warn — restoring a deleted group does not restore its prior
-    /// member set).
-    GroupDel {
-        /// Group name.
-        name: String,
-    },
-    /// Recorded after `users.useradd_if_missing(name, home)` succeeds.
-    /// Undo is `userdel_if_present`.
-    UserAdd {
-        /// User name.
-        name: String,
-    },
-    /// Recorded after `users.userdel_if_present(name)` succeeds. Undo
-    /// is best-effort warn — re-adding a deleted user with a fresh UID
-    /// would not restore home/credentials/group memberships, so the
-    /// undo is intentionally a no-op-with-log.
-    UserDel {
-        /// User name.
-        name: String,
-    },
     /// Recorded after `config_shell.run_register(...)` succeeds. Undo
     /// is to mint a fresh removal token via the auth registry and call
     /// `config_shell.run_remove`. If the auth registry has no entry
@@ -609,8 +580,6 @@ impl UndoStep {
                 | UndoStep::RemoveDir { .. }
                 | UndoStep::StopUnit { .. }
                 | UndoStep::DisableUnit { .. }
-                | UndoStep::GroupDel { .. }
-                | UndoStep::UserDel { .. }
         )
     }
 
@@ -675,18 +644,6 @@ impl UndoStep {
             }
             UndoStep::DisableUnit { name } => {
                 format!("disabled {}", crate::escape_control_chars(name))
-            }
-            UndoStep::GroupAdd { name } => {
-                format!("created group {}", crate::escape_control_chars(name))
-            }
-            UndoStep::GroupDel { name } => {
-                format!("deleted group {}", crate::escape_control_chars(name))
-            }
-            UndoStep::UserAdd { name } => {
-                format!("created user {}", crate::escape_control_chars(name))
-            }
-            UndoStep::UserDel { name } => {
-                format!("deleted user {}", crate::escape_control_chars(name))
             }
             UndoStep::GitHubRegistration { name, url, .. } => {
                 format!(
@@ -850,8 +807,6 @@ fn undo_one(step: &UndoStep, deps: &Deps<'_>) -> Result<()> {
         }
         UndoStep::StartUnit { name } => deps.systemd.stop_unit(name),
         UndoStep::EnableUnit { name } => deps.systemd.disable_unit(name),
-        UndoStep::GroupAdd { name } => deps.users.groupdel_if_present(name),
-        UndoStep::UserAdd { name } => deps.users.userdel_if_present(name),
         UndoStep::GitHubRegistration {
             name,
             url,
@@ -886,9 +841,7 @@ fn undo_one(step: &UndoStep, deps: &Deps<'_>) -> Result<()> {
         UndoStep::RemoveFile { .. }
         | UndoStep::RemoveDir { .. }
         | UndoStep::StopUnit { .. }
-        | UndoStep::DisableUnit { .. }
-        | UndoStep::GroupDel { .. }
-        | UndoStep::UserDel { .. } => {
+        | UndoStep::DisableUnit { .. } => {
             // Filtered upstream by `undo`'s is_reverse_direction()
             // gate. Documenting the contract here so a future caller
             // that bypasses `undo` and reaches `undo_one` directly
@@ -916,8 +869,6 @@ pub struct Deps<'a> {
     pub auth: AuthRegistry<'a>,
     /// Tarball download / verify / install seam.
     pub tarball: &'a dyn Tarball,
-    /// User-provisioning seam (`useradd` / `userdel`).
-    pub users: &'a dyn Users,
     /// `config.sh` invocation seam.
     pub config_shell: &'a dyn ConfigShell,
 }
@@ -1250,216 +1201,6 @@ impl Tarball for RealTarball {
         version: &str,
     ) -> Result<Utf8PathBuf> {
         install_runner_binary(tarball_path, state_dir, runner_home, runner_name, version)
-    }
-}
-
-// ---------- Useradd seam -----------------------------------------------
-
-/// User provisioning seam. Production wires a [`RealUsers`] that shells
-/// out to `useradd` / `userdel` / `groupadd` / `gpasswd`. Tests inject
-/// a fake that records requests against an in-memory passwd table.
-pub trait Users {
-    /// Idempotently create `name` as a system user with home
-    /// `<prefix>/<name>`, primary group `name`, and shell `/sbin/nologin`.
-    ///
-    /// # Errors
-    ///
-    /// `GharsError::Apply { ... }` wrapping the underlying I/O / spawn
-    /// failure when `useradd` cannot be invoked or returns non-zero
-    /// (other than EEXIST, which is treated as success).
-    fn useradd_if_missing(&self, name: &str, home: &Utf8Path) -> Result<()>;
-
-    /// Idempotently remove the system user `name` (best-effort —
-    /// `userdel` errors on missing user are swallowed).
-    ///
-    /// # Errors
-    ///
-    /// `GharsError::Apply { ... }` only on I/O / spawn failure (not
-    /// "user does not exist").
-    fn userdel_if_present(&self, name: &str) -> Result<()>;
-
-    /// Idempotently create a system group named `group`. Used for
-    /// per-pool cache groups (`ghars-cache-POOL`); the group is the
-    /// authoritative DAC gate for sccache UDS access (Part 9b
-    /// "DAC permissions on the socket file").
-    ///
-    /// # Errors
-    ///
-    /// `GharsError::Apply { ... }` on spawn failure or non-zero exit
-    /// (other than the "group already exists" case which is treated as
-    /// success).
-    fn groupadd_if_missing(&self, group: &str) -> Result<()>;
-
-    /// Idempotently remove a system group (best-effort — `groupdel`
-    /// errors on missing group are swallowed).
-    ///
-    /// # Errors
-    ///
-    /// `GharsError::Apply { ... }` only on I/O / spawn failure.
-    fn groupdel_if_present(&self, group: &str) -> Result<()>;
-
-    /// Idempotently add `user` to supplementary group `group` (does NOT
-    /// change primary group). Per-pool cache access path: each runner
-    /// user joins the per-pool `ghars-cache-POOL` group so the UDS at
-    /// `/run/ghars/cache-POOL.sock` (mode 0660 group=ghars-cache-POOL)
-    /// is reachable.
-    ///
-    /// # Errors
-    ///
-    /// `GharsError::Apply { ... }` on spawn failure or non-zero exit.
-    fn add_user_to_group(&self, user: &str, group: &str) -> Result<()>;
-
-    /// Idempotently remove `user` from supplementary group `group`. The
-    /// inverse of [`add_user_to_group`] — used by
-    /// `execute_update_runner` in-place when a runner's `caches` list
-    /// shrinks. gpasswd(1) exit code 3 ("user not a member
-    /// of group", `E_NOT_A_MEMBER` in shadow-utils `src/gpasswd.c`) is
-    /// treated as idempotent success: a runner that was never
-    /// enrolled still ends up not-enrolled, which is what we want.
-    ///
-    /// # Errors
-    ///
-    /// `GharsError::Apply { ... }` on spawn failure or non-zero exit
-    /// other than the not-a-member case.
-    fn remove_user_from_group(&self, user: &str, group: &str) -> Result<()>;
-}
-
-/// Production user provisioning. Shells out to `/usr/sbin/useradd` and
-/// `/usr/sbin/userdel`.
-#[derive(Debug, Default)]
-pub struct RealUsers;
-
-impl Users for RealUsers {
-    fn useradd_if_missing(&self, name: &str, home: &Utf8Path) -> Result<()> {
-        // `useradd -r -m -d HOME -s /sbin/nologin -U NAME`. `-U`
-        // creates a same-named primary group. `-m` creates HOME if
-        // missing; useradd refuses to create HOME if the directory
-        // already exists with different ownership, so the caller is
-        // expected to have not pre-created HOME.
-        //
-        // Exit code 9 == "username already in use" — treated as
-        // idempotent success per useradd(8).
-        let status = Command::new("/usr/sbin/useradd")
-            .args([
-                "-r",
-                "-m",
-                "-d",
-                home.as_str(),
-                "-s",
-                "/sbin/nologin",
-                "-U",
-                name,
-            ])
-            .status()
-            .map_err(|e| spawn_err("useradd", &e))?;
-        if status.success() {
-            return Ok(());
-        }
-        if matches!(status.code(), Some(9)) {
-            return Ok(());
-        }
-        Err(GharsError::Io(std::io::Error::other(format!(
-            "useradd[{name}]: exited with {status:?}"
-        ))))
-    }
-
-    fn userdel_if_present(&self, name: &str) -> Result<()> {
-        // `userdel -r` removes the home directory too; we keep the home
-        // dir delete in `apply` (so guard_home_dir_rmrf gets a chance
-        // to enforce) and call `userdel` without `-r`. Exit code 6 ==
-        // "specified user doesn't exist" — treated as idempotent
-        // success per userdel(8).
-        let status = Command::new("/usr/sbin/userdel")
-            .arg(name)
-            .status()
-            .map_err(|e| spawn_err("userdel", &e))?;
-        if status.success() {
-            return Ok(());
-        }
-        if matches!(status.code(), Some(6)) {
-            return Ok(());
-        }
-        Err(GharsError::Io(std::io::Error::other(format!(
-            "userdel[{name}]: exited with {status:?}"
-        ))))
-    }
-
-    fn groupadd_if_missing(&self, group: &str) -> Result<()> {
-        // `groupadd -r -f NAME`: -r system group, -f suppresses the
-        // "already exists" error and returns success. groupadd(8)'s
-        // exit codes per util-linux: 0 success, 9 "group already
-        // exists" (with -f, returns 0). Treat 9 as success defensively.
-        let status = Command::new("/usr/sbin/groupadd")
-            .args(["-r", "-f", group])
-            .status()
-            .map_err(|e| spawn_err("groupadd", &e))?;
-        if status.success() {
-            return Ok(());
-        }
-        if matches!(status.code(), Some(9)) {
-            return Ok(());
-        }
-        Err(GharsError::Io(std::io::Error::other(format!(
-            "groupadd[{group}]: exited with {status:?}"
-        ))))
-    }
-
-    fn groupdel_if_present(&self, group: &str) -> Result<()> {
-        // groupdel(8) exit code 6 == "specified group doesn't exist".
-        let status = Command::new("/usr/sbin/groupdel")
-            .arg(group)
-            .status()
-            .map_err(|e| spawn_err("groupdel", &e))?;
-        if status.success() {
-            return Ok(());
-        }
-        if matches!(status.code(), Some(6)) {
-            return Ok(());
-        }
-        Err(GharsError::Io(std::io::Error::other(format!(
-            "groupdel[{group}]: exited with {status:?}"
-        ))))
-    }
-
-    fn add_user_to_group(&self, user: &str, group: &str) -> Result<()> {
-        // `gpasswd -a USER GROUP` is idempotent: if USER is already a
-        // member, it returns 0. Use it instead of `usermod -aG` because
-        // usermod's `-aG` needs the FULL supplementary list and is
-        // racy when other tools touch /etc/group concurrently.
-        let status = Command::new("/usr/bin/gpasswd")
-            .args(["-a", user, group])
-            .status()
-            .map_err(|e| spawn_err("gpasswd", &e))?;
-        if status.success() {
-            return Ok(());
-        }
-        Err(GharsError::Io(std::io::Error::other(format!(
-            "gpasswd[-a {user} {group}]: exited with {status:?}"
-        ))))
-    }
-
-    fn remove_user_from_group(&self, user: &str, group: &str) -> Result<()> {
-        // `gpasswd -d USER GROUP` removes USER from supplementary
-        // group GROUP without touching primary group. gpasswd(1) exit
-        // codes per shadow-utils: 0 success, 3 "user not a member of
-        // group" (treated as idempotent success — the post-condition
-        // is the same), other non-zero is failure. The historical
-        // shadow-utils 4.6+ value for not-a-member is 3 (`E_NOT_A_MEMBER`
-        // in src/gpasswd.c). Treat code 3 specifically; other codes
-        // (e.g. 2 EUSAGE, 6 EACCES) propagate as errors.
-        let status = Command::new("/usr/bin/gpasswd")
-            .args(["-d", user, group])
-            .status()
-            .map_err(|e| spawn_err("gpasswd", &e))?;
-        if status.success() {
-            return Ok(());
-        }
-        if matches!(status.code(), Some(3)) {
-            return Ok(());
-        }
-        Err(GharsError::Io(std::io::Error::other(format!(
-            "gpasswd[-d {user} {group}]: exited with {status:?}"
-        ))))
     }
 }
 
@@ -2315,35 +2056,14 @@ fn execute_create_runner(
     let spec = &plan.spec;
     let runner_home = paths.runner_home(&spec.name);
 
-    // 1) System user. Per-runner UID `ghars-NAME` is the v0.1 default
-    //    (SEC-27); `spec.user` may override (with the apply-time
-    //    "shared UID disables cross-runner isolation" warning emitted
-    //    upstream during plan).
-    deps.users.useradd_if_missing(&spec.user, &runner_home)?;
-    log.push(UndoStep::UserAdd {
-        name: spec.user.clone(),
-    });
+    // No useradd / gpasswd step. The runner unit declares
+    // DynamicUser=yes with `User=ghars-tz-<TRUST_ZONE>` set in the
+    // per-runner 00-ghars.conf drop-in; systemd allocates the
+    // transient UID/GID on unit start and recycles it on stop. Cache
+    // reach is socket-DAC + BindPaths (cache server runs at the same
+    // trust_zone DynamicUser), not gpasswd.
 
-    // 1b) Per-pool group membership. Each cache pool the runner
-    //     references has a `ghars-cache-POOL` group (provisioned by
-    //     execute_create_cache_pool) that gates DAC access to the
-    //     sccache UDS at /run/ghars/cache-POOL.sock. We always add
-    //     even for ccache-only pools so the pool can grow into
-    //     sccache without re-applying every runner. Part 9b
-    //     "DAC permissions on the socket file" cross-user UDS.
-    //
-    //     Note: `add_user_to_group` is idempotent and we don't record
-    //     it as an undo step — gpasswd -d on rollback would leave the
-    //     user removed from the group, which is the wrong direction
-    //     when the runner is just being recreated on the next apply.
-    //     The shared-membership semantics make this orthogonal to
-    //     per-action rollback.
-    for binding in &spec.caches {
-        let group = cache_pool_group(&binding.name);
-        deps.users.add_user_to_group(&spec.user, &group)?;
-    }
-
-    // 2) Runner binary. Two paths:
+    // 1) Runner binary. Two paths:
     //    (a) `runner_tarball` set on the spec → use the local file
     //        verbatim after re-stat'ing (verify_local closes the
     //        SEC-16 stat-then-extract TOCTOU window).
@@ -2614,12 +2334,9 @@ fn execute_remove_runner(
         });
     }
 
-    // 5) Remove the system user (best-effort; userdel(8) exit 6 is
-    //    "user does not exist" which is treated as success).
-    deps.users.userdel_if_present(&identity.user)?;
-    log.push(UndoStep::UserDel {
-        name: identity.user.clone(),
-    });
+    // No userdel step. The runner unit's DynamicUser-allocated UID is
+    // released by systemd on unit stop; nothing was written to
+    // /etc/passwd / /etc/group, so there is nothing to clean up.
 
     // The end-of-apply daemon_reload picks up the unit file removal.
     Ok(ApplyOutcome::Removed)
@@ -2733,22 +2450,13 @@ fn execute_update_runner(
     // land annotations and a future caches-list edit can reconcile
     // from a known baseline.
     //
-    // Order:
-    // 1. Add user to every newly-referenced pool group (idempotent —
-    //    `gpasswd -a` is a no-op if already a member, so no-op for
-    //    pools that survived the edit).
-    // 2. Remove user from every previously-referenced pool group that
-    //    is no longer in the desired set (`gpasswd -d` is idempotent
-    //    via the not-a-member exit code, see `RealUsers::remove_user_from_group`).
-    //
-    // NO UndoStep is recorded for group ops per the shared-membership
-    // design at `execute_create_runner`'s 1b comment block — gpasswd -d
-    // on rollback would leave the user removed from a pool the runner
-    // is being recreated against, which is the wrong direction. The
-    // window of partially-stale group state is SEC-bounded by gpasswd's
-    // own permission gates (the helper requires root) — a non-root
-    // caller would have failed at `acquire_lock` (apply.lock is mode
-    // 0600 root-owned).
+    // No gpasswd add/remove. Cache reach is socket-DAC + BindPaths
+    // under DynamicUser, not /etc/group membership. The set diff
+    // below still records pools_added / pools_removed for the plan-
+    // emission detail surface ("runner X gained pool Y / lost pool
+    // Z"), but no system-level operation is dispatched — the runner
+    // unit's 30-cache-pool.conf drop-in (re-rendered below) carries
+    // the BindPaths entries that materialize cache reach.
     if let Some(before) = delta.before_caches.as_ref() {
         let after_set: std::collections::BTreeSet<&str> = delta
             .after
@@ -2763,19 +2471,10 @@ fn execute_update_runner(
         // run in deterministic alphabetical order — easier for tests
         // and for operator log readability.
         for added in after_set.difference(&before_set) {
-            let group = cache_pool_group(added);
-            deps.users
-                .add_user_to_group(&delta.after.spec.user, &group)?;
-            // Capture the pool NAME (input to cache_pool_group),
-            // not the group name — operator-facing detail surface.
-            // BTreeSet::difference yields entries in sorted order so
-            // the resulting Vec is already deterministic.
+            // Capture the pool NAME for operator-facing detail surface.
             pools_added.push((*added).to_string());
         }
         for removed in before_set.difference(&after_set) {
-            let group = cache_pool_group(removed);
-            deps.users
-                .remove_user_from_group(&delta.after.spec.user, &group)?;
             pools_removed.push((*removed).to_string());
         }
     }
@@ -2943,37 +2642,6 @@ fn read_then_write_if_changed(path: &Utf8Path, bytes: &[u8], log: &mut UndoLog) 
         prior_content: prior,
     });
     Ok(true)
-}
-
-/// Per-pool group name. Runners that reference a pool join this group
-/// so the sccache UDS at `/run/ghars/cache-POOL.sock` (mode 0660,
-/// group=ghars-cache-POOL) is reachable through DAC. Part 9b
-/// "DAC permissions on the socket file" / cross-user access.
-///
-/// `pub(crate)` so `systemd::render_cache_drop_in` (the only other
-/// site that materializes the `ghars-cache-*` group name, in the
-/// `Group=` line of the cache pool drop-in) can re-use the same helper
-/// instead of duplicating the inline `format!`. Single-sourcing the
-/// pattern means the fuzz invariant in `apply::cache_pool_group_props`
-/// (length cap + charset) covers both call sites.
-pub(crate) fn cache_pool_group(pool: &str) -> String {
-    // Contract: state.rs::discover() INCLUDES oversize pool
-    // names in `actual.cache_pools` so the planner can emit
-    // RemoveCachePool. That removal flows through
-    // `execute_remove_cache_pool` → `cache_pool_group` to compute the
-    // group name to delete via `groupdel_if_present`. Panicking here
-    // (the prior `debug_assert!` contract) would block cleanup of the
-    // very state the operator is trying to reconcile, so we log at
-    // debug level instead — production groupdel will fail with a
-    // systemd error (`group name too long`) and that error surfaces
-    // through ApplyResult.failed.
-    if pool.len() > crate::validators::CACHE_POOL_NAME_MAX_LEN {
-        tracing::debug!(
-            pool,
-            "cache_pool_group called with oversize name (removal path)"
-        );
-    }
-    format!("{}{pool}", crate::validators::CACHE_GROUP_PREFIX)
 }
 
 /// Provision the netns side-units for a Netns-mode runner. Called from
@@ -3175,18 +2843,10 @@ fn execute_create_cache_pool(
     let dest = drop_in_dir.join("00-ghars.conf");
     write_record_undo(&dest, plan.drop_in_body.as_bytes(), log)?;
 
-    // 3) Per-pool group (Part 9b: DAC gate on the sccache UDS). Pool
-    //    creation always provisions the group even for ccache-only
-    //    pools — runner-add-to-group (in execute_create_runner) is the
-    //    join point and is always-on so the pool can grow into sccache
-    //    without re-applying group membership.
-    let group = cache_pool_group(pool);
-    deps.users.groupadd_if_missing(&group)?;
-    log.push(UndoStep::GroupAdd {
-        name: group.clone(),
-    });
+    // No groupadd. Cache reach is socket-DAC + BindPaths under
+    // DynamicUser; no /etc/group entry is involved.
 
-    // 4) Enable + reload + start. Pre-start daemon_reload is required
+    // 3) Enable + reload + start. Pre-start daemon_reload is required
     //    because the freshly-written template + drop-in are not
     //    visible to systemd until reload. The end-of-apply
     //    daemon_reload (`apply()` calls it again) is idempotent.
@@ -3310,15 +2970,9 @@ fn execute_remove_cache_pool(
         });
     }
 
-    // Per-pool group. Removed last so the `gpasswd -a` join from any
-    // remaining runner couldn't observe an in-flight teardown (apply
-    // serializes via the file lock, but the order is still
-    // defensively conservative).
-    let group = cache_pool_group(name);
-    deps.users.groupdel_if_present(&group)?;
-    log.push(UndoStep::GroupDel {
-        name: group.clone(),
-    });
+    // No groupdel. Cache reach is socket-DAC + BindPaths under
+    // DynamicUser; no /etc/group entry was created on pool create
+    // and there is nothing to clean up.
 
     Ok(ApplyOutcome::PoolRemoved)
 }
@@ -4219,89 +3873,6 @@ mod tests {
             let bin = runner_home.join(format!("bin.{version}"));
             fs::create_dir_all(bin.as_std_path())?;
             Ok(bin)
-        }
-    }
-
-    #[derive(Default)]
-    struct MockUsers {
-        added: Mutex<Vec<String>>,
-        removed: Mutex<Vec<String>>,
-        groups_added: Mutex<Vec<String>>,
-        groups_removed: Mutex<Vec<String>>,
-        memberships: Mutex<Vec<(String, String)>>,
-        // Pairs (user, group) recorded by remove_user_from_group.
-        // Disjoint from `memberships` so tests can independently assert
-        // "added" and "removed" sequences.
-        removed_memberships: Mutex<Vec<(String, String)>>,
-        // Fault-injection. When `fail_remove_group` is set to
-        // Some(group), `remove_user_from_group(_, group)` returns Err
-        // rather than recording the call. The Err mirrors a
-        // production-time gpasswd failure (system-level error). The
-        // call is NOT recorded into `removed_memberships` so the test
-        // can pin "the failed op never appeared in the membership
-        // log". Add-side has the same shape via `fail_add_group`.
-        fail_remove_group: Mutex<Option<String>>,
-        fail_add_group: Mutex<Option<String>>,
-        // Optional override for the injected add_user_to_group
-        // error message. When `Some(s)`, the Err returned by
-        // `add_user_to_group` carries `s` verbatim inside its Io
-        // source. Used by call-site sanitization wiring tests to
-        // inject hostile control-char payloads into the apply()-loop
-        // error path without touching other mocks.
-        fail_add_group_message: Mutex<Option<String>>,
-    }
-
-    impl Users for MockUsers {
-        fn useradd_if_missing(&self, name: &str, _home: &Utf8Path) -> Result<()> {
-            self.added.lock().unwrap().push(name.into());
-            Ok(())
-        }
-        fn userdel_if_present(&self, name: &str) -> Result<()> {
-            self.removed.lock().unwrap().push(name.into());
-            Ok(())
-        }
-        fn groupadd_if_missing(&self, group: &str) -> Result<()> {
-            self.groups_added.lock().unwrap().push(group.into());
-            Ok(())
-        }
-        fn groupdel_if_present(&self, group: &str) -> Result<()> {
-            self.groups_removed.lock().unwrap().push(group.into());
-            Ok(())
-        }
-        fn add_user_to_group(&self, user: &str, group: &str) -> Result<()> {
-            if let Some(target) = self.fail_add_group.lock().unwrap().as_deref() {
-                if target == group {
-                    let msg = self
-                        .fail_add_group_message
-                        .lock()
-                        .unwrap()
-                        .clone()
-                        .unwrap_or_else(|| "mock: add_user_to_group injected failure".into());
-                    return Err(GharsError::Io(std::io::Error::other(format!(
-                        "gpasswd[-a {user} {group}]: {msg}"
-                    ))));
-                }
-            }
-            self.memberships
-                .lock()
-                .unwrap()
-                .push((user.into(), group.into()));
-            Ok(())
-        }
-        fn remove_user_from_group(&self, user: &str, group: &str) -> Result<()> {
-            if let Some(target) = self.fail_remove_group.lock().unwrap().as_deref() {
-                if target == group {
-                    return Err(GharsError::Io(std::io::Error::other(format!(
-                        "gpasswd[-d {user} {group}]: \
-                         mock: remove_user_from_group injected failure"
-                    ))));
-                }
-            }
-            self.removed_memberships
-                .lock()
-                .unwrap()
-                .push((user.into(), group.into()));
-            Ok(())
         }
     }
 
@@ -5239,14 +4810,12 @@ mod tests {
         // Empty auth registry — guarantees mint_token would fail if
         // it were called.
         let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
-        let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
         let tarball = MockTarball::default();
         let deps = Deps {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
 
@@ -5262,14 +4831,6 @@ mod tests {
         // Local artifacts ARE cleaned up.
         assert!(!paths.unit_file("ghost").as_std_path().exists());
         assert!(!runner_home.as_std_path().exists());
-        assert!(
-            users
-                .removed
-                .lock()
-                .unwrap()
-                .contains(&"ghars-ghost".to_string()),
-            "userdel must still run on orphans"
-        );
         // Systemd ops still happen (stop/disable + ghars-net@ teardown).
         let calls = systemd.calls_snapshot();
         assert!(
@@ -5589,14 +5150,12 @@ mod tests {
             }),
         );
         let tarball = MockTarball::default();
-        let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
         let opts = ApplyOptions::default();
         let deps = Deps {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         let result = apply(&plan, &deps, &paths, &opts).unwrap();
@@ -5630,7 +5189,6 @@ mod tests {
         let systemd = MockSystemd::default();
         let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
         let tarball = MockTarball::default();
-        let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
         let opts = ApplyOptions {
             dry_run: true,
@@ -5640,7 +5198,6 @@ mod tests {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         let result = apply(&plan, &deps, &paths, &opts).unwrap();
@@ -5766,7 +5323,6 @@ mod tests {
         };
         let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
         let tarball = MockTarball::default();
-        let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
         let opts = ApplyOptions {
             fail_fast: true,
@@ -5776,7 +5332,6 @@ mod tests {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         let result = apply(&plan, &deps, &paths, &opts).unwrap();
@@ -5858,20 +5413,14 @@ mod tests {
         // Steps recorded BEFORE the failed enable_unit:
         // 1. CreateDir for the per-pool drop-in dir
         // 2. WriteFile for 00-ghars.conf (via write_record_undo)
-        // 3. GroupAdd for ghars-cache-a
         assert_eq!(
             steps.len(),
-            3,
-            "expected CreateDir + WriteFile + GroupAdd before enable_unit \
+            2,
+            "expected CreateDir + WriteFile before enable_unit \
              failed; got {steps:?}",
         );
         assert!(matches!(steps[0], UndoStep::CreateDir { .. }));
         assert!(matches!(steps[1], UndoStep::WriteFile { .. }));
-        assert!(
-            matches!(&steps[2], UndoStep::GroupAdd { name } if name == "ghars-cache-a"),
-            "GroupAdd must carry the per-pool group name; got {:?}",
-            steps[2],
-        );
     }
 
     /// `result.details` filtered to the [`ApplyOutcome::Failed`] rows
@@ -6032,13 +5581,11 @@ mod tests {
             }),
         );
         let tarball = MockTarball::default();
-        let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
         let deps = Deps {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         execute_create_runner(&plan, &deps, &paths, &mut UndoLog::new()).unwrap();
@@ -6077,7 +5624,6 @@ mod tests {
         // Tarball was downloaded once.
         assert_eq!(tarball.fetched.lock().unwrap().len(), 1);
         // User was added.
-        assert!(users.added.lock().unwrap().contains(&"ghars-a".to_string()));
         // config.sh registered with the minted token.
         let regs = config_shell.registered.lock().unwrap();
         assert_eq!(regs.len(), 1);
@@ -6120,13 +5666,11 @@ mod tests {
             }),
         );
         let tarball = MockTarball::default();
-        let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
         let deps = Deps {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         execute_create_runner(&plan, &deps, &paths, &mut UndoLog::new()).unwrap();
@@ -6220,13 +5764,11 @@ mod tests {
         let systemd = MockSystemd::default();
         let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
         let tarball = MockTarball::default();
-        let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
         let deps = Deps {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new()).unwrap();
@@ -6283,26 +5825,17 @@ mod tests {
                 ..MockTokenSource::default()
             }),
         );
-        let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
         let tarball = MockTarball::default();
         let deps = Deps {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         execute_remove_runner(&identity, &deps, &paths, &mut UndoLog::new()).unwrap();
         assert!(!paths.unit_file("a").as_std_path().exists());
         assert!(!runner_home.as_std_path().exists());
-        assert!(
-            users
-                .removed
-                .lock()
-                .unwrap()
-                .contains(&"ghars-a".to_string())
-        );
         assert_eq!(config_shell.removed.lock().unwrap().len(), 1);
         let calls = systemd.calls_snapshot();
         assert!(
@@ -6350,13 +5883,11 @@ mod tests {
         let systemd = MockSystemd::default();
         let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
         let tarball = MockTarball::default();
-        let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
         let deps = Deps {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         execute_create_cache_pool(&plan, &deps, &paths, &mut UndoLog::new()).unwrap();
@@ -6373,14 +5904,8 @@ mod tests {
         assert!(drop_in_body.contains("X-Ghars-Pool-Name=build"));
         assert!(drop_in_body.contains("ExecStart=/usr/bin/sccache --start-server"));
         assert!(drop_in_body.contains("SCCACHE_NO_DAEMON=1"));
-        // Per-pool group provisioned.
-        assert!(
-            users
-                .groups_added
-                .lock()
-                .unwrap()
-                .contains(&"ghars-cache-build".to_string())
-        );
+        // No groupadd: cache reach is socket-DAC + BindPaths under
+        // DynamicUser; the per-pool group concept is gone.
         // Systemd was called: enable + daemon_reload + start.
         let calls = systemd.calls_snapshot();
         assert!(
@@ -6421,13 +5946,11 @@ mod tests {
         let systemd = MockSystemd::default();
         let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
         let tarball = MockTarball::default();
-        let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
         let deps = Deps {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         execute_remove_cache_pool("build", &deps, &paths, &mut UndoLog::new()).unwrap();
@@ -6435,14 +5958,7 @@ mod tests {
         assert!(!drop_in_dir.as_std_path().exists());
         // Pool dir gone — backing storage no longer leaks.
         assert!(!pool_dir.as_std_path().exists());
-        // Group removed.
-        assert!(
-            users
-                .groups_removed
-                .lock()
-                .unwrap()
-                .contains(&"ghars-cache-build".to_string())
-        );
+        // No groupdel: there's no per-pool group under DynamicUser.
         // Systemd was called: stop + disable.
         let calls = systemd.calls_snapshot();
         assert!(
@@ -6458,58 +5974,6 @@ mod tests {
     }
 
     #[test]
-    fn create_runner_joins_referenced_cache_pool_groups() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = make_paths(&tmp);
-        fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
-        let mut plan = make_runner_plan("a", &paths.state_dir);
-        // Two pools referenced by this runner. Both groups should land
-        // even though only sccache pools have a UDS — the group
-        // provisioning is unconditional so a ccache-only pool can grow
-        // into sccache without re-applying every runner.
-        plan.spec.caches = vec![
-            crate::config::EffectiveCacheBinding {
-                name: "build".into(),
-                kinds: vec![crate::config::CacheKind::Sccache],
-                size: "200G".into(),
-                mode: crate::config::CacheMode::Shared,
-                trust_zone: "default".into(),
-            },
-            crate::config::EffectiveCacheBinding {
-                name: "ccache-only".into(),
-                kinds: vec![crate::config::CacheKind::Ccache],
-                size: "50G".into(),
-                mode: crate::config::CacheMode::Shared,
-                trust_zone: "default".into(),
-            },
-        ];
-        let systemd = MockSystemd::default();
-        let mut auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
-        auth_map.insert(
-            "pat".into(),
-            Box::new(MockTokenSource {
-                name: "pat".into(),
-                ..MockTokenSource::default()
-            }),
-        );
-        let tarball = MockTarball::default();
-        let users = MockUsers::default();
-        let config_shell = MockConfigShell::default();
-        let deps = Deps {
-            systemd: &systemd,
-            auth: &auth_map,
-            tarball: &tarball,
-            users: &users,
-            config_shell: &config_shell,
-        };
-        execute_create_runner(&plan, &deps, &paths, &mut UndoLog::new()).unwrap();
-        let memberships = users.memberships.lock().unwrap().clone();
-        // Per-pool group joins recorded for both referenced pools.
-        assert!(memberships.contains(&("ghars-a".into(), "ghars-cache-build".into())));
-        assert!(memberships.contains(&("ghars-a".into(), "ghars-cache-ccache-only".into())));
-    }
-
-    #[test]
     fn cache_pool_template_is_idempotent_on_second_create() {
         // Two pool creations land in the same apply — second write must
         // succeed (template path already exists). truncate=true on
@@ -6522,13 +5986,11 @@ mod tests {
         let systemd = MockSystemd::default();
         let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
         let tarball = MockTarball::default();
-        let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
         let deps = Deps {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         execute_create_cache_pool(&plan_a, &deps, &paths, &mut UndoLog::new()).unwrap();
@@ -6742,13 +6204,11 @@ mod tests {
             }),
         );
         let tarball = MockTarball::default();
-        let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
         let deps = Deps {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         // Best-effort call. The post-start verify_runner_netns fails in
@@ -6818,13 +6278,11 @@ mod tests {
             }),
         );
         let tarball = MockTarball::default();
-        let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
         let deps = Deps {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         execute_create_runner(&plan, &deps, &paths, &mut UndoLog::new()).unwrap();
@@ -6890,14 +6348,12 @@ mod tests {
                 ..MockTokenSource::default()
             }),
         );
-        let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
         let tarball = MockTarball::default();
         let deps = Deps {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         execute_remove_runner(&identity, &deps, &paths, &mut UndoLog::new()).unwrap();
@@ -7313,8 +6769,8 @@ mod tests {
         // Insertion order matters because `undo` walks reverse — order
         // here directly drives the inverse-execution sequence.
         let mut log = UndoLog::new();
-        log.push(UndoStep::UserAdd {
-            name: "ghars-a".into(),
+        log.push(UndoStep::CreateDir {
+            path: Utf8PathBuf::from("/tmp/ghars-test"),
         });
         log.push(UndoStep::EnableUnit {
             name: "ghars-runner@a.service".into(),
@@ -7324,8 +6780,10 @@ mod tests {
         });
         assert_eq!(log.len(), 3);
         match &log.steps()[0] {
-            UndoStep::UserAdd { name } => assert_eq!(name, "ghars-a"),
-            other => panic!("expected UserAdd, got {other:?}"),
+            UndoStep::CreateDir { path } => {
+                assert_eq!(path.as_str(), "/tmp/ghars-test")
+            }
+            other => panic!("expected CreateDir, got {other:?}"),
         }
         match &log.steps()[2] {
             UndoStep::StartUnit { name } => {
@@ -7350,8 +6808,6 @@ mod tests {
             },
             UndoStep::StartUnit { name: "u".into() },
             UndoStep::EnableUnit { name: "u".into() },
-            UndoStep::GroupAdd { name: "g".into() },
-            UndoStep::UserAdd { name: "u".into() },
             UndoStep::GitHubRegistration {
                 name: "n".into(),
                 url: "u".into(),
@@ -7376,8 +6832,6 @@ mod tests {
             },
             UndoStep::StopUnit { name: "u".into() },
             UndoStep::DisableUnit { name: "u".into() },
-            UndoStep::GroupDel { name: "g".into() },
-            UndoStep::UserDel { name: "u".into() },
         ];
         for s in &reverse {
             assert!(
@@ -7389,10 +6843,9 @@ mod tests {
 
     /// Build a minimal `Deps` for unit tests of the `undo` function. No
     /// auth registry entry, no tarball calls — undo only touches
-    /// systemd / users / config_shell / filesystem.
+    /// systemd / config_shell / filesystem.
     fn rollback_deps<'a>(
         systemd: &'a MockSystemd,
-        users: &'a MockUsers,
         config_shell: &'a MockConfigShell,
         tarball: &'a MockTarball,
         auth: &'a HashMap<String, Box<dyn TokenSource>>,
@@ -7401,58 +6854,17 @@ mod tests {
             systemd,
             auth,
             tarball,
-            users,
             config_shell,
         }
     }
 
     #[test]
-    fn undo_user_add_calls_userdel() {
-        // UserAdd → undo via userdel_if_present.
-        let systemd = MockSystemd::default();
-        let users = MockUsers::default();
-        let config_shell = MockConfigShell::default();
-        let tarball = MockTarball::default();
-        let auth: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
-        let deps = rollback_deps(&systemd, &users, &config_shell, &tarball, &auth);
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = make_paths(&tmp);
-        let mut log = UndoLog::new();
-        log.push(UndoStep::UserAdd {
-            name: "ghars-a".into(),
-        });
-        undo(&log, &deps, &paths).unwrap();
-        let removed = users.removed.lock().unwrap().clone();
-        assert_eq!(removed, vec!["ghars-a"]);
-    }
-
-    #[test]
-    fn undo_group_add_calls_groupdel() {
-        let systemd = MockSystemd::default();
-        let users = MockUsers::default();
-        let config_shell = MockConfigShell::default();
-        let tarball = MockTarball::default();
-        let auth: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
-        let deps = rollback_deps(&systemd, &users, &config_shell, &tarball, &auth);
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = make_paths(&tmp);
-        let mut log = UndoLog::new();
-        log.push(UndoStep::GroupAdd {
-            name: "ghars-cache-build".into(),
-        });
-        undo(&log, &deps, &paths).unwrap();
-        let removed = users.groups_removed.lock().unwrap().clone();
-        assert_eq!(removed, vec!["ghars-cache-build"]);
-    }
-
-    #[test]
     fn undo_start_unit_calls_stop_unit() {
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
         let tarball = MockTarball::default();
         let auth: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
-        let deps = rollback_deps(&systemd, &users, &config_shell, &tarball, &auth);
+        let deps = rollback_deps(&systemd, &config_shell, &tarball, &auth);
         let tmp = tempfile::tempdir().unwrap();
         let paths = make_paths(&tmp);
         let mut log = UndoLog::new();
@@ -7472,11 +6884,10 @@ mod tests {
     #[test]
     fn undo_enable_unit_calls_disable_unit() {
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
         let tarball = MockTarball::default();
         let auth: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
-        let deps = rollback_deps(&systemd, &users, &config_shell, &tarball, &auth);
+        let deps = rollback_deps(&systemd, &config_shell, &tarball, &auth);
         let tmp = tempfile::tempdir().unwrap();
         let paths = make_paths(&tmp);
         let mut log = UndoLog::new();
@@ -7504,11 +6915,10 @@ mod tests {
         fs::write(path.as_std_path(), b"new content").unwrap();
         assert!(path.exists());
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
         let tarball = MockTarball::default();
         let auth: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
-        let deps = rollback_deps(&systemd, &users, &config_shell, &tarball, &auth);
+        let deps = rollback_deps(&systemd, &config_shell, &tarball, &auth);
         let paths = make_paths(&tmp);
         let mut log = UndoLog::new();
         log.push(UndoStep::WriteFile {
@@ -7534,11 +6944,10 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap().as_std_path()).unwrap();
         fs::write(path.as_std_path(), b"new content").unwrap();
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
         let tarball = MockTarball::default();
         let auth: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
-        let deps = rollback_deps(&systemd, &users, &config_shell, &tarball, &auth);
+        let deps = rollback_deps(&systemd, &config_shell, &tarball, &auth);
         let paths = make_paths(&tmp);
         let mut log = UndoLog::new();
         log.push(UndoStep::WriteFile {
@@ -7559,11 +6968,10 @@ mod tests {
         fs::create_dir_all(dir.as_std_path()).unwrap();
         assert!(dir.exists());
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
         let tarball = MockTarball::default();
         let auth: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
-        let deps = rollback_deps(&systemd, &users, &config_shell, &tarball, &auth);
+        let deps = rollback_deps(&systemd, &config_shell, &tarball, &auth);
         let paths = make_paths(&tmp);
         let mut log = UndoLog::new();
         log.push(UndoStep::CreateDir { path: dir.clone() });
@@ -7584,11 +6992,10 @@ mod tests {
         let child = dir.join("child.conf");
         fs::write(child.as_std_path(), b"content").unwrap();
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
         let tarball = MockTarball::default();
         let auth: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
-        let deps = rollback_deps(&systemd, &users, &config_shell, &tarball, &auth);
+        let deps = rollback_deps(&systemd, &config_shell, &tarball, &auth);
         let paths = make_paths(&tmp);
         let mut log = UndoLog::new();
         log.push(UndoStep::CreateDir { path: dir.clone() });
@@ -7607,7 +7014,6 @@ mod tests {
         // server-side deregister even though the original action
         // failed.
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
         let tarball = MockTarball::default();
         let mut auth: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -7618,7 +7024,7 @@ mod tests {
                 ..Default::default()
             }),
         );
-        let deps = rollback_deps(&systemd, &users, &config_shell, &tarball, &auth);
+        let deps = rollback_deps(&systemd, &config_shell, &tarball, &auth);
         let tmp = tempfile::tempdir().unwrap();
         let paths = make_paths(&tmp);
         let runner_home = paths.runner_home("a");
@@ -7642,11 +7048,10 @@ mod tests {
         // and skip. The function returns Ok(()) — the rollback
         // continues even though this step couldn't fire.
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
         let tarball = MockTarball::default();
         let auth: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
-        let deps = rollback_deps(&systemd, &users, &config_shell, &tarball, &auth);
+        let deps = rollback_deps(&systemd, &config_shell, &tarball, &auth);
         let tmp = tempfile::tempdir().unwrap();
         let paths = make_paths(&tmp);
         let runner_home = paths.runner_home("a");
@@ -7668,58 +7073,57 @@ mod tests {
 
     #[test]
     fn undo_walks_steps_in_reverse_order() {
-        // Insert order: A, B, C. Undo order must be: C, B, A.
+        // Insert order: A, B. Undo order must be: B, A. The undo walk
+        // is a Vec.iter().rev() so EnableUnit (last forward) becomes
+        // disable_unit (first reverse), then StartUnit (the earlier
+        // forward) becomes stop_unit (the later reverse).
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
         let tarball = MockTarball::default();
         let auth: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
-        let deps = rollback_deps(&systemd, &users, &config_shell, &tarball, &auth);
+        let deps = rollback_deps(&systemd, &config_shell, &tarball, &auth);
         let tmp = tempfile::tempdir().unwrap();
         let paths = make_paths(&tmp);
         let mut log = UndoLog::new();
-        log.push(UndoStep::UserAdd {
-            name: "user-a".into(),
-        });
-        log.push(UndoStep::GroupAdd {
-            name: "group-b".into(),
+        log.push(UndoStep::StartUnit {
+            name: "unit-a".into(),
         });
         log.push(UndoStep::EnableUnit {
-            name: "unit-c".into(),
+            name: "unit-b".into(),
         });
         undo(&log, &deps, &paths).unwrap();
-        // Verify the calls landed in reverse order: disable_unit
-        // (from EnableUnit) before groupdel before userdel.
         let calls = systemd.calls_snapshot();
-        let groupdel = users.groups_removed.lock().unwrap().clone();
-        let userdel = users.removed.lock().unwrap().clone();
-        // disable_unit was the first reverse step (last forward step).
+        // Reverse walk: disable_unit(unit-b) (from EnableUnit) before
+        // stop_unit(unit-a) (from StartUnit).
+        let pos_disable = calls
+            .iter()
+            .position(|c| c == "disable_unit(unit-b)")
+            .expect("disable_unit recorded");
+        let pos_stop = calls
+            .iter()
+            .position(|c| c == "stop_unit(unit-a)")
+            .expect("stop_unit recorded");
         assert!(
-            calls.iter().any(|c| c == "disable_unit(unit-c)"),
-            "got: {calls:?}"
+            pos_disable < pos_stop,
+            "disable_unit must precede stop_unit in reverse walk; got {calls:?}"
         );
-        assert_eq!(groupdel, vec!["group-b"]);
-        assert_eq!(userdel, vec!["user-a"]);
     }
 
     #[test]
     fn undo_skips_reverse_direction_steps_without_calling_systemd() {
-        // RemoveFile / RemoveDir / StopUnit / DisableUnit / GroupDel /
-        // UserDel are recorded for audit-trail completeness. undo()
-        // logs warn + skips them (no inverse attempted).
+        // RemoveFile / RemoveDir / StopUnit / DisableUnit are recorded
+        // for audit-trail completeness. undo() logs warn + skips them
+        // (no inverse attempted).
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
         let tarball = MockTarball::default();
         let auth: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
-        let deps = rollback_deps(&systemd, &users, &config_shell, &tarball, &auth);
+        let deps = rollback_deps(&systemd, &config_shell, &tarball, &auth);
         let tmp = tempfile::tempdir().unwrap();
         let paths = make_paths(&tmp);
         let mut log = UndoLog::new();
         log.push(UndoStep::StopUnit { name: "u".into() });
         log.push(UndoStep::DisableUnit { name: "u".into() });
-        log.push(UndoStep::GroupDel { name: "g".into() });
-        log.push(UndoStep::UserDel { name: "u".into() });
         log.push(UndoStep::RemoveDir {
             path: Utf8PathBuf::from("/some/path"),
         });
@@ -7739,8 +7143,6 @@ mod tests {
             !calls.iter().any(|c| c.starts_with("enable_unit")),
             "must not enable_unit on DisableUnit undo; got {calls:?}"
         );
-        assert!(users.added.lock().unwrap().is_empty());
-        assert!(users.groups_added.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -7760,7 +7162,6 @@ mod tests {
             warnings: vec![],
         };
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
         let tarball = MockTarball::default();
         let mut auth: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -7775,7 +7176,6 @@ mod tests {
             systemd: &systemd,
             auth: &auth,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         let opts = ApplyOptions {
@@ -7784,16 +7184,11 @@ mod tests {
         };
         let result = apply(&plan, &deps, &paths, &opts).unwrap();
         assert!(!result.failed.is_empty(), "plan must fail");
-        // useradd ran (the first side effect inside execute_create_runner
-        // before the no-release error fires later). With rollback OFF
-        // the user is NOT removed.
-        let added = users.added.lock().unwrap().clone();
-        let removed = users.removed.lock().unwrap().clone();
-        assert_eq!(added, vec!["ghars-a"]);
-        assert!(
-            removed.is_empty(),
-            "rollback OFF must leave user in place; got {removed:?}"
-        );
+        // The pre-DynamicUser version asserted that useradd ran but
+        // userdel did not. Both calls are gone; the surviving signal
+        // is just that the action failed (asserted by the apply
+        // result above). Rollback-OFF semantics for the surviving
+        // UndoStep variants are covered by other tests.
     }
 
     #[test]
@@ -7811,7 +7206,6 @@ mod tests {
             warnings: vec![],
         };
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
         let tarball = MockTarball::default();
         let mut auth: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -7826,7 +7220,6 @@ mod tests {
             systemd: &systemd,
             auth: &auth,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         let opts = ApplyOptions {
@@ -7835,14 +7228,9 @@ mod tests {
         };
         let result = apply(&plan, &deps, &paths, &opts).unwrap();
         assert!(!result.failed.is_empty(), "plan must fail");
-        let added = users.added.lock().unwrap().clone();
-        let removed = users.removed.lock().unwrap().clone();
-        assert_eq!(added, vec!["ghars-a"]);
-        assert_eq!(
-            removed,
-            vec!["ghars-a"],
-            "rollback ON must reverse useradd via userdel"
-        );
+        // The pre-DynamicUser version asserted that the rollback walk
+        // inverted UserAdd → userdel via the trait. Both are gone;
+        // the action-failed assertion above is the remaining signal.
     }
 
     #[test]
@@ -7875,7 +7263,6 @@ mod tests {
             warnings: vec![],
         };
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
         let tarball = MockTarball::default();
         let mut auth: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -7890,7 +7277,6 @@ mod tests {
             systemd: &systemd,
             auth: &auth,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         let opts = ApplyOptions {
@@ -7899,18 +7285,21 @@ mod tests {
         };
         let result = apply(&plan, &deps, &paths, &opts).unwrap();
         assert_eq!(result.failed.len(), 1, "exactly one action failed");
-        // CachePool group MUST still exist — its UndoLog ended Ok
-        // and was discarded; the failing runner action's UndoLog is
-        // the only one walked.
-        let groups_added = users.groups_added.lock().unwrap().clone();
-        let groups_removed = users.groups_removed.lock().unwrap().clone();
+        // The pre-DynamicUser version asserted the cache pool's
+        // groupadd ran and was NOT inverted by the failing runner
+        // action's rollback walk. The trait is gone; the signal that
+        // remains is the per-action scope (only the failed runner's
+        // UndoLog walks; the successful pool's discards on Ok). The
+        // pool's drop-in file should still exist on disk after the
+        // mixed-success apply — assert that as the per-action-scope
+        // signal that doesn't depend on the deleted trait.
+        let pool_drop_in = paths
+            .cache_drop_in_dir("build")
+            .join("00-ghars.conf");
         assert!(
-            groups_added.contains(&"ghars-cache-build".into()),
-            "cache pool groupadd must have run"
-        );
-        assert!(
-            !groups_removed.contains(&"ghars-cache-build".into()),
-            "cache pool groupdel must NOT have run; per-action scope keeps successful actions"
+            pool_drop_in.exists(),
+            "cache pool drop-in must persist on disk despite runner failure; \
+             per-action-scope rollback walks only the failed action's UndoLog"
         );
     }
 
@@ -7948,16 +7337,14 @@ mod tests {
     }
 
     #[test]
-    fn execute_create_runner_records_user_add_in_log() {
+    fn execute_create_runner_records_unit_start_in_log() {
         // Verify the threading: a successful execute_create_runner
-        // step pushes UserAdd. (Other steps are pushed too — full
-        // audit-trail coverage lives in the rollback-end-to-end tests
-        // above.)
+        // step pushes StartUnit. (DynamicUser handles the runner
+        // identity, so there's no UserAdd step under the new model.)
         let tmp = tempfile::tempdir().unwrap();
         let paths = make_paths(&tmp);
         let plan = make_runner_plan("rt", &paths.state_dir);
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
         let tarball = MockTarball::default();
         let mut auth: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -7972,21 +7359,10 @@ mod tests {
             systemd: &systemd,
             auth: &auth,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         let mut log = UndoLog::new();
         execute_create_runner(&plan, &deps, &paths, &mut log).unwrap();
-        let has_user_add = log
-            .steps()
-            .iter()
-            .any(|s| matches!(s, UndoStep::UserAdd { name } if name == "ghars-rt"));
-        assert!(
-            has_user_add,
-            "execute_create_runner must push UserAdd; got {:?}",
-            log.steps()
-        );
-        // And the unit-start step.
         let has_start = log.steps().iter().any(
             |s| matches!(s, UndoStep::StartUnit { name } if name == "ghars-runner@rt.service"),
         );
@@ -8687,111 +8063,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn execute_update_runner_in_place_grows_caches_calls_add() {
-        // Caches grows from [] → ["pool-new"]. `add_user_to_group`
-        // must be called once for "ghars-cache-pool-new"; no remove.
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = make_paths(&tmp);
-        // The in-place path daemon-reloads + stop+starts the unit, so
-        // we wire MockSystemd through the full Deps. ConfigShell /
-        // Tarball / Auth aren't exercised by the in-place branch
-        // (those live on the recreate path).
-        let systemd = MockSystemd::default();
-        let users = MockUsers::default();
-        let tarball = MockTarball::default();
-        let config_shell = MockConfigShell::default();
-        // In-place path doesn't mint tokens; empty registry suffices.
-        let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
-        let deps = Deps {
-            systemd: &systemd,
-            auth: &auth_map,
-            tarball: &tarball,
-            users: &users,
-            config_shell: &config_shell,
-        };
-        let delta = make_caches_delta(&paths, Some(vec![]), vec!["pool-new"]);
-        let mut log = UndoLog::new();
-        execute_update_runner(&delta, &deps, &paths, &mut log).unwrap();
-
-        let added = users.memberships.lock().unwrap().clone();
-        assert_eq!(
-            added,
-            vec![("ghars-a".to_string(), "ghars-cache-pool-new".to_string())],
-            "add_user_to_group must fire for added pool",
-        );
-        let removed = users.removed_memberships.lock().unwrap().clone();
-        assert!(
-            removed.is_empty(),
-            "no remove_user_from_group on a pure grow; got: {removed:?}",
-        );
-    }
-
-    #[test]
-    fn execute_update_runner_in_place_shrinks_caches_calls_remove() {
-        // Caches shrinks from ["pool-old"] → []. The diff
-        // must call remove_user_from_group for "ghars-cache-pool-old"
-        // and NOT touch add.
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = make_paths(&tmp);
-        let systemd = MockSystemd::default();
-        let users = MockUsers::default();
-        let tarball = MockTarball::default();
-        let config_shell = MockConfigShell::default();
-        // In-place path doesn't mint tokens; empty registry suffices.
-        let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
-        let deps = Deps {
-            systemd: &systemd,
-            auth: &auth_map,
-            tarball: &tarball,
-            users: &users,
-            config_shell: &config_shell,
-        };
-        let delta = make_caches_delta(&paths, Some(vec!["pool-old"]), vec![]);
-        let mut log = UndoLog::new();
-        execute_update_runner(&delta, &deps, &paths, &mut log).unwrap();
-
-        let removed = users.removed_memberships.lock().unwrap().clone();
-        assert_eq!(
-            removed,
-            vec![("ghars-a".to_string(), "ghars-cache-pool-old".to_string())],
-            "remove_user_from_group must fire for shrunk pool",
-        );
-        let added = users.memberships.lock().unwrap().clone();
-        assert!(added.is_empty(), "no add on a pure shrink; got: {added:?}");
-    }
-
-    #[test]
-    fn execute_update_runner_in_place_caches_reorder_is_noop() {
-        // Caches reorder ["a","b"] → ["b","a"]. Set diff is
-        // empty; neither add nor remove must fire.
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = make_paths(&tmp);
-        let systemd = MockSystemd::default();
-        let users = MockUsers::default();
-        let tarball = MockTarball::default();
-        let config_shell = MockConfigShell::default();
-        // In-place path doesn't mint tokens; empty registry suffices.
-        let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
-        let deps = Deps {
-            systemd: &systemd,
-            auth: &auth_map,
-            tarball: &tarball,
-            users: &users,
-            config_shell: &config_shell,
-        };
-        let delta = make_caches_delta(&paths, Some(vec!["a", "b"]), vec!["b", "a"]);
-        let mut log = UndoLog::new();
-        execute_update_runner(&delta, &deps, &paths, &mut log).unwrap();
-
-        let added = users.memberships.lock().unwrap().clone();
-        let removed = users.removed_memberships.lock().unwrap().clone();
-        assert!(
-            added.is_empty() && removed.is_empty(),
-            "reorder is set-equal ⇒ no group churn; got add={added:?} remove={removed:?}",
-        );
-    }
-
     /// Pin that `execute_update_runner` populates the
     /// `InPlaceRestarted.pools_added` / `pools_removed` Vecs from the
     /// caches diff so cmd_apply's per-action detail line surfaces the
@@ -8812,16 +8083,14 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let paths = make_paths(&tmp);
             let systemd = MockSystemd::default();
-            let users = MockUsers::default();
-            let tarball = MockTarball::default();
+                let tarball = MockTarball::default();
             let config_shell = MockConfigShell::default();
             let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
             let deps = Deps {
                 systemd: &systemd,
                 auth: &auth_map,
                 tarball: &tarball,
-                users: &users,
-                config_shell: &config_shell,
+                    config_shell: &config_shell,
             };
             let delta = make_caches_delta(&paths, before, after);
             let mut log = UndoLog::new();
@@ -8884,7 +8153,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let paths = make_paths(&tmp);
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let tarball = MockTarball::default();
         let config_shell = MockConfigShell::default();
         let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -8892,7 +8160,6 @@ mod tests {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         let delta = make_caches_delta(&paths, Some(vec!["a", "z"]), vec!["m"]);
@@ -8920,294 +8187,11 @@ mod tests {
         );
     }
 
-    /// SEC: when `gpasswd -d` (the remove half of the diff) fails
-    /// partway through reconciliation, execute_update_runner must
-    /// return Err WITHOUT having written the new 00-ghars.conf. Drop-in
-    /// rewrites must be gated behind successful supplementary-group
-    /// reconciliation so a failed gpasswd leaves the on-disk
-    /// `X-Ghars-Caches=` annotation reflecting the OLD caches list. The
-    /// next plan re-diffs from that old annotation against the same
-    /// desired list and retries the gpasswd ops.
-    ///
-    /// Setup: caches diff is `[old]` → `[new]` — adds `new`, removes
-    /// `old`. Inject a failure on `remove_user_from_group` for the
-    /// `ghars-cache-old` group (the second half of the diff). The
-    /// `add_user_to_group` for `ghars-cache-new` runs first and
-    /// succeeds (so the group state is partially-reconciled), then the
-    /// remove fails. Assert:
-    ///   (a) execute_update_runner returns Err.
-    ///   (b) The drop-in directory contains NO `00-ghars.conf` — proof
-    ///       that the drop-in writes did not run, so any prior
-    ///       on-disk annotation is preserved.
     #[test]
-    fn execute_update_runner_in_place_remove_failure_skips_drop_in_rewrite() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = make_paths(&tmp);
-        let systemd = MockSystemd::default();
-        let users = MockUsers {
-            fail_remove_group: Mutex::new(Some("ghars-cache-old".into())),
-            ..MockUsers::default()
-        };
-        let tarball = MockTarball::default();
-        let config_shell = MockConfigShell::default();
-        let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
-        let deps = Deps {
-            systemd: &systemd,
-            auth: &auth_map,
-            tarball: &tarball,
-            users: &users,
-            config_shell: &config_shell,
-        };
-        let delta = make_caches_delta(&paths, Some(vec!["old"]), vec!["new"]);
-        let mut log = UndoLog::new();
-
-        let err = execute_update_runner(&delta, &deps, &paths, &mut log)
-            .expect_err("gpasswd -d failure must propagate");
-        // The error chain bottoms out at the injected mock failure.
-        let msg = format!("{err:#}");
-        assert!(
-            msg.contains("remove_user_from_group injected failure"),
-            "error must surface the injected gpasswd failure; got: {msg}"
-        );
-
-        // Add for `new` ran before the failed remove for `old` (current
-        // diff order: adds first, then removes). Pin that the partial
-        // state we expect is exactly what's in the membership log.
-        let added = users.memberships.lock().unwrap().clone();
-        assert_eq!(
-            added,
-            vec![("ghars-a".to_string(), "ghars-cache-new".to_string())],
-            "add must have fired before the failed remove; got: {added:?}"
-        );
-        let removed = users.removed_memberships.lock().unwrap().clone();
-        assert!(
-            removed.is_empty(),
-            "remove path failed before recording; got: {removed:?}"
-        );
-
-        // The load-bearing assertion: drop-in writes did NOT run, so the
-        // on-disk 00-ghars.conf still carries whatever annotation the
-        // prior apply wrote (in test fixture: nothing was written, so
-        // the file does not exist). If gpasswd had run AFTER the
-        // drop-in writes, the new annotation would already be on disk
-        // here, masking the partial-state bug from the next `ghars
-        // plan` and baking in stale group membership.
-        let drop_in = paths
-            .drop_in_dir(&delta.identity.name)
-            .join("00-ghars.conf");
-        assert!(
-            !drop_in.exists(),
-            "00-ghars.conf must NOT have been written before the failed gpasswd; \
-             found at: {drop_in}"
-        );
-
-        // Pin the FULL ordering: gpasswd → drop-ins → systemd cycle. A
-        // failed gpasswd must short-circuit BEFORE daemon-reload + stop
-        // + start. If any of those landed before the gpasswd error
-        // propagated, we'd have a half-restarted unit running with the
-        // old credentials snapshot AND a partially-reconciled group
-        // state. The empty calls list proves the entire post-gpasswd
-        // pipeline (read_then_write_if_changed → daemon_reload →
-        // stop_unit → start_unit) was skipped.
-        let systemd_calls = systemd.calls_snapshot();
-        assert!(
-            systemd_calls.is_empty(),
-            "systemd must not have been touched after gpasswd failure; got: {systemd_calls:?}"
-        );
-    }
-
-    /// SEC: symmetric with the fail_remove_group test above. When
-    /// `gpasswd -a` (the add half of the diff) fails, execute_update_
-    /// runner must return Err WITHOUT recording the add, never running
-    /// the subsequent remove, and never writing the new 00-ghars.conf.
-    /// The drop-in writes are gated behind successful gpasswd
-    /// reconciliation so a failed add leaves on-disk state reflecting
-    /// the OLD caches list — the next plan re-diffs and retries.
-    ///
-    /// Setup: caches diff is `[old]` → `[new]` — adds `new` first, then
-    /// removes `old`. Inject failure on `add_user_to_group` for the
-    /// `ghars-cache-new` group. Because the add runs FIRST in
-    /// `execute_update_runner`'s in-place caches diff order, the
-    /// failure propagates before the remove can run. Assert:
-    ///   (a) execute_update_runner returns Err carrying the injected
-    ///       message.
-    ///   (b) memberships is empty (the failed add was not recorded).
-    ///   (c) removed_memberships is empty (the remove never ran).
-    ///   (d) The drop-in directory contains NO `00-ghars.conf`.
-    ///   (e) systemd was never touched (daemon-reload + stop + start
-    ///       all skipped).
-    #[test]
-    fn execute_update_runner_in_place_add_failure_skips_drop_in_rewrite() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = make_paths(&tmp);
-        let systemd = MockSystemd::default();
-        let users = MockUsers {
-            fail_add_group: Mutex::new(Some("ghars-cache-new".into())),
-            ..MockUsers::default()
-        };
-        let tarball = MockTarball::default();
-        let config_shell = MockConfigShell::default();
-        let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
-        let deps = Deps {
-            systemd: &systemd,
-            auth: &auth_map,
-            tarball: &tarball,
-            users: &users,
-            config_shell: &config_shell,
-        };
-        let delta = make_caches_delta(&paths, Some(vec!["old"]), vec!["new"]);
-        let mut log = UndoLog::new();
-
-        let err = execute_update_runner(&delta, &deps, &paths, &mut log)
-            .expect_err("gpasswd -a failure must propagate");
-        let msg = format!("{err:#}");
-        assert!(
-            msg.contains("add_user_to_group injected failure"),
-            "error must surface the injected gpasswd failure; got: {msg}"
-        );
-
-        // (b) The injected failure short-circuits before the membership
-        //     log push. Differs from the fail_remove case where the
-        //     successful add fired before the remove failed.
-        let added = users.memberships.lock().unwrap().clone();
-        assert!(
-            added.is_empty(),
-            "add path failed before recording; got: {added:?}"
-        );
-
-        // (c) The remove for `old` never runs because adds are emitted
-        //     before removes in the diff loop and the add failure
-        //     short-circuits with `?`.
-        let removed = users.removed_memberships.lock().unwrap().clone();
-        assert!(
-            removed.is_empty(),
-            "remove path must not run after add failure; got: {removed:?}"
-        );
-
-        // (d) Load-bearing assertion: drop-in writes did NOT run, so
-        //     any prior on-disk 00-ghars.conf still carries its old
-        //     X-Ghars-Caches annotation. Without this gate, a future
-        //     plan would re-diff against the new annotation and miss
-        //     that the gpasswd op never landed.
-        let drop_in = paths
-            .drop_in_dir(&delta.identity.name)
-            .join("00-ghars.conf");
-        assert!(
-            !drop_in.exists(),
-            "00-ghars.conf must NOT have been written before the failed gpasswd; \
-             found at: {drop_in}"
-        );
-
-        // (e) systemd never touched. A failed add must skip the entire
-        //     post-gpasswd pipeline (read_then_write_if_changed →
-        //     daemon_reload → stop_unit → start_unit) — same
-        //     short-circuit semantic the remove path relies on.
-        let systemd_calls = systemd.calls_snapshot();
-        assert!(
-            systemd_calls.is_empty(),
-            "systemd must not have been touched after gpasswd failure; got: {systemd_calls:?}"
-        );
-    }
-
-    #[test]
-    fn execute_update_runner_in_place_recreate_path_ignores_before_caches() {
-        // Recreate path goes through
-        // execute_remove_runner + execute_create_runner, which
-        // rebuild group membership from scratch (the create path's
-        // 1b block calls add_user_to_group for every binding in
-        // delta.after.spec.caches). The in-place caches diff inside
-        // `execute_update_runner` MUST NOT also fire — it's gated on
-        // `if delta.requires_recreate { ... return ... }` at the top
-        // of execute_update_runner. Without that gate the recreate
-        // path would call add for the desired pools twice (once via
-        // create, once via the diff) and remove for any pool the
-        // operator dropped (which would race against the recreate's
-        // group provisioning of the new caches list).
-        //
-        // Setup: requires_recreate=true with caches change pool-old →
-        // pool-new. Drive execute_update_runner directly. Assert that
-        // the only adds recorded come from the create branch (one for
-        // pool-new, the recreate's freshly-provisioned membership);
-        // NO removes fire from the in-place diff because the recreate
-        // path short-circuits before reaching the diff block.
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = make_paths(&tmp);
-        // Pre-populate state for execute_remove_runner — it expects a
-        // runner unit file + drop-in dir + runner home to clean up.
-        // execute_create_runner then re-creates them.
-        fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
-        let unit_file = paths.unit_file("a");
-        fs::write(unit_file.as_std_path(), b"[Unit]\nX-Ghars-Managed=true\n").unwrap();
-        let drop_in_dir = paths.drop_in_dir("a");
-        fs::create_dir_all(drop_in_dir.as_std_path()).unwrap();
-        fs::create_dir_all(paths.runner_home("a").as_std_path()).unwrap();
-        fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
-
-        let systemd = MockSystemd::default();
-        let users = MockUsers::default();
-        let tarball = MockTarball::default();
-        let config_shell = MockConfigShell::default();
-        // recreate path mints a removal token; wire a real auth source
-        // so execute_remove_runner does not fail at the deregister
-        // step. The orphan-style empty-auth_name fallback would also
-        // skip mint_token, but a populated registry exercises the
-        // canonical path.
-        let mut auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
-        auth_map.insert(
-            "pat".into(),
-            Box::new(MockTokenSource {
-                name: "pat".into(),
-                ..MockTokenSource::default()
-            }),
-        );
-        let deps = Deps {
-            systemd: &systemd,
-            auth: &auth_map,
-            tarball: &tarball,
-            users: &users,
-            config_shell: &config_shell,
-        };
-        let mut delta = make_caches_delta(&paths, Some(vec!["pool-old"]), vec!["pool-new"]);
-        delta.requires_recreate = true;
-        delta.recreate_reasons = vec!["url"];
-        // Recreate goes through execute_create_runner, which fetches
-        // and installs the runner binary. make_caches_delta's plan has
-        // resolved_release=None and the spec has runner_tarball=None, so
-        // without an explicit resolved_release the create path bails at
-        // the "no runner_tarball and no resolved release" Validation
-        // gate inside `execute_create_runner`. Wire a release so the
-        // test exercises the canonical path.
-        delta.after.resolved_release = Some(make_release());
-        let mut log = UndoLog::new();
-        execute_update_runner(&delta, &deps, &paths, &mut log).unwrap();
-
-        // Recreate path: execute_create_runner adds membership to
-        // every desired pool (one entry: pool-new). The in-place diff
-        // is short-circuited, so removed_memberships MUST be empty —
-        // no `gpasswd -d pool-old` fires.
-        let added = users.memberships.lock().unwrap().clone();
-        assert_eq!(
-            added,
-            vec![("ghars-a".to_string(), "ghars-cache-pool-new".to_string())],
-            "recreate path provisions add for desired pools (via create's 1b loop)",
-        );
-        let removed = users.removed_memberships.lock().unwrap().clone();
-        assert!(
-            removed.is_empty(),
-            "recreate path must NOT call remove_user_from_group; the in-place \
-             diff is gated by requires_recreate. got: {removed:?}",
-        );
-    }
-
-    #[test]
-    fn apply_dry_run_with_caches_change_skips_group_ops() {
-        // dry_run=true at the apply() level short-
-        // circuits each action before execute_*. A caches-list change
-        // routed through dry-run apply MUST NOT call add_user_to_group
-        // or remove_user_from_group — even though the in-place
-        // execute_update_runner would, the apply loop's
-        // `if opts.dry_run { result.skipped.push(label); continue; }`
-        // guard blocks dispatch entirely.
+    fn apply_dry_run_with_caches_change_is_skipped() {
+        // dry_run=true at the apply() level short-circuits each action
+        // before execute_*. A caches-list change routed through dry-run
+        // apply lands in `result.skipped` instead of executing.
         let tmp = tempfile::tempdir().unwrap();
         let paths = make_paths(&tmp);
         fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
@@ -9218,7 +8202,6 @@ mod tests {
             warnings: vec![],
         };
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let tarball = MockTarball::default();
         let config_shell = MockConfigShell::default();
         let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -9230,21 +8213,14 @@ mod tests {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         let result = apply(&plan, &deps, &paths, &opts).unwrap();
 
         assert_eq!(result.skipped.len(), 1, "dry-run must skip the action");
-        let added = users.memberships.lock().unwrap().clone();
-        let removed = users.removed_memberships.lock().unwrap().clone();
-        assert!(
-            added.is_empty() && removed.is_empty(),
-            "dry-run must produce zero group ops; got add={added:?} remove={removed:?}",
-        );
-        // Dry-run-skipped actions still land in `details` so
-        // cmd_apply can render the per-action `dry-run (skipped)`
-        // line. The label tracks the skipped action verbatim.
+        // Dry-run-skipped actions still land in `details` so cmd_apply
+        // can render the per-action `dry-run (skipped)` line. The
+        // label tracks the skipped action verbatim.
         assert_eq!(result.details.len(), 1);
         assert!(matches!(result.details[0].1, ApplyOutcome::DryRunSkipped));
     }
@@ -9510,34 +8486,6 @@ mod tests {
             "disabled ghars-runner@foo.service",
         );
         assert_eq!(
-            UndoStep::GroupAdd {
-                name: "ghars-cache-build".into(),
-            }
-            .describe(),
-            "created group ghars-cache-build",
-        );
-        assert_eq!(
-            UndoStep::GroupDel {
-                name: "ghars-cache-build".into(),
-            }
-            .describe(),
-            "deleted group ghars-cache-build",
-        );
-        assert_eq!(
-            UndoStep::UserAdd {
-                name: "ghars-foo".into(),
-            }
-            .describe(),
-            "created user ghars-foo",
-        );
-        assert_eq!(
-            UndoStep::UserDel {
-                name: "ghars-foo".into(),
-            }
-            .describe(),
-            "deleted user ghars-foo",
-        );
-        assert_eq!(
             UndoStep::GitHubRegistration {
                 name: "foo".into(),
                 url: "https://github.com/example/repo".into(),
@@ -9590,7 +8538,6 @@ mod tests {
             warnings: vec![],
         };
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let tarball = MockTarball::default();
         let config_shell = MockConfigShell::default();
         let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -9599,7 +8546,6 @@ mod tests {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         let result = apply(&plan, &deps, &paths, &opts).unwrap();
@@ -9683,7 +8629,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let paths = make_paths(&tmp);
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let tarball = MockTarball::default();
         let config_shell = MockConfigShell::default();
         let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -9691,7 +8636,6 @@ mod tests {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         let delta = delta_with_all_preserved_drop_ins(&paths);
@@ -9708,15 +8652,9 @@ mod tests {
             calls.is_empty(),
             "skip path must not touch systemd; got: {calls:?}",
         );
-        let added = users.memberships.lock().unwrap().clone();
-        let removed = users.removed_memberships.lock().unwrap().clone();
-        assert!(
-            added.is_empty() && removed.is_empty(),
-            "no group ops on the skip path; got add={added:?} remove={removed:?}",
-        );
         assert!(
             log.is_empty(),
-            "skip path must not push any UndoStep (no writes, no group ops); got len={}",
+            "skip path must not push any UndoStep; got len={}",
             log.len(),
         );
     }
@@ -9729,7 +8667,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let paths = make_paths(&tmp);
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let tarball = MockTarball::default();
         let config_shell = MockConfigShell::default();
         let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -9737,7 +8674,6 @@ mod tests {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         let delta = delta_with_all_preserved_drop_ins(&paths);
@@ -9779,7 +8715,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let paths = make_paths(&tmp);
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let tarball = MockTarball::default();
         let config_shell = MockConfigShell::default();
         let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -9787,7 +8722,6 @@ mod tests {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         let mut delta = delta_with_all_preserved_drop_ins(&paths);
@@ -9877,7 +8811,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let paths = make_paths(&tmp);
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let tarball = MockTarball::default();
         let config_shell = MockConfigShell::default();
         let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -9885,7 +8818,6 @@ mod tests {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         let delta = skip_test_cache_delta("build");
@@ -9926,7 +8858,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let paths = make_paths(&tmp);
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let tarball = MockTarball::default();
         let config_shell = MockConfigShell::default();
         let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -9934,7 +8865,6 @@ mod tests {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         let delta = skip_test_cache_delta("build");
@@ -9990,7 +8920,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let paths = make_paths(&tmp);
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let tarball = MockTarball::default();
         let config_shell = MockConfigShell::default();
         let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -9998,7 +8927,6 @@ mod tests {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         let delta = skip_test_cache_delta("build");
@@ -10043,7 +8971,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let paths = make_paths(&tmp);
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let tarball = MockTarball::default();
         let config_shell = MockConfigShell::default();
         let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -10051,7 +8978,6 @@ mod tests {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         let mut delta = delta_with_all_preserved_drop_ins(&paths);
@@ -10098,7 +9024,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let paths = make_paths(&tmp);
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let tarball = MockTarball::default();
         let config_shell = MockConfigShell::default();
         // In-place path doesn't mint tokens; empty registry suffices.
@@ -10107,86 +9032,15 @@ mod tests {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         let delta = make_caches_delta(&paths, None, vec!["pool"]);
         let mut log = UndoLog::new();
         execute_update_runner(&delta, &deps, &paths, &mut log).unwrap();
-
-        let added = users.memberships.lock().unwrap().clone();
-        let removed = users.removed_memberships.lock().unwrap().clone();
-        assert!(
-            added.is_empty() && removed.is_empty(),
-            "before_caches=None ⇒ no group ops (deferred to next apply); got add={added:?} remove={removed:?}",
-        );
-    }
-
-    // ---- cache_pool_group naming ----------------------------------
-
-    /// `cache_pool_group` returns the canonical "ghars-cache-{pool}"
-    /// pattern. Pinned so future call sites can't drift to a different
-    /// suffix without triggering this test.
-    #[test]
-    fn cache_pool_group_emits_canonical_prefix() {
-        assert_eq!(cache_pool_group("ccache"), "ghars-cache-ccache");
-        assert_eq!(cache_pool_group("p"), "ghars-cache-p");
-    }
-
-    /// `cache_pool_group` is purely concatenation, so any `[a-z0-9-]`
-    /// pool name produces a `[a-z0-9-]` group name. Property test that
-    /// confirms the charset invariant for IDENTIFIER_REGEX-shaped
-    /// pool names. Length cap matches the
-    /// `systemd group name ≤ SYSTEMD_GROUP_NAME_MAX` constraint:
-    /// `CACHE_POOL_NAME_MAX_LEN` pool + `CACHE_GROUP_PREFIX` prefix =
-    /// `SYSTEMD_GROUP_NAME_MAX`. Pool names longer than
-    /// `CACHE_POOL_NAME_MAX_LEN` chars produce group names that exceed
-    /// systemd's `SYSTEMD_GROUP_NAME_MAX`-char limit — input cap at
-    /// `validators::validate_cache_pool_name`; this property test pins
-    /// the output invariant as defense-in-depth.
-    ///
-    /// The proptest regex literal cannot reference `CACHE_POOL_NAME_MAX_LEN`
-    /// directly because `string_regex` is a const-time string template;
-    /// the `{0,17}` upper bound corresponds to
-    /// `CACHE_POOL_NAME_MAX_LEN - 2` (1 leading char + 17 inner +
-    /// 1 trailing = 19). Adjust both literal and the input cap together.
-    #[cfg(test)]
-    mod cache_pool_group_props {
-        use super::cache_pool_group;
-        use crate::validators::SYSTEMD_GROUP_NAME_MAX;
-        proptest::proptest! {
-            #[test]
-            fn group_name_charset_and_length(
-                pool in proptest::string::string_regex(r"[a-z]([a-z0-9-]{0,17}[a-z0-9])?").unwrap(),
-            ) {
-                let group = cache_pool_group(&pool);
-                proptest::prop_assert!(
-                    group.starts_with("ghars-cache-"),
-                    "group must start with prefix: {group}",
-                );
-                proptest::prop_assert!(
-                    group.len() <= SYSTEMD_GROUP_NAME_MAX,
-                    "group must be ≤{SYSTEMD_GROUP_NAME_MAX} chars (systemd group-name limit); got {} for pool {pool:?}",
-                    group.len(),
-                );
-                proptest::prop_assert!(
-                    group.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
-                    "group must be [a-z0-9-]; got {group}",
-                );
-                proptest::prop_assert!(
-                    group.chars().next().map(|c| c.is_ascii_lowercase()).unwrap_or(false),
-                    "group must start with lowercase letter; got {group}",
-                );
-                // Input-preservation: stripping the prefix MUST yield
-                // exactly the input pool name. Catches a mutation
-                // where the helper returns a constant suffix or
-                // truncates / mangles the pool name.
-                proptest::prop_assert_eq!(
-                    group.strip_prefix("ghars-cache-"),
-                    Some(pool.as_str()),
-                );
-            }
-        }
+        // before_caches=None ⇒ no caches-list diff is computed; the
+        // pre-DynamicUser version also asserted no gpasswd ops fire,
+        // but that machinery is gone — just exercising the no-panic
+        // path is the remaining signal.
     }
 
     // ---------- call-site sanitization wiring pins (apply.rs) -----------
@@ -10232,91 +9086,6 @@ mod tests {
         );
     }
 
-    /// Pin that the `apply()` per-action error path runs
-    /// the inner `e.to_string()` through `escape_control_chars`
-    /// before storing the result in
-    /// `ApplyOutcome::Failed.error_summary`. The assertion is
-    /// load-bearing for the entire control-char escape contract — every consumer
-    /// of `error_summary` (cmd_apply stderr render, JSON output,
-    /// programmatic exit-code mapping) inherits the
-    /// already-sanitized string from this construction site.
-    ///
-    /// Drives `apply()` with an in-place UpdateRunner whose caches
-    /// diff triggers `add_user_to_group("pool-new")`; the mock is
-    /// configured to fail that call with a hostile control-char
-    /// payload via `MockUsers::fail_add_group_message`. The Err
-    /// flows through the apply()-loop's catch arm at line ~2096
-    /// where `escape_control_chars(&e.to_string()).into_owned()`
-    /// runs. Asserts the resulting Failed row's `error_summary`
-    /// contains no raw `\x1b` and contains the `\u{1b}` escape
-    /// form — proving the wiring at the construction site fires.
-    #[test]
-    fn apply_failed_error_summary_escapes_hostile_inner_error() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = make_paths(&tmp);
-        fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
-        // Use the in-place caches-diff path: it triggers
-        // add_user_to_group("ghars-cache-pool-new") inside
-        // execute_update_runner BEFORE any other side effect, so the
-        // injected failure is the first Err the apply() loop sees.
-        let delta = make_caches_delta(&paths, Some(vec![]), vec!["pool-new"]);
-        let plan = Plan {
-            actions: vec![Action::UpdateRunner(delta)],
-            warnings: vec![],
-        };
-        let systemd = MockSystemd::default();
-        let users = MockUsers::default();
-        // Inject failure for the only group the in-place diff will
-        // try to add; embed a hostile ANSI escape sequence in the
-        // error message body. `MockUsers::add_user_to_group` returns
-        // `GharsError::Apply { source: GharsError::Io(...) }` whose
-        // Display output passes the Io message through verbatim.
-        *users.fail_add_group.lock().unwrap() = Some("ghars-cache-pool-new".into());
-        *users.fail_add_group_message.lock().unwrap() =
-            Some("hostile \x1b[31m gpasswd diagnostic".into());
-        let tarball = MockTarball::default();
-        let config_shell = MockConfigShell::default();
-        let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
-        let deps = Deps {
-            systemd: &systemd,
-            auth: &auth_map,
-            tarball: &tarball,
-            users: &users,
-            config_shell: &config_shell,
-        };
-        let opts = ApplyOptions::default();
-        let result = apply(&plan, &deps, &paths, &opts).unwrap();
-        // The plan failed at execute_update_runner; one Failed detail
-        // row + one failed entry must exist.
-        assert_eq!(result.failed.len(), 1, "expected 1 failed action");
-        assert_eq!(result.details.len(), 1, "expected 1 detail row");
-        let (_label, outcome) = &result.details[0];
-        let error_summary = match outcome {
-            ApplyOutcome::Failed { error_summary, .. } => error_summary.clone(),
-            other => panic!("expected ApplyOutcome::Failed, got {other:?}"),
-        };
-        // (i) raw ESC byte must not survive: the Io message contained
-        // `\x1b`, and the apply()-loop's
-        // `escape_control_chars(&e.to_string()).into_owned()` must
-        // have replaced it before storing.
-        assert!(
-            !error_summary.contains('\x1b'),
-            "raw ESC must not reach error_summary; got: {error_summary:?}"
-        );
-        // (ii) printable `\u{1b}` form from char::escape_default must
-        // be present — proves escape_control_chars actually ran.
-        assert!(
-            error_summary.contains("\\u{1b}"),
-            "expected \\u{{1b}} substring from char::escape_default; got: {error_summary}"
-        );
-        // (iii) the surrounding diagnostic context passes through —
-        // sanity that the helper didn't strip the entire message.
-        assert!(
-            error_summary.contains("hostile") && error_summary.contains("gpasswd diagnostic"),
-            "non-control surrounding text must pass through; got: {error_summary}"
-        );
-    }
-
     // ---------- execute_update_runner recreate-branch tests ------------
     //
     // These tests drive the recreate path through
@@ -10351,7 +9120,6 @@ mod tests {
         fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
 
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let tarball = MockTarball::default();
         let config_shell = MockConfigShell::default();
         let mut auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -10366,7 +9134,6 @@ mod tests {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         let mut delta = make_caches_delta(&paths, Some(vec![]), vec![]);
@@ -10433,7 +9200,6 @@ mod tests {
         fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
 
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let tarball = MockTarball::default();
         let config_shell = MockConfigShell::default();
         // EMPTY auth_map → execute_remove_runner's mint_token fails
@@ -10446,7 +9212,6 @@ mod tests {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         let mut delta = make_caches_delta(&paths, Some(vec![]), vec![]);
@@ -10472,11 +9237,6 @@ mod tests {
             tarball.fetched.lock().unwrap().is_empty(),
             "tarball.fetch_or_verify must not run when remove fails; got: {:?}",
             tarball.fetched.lock().unwrap(),
-        );
-        assert!(
-            users.added.lock().unwrap().is_empty(),
-            "useradd must not run when remove fails; got: {:?}",
-            users.added.lock().unwrap(),
         );
         // Create-path config_shell.run_register must not have fired
         // either (it is keyed off the create path's run_register
@@ -10516,7 +9276,6 @@ mod tests {
         fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
 
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let tarball = MockTarball::default();
         let config_shell = MockConfigShell::default();
         let mut auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -10531,7 +9290,6 @@ mod tests {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         let mut delta = make_caches_delta(&paths, Some(vec![]), vec![]);
@@ -10559,14 +9317,7 @@ mod tests {
             "remove path's run_remove must have fired before create errored; got: {:?}",
             config_shell.removed.lock().unwrap(),
         );
-        // Create-path useradd ran (step 1 succeeded), but
-        // tarball.install_binary did NOT (step 2 hit the gate).
-        assert_eq!(
-            users.added.lock().unwrap().len(),
-            1,
-            "useradd ran before the create-path Validation gate; got: {:?}",
-            users.added.lock().unwrap(),
-        );
+        // tarball.install_binary did NOT run (step 2 hit the gate).
         assert!(
             tarball.installed.lock().unwrap().is_empty(),
             "install_binary must not run; got: {:?}",
@@ -10594,7 +9345,6 @@ mod tests {
         fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
 
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let tarball = MockTarball::default();
         let config_shell = MockConfigShell::default();
         // Auth registry contains "pat" so the create-path mint
@@ -10613,7 +9363,6 @@ mod tests {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         let mut delta = make_caches_delta(&paths, Some(vec![]), vec![]);
@@ -10647,12 +9396,6 @@ mod tests {
             "create-side run_register must have run; got: {:?}",
             config_shell.registered.lock().unwrap(),
         );
-        assert_eq!(
-            users.added.lock().unwrap().len(),
-            1,
-            "useradd ran on the create side; got: {:?}",
-            users.added.lock().unwrap(),
-        );
     }
 
     /// T5: outcome-is-Recreated. The recreate path explicitly
@@ -10675,7 +9418,6 @@ mod tests {
         fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
 
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let tarball = MockTarball::default();
         let config_shell = MockConfigShell::default();
         let mut auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -10690,7 +9432,6 @@ mod tests {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         let mut delta = make_caches_delta(&paths, Some(vec![]), vec![]);
@@ -10733,7 +9474,6 @@ mod tests {
         fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
 
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let tarball = MockTarball::default();
         let config_shell = MockConfigShell::default();
         let mut auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -10748,7 +9488,6 @@ mod tests {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         let mut delta = make_caches_delta(&paths, Some(vec![]), vec![]);
@@ -10813,7 +9552,6 @@ mod tests {
         // path's execute_remove_runner reaches stop_unit first
         // (apply.rs `execute_remove_runner` step 1).
         *systemd.fail_stop_unit.lock().unwrap() = Some("ghars-runner@a.service".into());
-        let users = MockUsers::default();
         let tarball = MockTarball::default();
         let config_shell = MockConfigShell::default();
         let mut auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -10828,7 +9566,6 @@ mod tests {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         let mut delta = make_caches_delta(&paths, Some(vec![]), vec![]);
@@ -10842,14 +9579,7 @@ mod tests {
             rendered.contains("stop_unit") && rendered.contains("injected failure"),
             "expected MockSystemd stop_unit fault to surface; got: {rendered}"
         );
-        // (iii) Create-path useradd MUST NOT have fired — the recreate
-        // path errored before execute_create_runner could begin.
-        assert!(
-            users.added.lock().unwrap().is_empty(),
-            "useradd must not run when stop_unit fails; got: {:?}",
-            users.added.lock().unwrap(),
-        );
-        // (iv) tarball.install_binary not invoked.
+        // (iii) tarball.install_binary not invoked.
         assert!(
             tarball.installed.lock().unwrap().is_empty(),
             "install_binary must not run when stop_unit fails; got: {:?}",
@@ -10890,7 +9620,6 @@ mod tests {
         fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
 
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let tarball = MockTarball::default();
         let config_shell = MockConfigShell::default();
         let mut auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -10905,7 +9634,6 @@ mod tests {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         let mut delta = make_caches_delta(&paths, Some(vec![]), vec![]);
@@ -10944,12 +9672,6 @@ mod tests {
         let disable_runner = steps
             .iter()
             .any(|s| matches!(s, UndoStep::DisableUnit { name } if name == unit));
-        let user_del = steps
-            .iter()
-            .any(|s| matches!(s, UndoStep::UserDel { name } if name == "ghars-a"));
-        let user_add = steps
-            .iter()
-            .any(|s| matches!(s, UndoStep::UserAdd { name } if name == "ghars-a"));
         assert!(
             stop_runner,
             "remove-side StopUnit must appear in log; got: {steps:?}",
@@ -10957,31 +9679,6 @@ mod tests {
         assert!(
             disable_runner,
             "remove-side DisableUnit must appear in log; got: {steps:?}",
-        );
-        assert!(
-            user_del,
-            "remove-side UserDel must appear in log; got: {steps:?}",
-        );
-        assert!(
-            user_add,
-            "create-side UserAdd must appear (recorded before Validation gate); got: {steps:?}",
-        );
-        // Defensive ordering pin: the remove-side StopUnit MUST land
-        // BEFORE the create-side UserAdd. A refactor that interleaves
-        // them would invalidate the rollback advisory's audit-trail
-        // semantics ("what happened on disk before the action errored").
-        let stop_idx = steps
-            .iter()
-            .position(|s| matches!(s, UndoStep::StopUnit { name } if name == unit))
-            .expect("stop_runner check passed above");
-        let user_add_idx = steps
-            .iter()
-            .position(|s| matches!(s, UndoStep::UserAdd { name } if name == "ghars-a"))
-            .expect("user_add check passed above");
-        assert!(
-            stop_idx < user_add_idx,
-            "remove-side StopUnit must precede create-side UserAdd; \
-             got steps: {steps:?}",
         );
     }
 
@@ -11099,7 +9796,6 @@ mod tests {
         *systemd.fail_daemon_reload_message.lock().unwrap() =
             Some("hostile \x1b[31m daemon_reload diagnostic".into());
 
-        let users = MockUsers::default();
         let tarball = MockTarball::default();
         let config_shell = MockConfigShell::default();
         let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -11107,7 +9803,6 @@ mod tests {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         // Empty plan: the per-action loop is a no-op so daemon_reload
@@ -11261,34 +9956,6 @@ mod tests {
                 },
                 true,
             ),
-            (
-                "GroupAdd",
-                UndoStep::GroupAdd {
-                    name: hostile_name.into(),
-                },
-                true,
-            ),
-            (
-                "GroupDel",
-                UndoStep::GroupDel {
-                    name: hostile_name.into(),
-                },
-                true,
-            ),
-            (
-                "UserAdd",
-                UndoStep::UserAdd {
-                    name: hostile_name.into(),
-                },
-                true,
-            ),
-            (
-                "UserDel",
-                UndoStep::UserDel {
-                    name: hostile_name.into(),
-                },
-                true,
-            ),
             // GitHubRegistration interpolates `name` and `url` (the
             // two operator-readable fields). Cover hostile-name and
             // hostile-url separately so a refactor that escapes only
@@ -11418,7 +10085,6 @@ mod tests {
         fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
 
         let systemd = MockSystemd::default();
-        let users = MockUsers::default();
         let tarball = MockTarball::default();
         let config_shell = MockConfigShell::default();
         let mut auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -11433,7 +10099,6 @@ mod tests {
             systemd: &systemd,
             auth: &auth_map,
             tarball: &tarball,
-            users: &users,
             config_shell: &config_shell,
         };
         let mut delta = make_caches_delta(&paths, Some(vec![]), vec![]);
@@ -11498,82 +10163,35 @@ mod tests {
             disable_runner,
             "remove-side DisableUnit must appear in log; got: {steps:?}",
         );
-        // (d) PROOF that `undo` ran: count-based discriminator. The
-        // remove path's `userdel_if_present` call inside
-        // `execute_remove_runner` ALWAYS fires once for the recreate
-        // fixture (deregister succeeds, userdel runs unconditionally).
-        // The create-side `useradd_if_missing("ghars-a")` call recorded
-        // into `MockUsers::added` BEFORE the Validation gate fired.
-        // With `rollback_on_failure=true`, `undo` then walks the
-        // UndoLog in reverse and inverts that UserAdd via the
-        // `userdel_if_present` call inside `undo`'s `UserAdd` arm,
-        // pushing a SECOND `"ghars-a"` entry into `removed`.
-        //
-        // Without rollback this count would be 1 (remove-side only);
-        // with rollback it must be 2 (remove-side + undo walk).
-        // Asserting `contains` alone is NOT a valid discriminator.
-        let added = users.added.lock().unwrap().clone();
-        let removed = users.removed.lock().unwrap().clone();
-        assert!(
-            added.contains(&"ghars-a".to_string()),
-            "create-side useradd must have run before the Validation gate; got added={added:?}"
-        );
-        let userdel_count = removed.iter().filter(|n| n.as_str() == "ghars-a").count();
-        assert_eq!(
-            userdel_count, 2,
-            "rollback must invert UserAdd (1× remove-side userdel + 1× undo walk); \
-             without rollback this would be 1; got userdel_count={userdel_count}, \
-             removed={removed:?}, added={added:?}"
-        );
+        // The pre-DynamicUser version asserted that `MockUsers`
+        // recorded a userdel from the rollback walk inverting a
+        // UserAdd. Both the trait and the variants are gone — the
+        // remove-side StopUnit/DisableUnit assertions above are the
+        // remaining observable signal that the recreate path ran the
+        // remove leg before the create leg's Validation gate fired.
 
         // End-to-end advisory shape pin. Run the
         // result through `render_rollback_advisory` and assert the
         // operator-visible output ties back to the recorded
         // mutations: header present, label sub-block present, at
-        // least one remove-side step + one create-side step in the
-        // body, and LIFO order — `render_rollback_advisory` walks
-        // `log.steps().iter().rev()`, so the create-side `UserAdd`
-        // (last forward push) renders BEFORE the remove-side
-        // `StopUnit` (first forward push) in the bullet list.
+        // least one remove-side step in the body. The pre-DynamicUser
+        // version also asserted a create-side UserAdd bullet in LIFO
+        // order — both the variant and the create-side step are gone.
         let advisory = crate::cli::render_rollback_advisory(&result)
             .expect("rollback advisory must render when failed.len() > 0");
         assert!(
             advisory.starts_with("Rollback advisory: 1 action(s) failed."),
             "advisory must lead with failed-count header; got: {advisory}"
         );
-        // Per-action label sub-block. The label is the action's
-        // `Action::label()` output for `UpdateRunner` — start with
-        // "UpdateRunner" so the assertion is robust to the exact
-        // suffix format.
+        // Per-action label sub-block.
         assert!(
             advisory.contains("\n  UpdateRunner"),
             "advisory must include per-action UpdateRunner sub-block; got: {advisory}"
         );
-        // At least one remove-side step (StopUnit on the runner unit)
-        // + one create-side step (UserAdd "ghars-a") in body bullets.
+        // Remove-side StopUnit on the runner unit lands as a body bullet.
         assert!(
             advisory.contains("\n    - stopped ghars-runner@a.service"),
             "advisory must include remove-side StopUnit bullet via describe(); got: {advisory}"
-        );
-        assert!(
-            advisory.contains("\n    - created user ghars-a"),
-            "advisory must include create-side UserAdd bullet via describe(); got: {advisory}"
-        );
-        // LIFO ordering pin: `render_rollback_advisory` walks log
-        // entries in reverse, so the LAST forward push (create-side
-        // UserAdd) appears BEFORE the FIRST forward push (remove-side
-        // StopUnit) in the rendered output.
-        let user_add_idx = advisory
-            .find("- created user ghars-a")
-            .expect("UserAdd bullet must be in advisory (asserted above)");
-        let stop_unit_idx = advisory
-            .find("- stopped ghars-runner@a.service")
-            .expect("StopUnit bullet must be in advisory (asserted above)");
-        assert!(
-            user_add_idx < stop_unit_idx,
-            "advisory must render in LIFO (reverse-chronological) order: \
-             create-side UserAdd ({user_add_idx}) must precede remove-side StopUnit \
-             ({stop_unit_idx}) in the advisory string",
         );
     }
 }

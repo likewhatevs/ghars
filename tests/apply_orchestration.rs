@@ -39,7 +39,7 @@
 use camino::{Utf8Path, Utf8PathBuf};
 use chrono::Utc;
 use ghars::apply::{
-    ApplyOptions, ConfigShell, ConfigShellCtx, Deps, Tarball, UndoLog, Users, apply, execute,
+    ApplyOptions, ConfigShell, ConfigShellCtx, Deps, Tarball, UndoLog, apply, execute,
 };
 use ghars::auth::{RegistrationToken, TokenSource};
 use ghars::config::{
@@ -201,44 +201,6 @@ impl Tarball for TestTarball {
 }
 
 #[derive(Default)]
-struct TestUsers {
-    /// When set, `groupdel_if_present` returns Err if the requested
-    /// group name matches. Mirrors the in-tree `fail_add_group` /
-    /// `fail_remove_group` fault-injection pattern; used to
-    /// pin that an oversize cache-pool group name surfaces a failure
-    /// in `ApplyResult.failed` instead of silently succeeding.
-    fail_groupdel: Mutex<Option<String>>,
-}
-
-impl Users for TestUsers {
-    fn useradd_if_missing(&self, _name: &str, _home: &Utf8Path) -> ghars::Result<()> {
-        Ok(())
-    }
-    fn userdel_if_present(&self, _name: &str) -> ghars::Result<()> {
-        Ok(())
-    }
-    fn groupadd_if_missing(&self, _group: &str) -> ghars::Result<()> {
-        Ok(())
-    }
-    fn groupdel_if_present(&self, group: &str) -> ghars::Result<()> {
-        if let Some(target) = self.fail_groupdel.lock().unwrap().as_deref() {
-            if target == group {
-                return Err(GharsError::Io(std::io::Error::other(format!(
-                    "groupdel[{group}]: test: injected failure"
-                ))));
-            }
-        }
-        Ok(())
-    }
-    fn add_user_to_group(&self, _user: &str, _group: &str) -> ghars::Result<()> {
-        Ok(())
-    }
-    fn remove_user_from_group(&self, _user: &str, _group: &str) -> ghars::Result<()> {
-        Ok(())
-    }
-}
-
-#[derive(Default)]
 struct TestConfigShell {
     fail_register: Mutex<bool>,
 }
@@ -374,14 +336,12 @@ fn deps<'a>(
     systemd: &'a TestSystemd,
     auth: &'a HashMap<String, Box<dyn TokenSource>>,
     tarball: &'a TestTarball,
-    users: &'a TestUsers,
     config_shell: &'a TestConfigShell,
 ) -> Deps<'a> {
     Deps {
         systemd,
         auth,
         tarball,
-        users,
         config_shell,
     }
 }
@@ -408,9 +368,8 @@ fn create_runner_errors_when_no_release_and_no_local_tarball() {
         }),
     );
     let tarball = TestTarball::default();
-    let users = TestUsers::default();
     let config_shell = TestConfigShell::default();
-    let d = deps(&systemd, &auth_map, &tarball, &users, &config_shell);
+    let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let action = Action::CreateRunner(plan);
     let err = execute(&action, &d, &paths, &mut UndoLog::new())
         .expect_err("must error on no release + no tarball");
@@ -434,9 +393,8 @@ fn create_runner_errors_when_auth_registry_missing_key() {
     let systemd = TestSystemd::default();
     let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
     let tarball = TestTarball::default();
-    let users = TestUsers::default();
     let config_shell = TestConfigShell::default();
-    let d = deps(&systemd, &auth_map, &tarball, &users, &config_shell);
+    let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let action = Action::CreateRunner(plan);
     let err =
         execute(&action, &d, &paths, &mut UndoLog::new()).expect_err("must error on missing auth");
@@ -462,9 +420,8 @@ fn create_runner_errors_when_token_mint_fails() {
         }),
     );
     let tarball = TestTarball::default();
-    let users = TestUsers::default();
     let config_shell = TestConfigShell::default();
-    let d = deps(&systemd, &auth_map, &tarball, &users, &config_shell);
+    let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let action = Action::CreateRunner(plan);
     let err =
         execute(&action, &d, &paths, &mut UndoLog::new()).expect_err("must error on mint failure");
@@ -491,9 +448,8 @@ fn create_runner_errors_when_verify_local_fails() {
     );
     let tarball = TestTarball::default();
     *tarball.fail_verify_local.lock().unwrap() = true;
-    let users = TestUsers::default();
     let config_shell = TestConfigShell::default();
-    let d = deps(&systemd, &auth_map, &tarball, &users, &config_shell);
+    let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let action = Action::CreateRunner(plan);
     let err = execute(&action, &d, &paths, &mut UndoLog::new())
         .expect_err("must error on verify_local failure");
@@ -518,9 +474,8 @@ fn create_runner_errors_when_install_binary_fails() {
     );
     let tarball = TestTarball::default();
     *tarball.fail_install.lock().unwrap() = true;
-    let users = TestUsers::default();
     let config_shell = TestConfigShell::default();
-    let d = deps(&systemd, &auth_map, &tarball, &users, &config_shell);
+    let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let action = Action::CreateRunner(plan);
     let err = execute(&action, &d, &paths, &mut UndoLog::new())
         .expect_err("must error on install_binary failure");
@@ -544,10 +499,9 @@ fn create_runner_errors_when_config_shell_register_fails() {
         }),
     );
     let tarball = TestTarball::default();
-    let users = TestUsers::default();
     let config_shell = TestConfigShell::default();
     *config_shell.fail_register.lock().unwrap() = true;
-    let d = deps(&systemd, &auth_map, &tarball, &users, &config_shell);
+    let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let action = Action::CreateRunner(plan);
     let err = execute(&action, &d, &paths, &mut UndoLog::new())
         .expect_err("must error on register failure");
@@ -575,13 +529,12 @@ fn apply_fail_fast_false_accumulates_multiple_failures() {
     *systemd.fail_enable.lock().unwrap() = true;
     let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
     let tarball = TestTarball::default();
-    let users = TestUsers::default();
     let config_shell = TestConfigShell::default();
     let opts = ApplyOptions {
         fail_fast: false,
         ..ApplyOptions::default()
     };
-    let d = deps(&systemd, &auth_map, &tarball, &users, &config_shell);
+    let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let result = apply(&plan, &d, &paths, &opts).unwrap();
     // Both pool creates failed. fail_fast=false → both accumulated.
     // With root running unprivileged in CI, write_root_owned errors
@@ -625,13 +578,12 @@ fn apply_fail_fast_true_short_circuits_on_first_failure() {
     *systemd.fail_enable.lock().unwrap() = true;
     let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
     let tarball = TestTarball::default();
-    let users = TestUsers::default();
     let config_shell = TestConfigShell::default();
     let opts = ApplyOptions {
         fail_fast: true,
         ..ApplyOptions::default()
     };
-    let d = deps(&systemd, &auth_map, &tarball, &users, &config_shell);
+    let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let result = apply(&plan, &d, &paths, &opts).unwrap();
     assert!(!result.ok());
     // First failure recorded; second NEVER attempted. result.failed
@@ -670,13 +622,12 @@ fn apply_dry_run_skips_all_non_noop_actions() {
     let systemd = TestSystemd::default();
     let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
     let tarball = TestTarball::default();
-    let users = TestUsers::default();
     let config_shell = TestConfigShell::default();
     let opts = ApplyOptions {
         dry_run: true,
         ..ApplyOptions::default()
     };
-    let d = deps(&systemd, &auth_map, &tarball, &users, &config_shell);
+    let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let result = apply(&plan, &d, &paths, &opts).unwrap();
     assert!(result.ok());
     // Both actions skipped (CreateCachePool because dry_run, NoOp
@@ -707,10 +658,9 @@ fn apply_daemon_reload_failure_appends_to_result_failed() {
     *systemd.fail_daemon_reload.lock().unwrap() = true;
     let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
     let tarball = TestTarball::default();
-    let users = TestUsers::default();
     let config_shell = TestConfigShell::default();
     let opts = ApplyOptions::default();
-    let d = deps(&systemd, &auth_map, &tarball, &users, &config_shell);
+    let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let result = apply(&plan, &d, &paths, &opts).unwrap();
     assert!(!result.ok());
     assert!(
@@ -739,13 +689,12 @@ fn apply_dry_run_holds_lock_during_run() {
     let systemd = TestSystemd::default();
     let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
     let tarball = TestTarball::default();
-    let users = TestUsers::default();
     let config_shell = TestConfigShell::default();
     let opts = ApplyOptions {
         dry_run: true,
         ..ApplyOptions::default()
     };
-    let d = deps(&systemd, &auth_map, &tarball, &users, &config_shell);
+    let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     apply(&plan, &d, &paths, &opts).unwrap();
     // After Drop, lock released — re-acquire succeeds.
     let _lock = ghars::apply::acquire_lock(&paths).unwrap();
@@ -767,10 +716,9 @@ fn apply_records_success_for_noop_actions_in_skipped_not_succeeded() {
     let systemd = TestSystemd::default();
     let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
     let tarball = TestTarball::default();
-    let users = TestUsers::default();
     let config_shell = TestConfigShell::default();
     let opts = ApplyOptions::default();
-    let d = deps(&systemd, &auth_map, &tarball, &users, &config_shell);
+    let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let result = apply(&plan, &d, &paths, &opts).unwrap();
     assert!(result.ok(), "{:?}", result.failed);
     assert!(result.succeeded.is_empty());
@@ -795,10 +743,9 @@ fn apply_empty_plan_still_runs_daemon_reload() {
     let systemd = TestSystemd::default();
     let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
     let tarball = TestTarball::default();
-    let users = TestUsers::default();
     let config_shell = TestConfigShell::default();
     let opts = ApplyOptions::default();
-    let d = deps(&systemd, &auth_map, &tarball, &users, &config_shell);
+    let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let result = apply(&plan, &d, &paths, &opts).unwrap();
     assert!(result.ok());
     assert!(result.skipped.is_empty());
@@ -821,10 +768,9 @@ fn apply_remove_cache_pool_records_action_label_on_success() {
     let systemd = TestSystemd::default();
     let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
     let tarball = TestTarball::default();
-    let users = TestUsers::default();
     let config_shell = TestConfigShell::default();
     let opts = ApplyOptions::default();
-    let d = deps(&systemd, &auth_map, &tarball, &users, &config_shell);
+    let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let result = apply(&plan, &d, &paths, &opts).unwrap();
     assert!(result.ok(), "{:?}", result.failed);
     assert!(
@@ -832,76 +778,6 @@ fn apply_remove_cache_pool_records_action_label_on_success() {
             .succeeded
             .iter()
             .any(|s| s.contains("RemoveCachePool(absent)"))
-    );
-}
-
-/// An oversize cache-pool name (state-discovered, exceeds
-/// `CACHE_POOL_NAME_MAX_LEN`) flowing through `RemoveCachePool` MUST
-/// surface as a recorded failure in `ApplyResult.failed` — not be
-/// silently swallowed. apply.rs::cache_pool_group still produces the
-/// `ghars-cache-{name}` group name (with a tracing::debug! warning),
-/// and the production `groupdel` would error with "name too long" on
-/// real systemd. We inject that exact failure via TestUsers's
-/// `fail_groupdel` so the test runs without a real shell.
-///
-/// Pins (a) result.ok() == false, (b) the action label appears in
-/// result.failed, and (c) the group name in the failure string
-/// matches the derived `ghars-cache-{oversize}` form (both the
-/// `cache_pool_group` helper and the `groupdel` shell call must
-/// agree on the name).
-#[test]
-fn apply_remove_cache_pool_with_oversize_name_records_failure() {
-    use ghars::validators::CACHE_POOL_NAME_MAX_LEN;
-    let oversize = "a".repeat(CACHE_POOL_NAME_MAX_LEN + 1);
-    // `apply::cache_pool_group` produces `"ghars-cache-{name}"`; the
-    // prefix is `pub(crate)` so we hardcode the literal here. If the
-    // prefix ever changes the in-tree fuzz test
-    // `apply::tests::cache_pool_group_props` and the apply.rs unit
-    // test `cache_pool_group_emits_canonical_prefix` will fail and
-    // surface the mismatch.
-    let oversize_group = format!("ghars-cache-{oversize}");
-    let tmp = tempfile::tempdir().unwrap();
-    let paths = make_paths(&tmp);
-    std::fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
-    let plan = Plan {
-        actions: vec![Action::RemoveCachePool(oversize.clone())],
-        warnings: vec![],
-    };
-    let systemd = TestSystemd::default();
-    let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
-    let tarball = TestTarball::default();
-    let users = TestUsers::default();
-    *users.fail_groupdel.lock().unwrap() = Some(oversize_group.clone());
-    let config_shell = TestConfigShell::default();
-    let opts = ApplyOptions::default();
-    let d = deps(&systemd, &auth_map, &tarball, &users, &config_shell);
-    let result = apply(&plan, &d, &paths, &opts).unwrap();
-    assert!(
-        !result.ok(),
-        "oversize RemoveCachePool must NOT silently succeed; result.failed={:?}",
-        result.failed
-    );
-    // ApplyResult.failed is Vec<(String, GharsError)>: .0 is the action
-    // label, .1 is the underlying error. Both are checked because the
-    // contract is "the failure surfaces in result.failed scoped to the
-    // action AND carries enough error context to identify the offender".
-    let label_needle = format!("RemoveCachePool({oversize})");
-    assert!(
-        result
-            .failed
-            .iter()
-            .any(|(label, _err)| label.contains(&label_needle)),
-        "result.failed must contain the action label {label_needle:?}; got: {:?}",
-        result.failed
-    );
-    assert!(
-        result
-            .failed
-            .iter()
-            .any(|(_label, err)| format!("{err}").contains(&oversize_group)),
-        "result.failed error message must contain the derived group name \
-         {oversize_group:?}; got: {:?}",
-        result.failed
     );
 }
 
@@ -977,13 +853,12 @@ proptest::proptest! {
         *systemd.fail_enable.lock().unwrap() = true;
         let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
         let tarball = TestTarball::default();
-        let users = TestUsers::default();
-        let config_shell = TestConfigShell::default();
+            let config_shell = TestConfigShell::default();
         let opts = ApplyOptions {
             fail_fast: false,
             ..ApplyOptions::default()
         };
-        let d = deps(&systemd, &auth_map, &tarball, &users, &config_shell);
+        let d = deps(&systemd, &auth_map, &tarball, &config_shell);
         let result = apply(&plan, &d, &paths, &opts).unwrap();
         // Pre-assertion: prevent trivially-passing proptest by pinning
         // that all N actions actually failed before checking lockstep.
@@ -1031,13 +906,12 @@ fn apply_fail_fast_pushes_failed_and_undo_logs_in_lockstep() {
     *systemd.fail_enable.lock().unwrap() = true;
     let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
     let tarball = TestTarball::default();
-    let users = TestUsers::default();
     let config_shell = TestConfigShell::default();
     let opts = ApplyOptions {
         fail_fast: true,
         ..ApplyOptions::default()
     };
-    let d = deps(&systemd, &auth_map, &tarball, &users, &config_shell);
+    let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let result = apply(&plan, &d, &paths, &opts).unwrap();
     assert_eq!(
         result.failed.len(),
@@ -1108,10 +982,9 @@ fn apply_daemon_reload_failure_pushes_lockstep_with_empty_undo_log() {
     *systemd.fail_daemon_reload.lock().unwrap() = true;
     let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
     let tarball = TestTarball::default();
-    let users = TestUsers::default();
     let config_shell = TestConfigShell::default();
     let opts = ApplyOptions::default();
-    let d = deps(&systemd, &auth_map, &tarball, &users, &config_shell);
+    let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let result = apply(&plan, &d, &paths, &opts).unwrap();
     assert_eq!(
         result.failed.len(),

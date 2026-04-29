@@ -2975,13 +2975,11 @@ fn cmd_apply(
     let registry = build_auth_registry(&cfg.auth)?;
     let systemd = open_dbus()?;
     let tarball = apply::RealTarball;
-    let users = apply::RealUsers;
     let config_shell = apply::RealConfigShell;
     let deps = apply::Deps {
         systemd: &systemd,
         auth: &registry,
         tarball: &tarball,
-        users: &users,
         config_shell: &config_shell,
     };
     let opts = apply::ApplyOptions {
@@ -8028,9 +8026,6 @@ auth = \"pat\"
                     ),
                     prior_content: None,
                 },
-                apply::UndoStep::GroupAdd {
-                    name: "ghars-cache-build".into(),
-                },
             ],
         );
         let advisory = render_rollback_advisory(&result).unwrap();
@@ -8062,10 +8057,6 @@ auth = \"pat\"
                 "\n    - wrote /etc/systemd/system/ghars-cache@build.service.d/00-ghars.conf"
             ),
             "advisory must include WriteFile step; got: {advisory}",
-        );
-        assert!(
-            advisory.contains("\n    - created group ghars-cache-build"),
-            "advisory must include GroupAdd step; got: {advisory}",
         );
     }
 
@@ -15439,8 +15430,8 @@ auth = \"pat\"
     #[test]
     fn render_rollback_advisory_renders_steps_in_reverse_lifo_order() {
         // Steps recorded in forward (insertion) order:
-        // CreateDir → WriteFile → GroupAdd. Advisory MUST render in
-        // reverse: GroupAdd → WriteFile → CreateDir.
+        // CreateDir → WriteFile → EnableUnit. Advisory MUST render in
+        // reverse: EnableUnit → WriteFile → CreateDir.
         let mut result = apply::ApplyResult::default();
         push_failed(
             &mut result,
@@ -15457,8 +15448,8 @@ auth = \"pat\"
                     ),
                     prior_content: None,
                 },
-                apply::UndoStep::GroupAdd {
-                    name: "ghars-cache-build".into(),
+                apply::UndoStep::EnableUnit {
+                    name: "ghars-cache@build.service".into(),
                 },
             ],
         );
@@ -15469,14 +15460,14 @@ auth = \"pat\"
         let pos_write_file = advisory
             .find("wrote /etc/systemd/system/ghars-cache@build.service.d/00-ghars.conf")
             .expect("WriteFile step present");
-        let pos_group_add = advisory
-            .find("created group ghars-cache-build")
-            .expect("GroupAdd step present");
-        // LIFO: GroupAdd (most recent) → WriteFile → CreateDir
+        let pos_enable = advisory
+            .find("enabled ghars-cache@build.service")
+            .expect("EnableUnit step present");
+        // LIFO: EnableUnit (most recent) → WriteFile → CreateDir
         // (earliest, bottom).
         assert!(
-            pos_group_add < pos_write_file,
-            "GroupAdd must precede WriteFile (LIFO); got: {advisory}",
+            pos_enable < pos_write_file,
+            "EnableUnit must precede WriteFile (LIFO); got: {advisory}",
         );
         assert!(
             pos_write_file < pos_create_dir,
@@ -15567,8 +15558,8 @@ auth = \"pat\"
         push_failed(
             &mut result,
             "CreateCachePool(build)",
-            vec![apply::UndoStep::GroupAdd {
-                name: "ghars-cache-build".into(),
+            vec![apply::UndoStep::EnableUnit {
+                name: "ghars-cache@build.service".into(),
             }],
         );
         // Equal lengths (1 == 1) ⇒ debug_assert_eq! passes; renderer
@@ -15839,22 +15830,22 @@ auth = \"pat\"
         push_failed(
             &mut result,
             "CreateRunner(a)",
-            vec![apply::UndoStep::GroupAdd {
-                name: "ghars-runner-a".into(),
+            vec![apply::UndoStep::EnableUnit {
+                name: "ghars-runner@a.service".into(),
             }],
         );
         push_failed(
             &mut result,
             "CreateRunner(b)",
-            vec![apply::UndoStep::GroupAdd {
-                name: "ghars-runner-b".into(),
+            vec![apply::UndoStep::EnableUnit {
+                name: "ghars-runner@b.service".into(),
             }],
         );
         push_failed(
             &mut result,
             "CreateRunner(c)",
-            vec![apply::UndoStep::GroupAdd {
-                name: "ghars-runner-c".into(),
+            vec![apply::UndoStep::EnableUnit {
+                name: "ghars-runner@c.service".into(),
             }],
         );
         let advisory =
