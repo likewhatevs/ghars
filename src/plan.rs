@@ -6749,13 +6749,7 @@ labels  = ["alpha", "beta"]
                 token_file: None,
             },
         );
-        assert_auth_name_change_is_in_place(
-            auth_blocks,
-            "pat-old",
-            "pat-new",
-            FieldValue::String("pat-old".into()),
-            FieldValue::String("pat-new".into()),
-        );
+        assert_auth_name_change_is_in_place(auth_blocks, "pat-old", "pat-new");
     }
 
     /// Shared scaffold for the auth-name in-place sibling tests
@@ -6779,8 +6773,8 @@ labels  = ["alpha", "beta"]
     ///    refactor could decouple the two.
     /// 3. `field_changes.len() == 1` — phantom fields signal regression.
     /// 4. `field_changes` contains an `auth_name` `FieldChange` whose
-    ///    `before` matches `expected_before` and `after` matches
-    ///    `expected_after`.
+    ///    `before` matches `FieldValue::String(discovered_auth_name)`
+    ///    and `after` matches `FieldValue::String(desired_auth_name)`.
     /// 5. `drift_cause == DriftCause::SpecChanged` — the auth_name
     ///    string diff drives a spec_hash mismatch with no on-disk
     ///    drift (the discovered drop-in is freshly rendered by
@@ -6802,20 +6796,19 @@ labels  = ["alpha", "beta"]
     /// Each caller passes its own `auth_blocks`
     /// (`IndexMap<String, AuthSpec>`) so same-discriminant vs
     /// cross-discriminant fixture shapes stay caller-controlled —
-    /// the helper does not fabricate `AuthSpec` content. The
-    /// `expected_before`/`expected_after` arguments are explicit
-    /// rather than derived from `discovered_auth_name`/
-    /// `desired_auth_name` so each caller documents its own
-    /// before/after contract at its own call site (and a future
-    /// caller that wants to assert something other than literal
-    /// pass-through is supported without re-plumbing the helper).
+    /// the helper does not fabricate `AuthSpec` content. The expected
+    /// `FieldChange` before/after are derived from the two name
+    /// arguments (`merge_defaults` lowers the auth ref to a bare
+    /// `EffectiveRunnerSpec.auth_name` string with no normalization,
+    /// so the rendered before/after are literal pass-through of the
+    /// caller-supplied names).
     fn assert_auth_name_change_is_in_place(
         auth_blocks: IndexMap<String, AuthSpec>,
         discovered_auth_name: &str,
         desired_auth_name: &str,
-        expected_before: FieldValue,
-        expected_after: FieldValue,
     ) {
+        let expected_before = FieldValue::String(discovered_auth_name.into());
+        let expected_after = FieldValue::String(desired_auth_name.into());
         let mut cfg = config_with_runners(vec![{
             let mut r = minimal_runner("a");
             r.auth = Some(desired_auth_name.into());
@@ -6992,13 +6985,7 @@ labels  = ["alpha", "beta"]
                 token_file: None,
             },
         );
-        assert_auth_name_change_is_in_place(
-            auth_blocks,
-            "pat",
-            "github_app",
-            FieldValue::String("pat".into()),
-            FieldValue::String("github_app".into()),
-        );
+        assert_auth_name_change_is_in_place(auth_blocks, "pat", "github_app");
     }
 
     /// Cross-discriminant pin for the auth-name in-place contract:
@@ -7030,8 +7017,6 @@ labels  = ["alpha", "beta"]
             auth_blocks_with_pat_and_github_app(),
             "pat",
             "github_app",
-            FieldValue::String("pat".into()),
-            FieldValue::String("github_app".into()),
         );
     }
 
@@ -7064,8 +7049,6 @@ labels  = ["alpha", "beta"]
             auth_blocks_with_pat_and_github_app(),
             "github_app",
             "pat",
-            FieldValue::String("github_app".into()),
-            FieldValue::String("pat".into()),
         );
     }
 
@@ -7189,8 +7172,6 @@ labels  = ["alpha", "beta"]
             auth_blocks_with_pat_and_interactive(),
             "pat",
             "interactive",
-            FieldValue::String("pat".into()),
-            FieldValue::String("interactive".into()),
         );
     }
 
@@ -7207,8 +7188,6 @@ labels  = ["alpha", "beta"]
             auth_blocks_with_pat_and_interactive(),
             "interactive",
             "pat",
-            FieldValue::String("interactive".into()),
-            FieldValue::String("pat".into()),
         );
     }
 
@@ -7227,8 +7206,6 @@ labels  = ["alpha", "beta"]
             auth_blocks_with_pat_and_token_file(),
             "pat",
             "token_file",
-            FieldValue::String("pat".into()),
-            FieldValue::String("token_file".into()),
         );
     }
 
@@ -7243,8 +7220,6 @@ labels  = ["alpha", "beta"]
             auth_blocks_with_pat_and_token_file(),
             "token_file",
             "pat",
-            FieldValue::String("token_file".into()),
-            FieldValue::String("pat".into()),
         );
     }
 
@@ -7261,8 +7236,6 @@ labels  = ["alpha", "beta"]
             auth_blocks_with_github_app_and_interactive(),
             "github_app",
             "interactive",
-            FieldValue::String("github_app".into()),
-            FieldValue::String("interactive".into()),
         );
     }
 
@@ -7280,8 +7253,6 @@ labels  = ["alpha", "beta"]
             auth_blocks_with_github_app_and_interactive(),
             "interactive",
             "github_app",
-            FieldValue::String("interactive".into()),
-            FieldValue::String("github_app".into()),
         );
     }
 
@@ -7297,8 +7268,6 @@ labels  = ["alpha", "beta"]
             auth_blocks_with_github_app_and_token_file(),
             "github_app",
             "token_file",
-            FieldValue::String("github_app".into()),
-            FieldValue::String("token_file".into()),
         );
     }
 
@@ -7314,8 +7283,6 @@ labels  = ["alpha", "beta"]
             auth_blocks_with_github_app_and_token_file(),
             "token_file",
             "github_app",
-            FieldValue::String("token_file".into()),
-            FieldValue::String("github_app".into()),
         );
     }
 
@@ -7332,8 +7299,6 @@ labels  = ["alpha", "beta"]
             auth_blocks_with_interactive_and_token_file(),
             "interactive",
             "token_file",
-            FieldValue::String("interactive".into()),
-            FieldValue::String("token_file".into()),
         );
     }
 
@@ -7349,8 +7314,6 @@ labels  = ["alpha", "beta"]
             auth_blocks_with_interactive_and_token_file(),
             "token_file",
             "interactive",
-            FieldValue::String("token_file".into()),
-            FieldValue::String("interactive".into()),
         );
     }
 
