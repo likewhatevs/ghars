@@ -1313,9 +1313,16 @@ impl DiscoveredAnnotations {
     /// annotations.
     ///
     /// `state::discover` populates `discovered.on_disk_unit_text`
-    /// from the unit-template path on disk (state.rs:220) and
-    /// `discovered.drop_ins["00-ghars.conf"]` from the per-runner
-    /// drop-in dir (state.rs:228-229). Reading the unit text would
+    /// from the per-instance unit file path
+    /// (`<unit_dir>/ghars-runner@<INSTANCE>.service`) via
+    /// `fs::read_to_string` inside `discover`'s per-runner loop —
+    /// `apply::execute_create_runner` writes the canonical template
+    /// body to that path verbatim, so the bytes the planner sees are
+    /// the runner template even though the path is per-instance.
+    /// `discovered.drop_ins["00-ghars.conf"]` is populated from the
+    /// per-runner drop-in dir via the `read_drop_ins` call in the
+    /// same loop.
+    /// Reading the unit text would
     /// therefore find nothing — Stage 1 annotation classification
     /// would silently break in production while passing under any
     /// fixture that happens to put the lines in the unit text.
@@ -1947,9 +1954,10 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                             after_spec.runsvc_sha256 = existing;
                             // Re-call with_hash defensively after
                             // mutating runsvc_sha256. Today
-                            // EffectiveRunnerSpec.runsvc_sha256 is
-                            // `#[serde(skip)]` (config.rs:297) so it
-                            // is NOT a canonical-JSON spec_hash input
+                            // `EffectiveRunnerSpec.runsvc_sha256` is
+                            // `#[serde(skip)]` (declared in `config.rs`)
+                            // so it is NOT a canonical-JSON spec_hash
+                            // input
                             // — `prop_spec_hash_ignores_runsvc_sha256`
                             // pins that property. The re-hash is
                             // therefore a no-op for the current set of
@@ -2343,8 +2351,8 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                 // managed body.
                 let pool_in_sync = matches!(actual_pool.drift, Drift::InSync);
                 if plan.spec_hash != actual_pool.spec_hash || !pool_in_sync {
-                    // F79i invariant (design Part 17 ~line 5060):
-                    // pool-kind change is a runner-membership no-op.
+                    // F79i invariant: pool-kind change is a
+                    // runner-membership no-op.
                     // The per-pool group is `ghars-cache-NAME` —
                     // parameterized by pool name only, NOT by kinds.
                     // Group identity is unchanged across the update,
@@ -4962,10 +4970,10 @@ mod tests {
     }
 
     /// `runsvc_sha256` must NOT participate in `spec_hash`. The field
-    /// is `#[serde(skip, default)]` (config.rs line 297) so plan
-    /// (pre-install) and apply (post-install, with the digest filled
-    /// in) hash identically. A mutation that strips the skip would
-    /// surface here as a hash change.
+    /// is `#[serde(skip, default)]` on `EffectiveRunnerSpec` (declared
+    /// in `config.rs`) so plan (pre-install) and apply (post-install,
+    /// with the digest filled in) hash identically. A mutation that
+    /// strips the skip would surface here as a hash change.
     #[test]
     fn spec_hash_excludes_runsvc_sha256_field() {
         let mut a = build_baseline_spec();
@@ -5372,11 +5380,11 @@ mod tests {
         }
 
         // Property: labels sort is stable across the FULL LABEL_RE
-        // charset (`^[a-zA-Z0-9._-]+$` per validators.rs:173), not
-        // just the lowercase-alphanumeric subset the sibling
+        // charset (`^[a-zA-Z0-9._-]+$` per `validators::LABEL_RE`),
+        // not just the lowercase-alphanumeric subset the sibling
         // `prop_merge_defaults_labels_concat_dedup_sorted` uses.
-        // `merge_defaults` calls `labels.sort_unstable()` (plan.rs
-        // line 924), which uses byte-wise `Ord`. The byte-wise Ord
+        // `merge_defaults` calls `labels.sort_unstable()`, which
+        // uses byte-wise `Ord`. The byte-wise Ord
         // agrees with operator intent ONLY for the ASCII subset the
         // validator allows; this property pins that expectation by
         // exercising uppercase + digits + `._-` separators
@@ -6069,7 +6077,8 @@ labels  = ["alpha", "beta"]
         // Inject the install-phase digest BEFORE computing spec_hash so
         // the discovered drop-ins (rendered from old_spec) carry the
         // X-Ghars-Runsvc-Sha256 annotation. spec_hash itself excludes
-        // this field via #[serde(skip)] (config.rs:297) — pinned by
+        // this field via the `#[serde(skip)]` on
+        // `EffectiveRunnerSpec.runsvc_sha256` — pinned by
         // `prop_spec_hash_ignores_runsvc_sha256`.
         old_spec.runsvc_sha256 = recorded_digest.clone();
         old_spec.spec_hash = spec_hash(&old_spec);
@@ -6146,7 +6155,8 @@ labels  = ["alpha", "beta"]
 
     /// Helper: build a DiscoveredCachePool with the given spec_hash +
     /// drop-in body content, and the requested Drift. Matches the
-    /// shape produced by state.rs's `discover` (state.rs:301-312).
+    /// shape produced by `state::discover` for cache-pool drop-in
+    /// dirs.
     fn discovered_pool(
         name: &str,
         spec_hash: &str,
@@ -8147,7 +8157,7 @@ labels  = ["alpha", "beta"]
         );
     }
 
-    // ---- delta.before_caches sort site (plan.rs:2074) ------------------
+    // ---- delta.before_caches sort site --------------------------------
 
     /// `RunnerDelta.before_caches` is sorted at the population site in
     /// `plan_from`'s intersection branch so operator-facing surfaces
@@ -8167,10 +8177,10 @@ labels  = ["alpha", "beta"]
         // X-Ghars-Caches annotation in the discovered drop-in with a
         // non-canonical order (`pool-z,pool-a,pool-m`). The
         // intersection branch in plan_from reads this annotation and
-        // populates `delta.before_caches` after sorting at the
-        // population site (plan.rs:2080 — `sort_unstable()`). New
-        // desired spec adds a `pool-new` cache, forcing an
-        // UpdateRunner whose `before_caches` we inspect.
+        // populates `delta.before_caches` after `sort_unstable()` at
+        // the population site. New desired spec adds a `pool-new`
+        // cache, forcing an UpdateRunner whose `before_caches` we
+        // inspect.
         let mut cfg = config_with_runners(vec![{
             let mut r = minimal_runner("a");
             r.caches = vec![
@@ -8313,7 +8323,7 @@ labels  = ["alpha", "beta"]
         // Inject the operator drop-in body into the discovered drop_ins
         // map. Without this, the in-place classifier's drop-in body
         // diff would not see 99-tuning.conf at all and the test would
-        // pass for the wrong reason. discover() (state.rs:228-229)
+        // pass for the wrong reason. `discover` (via `read_drop_ins`)
         // reads every *.conf in the runner drop-in dir, so the
         // discovered drop_ins must include the unmanaged file.
         discovered

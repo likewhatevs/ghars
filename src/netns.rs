@@ -905,13 +905,13 @@ fn run_cleanup_verb(cmd: &mut Command, label: &str) -> Result<()> {
         return Ok(());
     }
     let stderr = String::from_utf8_lossy(&out.stderr);
-    // Stable iproute2 messages (verified against ~/opensource/iproute2
-    // ip/ip{link,netns}.c): "Cannot find device" for ENODEV when a link
-    // doesn't exist, "Cannot remove namespace file ... No such file or
-    // directory" when ip netns del runs against an absent name. nft's
-    // `destroy table` is invoked via `_netns-veth INSTANCE nft destroy
-    // table inet ghars_INSTANCE_ns` upstream from this helper — its
-    // "No such file or directory" surfaces too.
+    // Stable iproute2 messages (verified against iproute2's
+    // ip/ip{link,netns}.c source): "Cannot find device" for ENODEV when
+    // a link doesn't exist, "Cannot remove namespace file ... No such
+    // file or directory" when ip netns del runs against an absent name.
+    // nft's `destroy table` is invoked via `_netns-veth INSTANCE nft
+    // destroy table inet ghars_INSTANCE_ns` upstream from this helper —
+    // its "No such file or directory" surfaces too.
     let absent_markers = [
         "Cannot find device",
         "Cannot remove namespace file",
@@ -1464,7 +1464,7 @@ mod tests {
         // mask), an input of `255.255.255.255/30` would compute
         // `addr+1 = 0.0.0.0` (u32 wrap), silently misallocating the
         // host IP into a different network. The current impl uses
-        // `net.network()` (verified at src/netns.rs:157), so the
+        // `net.network()` inside `subnet_addresses`, so the
         // base is canonicalized before `+1`/`+2`.
         //
         // Verify the canonicalization holds for every address inside

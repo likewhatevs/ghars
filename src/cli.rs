@@ -1007,8 +1007,9 @@ fn is_disallowed_hidden_char(c: char) -> bool {
 
 /// Walk every `[auth.NAME]` entry and, for `AuthSpec::Pat`,
 /// reject configurations that violate the documented XOR invariant
-/// (config.rs:481, auth.rs:286): exactly one of `token_env` /
-/// `token_file` MUST be set. `PatToken::new` re-validates this at
+/// (the `AuthSpec::Pat` doc-comment in `config.rs` and the
+/// `PatToken::new` constructor in `auth.rs`): exactly one of
+/// `token_env` / `token_file` MUST be set. `PatToken::new` re-validates this at
 /// apply time.
 ///
 /// Wiring landscape — which CLI commands rely on this gate vs the
@@ -1280,9 +1281,9 @@ fn validate_pat_xor(cfg: &Config) -> Result<()> {
 }
 
 /// Walk every `[auth.NAME]` key and gate it through
-/// `validators::validate_identifier` (config.rs:24-27 documents the
-/// regex as shared by runner names, auth keys, cache pool keys, and
-/// network keys). Auth keys are user-chosen identifiers that flow
+/// `validators::validate_identifier` — the `IDENTIFIER_REGEX`
+/// (defined in `config.rs`) is shared by runner names, auth keys,
+/// cache pool keys, and network keys. Auth keys are user-chosen identifiers that flow
 /// into:
 ///   - the auth-name → `TokenSource` map (`build_auth_registry`);
 ///   - error scopes via `prepend_validation_scope("auth {name:?}", ...)`,
@@ -2662,9 +2663,10 @@ fn format_disruption_tail(none: u64, restart: u64, recreate: u64) -> String {
 ///
 /// **fail_fast caveat**: under `ApplyOptions::fail_fast`, the loop
 /// short-circuits on the first action error and unprocessed actions
-/// are absent from `result.details` (see apply.rs:333-341). The
-/// footer total (`applied + failed + skipped`) may therefore be less
-/// than the originating plan's action count.
+/// are absent from `result.details` (see the per-action loop's
+/// `fail_fast` short-circuit in `apply()`). The footer total
+/// (`applied + failed + skipped`) may therefore be less than the
+/// originating plan's action count.
 #[must_use]
 pub(crate) fn render_apply_summary_line(result: &apply::ApplyResult) -> String {
     let mut applied: u64 = 0;
@@ -2727,8 +2729,8 @@ pub(crate) fn render_apply_summary_line(result: &apply::ApplyResult) -> String {
 ///      the per-action match arm (no wildcard), so adding a new
 ///      ApplyOutcome variant is a compile error here.
 ///    The `[disruption]` bracket tag (`[none]`/`[restart]`/`[recreate]`)
-///    reuses the plan-output vocabulary from `render_action_line`
-///    (Part 5 of the design) so a single `grep [recreate]` matches
+///    reuses the plan-output vocabulary from `render_action_line` so
+///    a single `grep [recreate]` matches
 ///    both surfaces.
 ///
 /// 2. **Apply summary footer** ([`render_apply_summary_line`]) → stdout.
@@ -3386,9 +3388,9 @@ fn cmd_status(
     // this non-negotiable:
     //
     //   1. Orphan classification (the "ORPHAN — no [[runner]] in config;
-    //      next apply will REMOVE" column at design line 3649) requires
-    //      the parsed desired set. Without it, runners discovered on
-    //      disk can't be told apart from runners the operator declared.
+    //      next apply will REMOVE" status column) requires the parsed
+    //      desired set. Without it, runners discovered on disk can't
+    //      be told apart from runners the operator declared.
     //   2. Smoke-test invariant: `ghars status --runners-only` after a
     //      config edit must surface "your config is malformed" if it is.
     //      Suppressing config errors and proceeding violates fail-fast
@@ -7909,7 +7911,7 @@ auth = \"pat\"
     /// DryRunSkipped, InPlaceSkipped, PoolSkipped; `failed` covers
     /// ApplyOutcome::Failed. The disruption parenthetical mirrors
     /// each outcome's `disruption()` mapping (verified against
-    /// apply.rs:295-308).
+    /// `apply::ApplyOutcome::disruption`).
     #[test]
     fn render_apply_summary_line_buckets_every_variant_correctly() {
         // 3 applied: Created (Recreate), InPlaceRestarted (Restart),
@@ -9940,8 +9942,8 @@ auth = \"pat\"
     /// invariants every direction must satisfy:
     ///
     /// 1. The plan emits exactly 3 `CreateRunner` actions — `expand_counts`
-    ///    at plan.rs:813 auto-skips the count-expanded `ci-1` (because
-    ///    `explicit_names.contains("ci-1")`), so the explicit ci-1's
+    ///    auto-skips the count-expanded `ci-1` via its
+    ///    `explicit_names.contains("ci-1")` arm, so the explicit ci-1's
     ///    RunnerSpec passes through directly while the count block
     ///    contributes ci-2 and ci-3.
     /// 2. `summary.recreates` is exactly
@@ -9959,7 +9961,7 @@ auth = \"pat\"
     ///    silently pass).
     /// 5. Discriminating-fixture guard: `cfg.defaults.memory_max` is
     ///    None. `merge_defaults`'s `runner.memory_max OR defaults.memory_max`
-    ///    chain at plan.rs:1048 falls through to defaults when the
+    ///    or-chain falls through to defaults when the
     ///    runner-level field is None — if a future fixture sets
     ///    defaults.memory_max, the explicit-side None case would
     ///    silently inherit the defaults value, masking the "explicit
@@ -10058,8 +10060,8 @@ auth = \"pat\"
              ({count_block_memory_max:?}) for precedence test to be discriminating",
         );
         // 5. Discriminating-fixture guard: defaults.memory_max is
-        // None so merge_defaults's or_else chain at plan.rs:1048
-        // can't inject a defaults value into the explicit-side
+        // None so merge_defaults's or_else chain can't inject a
+        // defaults value into the explicit-side
         // EffectiveRunnerSpec.
         assert!(
             cfg.defaults.memory_max.is_none(),
@@ -10111,13 +10113,13 @@ auth = \"pat\"
     /// Inverse of `plan_from_count_with_explicit_collision_lists_each_name_once_in_recreates`:
     /// the explicit ci-1 carries `memory_max = None` while the count
     /// block carries `memory_max = Some("4G")`. expand_counts's
-    /// `if explicit_names.contains(...)` arm at plan.rs:813 still
-    /// auto-skips the count-expanded ci-1, so the explicit ci-1's
-    /// RunnerSpec — with its None memory_max — is what flows through
+    /// `if explicit_names.contains(...)` arm still auto-skips the
+    /// count-expanded ci-1, so the explicit ci-1's RunnerSpec —
+    /// with its None memory_max — is what flows through
     /// merge_defaults and into the resulting EffectiveRunnerSpec.
     /// merge_defaults's `runner.memory_max OR defaults.memory_max`
-    /// chain at plan.rs:1048 then resolves to None (defaults left
-    /// None by `cfg_with_runner_trust_zone`).
+    /// or-chain then resolves to None (defaults left None by
+    /// `cfg_with_runner_trust_zone`).
     ///
     /// The forward-direction sibling proves the explicit block wins
     /// when it carries MORE configuration than the count block (the
@@ -15543,11 +15545,11 @@ auth = \"pat\"
         // Pins the non-empty-count gate
         // (`filter(!is_empty()).count() == 0`) beyond the single
         // daemon_reload entry. This fixture is hand-constructed
-        // (production apply.rs:2147-2149 always pushes the per-action
-        // UndoLog with whatever steps were recorded — empty only for
-        // pre-side-effect errors), but the rendering contract must
-        // hold for the convergent case where every action errored
-        // pre-mutation.
+        // (production `apply()`'s per-action loop always pushes the
+        // per-action UndoLog with whatever steps were recorded —
+        // empty only for pre-side-effect errors), but the rendering
+        // contract must hold for the convergent case where every
+        // action errored pre-mutation.
         assert!(
             render_rollback_advisory(&result).is_none(),
             "all-empty failed_undo_logs (multi-entry) must suppress the advisory entirely",
@@ -15585,9 +15587,9 @@ auth = \"pat\"
 
     /// Negative-control test for the length-mismatch invariant.
     /// `apply::apply` pushes to `result.failed` and
-    /// `result.failed_undo_logs` in lockstep on every Err arm
-    /// (apply.rs:2123/2147-2149 per-action; apply.rs:2188/2201
-    /// synthetic daemon_reload). The lengths can only diverge in
+    /// `result.failed_undo_logs` in lockstep on every Err arm —
+    /// both the per-action loop's Err arm and the synthetic
+    /// post-loop daemon_reload arm. The lengths can only diverge in
     /// hand-constructed `ApplyResult` test fixtures. The
     /// `debug_assert_eq!` at `render_rollback_advisory`'s entry
     /// catches such fixtures (and any future production-code
@@ -16883,8 +16885,9 @@ auth = \"pat\"
         let mut delta = inplace_delta("buckos");
         // Sole drop_in_changes entry — Created variant is the most
         // common in-place mutation (operator added a new drop-in
-        // section like `[memory_max]`); the basename loop at
-        // cli.rs:1448-1450 emits `    + {escape_control_chars(basename)}`.
+        // section like `[memory_max]`); the basename loop in
+        // `render_action_line`'s in-place text path emits
+        // `    + {escape_control_chars(basename)}`.
         delta.drop_in_changes.push(plan::DropInChange {
             basename: "60-\x1b[31mhostile.conf".into(),
             change: plan::DropInChangeKind::Created {
@@ -16930,9 +16933,9 @@ auth = \"pat\"
     ///
     /// Drives `plan_to_json_value` (diff=false) with an in-place
     /// RunnerDelta. The `drop_in_change_to_json` helper is invoked
-    /// at cli.rs:1786 for each `dc` in `d.drop_in_changes`, and the
-    /// helper's `obj.insert("basename", escape_control_chars(...))`
-    /// at line 2146 is the wiring point under test.
+    /// for each `dc` in `d.drop_in_changes` from inside
+    /// `plan_to_json_value`, and the helper's `obj.insert("basename",
+    /// escape_control_chars(...))` is the wiring point under test.
     ///
     /// Assertion roles:
     /// - (a) `!serialized.contains('\\x1b')` is anti-tampering:
@@ -16970,11 +16973,12 @@ auth = \"pat\"
             warnings: vec![],
         };
         // diff=false routes through the in-place path's per-entry
-        // map (cli.rs:1784-1787) which delegates to
-        // drop_in_change_to_json. The recreate-Removed path
-        // (line 1775-1779) is gated on `requires_recreate=true` and
-        // is the entry-point for the existing `*_recreate_*` JSON
-        // pin; this test exercises the disjoint in-place branch.
+        // `d.drop_in_changes.iter().map(...)` inside
+        // `plan_to_json_value`, which delegates to
+        // `drop_in_change_to_json`. The recreate-Removed path is
+        // gated on `requires_recreate=true` and is the entry-point
+        // for the existing `*_recreate_*` JSON pin; this test
+        // exercises the disjoint in-place branch.
         let body = plan_to_json_value(&plan_obj, false);
         let serialized = body.to_string();
         // (a) raw ESC must not survive in the serialized output.
@@ -17010,8 +17014,8 @@ auth = \"pat\"
     /// scrubs `UndoStep::describe()` output before stderr emission.
     /// The chain has two intentionally-redundant layers:
     ///   1. `describe()` escapes each interpolated field per arm at
-    ///      construction (apply.rs:643-689 — every `name`, `path`,
-    ///      `url` arm runs the helper).
+    ///      construction — every `name`, `path`, `url` arm runs
+    ///      `escape_control_chars`.
     ///   2. `render_rollback_advisory` re-escapes the full
     ///      `describe()` output before stderr emission via the
     ///      step-bullet escape inside
@@ -17031,18 +17035,11 @@ auth = \"pat\"
     /// does NOT isolate the `render_rollback_advisory` wiring from
     /// the `describe()`-side wiring.
     ///
-    /// Historical note: the per-failure label was NOT sanitized
-    /// when this test was first introduced — the
-    /// per-step bullets passed through the describe() +
-    /// render_rollback_advisory chain but the per-failure label
-    /// rendered raw. That gap was later closed by wrapping the
-    /// label with `escape_control_chars` at the per-failure
-    /// sub-block emission inside `render_rollback_advisory`. This
-    /// test still uses a benign label (`"RemoveRunner(buckos)"`)
+    /// This test uses a benign label (`"RemoveRunner(buckos)"`)
     /// because the dedicated label-escape pin is
-    /// `render_rollback_advisory_escapes_hostile_label` —
-    /// keeping this test focused on the step chain avoids
-    /// double-coverage and over-constraining a single fixture.
+    /// `render_rollback_advisory_escapes_hostile_label`. Keeping
+    /// this test focused on the step chain avoids double-coverage
+    /// and over-constraining a single fixture.
     ///
     /// Drives the renderer with an `ApplyResult` carrying one
     /// failure + one `StartUnit` UndoStep whose `name` field
@@ -17053,7 +17050,7 @@ auth = \"pat\"
     fn render_rollback_advisory_escapes_hostile_undo_step() {
         let mut result = apply::ApplyResult::default();
         // Hostile UndoStep::StartUnit. Note: describe() ALREADY runs
-        // escape_control_chars on `name` (apply.rs:657-658). The
+        // escape_control_chars on `name` in the StartUnit arm. The
         // second pass at the step-bullet escape inside
         // `render_rollback_advisory`'s rev-walk loop is idempotent
         // (pinned in lib.rs). Together they guarantee a
@@ -17085,9 +17082,9 @@ auth = \"pat\"
         // (c) header + step bullet structure intact: the advisory's
         // `Rollback advisory: N action(s) failed.` count line and
         // the `\n    - started ...` step bullet (past tense from
-        // describe()'s `format!("started {}")` arm at apply.rs:657)
-        // must both be present, proving the render structure
-        // survived the escape pass.
+        // describe()'s `format!("started {}")` StartUnit arm) must
+        // both be present, proving the render structure survived
+        // the escape pass.
         assert!(
             advisory.starts_with("Rollback advisory: 1 action(s) failed."),
             "advisory must lead with failed-count header; got: {advisory}"

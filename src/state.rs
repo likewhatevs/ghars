@@ -1071,7 +1071,8 @@ mod tests {
         //   70-hooks.conf       — hooks resolved
         //   80-lognamespace.conf — unconditional
         // 40-network.conf is NOT triggered — Open mode leaves
-        // EffectiveRunnerSpec.network=None per config.rs:325-327, so
+        // `EffectiveRunnerSpec.network = None` (the field is
+        // `Option<EffectiveNetworkBinding>` which defaults to `None`), so
         // there is no unit-test-constructible non-None binding short
         // of allocating a real /30 subnet via the plan engine. The
         // 40-network surface is exercised by plan.rs / systemd.rs
@@ -1650,8 +1651,8 @@ mod tests {
     /// `plan::extract_runsvc_sha256` then maps Some("") → None at
     /// the caller boundary; the helper itself MUST surface the
     /// distinction so other callers (e.g. labels which DO accept
-    /// empty as a meaningful value per the production parser at
-    /// state.rs:586-595) get the right answer.
+    /// empty as a meaningful value per the production parser
+    /// `SystemdUnit::from_text`) get the right answer.
     #[test]
     fn extract_x_ghars_value_returns_some_empty_for_empty_value() {
         let body = "[Unit]\nX-Ghars-Empty=\n";
@@ -1686,10 +1687,10 @@ mod tests {
     }
 
     /// A key appearing TWICE in the same section yields the
-    /// FIRST value, not the last. Pins `ParsedUnit::first` semantics
-    /// (state.rs:629-631) — `first` calls `self.values(...).next()`,
-    /// and `values` (state.rs:634-641) preserves source order via the
-    /// chained section/key filters over `self.sections` + bucket
+    /// FIRST value, not the last. Pins `ParsedUnit::first`
+    /// semantics — `first` calls `self.values(...).next()`,
+    /// and `values` preserves source order via the chained
+    /// section/key filters over `self.sections` + bucket
     /// `(key, value)` pairs. systemd's conf-parser policy varies by
     /// directive (some are list-typed and accumulate, others are
     /// last-wins for scalars), but our extractor pins FIRST so the
@@ -1939,8 +1940,8 @@ mod tests {
         assert!(r.drop_ins.is_empty());
     }
 
-    /// TOCTOU race between `list_runner_unit_files` (readdir) at line 183
-    /// and `fs::read_to_string` at line 192. The readdir succeeds but
+    /// TOCTOU race between `list_runner_unit_files` (readdir) and
+    /// the `fs::read_to_string` call inside `discover`. The readdir succeeds but
     /// the file is gone by the time we try to read it (e.g. another
     /// admin process removed it concurrently). Discovery must propagate
     /// the error; partial state from prior iterations is dropped because
@@ -1979,12 +1980,14 @@ mod tests {
     }
 
     /// EACCES on the per-runner drop-in directory. The unit file itself
-    /// is readable, but `read_drop_ins` (line 201) hits PermissionDenied
+    /// is readable, but `read_drop_ins` hits PermissionDenied
     /// on the `<runner>.service.d/` directory readdir. Distinct from
     /// `discover_propagates_eacces_as_io_error` which targets the
     /// top-level unit_dir — this targets the inner drop_in_dir read
-    /// path that mutation-test runs against `map_err(GharsError::Io)`
-    /// at line 201 would silently turn into a panic.
+    /// path that mutation-test runs against the `map_err(GharsError::Io)`
+    /// on the `read_drop_ins` call inside `discover`'s per-runner
+    /// loop, which would silently turn into a panic if the
+    /// `map_err` were dropped.
     ///
     /// Skipped under root because DAC bypasses chmod on drop-in dir.
     #[test]

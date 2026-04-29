@@ -10,8 +10,8 @@
 //! `SupplementaryGroups=` so this binary starts as root, while the
 //! unit's filesystem-namespacing, system-call filter, network
 //! namespace, capability bounding set, and other sandboxing directives
-//! stay applied (verified against `~/opensource/systemd/src/core/
-//! exec-invoke.c:5496`, where `needs_sandboxing` is gated on
+//! stay applied (verified against systemd's
+//! `src/core/exec-invoke.c::needs_sandboxing`, which is gated on
 //! `EXEC_COMMAND_FULLY_PRIVILEGED` — set by `+`, NOT by `!`).
 //!
 //! What the binary does, in order:
@@ -313,8 +313,9 @@ fn main() -> ExitCode {
         );
     }
     // Owner-execute bit is the minimum for fexecve to succeed; the
-    // tarball install lays runsvc.sh down as 0755 (extract.rs:437) so
-    // any other mode means tampering or operator interference.
+    // tarball install (`extract::install_runner_binary`) lays
+    // runsvc.sh down as 0755, so any other mode means tampering or
+    // operator interference.
     if meta.mode() & 0o100 == 0 {
         return die(
             exit_code::SCRIPT_NOT_REGULAR_OR_NOT_EXEC,
@@ -578,7 +579,7 @@ mod tests {
         );
     }
 
-    // -- #232: parser divergence vs state.rs (anti-tampering posture) ---
+    // -- parser divergence vs state.rs (anti-tampering posture) ----------
 
     #[test]
     fn find_section_key_does_not_follow_continuation_lines() {

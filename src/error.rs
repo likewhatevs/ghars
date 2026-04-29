@@ -323,8 +323,8 @@ pub(crate) fn format_error_chain(err: &(dyn std::error::Error + 'static)) -> Str
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     //! ApplyResult error rendering must not leak build-machine
-    //! paths or stack traces. The cli.rs cmd_apply at line 723 prints
-    //! `{err}` per failed action — `err: &GharsError` resolves to
+    //! paths or stack traces. The cli.rs `cmd_apply` per-failed-action
+    //! emission prints `{err}` — `err: &GharsError` resolves to
     //! Display, NOT Debug. These tests pin the Display contract: only
     //! operator-actionable content (variant tag + free-form message +
     //! optional hint), nothing from rustc, file!/line!, or std

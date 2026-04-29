@@ -1,6 +1,7 @@
 //! Full guard surface for `apply::guard_home_dir_rmrf`.
 //!
-//! The guard has 5 documented failure modes (see apply.rs:1568-1583):
+//! The guard has 5 documented failure modes (see the
+//! `guard_home_dir_rmrf` doc-comment in `apply.rs`):
 //! 1. home_dir == "/"
 //! 2. home_dir == prefix
 //! 3. runner name has `/` or `.`/`..`
@@ -306,7 +307,8 @@ fn rejects_when_prefix_does_not_exist_on_filesystem() {
     // But if home_dir DOES exist and prefix doesn't, canonicalize
     // fails. This case is rare in practice; documenting current
     // behaviour: caller is expected to gate on home_dir.exists()
-    // (apply.rs:1119) so the canonicalize branch only fires when
+    // before calling `guard_home_dir_rmrf` so the canonicalize
+    // branch only fires when
     // home_dir is a real directory. With a real home and a
     // nonexistent prefix, canonicalize(prefix) errors. The guard
     // surfaces it as Io.

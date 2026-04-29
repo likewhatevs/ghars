@@ -1582,10 +1582,10 @@ fn render_hardening(
 
     if !h.extra_capabilities.is_empty() {
         // Same union semantics for CapabilityBoundingSet=. The runner
-        // template grants CAP_SETUID + CAP_SETGID (the runsvc.sh
-        // privilege-drop set, line 887); appending caps here UNIONS
-        // with that base — the operator's tokens are added, not
-        // substituted. Operators who want to revoke the base set must
+        // template (`runner_template_text`) grants CAP_SETUID +
+        // CAP_SETGID (the runsvc.sh privilege-drop set); appending
+        // caps here UNIONS with that base — the operator's tokens are
+        // added, not substituted. Operators who want to revoke the base set must
         // use a 99-*.conf operator drop-in with the empty-reset form
         // (`CapabilityBoundingSet=` followed by the desired set), which
         // the F48 validator does NOT police.
@@ -1612,7 +1612,7 @@ fn render_hardening(
     // empty-reset form (`BindReadOnlyPaths=`) clears it. Both
     // bind_readonly_paths and extra_bind_paths therefore APPEND to the
     // template's accumulated list — neither replaces it. The F48
-    // validator (RESET_ON_EMPTY_DIRECTIVES at systemd.rs:649-660)
+    // validator (the `RESET_ON_EMPTY_DIRECTIVES` list)
     // forbids a managed drop-in from emitting the bare-`=` reset
     // form, so this generator only ever appends. Operators who want
     // to *narrow* the bind-readonly set must use a 99-*.conf
@@ -2596,11 +2596,13 @@ mod tests {
 
     /// `render_identity` sorts `spec.labels` alphabetically before
     /// emitting the `X-Ghars-Labels=` annotation, regardless of the
-    /// order they arrive in. `merge_defaults` already sorts (plan.rs
-    /// line 924); this test pins the defense-in-depth re-sort at the
-    /// emission site (line 1334) so a direct EffectiveRunnerSpec
-    /// constructor that bypasses `merge_defaults` still produces a
-    /// canonical on-disk annotation. A regression dropping the sort
+    /// order they arrive in. `plan::merge_defaults` already sorts
+    /// labels via `labels.sort_unstable()`; this test pins the
+    /// defense-in-depth re-sort inside `render_identity` (where the
+    /// `X-Ghars-Labels=` line is emitted) so a direct
+    /// `EffectiveRunnerSpec` constructor that bypasses
+    /// `merge_defaults` still produces a canonical on-disk
+    /// annotation. A regression dropping the sort
     /// at the emission site would surface here as the line carrying
     /// the unsorted construction order.
     #[test]

@@ -74,9 +74,9 @@ pub struct ApplyOptions {
     pub dry_run: bool,
     /// `--rollback-on-failure`: walk this action's [`UndoLog`] in reverse
     /// when its execute_* handler returns `Err`. Per-action scope only
-    /// — earlier successful actions are NOT undone (design Part 8 line
-    /// 2154 specifies "each Action records a Vec<UndoStep> ... walk the
-    /// list in reverse and best-effort undo"). Default false.
+    /// — earlier successful actions are NOT undone. Each Action records
+    /// a `Vec<UndoStep>`; on error the list is walked in reverse and
+    /// best-effort undone. Default false.
     pub rollback_on_failure: bool,
 }
 
@@ -462,10 +462,9 @@ impl ApplyResult {
 /// `--rollback-on-failure`, [`undo`] walks the per-action log in reverse
 /// and best-effort reverses each step.
 ///
-/// Design contract (Part 8 line 2154): "each Action records a
-/// Vec<UndoStep> (file paths created, units written, users added,
-/// registered runners). On error, walk the list in reverse and
-/// best-effort undo."
+/// Design contract: each Action records a `Vec<UndoStep>` (file
+/// paths created, units written, users added, registered runners).
+/// On error, walk the list in reverse and best-effort undo.
 ///
 /// Variants split into two directions:
 /// - **Forward (Create-direction)** — `WriteFile`, `CreateDir`,
@@ -576,9 +575,9 @@ pub enum UndoStep {
     /// is to mint a fresh removal token via the auth registry and call
     /// `config_shell.run_remove`. If the auth registry has no entry
     /// for `auth_name` the undo emits a `tracing::warn!` and continues
-    /// (design line 2154 — "config.sh registration is hard to
-    /// reverse — we attempt config.sh remove --token <fresh> if auth
-    /// is available; otherwise emit a warning").
+    /// — config.sh registration is hard to reverse, so we attempt
+    /// `config.sh remove --token <fresh>` if auth is available and
+    /// otherwise emit a warning.
     GitHubRegistration {
         /// Runner instance name (the `%i` value).
         name: String,
@@ -861,7 +860,8 @@ fn undo_one(step: &UndoStep, deps: &Deps<'_>) -> Result<()> {
             user,
         } => {
             // Mint a fresh removal token; if the registry has no
-            // matching entry, warn and skip per design line 2154.
+            // matching entry, warn and skip per the registration
+            // undo contract.
             let Some(source) = deps.auth.get(auth_name) else {
                 tracing::warn!(
                     runner = name.as_str(),
@@ -1917,7 +1917,7 @@ fn gc_stale_staging_dirs(paths: &Paths) {
 ///
 /// PRECONDITION: `.staging/` is exclusively owned by ghars
 /// (`extract.rs::install_runner_binary` creates it at mode 0700,
-/// root-only — see extract.rs:415-417). Foreign content must not be
+/// root-only). Foreign content must not be
 /// placed there. The parser is intentionally permissive — anything
 /// matching `*-NUM` is treated as a candidate stagedir — because
 /// under the precondition every occupant is one of ghars's own
@@ -2040,7 +2040,7 @@ pub fn apply(
         // after every successful side effect; on Err we walk the log
         // in reverse via `undo` when --rollback-on-failure is set.
         // Scope is per-action — earlier successful actions are NOT
-        // touched per design Part 8 line 2154.
+        // touched.
         let mut log = UndoLog::new();
         // Capture plan-time worst-case disruption BEFORE the
         // execute borrow / Err-path move so an `ApplyOutcome::Failed`
@@ -2404,7 +2404,7 @@ fn execute_create_runner(
     })?;
     // Push GitHubRegistration AFTER run_register succeeds. Undo path
     // mints a fresh removal token via the auth registry and calls
-    // run_remove (design line 2154). The runner_home/user fields are
+    // run_remove. The runner_home/user fields are
     // captured here because by the time undo runs, spec.user could
     // have been usermod'd (in-place update) and the runner_home path
     // is the canonical location config.sh writes credentials to.
@@ -2426,8 +2426,8 @@ fn execute_create_runner(
     // 5b) SEC-02: hash the runsvc.sh that `config.sh` wrote into the
     //     runner home. config.sh (the upstream actions/runner script)
     //     materialises runsvc.sh + .runner + .credentials in $HOME at
-    //     register time (design Part 9f, line 3228-3230) — NOT during
-    //     install_runner_binary, which only lays down bin.X.Y.Z/. We
+    //     register time — NOT during `install_runner_binary`, which
+    //     only lays down `bin.X.Y.Z/`. We
     //     hash AFTER run_register so the path actually exists.
     //
     //     The hash flows into a freshly-rendered 00-ghars.conf via the
@@ -2642,7 +2642,7 @@ fn execute_update_runner(
         // variants → warn-and-skip per design). Net effect on
         // recreate-rollback: the partial new state is unwound; the old
         // state stays gone (genuinely lossy — re-running apply is the
-        // recovery path). Documented at design Part 8 line 2154.
+        // recovery path).
         //
         // Collapse the inner Removed + Created outcomes into
         // a single `Recreated` — the user-facing contract is one row
@@ -3232,8 +3232,8 @@ fn execute_update_cache_pool(
 
     // Pool-kind change is a membership no-op.
     //
-    // F79i invariant (design Part 17 ~line 5060): the per-pool group is
-    // `ghars-cache-NAME`, parameterized by pool name only — NOT by kinds.
+    // F79i invariant: the per-pool group is `ghars-cache-NAME`,
+    // parameterized by pool name only — NOT by kinds.
     // A pool's `kinds` change (ccache-only → ccache+sccache or vice
     // versa) leaves group identity unchanged, so runners enrolled at
     // runner-create time retain valid membership across the update. No
@@ -4029,7 +4029,8 @@ mod tests {
         // a `GharsError::Systemd` instead of recording the call. Used
         // by the post-loop daemon_reload escape-pin test to inject a
         // hostile control-char payload into the synthetic Failed-row
-        // construction site at apply.rs L2180. Symmetric shape with
+        // construction site in `apply` (post-loop daemon_reload
+        // arm). Symmetric shape with
         // MockUsers.fail_add_group_message but for the synthetic
         // post-loop step rather than a per-action handler.
         fail_daemon_reload_message: Mutex<Option<String>>,
@@ -7637,8 +7638,8 @@ mod tests {
     #[test]
     fn undo_github_registration_warns_when_auth_missing() {
         // GitHubRegistration undo with auth_name not in registry: warn
-        // and skip per design line 2154. The function returns Ok(()) —
-        // the rollback continues even though this step couldn't fire.
+        // and skip. The function returns Ok(()) — the rollback
+        // continues even though this step couldn't fire.
         let systemd = MockSystemd::default();
         let users = MockUsers::default();
         let config_shell = MockConfigShell::default();
@@ -10413,7 +10414,8 @@ mod tests {
     /// T2: remove-failure short-circuits create. When the
     /// recreate path's first half (`execute_remove_runner`) errors
     /// out, the second half (`execute_create_runner`) MUST NOT fire
-    /// — the `?` operator on line 2646 propagates the Err. Pin via
+    /// — the `?` operator on the `execute_remove_runner` call inside
+    /// the recreate branch propagates the Err. Pin via
     /// an empty auth_map: `mint_token` inside execute_remove_runner
     /// fails at the deregister step. Asserts (i) the function
     /// returns Err, (ii) `tarball.installed` is empty (no create
@@ -10490,7 +10492,8 @@ mod tests {
 
     /// T3: create-failure-after-remove. Remove succeeds, then
     /// create errors out at the "no runner_tarball and no resolved
-    /// release" Validation gate (line 2354). The function returns
+    /// release" Validation gate inside `execute_create_runner`. The
+    /// function returns
     /// Err with the create-side failure; execute_remove_runner's
     /// successful side effects (deregister + cleanup) already
     /// landed, mirroring the production "partial new state" trade-off
@@ -10536,7 +10539,8 @@ mod tests {
         // Trigger the create-path Validation gate: no runner_tarball
         // AND no resolved_release. make_caches_delta already sets
         // runner_tarball=None; resolved_release defaults to None
-        // here too, so the create branch fails at line 2354.
+        // here too, so the create branch fails at the
+        // `execute_create_runner` Validation gate.
         assert!(delta.after.spec.runner_tarball.is_none());
         assert!(delta.after.resolved_release.is_none());
 
@@ -10651,8 +10655,9 @@ mod tests {
     }
 
     /// T5: outcome-is-Recreated. The recreate path explicitly
-    /// returns `Ok(ApplyOutcome::Recreated)` (line 2648) — NOT
-    /// the inner remove's `Removed` or create's `Created`. Pin
+    /// returns `Ok(ApplyOutcome::Recreated)` from the recreate
+    /// branch of `execute_update_runner` — NOT the inner remove's
+    /// `Removed` or create's `Created`. Pin
     /// because cmd_apply rendering and the apply summary
     /// footer both branch on the outcome variant; a
     /// refactor that returned `Created` instead would silently
@@ -10705,8 +10710,10 @@ mod tests {
 
     /// T6: runsvc_sha256-after-register pin. The recreate
     /// path's create branch hashes `<runner_home>/runsvc.sh` AFTER
-    /// `config.sh run_register` writes that file (line 2438), then
-    /// re-renders the unit text + drop-ins with the populated
+    /// `config.sh run_register` writes that file (the
+    /// `deps.config_shell.run_register` call inside
+    /// `execute_create_runner`), then re-renders the unit text +
+    /// drop-ins with the populated
     /// `runsvc_sha256` annotation. Pin that the bytes-on-disk in
     /// `00-ghars.conf` match the SHA256 of the runsvc.sh body the
     /// MockConfigShell wrote at register time. A regression where
@@ -10913,13 +10920,14 @@ mod tests {
             .expect_err("create-side Validation gate must error");
 
         let steps = log.steps();
-        // Remove-side steps that MUST have landed before create errored:
-        //   StopUnit("ghars-runner@a.service")     — apply.rs L2524
-        //   DisableUnit("ghars-runner@a.service")  — apply.rs L2528
+        // Remove-side steps that MUST have landed before create errored,
+        // pushed by `execute_remove_runner` in this order:
+        //   StopUnit("ghars-runner@a.service")
+        //   DisableUnit("ghars-runner@a.service")
         //   teardown_netns_artifacts step push    — Stop+Disable for
         //                                            ghars-net@a.service
-        //   RemoveDir(home_dir)                    — apply.rs L2613
-        //   UserDel(spec.user)                     — apply.rs L2621
+        //   RemoveDir(home_dir)
+        //   UserDel(spec.user)
         //
         // We pin the load-bearing primary remove-side mutations:
         //   StopUnit + DisableUnit on the runner unit + UserDel.
@@ -11063,8 +11071,7 @@ mod tests {
     /// per-action escape pin at
     /// `apply_failed_error_summary_escapes_hostile_inner_error` —
     /// together they cover the two construction sites in `apply()`
-    /// (per-action loop arm at L2101 + post-loop daemon_reload arm at
-    /// L2180).
+    /// (per-action loop arm + post-loop daemon_reload arm).
     ///
     /// Drives `apply()` with an EMPTY plan so the per-action loop is a
     /// no-op and `daemon_reload` is the only mutation. `MockSystemd`'s
@@ -11084,9 +11091,10 @@ mod tests {
 
         let systemd = MockSystemd::default();
         // Inject a hostile control-char payload into the Err returned
-        // by daemon_reload(). The post-loop arm at apply.rs L2180
-        // computes `escape_control_chars(&e.to_string()).into_owned()`
-        // and stores the result in `ApplyOutcome::Failed.error_summary`.
+        // by daemon_reload(). The post-loop daemon_reload arm in
+        // `apply()` computes
+        // `escape_control_chars(&e.to_string()).into_owned()` and
+        // stores the result in `ApplyOutcome::Failed.error_summary`.
         *systemd.fail_daemon_reload_message.lock().unwrap() =
             Some("hostile \x1b[31m daemon_reload diagnostic".into());
 
@@ -11114,7 +11122,8 @@ mod tests {
 
         // Post-loop daemon_reload pushes one Failed entry to both
         // `result.failed` and `result.details`. Synthetic label is
-        // exactly `"daemon_reload"` (apply.rs L2175 / L2191 / L2201).
+        // exactly `"daemon_reload"` at every push site in the
+        // post-loop arm.
         assert_eq!(
             result.failed.len(),
             1,
@@ -11284,7 +11293,7 @@ mod tests {
             // hostile-url separately so a refactor that escapes only
             // one of the two would still fail this test. Other fields
             // (auth_name, runner_home, user) are not interpolated by
-            // describe() — confirmed at apply.rs:681-687 — so the
+            // `describe()`'s `GitHubRegistration` arm, so the
             // hostile-runner_home row below uses the
             // `expects_interpolation=false` mode.
             (
@@ -11310,9 +11319,10 @@ mod tests {
                 true,
             ),
             // OPT-2 (Tester F5): forward-looking pin for runner_home.
-            // Today `describe()` does NOT interpolate `runner_home`
-            // (apply.rs:681-687 reads only `name` and `url`), so the
-            // hostile bytes never reach the format string and the
+            // Today `describe()`'s `GitHubRegistration` arm does NOT
+            // interpolate `runner_home` (it reads only `name` and
+            // `url`), so the hostile bytes never reach the format
+            // string and the
             // (a) "no raw ESC" assertion is vacuously true. A future
             // refactor that exposes runner_home in the rendered
             // string WITHOUT routing through `escape_control_chars`
@@ -11372,8 +11382,8 @@ mod tests {
     /// drives the same fixture (remove succeeds, create fails at the
     /// no-tarball Validation gate) but at the `execute_update_runner`
     /// boundary; this test drives the full `apply()` so the
-    /// rollback_on_failure gate at apply.rs L2075 actually fires and
-    /// `undo` walks the per-action UndoLog in reverse.
+    /// `rollback_on_failure` gate inside `apply()` actually fires
+    /// and `undo` walks the per-action UndoLog in reverse.
     ///
     /// Setup pre-populates the on-disk paths so execute_remove_runner
     /// can walk past its filesystem-cleanup steps without erroring on
@@ -11385,11 +11395,12 @@ mod tests {
     ///
     /// Discriminator design: `MockUsers::removed` records every
     /// `userdel_if_present` call regardless of trigger. The remove
-    /// path always pushes `"ghars-a"` (apply.rs:2625 — `userdel`
-    /// fires after `run_remove` succeeds), so a count of 1 in
-    /// `removed` is *consistent with* the no-rollback path. The
-    /// rollback walk's UserAdd→userdel inverse at apply.rs:844 fires
-    /// AFTER the create-side useradd recorded into `added`, pushing a
+    /// path always pushes `"ghars-a"` via `execute_remove_runner`'s
+    /// `userdel_if_present` call (which fires after `run_remove`
+    /// succeeds), so a count of 1 in `removed` is *consistent with*
+    /// the no-rollback path. The rollback walk's UserAdd→userdel
+    /// inverse arm in `undo` fires AFTER the create-side useradd
+    /// recorded into `added`, pushing a
     /// SECOND `"ghars-a"` entry. The `count == 2` assertion is the
     /// discriminator: without `rollback_on_failure=true` the count
     /// would be 1 (remove-side only); with rollback it must be 2
@@ -11439,7 +11450,8 @@ mod tests {
             warnings: vec![],
         };
         // Key delta from T3: opt into rollback_on_failure so apply()'s
-        // L2075 gate fires and undo walks the per-action UndoLog.
+        // `rollback_on_failure` gate fires and undo walks the
+        // per-action UndoLog.
         let opts = ApplyOptions {
             rollback_on_failure: true,
             ..ApplyOptions::default()
@@ -11486,15 +11498,15 @@ mod tests {
             "remove-side DisableUnit must appear in log; got: {steps:?}",
         );
         // (d) PROOF that `undo` ran: count-based discriminator. The
-        // remove path's `userdel_if_present` at apply.rs:2625 ALWAYS
-        // fires once for the recreate fixture (deregister succeeds,
-        // userdel runs unconditionally). The create-side
-        // `useradd_if_missing("ghars-a")` call recorded into
-        // `MockUsers::added` BEFORE the Validation gate fired. With
-        // `rollback_on_failure=true`, `undo` then walks the UndoLog
-        // in reverse and inverts that UserAdd via the
-        // `userdel_if_present` path at apply.rs:844, pushing a
-        // SECOND `"ghars-a"` entry into `removed`.
+        // remove path's `userdel_if_present` call inside
+        // `execute_remove_runner` ALWAYS fires once for the recreate
+        // fixture (deregister succeeds, userdel runs unconditionally).
+        // The create-side `useradd_if_missing("ghars-a")` call recorded
+        // into `MockUsers::added` BEFORE the Validation gate fired.
+        // With `rollback_on_failure=true`, `undo` then walks the
+        // UndoLog in reverse and inverts that UserAdd via the
+        // `userdel_if_present` call inside `undo`'s `UserAdd` arm,
+        // pushing a SECOND `"ghars-a"` entry into `removed`.
         //
         // Without rollback this count would be 1 (remove-side only);
         // with rollback it must be 2 (remove-side + undo walk).

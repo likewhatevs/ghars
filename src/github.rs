@@ -235,7 +235,7 @@ fn rt() -> &'static Runtime {
         // octocrab/reqwest layer rather than via tokio's timer.
         //
         // expect: failure here means the OS denied epoll setup, fatal
-        // at startup. Same panic pattern as design Part 6 line 1189.
+        // at startup.
         #[allow(clippy::expect_used)]
         tokio::runtime::Builder::new_current_thread()
             .enable_io()
