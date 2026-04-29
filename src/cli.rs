@@ -7076,6 +7076,7 @@ auth = \"pat\"
             name: name.into(),
             url: format!("https://github.com/example/{name}"),
             auth_name: "pat".into(),
+            trust_zone: "default".into(),
         }
     }
 

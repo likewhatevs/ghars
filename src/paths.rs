@@ -50,11 +50,23 @@ impl Default for Paths {
 }
 
 impl Paths {
-    /// `<state_dir>/<name>` — runner state directory (e.g.
-    /// `/var/lib/ghars/buckos`).
+    /// `<state_dir>/<trust_zone>/ghars-<name>` — runner state directory
+    /// (e.g. `/var/lib/ghars/default/ghars-buckos`). Per design Part 3 +
+    /// the DynamicUser pivot: runners that share a `trust_zone` share
+    /// the parent dir (and thus the trust_zone's transient UID), so
+    /// they can read/write each other's state through DAC.
     #[must_use]
-    pub fn runner_home(&self, name: &str) -> Utf8PathBuf {
-        self.state_dir.join(name)
+    pub fn runner_home(&self, trust_zone: &str, name: &str) -> Utf8PathBuf {
+        self.state_dir
+            .join(trust_zone)
+            .join(format!("ghars-{name}"))
+    }
+
+    /// `<state_dir>/<trust_zone>` — shared HOME root for every runner
+    /// in `trust_zone`.
+    #[must_use]
+    pub fn trust_zone_home(&self, trust_zone: &str) -> Utf8PathBuf {
+        self.state_dir.join(trust_zone)
     }
 
     /// `<unit_dir>/ghars-runner@<name>.service` — runner unit file.
@@ -182,10 +194,23 @@ mod tests {
     }
 
     #[test]
-    fn runner_home_joins_under_state_dir() {
+    fn runner_home_joins_trust_zone_and_runner_name() {
         let p = Paths::default();
-        assert_eq!(p.runner_home("buckos"), "/var/lib/ghars/buckos");
-        assert_eq!(p.runner_home("ktstr-1"), "/var/lib/ghars/ktstr-1");
+        assert_eq!(
+            p.runner_home("default", "buckos"),
+            "/var/lib/ghars/default/ghars-buckos"
+        );
+        assert_eq!(
+            p.runner_home("ci", "ktstr-1"),
+            "/var/lib/ghars/ci/ghars-ktstr-1"
+        );
+    }
+
+    #[test]
+    fn trust_zone_home_returns_shared_root() {
+        let p = Paths::default();
+        assert_eq!(p.trust_zone_home("default"), "/var/lib/ghars/default");
+        assert_eq!(p.trust_zone_home("audited"), "/var/lib/ghars/audited");
     }
 
     #[test]
@@ -309,7 +334,10 @@ mod tests {
             config_dir: Utf8PathBuf::from("/tmp/ghars-test/etc"),
             resolved_conf_d: Utf8PathBuf::from("/tmp/ghars-test/resolved.conf.d"),
         };
-        assert_eq!(p.runner_home("r"), "/tmp/ghars-test/lib/r");
+        assert_eq!(
+            p.runner_home("default", "r"),
+            "/tmp/ghars-test/lib/default/ghars-r"
+        );
         assert_eq!(
             p.unit_file("r"),
             "/tmp/ghars-test/units/ghars-runner@r.service"

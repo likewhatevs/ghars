@@ -178,8 +178,10 @@ fn drop_in_path(instance: &str) -> PathBuf {
     ))
 }
 
-fn runsvc_path(instance: &str) -> PathBuf {
-    PathBuf::from(format!("/var/lib/ghars/{instance}/runsvc.sh"))
+fn runsvc_path(trust_zone: &str, instance: &str) -> PathBuf {
+    PathBuf::from(format!(
+        "/var/lib/ghars/{trust_zone}/ghars-{instance}/runsvc.sh"
+    ))
 }
 
 /// Single failure-path helper. systemd's journal already prefixes
@@ -267,8 +269,16 @@ fn main() -> ExitCode {
     }
     let expected_owned = expected.to_owned();
 
+    // Trust-zone resolution: read X-Ghars-Trust-Zone from the [Unit]
+    // section of the same drop-in. Defaults to "default" when the
+    // annotation is absent or empty (matches plan::reconstruct_identity).
+    let trust_zone = find_section_key(drop_in_text, "Unit", "X-Ghars-Trust-Zone")
+        .filter(|t| !t.is_empty())
+        .unwrap_or("default")
+        .to_owned();
+
     // --- Step 2: open + integrity-check runsvc.sh -------------------
-    let script_path = runsvc_path(instance);
+    let script_path = runsvc_path(&trust_zone, instance);
     let script_file = match open_no_follow_rdonly(&script_path) {
         Ok(f) => f,
         Err(e) => {
@@ -676,10 +686,14 @@ mod tests {
     }
 
     #[test]
-    fn runsvc_path_constructs_per_instance_path() {
+    fn runsvc_path_constructs_per_trust_zone_path() {
         assert_eq!(
-            runsvc_path("buckos"),
-            std::path::PathBuf::from("/var/lib/ghars/buckos/runsvc.sh")
+            runsvc_path("default", "buckos"),
+            std::path::PathBuf::from("/var/lib/ghars/default/ghars-buckos/runsvc.sh")
+        );
+        assert_eq!(
+            runsvc_path("ci", "ktstr-1"),
+            std::path::PathBuf::from("/var/lib/ghars/ci/ghars-ktstr-1/runsvc.sh")
         );
     }
 

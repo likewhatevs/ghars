@@ -2041,7 +2041,7 @@ fn execute_create_runner(
     log: &mut UndoLog,
 ) -> Result<ApplyOutcome> {
     let spec = &plan.spec;
-    let runner_home = paths.runner_home(&spec.name);
+    let runner_home = paths.runner_home(&spec.trust_zone, &spec.name);
 
     // No useradd / gpasswd step. The runner unit declares
     // DynamicUser=yes with `User=ghars-tz-<TRUST_ZONE>` set in the
@@ -2218,7 +2218,7 @@ fn execute_remove_runner(
     log: &mut UndoLog,
 ) -> Result<ApplyOutcome> {
     let unit_name = format!("ghars-runner@{}.service", identity.name);
-    let runner_home = paths.runner_home(&identity.name);
+    let runner_home = paths.runner_home(&identity.trust_zone, &identity.name);
 
     // 1) Stop the unit. systemd's StopUnit is idempotent — non-running
     //    units accept Stop with a no-op outcome.
@@ -2309,7 +2309,12 @@ fn execute_remove_runner(
 
     // 4) Remove the runner home directory after the rmrf safety check.
     if runner_home.exists() {
-        guard_home_dir_rmrf(&runner_home, &paths.state_dir, &identity.name)?;
+        let trust_zone_root = paths.trust_zone_home(&identity.trust_zone);
+        guard_home_dir_rmrf(
+            &runner_home,
+            &trust_zone_root,
+            &format!("ghars-{}", identity.name),
+        )?;
         fs::remove_dir_all(runner_home.as_std_path())?;
         log.push(UndoStep::RemoveDir {
             path: runner_home.clone(),
@@ -3630,7 +3635,7 @@ fn verify_runner_netns_at(
 #[doc(hidden)]
 #[must_use]
 pub fn _spec_runner_home(spec: &EffectiveRunnerSpec, paths: &Paths) -> Utf8PathBuf {
-    paths.runner_home(&spec.name)
+    paths.runner_home(&spec.trust_zone, &spec.name)
 }
 
 // ---------- Tests --------------------------------------------------------
@@ -4770,7 +4775,7 @@ mod tests {
         fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
         // Pre-stage a runner home + unit file the orphan path can
         // clean up.
-        let runner_home = paths.runner_home("ghost");
+        let runner_home = paths.runner_home("default", "ghost");
         fs::create_dir_all(runner_home.as_std_path()).unwrap();
         fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
         fs::write(paths.unit_file("ghost").as_std_path(), b"[Unit]\n").unwrap();
@@ -4783,6 +4788,7 @@ mod tests {
             name: "ghost".into(),
             url: String::new(),
             auth_name: String::new(),
+            trust_zone: "default".into(),
         };
         let systemd = MockSystemd::default();
         // Empty auth registry — guarantees mint_token would fail if
@@ -4833,6 +4839,7 @@ mod tests {
             name: "x".into(),
             url: "https://github.com/example/repo".into(),
             auth_name: "pat".into(),
+            trust_zone: "default".into(),
         };
         let actions = vec![
             Action::CreateRunner(plan_b.clone()),
@@ -4883,6 +4890,7 @@ mod tests {
                 name: name.into(),
                 url: "https://github.com/example/repo".into(),
                 auth_name: "pat".into(),
+                trust_zone: "default".into(),
             },
             after,
             requires_recreate,
@@ -4928,6 +4936,7 @@ mod tests {
             name: name.into(),
             url: "https://github.com/example/repo".into(),
             auth_name: "pat".into(),
+            trust_zone: "default".into(),
         }
     }
 
@@ -5582,7 +5591,7 @@ mod tests {
         // The recorded hash must match what re-reading the same
         // runsvc.sh would produce — otherwise every unit start would
         // fail the integrity check.
-        let runsvc_path = paths.runner_home("a").join("runsvc.sh");
+        let runsvc_path = paths.runner_home("default", "a").join("runsvc.sh");
         let expected_hash = sha256_of_runsvc(&runsvc_path).unwrap();
         assert!(
             drop_in_body.contains(&format!("X-Ghars-Runsvc-Sha256={expected_hash}")),
@@ -5650,7 +5659,7 @@ mod tests {
         // Recompute the digest the way runsvc-wrapper would: read the
         // raw bytes the MockConfigShell wrote, hash with sha2::Sha256,
         // format with the `sha256:HEX` lowercase-hex prefix.
-        let runsvc = paths.runner_home("rt").join("runsvc.sh");
+        let runsvc = paths.runner_home("default", "rt").join("runsvc.sh");
         let bytes = fs::read(runsvc.as_std_path()).unwrap();
         let mut h = Sha256::new();
         h.update(&bytes);
@@ -5694,6 +5703,7 @@ mod tests {
                 name: "a".into(),
                 url: "https://github.com/example/repo".into(),
                 auth_name: "pat".into(),
+                trust_zone: "default".into(),
             },
             after: plan,
             requires_recreate: false,
@@ -5772,7 +5782,7 @@ mod tests {
         let paths = make_paths(&tmp);
         fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
         // Pre-stage a runner home + unit file so remove can clean them.
-        let runner_home = paths.runner_home("a");
+        let runner_home = paths.runner_home("default", "a");
         fs::create_dir_all(runner_home.as_std_path()).unwrap();
         fs::write(runner_home.join("config.sh").as_std_path(), b"#!/bin/sh\n").unwrap();
         fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
@@ -5783,6 +5793,7 @@ mod tests {
             name: "a".into(),
             url: "https://github.com/example/repo".into(),
             auth_name: "pat".into(),
+            trust_zone: "default".into(),
         };
         let systemd = MockSystemd::default();
         let mut auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -6275,7 +6286,7 @@ mod tests {
         fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
         // Pre-stage runner state + netns artifacts as if a prior apply
         // had created them.
-        let runner_home = paths.runner_home("a");
+        let runner_home = paths.runner_home("default", "a");
         fs::create_dir_all(runner_home.as_std_path()).unwrap();
         fs::write(runner_home.join("config.sh").as_std_path(), b"#!/bin/sh\n").unwrap();
         fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
@@ -6304,6 +6315,7 @@ mod tests {
             name: "a".into(),
             url: "https://github.com/example/repo".into(),
             auth_name: "pat".into(),
+            trust_zone: "default".into(),
         };
         let systemd = MockSystemd::default();
         let mut auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -6992,7 +7004,7 @@ mod tests {
         let deps = rollback_deps(&systemd, &config_shell, &tarball, &auth);
         let tmp = tempfile::tempdir().unwrap();
         let paths = make_paths(&tmp);
-        let runner_home = paths.runner_home("a");
+        let runner_home = paths.runner_home("default", "a");
         fs::create_dir_all(runner_home.as_std_path()).unwrap();
         let mut log = UndoLog::new();
         log.push(UndoStep::GitHubRegistration {
@@ -7018,7 +7030,7 @@ mod tests {
         let deps = rollback_deps(&systemd, &config_shell, &tarball, &auth);
         let tmp = tempfile::tempdir().unwrap();
         let paths = make_paths(&tmp);
-        let runner_home = paths.runner_home("a");
+        let runner_home = paths.runner_home("default", "a");
         let mut log = UndoLog::new();
         log.push(UndoStep::GitHubRegistration {
             name: "a".into(),
@@ -8012,6 +8024,7 @@ mod tests {
                 name: "a".into(),
                 url: "https://github.com/example/repo".into(),
                 auth_name: "pat".into(),
+                trust_zone: "default".into(),
             },
             after: plan,
             requires_recreate: false,
@@ -8545,6 +8558,7 @@ mod tests {
                 name: "a".into(),
                 url: "https://github.com/example/repo".into(),
                 auth_name: "pat".into(),
+                trust_zone: "default".into(),
             },
             after: plan,
             requires_recreate: false,
@@ -9074,7 +9088,7 @@ mod tests {
         )
         .unwrap();
         fs::create_dir_all(paths.drop_in_dir("a").as_std_path()).unwrap();
-        fs::create_dir_all(paths.runner_home("a").as_std_path()).unwrap();
+        fs::create_dir_all(paths.runner_home("default", "a").as_std_path()).unwrap();
         fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
 
         let systemd = MockSystemd::default();
@@ -9154,7 +9168,7 @@ mod tests {
         fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
         fs::write(paths.unit_file("a").as_std_path(), b"[Unit]\n").unwrap();
         fs::create_dir_all(paths.drop_in_dir("a").as_std_path()).unwrap();
-        fs::create_dir_all(paths.runner_home("a").as_std_path()).unwrap();
+        fs::create_dir_all(paths.runner_home("default", "a").as_std_path()).unwrap();
         fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
 
         let systemd = MockSystemd::default();
@@ -9230,7 +9244,7 @@ mod tests {
         fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
         fs::write(paths.unit_file("a").as_std_path(), b"[Unit]\n").unwrap();
         fs::create_dir_all(paths.drop_in_dir("a").as_std_path()).unwrap();
-        fs::create_dir_all(paths.runner_home("a").as_std_path()).unwrap();
+        fs::create_dir_all(paths.runner_home("default", "a").as_std_path()).unwrap();
         fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
 
         let systemd = MockSystemd::default();
@@ -9299,7 +9313,7 @@ mod tests {
         fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
         fs::write(paths.unit_file("a").as_std_path(), b"[Unit]\n").unwrap();
         fs::create_dir_all(paths.drop_in_dir("a").as_std_path()).unwrap();
-        fs::create_dir_all(paths.runner_home("a").as_std_path()).unwrap();
+        fs::create_dir_all(paths.runner_home("default", "a").as_std_path()).unwrap();
         fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
 
         let systemd = MockSystemd::default();
@@ -9372,7 +9386,7 @@ mod tests {
         fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
         fs::write(paths.unit_file("a").as_std_path(), b"[Unit]\n").unwrap();
         fs::create_dir_all(paths.drop_in_dir("a").as_std_path()).unwrap();
-        fs::create_dir_all(paths.runner_home("a").as_std_path()).unwrap();
+        fs::create_dir_all(paths.runner_home("default", "a").as_std_path()).unwrap();
         fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
 
         let systemd = MockSystemd::default();
@@ -9428,7 +9442,7 @@ mod tests {
         fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
         fs::write(paths.unit_file("a").as_std_path(), b"[Unit]\n").unwrap();
         fs::create_dir_all(paths.drop_in_dir("a").as_std_path()).unwrap();
-        fs::create_dir_all(paths.runner_home("a").as_std_path()).unwrap();
+        fs::create_dir_all(paths.runner_home("default", "a").as_std_path()).unwrap();
         fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
 
         let systemd = MockSystemd::default();
@@ -9502,7 +9516,7 @@ mod tests {
         fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
         fs::write(paths.unit_file("a").as_std_path(), b"[Unit]\n").unwrap();
         fs::create_dir_all(paths.drop_in_dir("a").as_std_path()).unwrap();
-        fs::create_dir_all(paths.runner_home("a").as_std_path()).unwrap();
+        fs::create_dir_all(paths.runner_home("default", "a").as_std_path()).unwrap();
         fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
 
         let systemd = MockSystemd::default();
@@ -9574,7 +9588,7 @@ mod tests {
         fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
         fs::write(paths.unit_file("a").as_std_path(), b"[Unit]\n").unwrap();
         fs::create_dir_all(paths.drop_in_dir("a").as_std_path()).unwrap();
-        fs::create_dir_all(paths.runner_home("a").as_std_path()).unwrap();
+        fs::create_dir_all(paths.runner_home("default", "a").as_std_path()).unwrap();
         fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
 
         let systemd = MockSystemd::default();
@@ -10036,7 +10050,7 @@ mod tests {
         fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
         fs::write(paths.unit_file("a").as_std_path(), b"[Unit]\n").unwrap();
         fs::create_dir_all(paths.drop_in_dir("a").as_std_path()).unwrap();
-        fs::create_dir_all(paths.runner_home("a").as_std_path()).unwrap();
+        fs::create_dir_all(paths.runner_home("default", "a").as_std_path()).unwrap();
         fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
 
         let systemd = MockSystemd::default();

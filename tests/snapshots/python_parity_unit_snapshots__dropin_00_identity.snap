@@ -17,4 +17,12 @@ X-Ghars-Network-Mode=open
 
 [Service]
 User=ghars-tz-default
+StateDirectory=ghars/default/ghars-buckos
+WorkingDirectory=/var/lib/ghars/default/ghars-buckos
+Environment=HOME=/var/lib/ghars/default/ghars-buckos
+
+[Unit]
+ConditionPathExists=/var/lib/ghars/default/ghars-buckos/runsvc.sh
+
+[Service]
 X-Ghars-Runsvc-Sha256=sha256:1111111111111111111111111111111111111111111111111111111111111111

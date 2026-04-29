@@ -800,7 +800,10 @@ const RUNNER_TEMPLATE: &str = r"[Unit]
 Description=GitHub Actions Runner (%i)
 After=network-online.target
 Wants=network-online.target
-ConditionPathExists=/var/lib/ghars/%i/runsvc.sh
+# ConditionPathExists is set in the per-runner 00-ghars.conf drop-in
+# (e.g. `/var/lib/ghars/<TRUST_ZONE>/ghars-<NAME>/runsvc.sh`) because
+# the path components depend on the runner's trust_zone, which the
+# template-level `%i` specifier cannot express on its own.
 StartLimitIntervalSec=300
 StartLimitBurst=5
 X-Ghars-Managed=true
@@ -838,13 +841,20 @@ Type=simple
 # empty (no CAP_SETUID, no CAP_SETGID).
 DynamicUser=yes
 ExecStart=/usr/lib/ghars/runsvc-wrapper %i
-WorkingDirectory=/var/lib/ghars/%i
+# WorkingDirectory + StateDirectory + HOME and the per-runner cache
+# env vars are set in the per-runner 00-ghars.conf drop-in. The
+# template-level `%i` specifier expands to the runner-name only, so
+# it cannot express the trust_zone-shared layout
+# (`/var/lib/ghars/<TRUST_ZONE>/ghars-<NAME>/`) that the apply-side
+# binds the runner home to.
 # Slice=system.slice unconditional. No operator opt-in.
 Slice=system.slice
 
-# StateDirectory implies BindPaths under TemporaryFileSystem=/:ro and
-# survives across restarts.
-StateDirectory=ghars/%i
+# CacheDirectory + LogsDirectory + RuntimeDirectory still use the
+# per-runner `%i` form because they are NOT trust_zone-shared (per
+# Part 3 / Part 9). Each runner gets its own per-runner cache /
+# log / runtime subtree under systemd's standard roots; only HOME
+# (StateDirectory) crosses runners within a trust_zone.
 StateDirectoryMode=0700
 CacheDirectory=ghars/%i
 CacheDirectoryMode=0700
@@ -858,7 +868,6 @@ RuntimeDirectoryMode=0700
 # compilers.
 Environment=PATH=/usr/lib64/ccache:/usr/lib/ccache:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=LANG=C.UTF-8
-Environment=HOME=/var/lib/ghars/%i
 
 # Per-runner cache env. Shared cache pools override these via
 # 30-cache-pool.conf drop-in.
@@ -1434,7 +1443,37 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
     s.push('\n');
     s.push_str("[Service]\n");
     let _ = writeln!(s, "User=ghars-tz-{}", spec.trust_zone);
+    // StateDirectory + WorkingDirectory + HOME stamp the per-runner
+    // home as `<state_dir>/<trust_zone>/ghars-<name>/`. These can't
+    // live in the template body because `%i` expands to the runner
+    // name only; the trust_zone component must be substituted at
+    // render time.
+    let _ = writeln!(
+        s,
+        "StateDirectory=ghars/{}/ghars-{}",
+        spec.trust_zone, spec.name
+    );
+    let _ = writeln!(
+        s,
+        "WorkingDirectory=/var/lib/ghars/{}/ghars-{}",
+        spec.trust_zone, spec.name
+    );
+    let _ = writeln!(
+        s,
+        "Environment=HOME=/var/lib/ghars/{}/ghars-{}",
+        spec.trust_zone, spec.name
+    );
+    // ConditionPathExists is a [Unit]-section directive; emit a
+    // separate [Unit] section AFTER [Service] (drop-in sections can
+    // appear in any order — systemd merges by section name).
+    s.push_str("\n[Unit]\n");
+    let _ = writeln!(
+        s,
+        "ConditionPathExists=/var/lib/ghars/{}/ghars-{}/runsvc.sh",
+        spec.trust_zone, spec.name
+    );
     if !spec.runsvc_sha256.is_empty() {
+        s.push_str("\n[Service]\n");
         let _ = writeln!(s, "X-Ghars-Runsvc-Sha256={}", spec.runsvc_sha256);
     }
     Ok(s)
@@ -2392,7 +2431,12 @@ mod tests {
     fn template_starts_with_unit_section() {
         let t = runner_template_text();
         assert!(t.starts_with("[Unit]\n"));
-        assert!(t.contains("ConditionPathExists=/var/lib/ghars/%i/runsvc.sh"));
+        // ConditionPathExists / WorkingDirectory / StateDirectory /
+        // HOME live in the per-runner drop-in (path components depend
+        // on trust_zone, which `%i` cannot express).
+        assert!(!t.contains("ConditionPathExists=/var/lib/ghars/%i/runsvc.sh"));
+        assert!(!t.contains("WorkingDirectory=/var/lib/ghars/%i"));
+        assert!(!t.contains("\nStateDirectory=ghars/%i\n"));
         // ExecStart= has NO prefix. The trampoline runs at the
         // DynamicUser-allocated identity (no setuid/setgid step), and
         // the unit's full sandbox stays applied because no prefix is

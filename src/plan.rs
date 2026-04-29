@@ -697,8 +697,8 @@ pub struct RunnerDelta {
 /// reference an existing runner. `apply` looks up the rendered spec via
 /// state discovery for removals; the identity carries everything required
 /// to drive systemd D-Bus calls (`ghars-runner@NAME.service`),
-/// home-directory rmrf safety checks (name), and registration-
-/// token mints (`url` + `auth_name`).
+/// home-directory rmrf safety checks (name + trust_zone), and
+/// registration-token mints (`url` + `auth_name`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunnerIdentity {
     /// Final runner name (post count-expansion).
@@ -707,6 +707,9 @@ pub struct RunnerIdentity {
     pub url: String,
     /// Auth registry key.
     pub auth_name: String,
+    /// Trust zone — drives the per-runner home location under
+    /// `<state_dir>/<trust_zone>/ghars-<name>/`.
+    pub trust_zone: String,
 }
 
 /// Data carried by a `CreateCachePool` action.
@@ -2242,6 +2245,7 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
             name: orphan.name.clone(),
             url: String::new(),
             auth_name: String::new(),
+            trust_zone: "default".to_owned(),
         }));
     }
 
@@ -2495,6 +2499,10 @@ fn reconstruct_identity(
         name: name.to_owned(),
         url: annotations.url.unwrap_or_default(),
         auth_name: annotations.auth_name.unwrap_or_default(),
+        trust_zone: annotations
+            .trust_zone
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| "default".to_owned()),
     }
 }
 

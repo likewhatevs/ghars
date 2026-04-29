@@ -6,7 +6,10 @@ expression: runner_template_text()
 Description=GitHub Actions Runner (%i)
 After=network-online.target
 Wants=network-online.target
-ConditionPathExists=/var/lib/ghars/%i/runsvc.sh
+# ConditionPathExists is set in the per-runner 00-ghars.conf drop-in
+# (e.g. `/var/lib/ghars/<TRUST_ZONE>/ghars-<NAME>/runsvc.sh`) because
+# the path components depend on the runner's trust_zone, which the
+# template-level `%i` specifier cannot express on its own.
 StartLimitIntervalSec=300
 StartLimitBurst=5
 X-Ghars-Managed=true
@@ -44,13 +47,20 @@ Type=simple
 # empty (no CAP_SETUID, no CAP_SETGID).
 DynamicUser=yes
 ExecStart=/usr/lib/ghars/runsvc-wrapper %i
-WorkingDirectory=/var/lib/ghars/%i
+# WorkingDirectory + StateDirectory + HOME and the per-runner cache
+# env vars are set in the per-runner 00-ghars.conf drop-in. The
+# template-level `%i` specifier expands to the runner-name only, so
+# it cannot express the trust_zone-shared layout
+# (`/var/lib/ghars/<TRUST_ZONE>/ghars-<NAME>/`) that the apply-side
+# binds the runner home to.
 # Slice=system.slice unconditional. No operator opt-in.
 Slice=system.slice
 
-# StateDirectory implies BindPaths under TemporaryFileSystem=/:ro and
-# survives across restarts.
-StateDirectory=ghars/%i
+# CacheDirectory + LogsDirectory + RuntimeDirectory still use the
+# per-runner `%i` form because they are NOT trust_zone-shared (per
+# Part 3 / Part 9). Each runner gets its own per-runner cache /
+# log / runtime subtree under systemd's standard roots; only HOME
+# (StateDirectory) crosses runners within a trust_zone.
 StateDirectoryMode=0700
 CacheDirectory=ghars/%i
 CacheDirectoryMode=0700
@@ -64,7 +74,6 @@ RuntimeDirectoryMode=0700
 # compilers.
 Environment=PATH=/usr/lib64/ccache:/usr/lib/ccache:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=LANG=C.UTF-8
-Environment=HOME=/var/lib/ghars/%i
 
 # Per-runner cache env. Shared cache pools override these via
 # 30-cache-pool.conf drop-in.
