@@ -112,6 +112,14 @@ BindReadOnlyPaths=-/etc/protocols -/etc/services
 BindReadOnlyPaths=-/etc/alternatives
 BindReadOnlyPaths=-/etc/os-release
 BindReadOnlyPaths=-/etc/gitconfig
+# The runsvc-wrapper trampoline reads
+# /etc/systemd/system/ghars-runner@%i.service.d/00-ghars.conf inside
+# the sandbox to fetch X-Ghars-Runsvc-Sha256 + X-Ghars-Trust-Zone
+# annotations before fexecve()'ing runsvc.sh. With TemporaryFileSystem=/:ro
+# above, this directory is otherwise invisible to the unit. No `-` prefix:
+# the drop-in MUST exist for the trampoline to work, fail-fast at unit-start
+# is preferable to ENOENT at trampoline-runtime.
+BindReadOnlyPaths=/etc/systemd/system/ghars-runner@%i.service.d
 PrivateTmp=yes
 UMask=0077
 

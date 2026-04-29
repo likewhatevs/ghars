@@ -906,6 +906,14 @@ BindReadOnlyPaths=-/etc/protocols -/etc/services
 BindReadOnlyPaths=-/etc/alternatives
 BindReadOnlyPaths=-/etc/os-release
 BindReadOnlyPaths=-/etc/gitconfig
+# The runsvc-wrapper trampoline reads
+# /etc/systemd/system/ghars-runner@%i.service.d/00-ghars.conf inside
+# the sandbox to fetch X-Ghars-Runsvc-Sha256 + X-Ghars-Trust-Zone
+# annotations before fexecve()'ing runsvc.sh. With TemporaryFileSystem=/:ro
+# above, this directory is otherwise invisible to the unit. No `-` prefix:
+# the drop-in MUST exist for the trampoline to work, fail-fast at unit-start
+# is preferable to ENOENT at trampoline-runtime.
+BindReadOnlyPaths=/etc/systemd/system/ghars-runner@%i.service.d
 PrivateTmp=yes
 UMask=0077
 
@@ -2477,6 +2485,29 @@ mod tests {
         assert!(t.contains("\nCapabilityBoundingSet=\n"));
         assert!(!t.contains("CapabilityBoundingSet=CAP_SETUID"));
         assert!(t.contains("Slice=system.slice"));
+    }
+
+    #[test]
+    fn template_binds_drop_in_dir_for_trampoline_to_read() {
+        // The runsvc-wrapper trampoline opens
+        // /etc/systemd/system/ghars-runner@<INSTANCE>.service.d/00-ghars.conf
+        // inside the unit's sandbox to read X-Ghars-Runsvc-Sha256 and
+        // X-Ghars-Trust-Zone annotations. With TemporaryFileSystem=/:ro
+        // establishing a tmpfs root, only directories listed in
+        // BindReadOnlyPaths= are visible. The drop-in directory is NOT
+        // covered by any of the curated /etc/* entries (hosts/passwd/ssl/
+        // ld.so.cache/etc.) so it must be re-bound explicitly. No `-`
+        // prefix: the drop-in MUST exist for the trampoline to function,
+        // and a missing drop-in is a fail-fast condition at unit-start
+        // rather than ENOENT inside the trampoline.
+        let t = runner_template_text();
+        assert!(t.contains(
+            "\nBindReadOnlyPaths=/etc/systemd/system/ghars-runner@%i.service.d\n"
+        ));
+        // Defense in depth: ensure no `-` prefix accidentally landed.
+        assert!(!t.contains(
+            "BindReadOnlyPaths=-/etc/systemd/system/ghars-runner@%i.service.d"
+        ));
     }
 
     #[test]
