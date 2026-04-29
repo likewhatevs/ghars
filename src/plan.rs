@@ -6752,6 +6752,105 @@ labels  = ["alpha", "beta"]
         assert_auth_name_change_is_in_place(auth_blocks, "pat-old", "pat-new");
     }
 
+    /// Same-discriminant pin: both `[auth.NAME]` blocks are
+    /// `AuthSpec::Interactive` — the unit variant carries no payload,
+    /// so the two blocks are bytewise identical except for their
+    /// IndexMap key. The classifier must still treat the auth-name
+    /// string change as in-place: `merge_defaults` lowers each block
+    /// to a bare `EffectiveRunnerSpec.auth_name` string regardless
+    /// of discriminant or payload, so the discovered/desired diff is
+    /// purely on the name string. Degenerate but load-bearing — pins
+    /// that the classifier never inspects upstream `AuthSpec` content
+    /// (which would falsely report "no change" here and skip the
+    /// 00-ghars.conf rewrite).
+    ///
+    /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`.
+    #[test]
+    fn plan_update_in_place_on_auth_name_change_interactive_old_to_interactive_new_has_empty_recreate_reasons()
+    {
+        let mut auth_blocks = IndexMap::new();
+        auth_blocks.insert("interactive-old".into(), AuthSpec::Interactive);
+        auth_blocks.insert("interactive-new".into(), AuthSpec::Interactive);
+        assert_auth_name_change_is_in_place(
+            auth_blocks,
+            "interactive-old",
+            "interactive-new",
+        );
+    }
+
+    /// Same-discriminant pin: both `[auth.NAME]` blocks are
+    /// `AuthSpec::TokenFile` with distinct `path` fields. Operator
+    /// rotates the on-disk registration token file (e.g. moves
+    /// `/etc/ghars/reg.token` → `/etc/ghars/reg2.token`) while
+    /// keeping the variant. The classifier sees only the
+    /// auth-name string diff at the `EffectiveRunnerSpec.auth_name`
+    /// level and must classify in-place; the path diff in the
+    /// upstream `AuthSpec::TokenFile { path }` is invisible to
+    /// `merge_defaults` and irrelevant to the
+    /// `00-ghars.conf` annotation rewrite.
+    ///
+    /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`.
+    #[test]
+    fn plan_update_in_place_on_auth_name_change_token_file_old_to_token_file_new_has_empty_recreate_reasons()
+    {
+        let mut auth_blocks = IndexMap::new();
+        auth_blocks.insert(
+            "token-file-old".into(),
+            AuthSpec::TokenFile {
+                path: Utf8PathBuf::from("/etc/ghars/reg.token"),
+            },
+        );
+        auth_blocks.insert(
+            "token-file-new".into(),
+            AuthSpec::TokenFile {
+                path: Utf8PathBuf::from("/etc/ghars/reg2.token"),
+            },
+        );
+        assert_auth_name_change_is_in_place(
+            auth_blocks,
+            "token-file-old",
+            "token-file-new",
+        );
+    }
+
+    /// Same-discriminant pin: both `[auth.NAME]` blocks are
+    /// `AuthSpec::GithubApp` with distinct `app_id`,
+    /// `installation_id`, AND `private_key_path` fields. Operator
+    /// rotates from one App to another (different `app_id`) and
+    /// updates the install + key alongside. Same-discriminant change
+    /// must classify in-place because `merge_defaults` reduces both
+    /// blocks to a bare `EffectiveRunnerSpec.auth_name` string;
+    /// `app_id`/`installation_id`/`private_key_path` differences
+    /// don't reach the planner.
+    ///
+    /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`.
+    #[test]
+    fn plan_update_in_place_on_auth_name_change_github_app_old_to_github_app_new_has_empty_recreate_reasons()
+    {
+        let mut auth_blocks = IndexMap::new();
+        auth_blocks.insert(
+            "github-app-old".into(),
+            AuthSpec::GithubApp {
+                app_id: 11111,
+                installation_id: 22222,
+                private_key_path: Utf8PathBuf::from("/etc/ghars/app-old.pem"),
+            },
+        );
+        auth_blocks.insert(
+            "github-app-new".into(),
+            AuthSpec::GithubApp {
+                app_id: 33333,
+                installation_id: 44444,
+                private_key_path: Utf8PathBuf::from("/etc/ghars/app-new.pem"),
+            },
+        );
+        assert_auth_name_change_is_in_place(
+            auth_blocks,
+            "github-app-old",
+            "github-app-new",
+        );
+    }
+
     /// Shared scaffold for the auth-name in-place sibling tests
     /// (same-discriminant Pat→Pat, cross-discriminant Pat→GithubApp,
     /// cross-discriminant GithubApp→Pat).
