@@ -593,16 +593,6 @@ fn load_config(path: &Utf8Path) -> Result<Config> {
     // --- validate_runner_names ---
     // Length cap (derived ghars-{name} system user).
     //
-    // --- validate_user_overrides ---
-    // Length + charset cap on operator-supplied User= values.
-    //
-    // --- validate_prefix_overrides ---
-    // Charset / traversal / reserved-root / symlink gate on
-    // operator-supplied `[defaults.prefix]` and per-runner `prefix`
-    // paths. The pure-string checks (regex, `..`, reserved-root) fire
-    // before the lstat, so a hostile string fails fast without
-    // filesystem touch — but the lstat itself does touch the
-    // filesystem when the pure-string checks pass.
     //
     // --- validate_pat_xor ---
     // AuthSpec::Pat shape-only XOR check on token_env /
@@ -612,8 +602,8 @@ fn load_config(path: &Utf8Path) -> Result<Config> {
     //
     // --- validate_runner_tarballs ---
     // lstat / regular-file gate on operator-supplied runner_tarball
-    // paths. Filesystem-touching (alongside validate_prefix_overrides,
-    // and validate_security_overrides when hooks are configured).
+    // paths. Filesystem-touching (alongside
+    // validate_security_overrides when hooks are configured).
     // Placed after the pure-shape / length-cap gates so an operator
     // hitting a typo in [defaults.user] sees that error before a
     // separate "tarball missing" error from a per-runner override.
@@ -1490,7 +1480,6 @@ fn cmd_validate(config_path: &Utf8Path, args: &ValidateArgs, quiet: bool) -> Res
     // (validate_networks + validate_security_overrides +
     // validate_identity_fields + validate_no_duplicate_caches +
     // validate_cache_pool_names + validate_runner_names +
-    // validate_user_overrides + validate_prefix_overrides +
     // validate_pat_xor + validate_runner_tarballs +
     // validate_netns_runner_name_lengths).
     // cmd_validate need not repeat them.
@@ -1557,7 +1546,7 @@ fn cmd_plan(
     // load_config runs the full post-load validator sweep — the
     // pre-batch-18 per-cmd repeats (validate_identity_fields,
     // validate_no_duplicate_caches, validate_cache_pool_names,
-    // validate_runner_names, validate_user_overrides,
+    // validate_runner_names,
     // validate_runner_tarballs) were moved into load_config so
     // cmd_plan, cmd_status, cmd_add etc. all share the same gate.
     let cfg = load_config(config_path)?;
@@ -2897,7 +2886,7 @@ fn cmd_apply(
     // load_config runs the full post-load validator sweep
     // (validate_security_overrides, validate_identity_fields,
     // validate_no_duplicate_caches, validate_cache_pool_names,
-    // validate_runner_names, validate_user_overrides,
+    // validate_runner_names,
     // validate_runner_tarballs) so cmd_apply does not need to
     // repeat any of them — apply inherits the same gate every
     // other cmd_* enforces.
@@ -14469,17 +14458,6 @@ auth = \"bad key\"
             )
         });
     }
-
-    // -------- validate_user_overrides + validate_prefix_overrides ----
-    //
-    // The user_overrides + prefix_overrides validators were deleted
-    // alongside the spec.user / spec.prefix fields they validated.
-    // Test bodies that targeted those validators are gone.
-
-    // The user/prefix-override tests that lived here were deleted
-    // alongside the spec.user / spec.prefix fields and the
-    // validate_user_overrides / validate_prefix_overrides validators
-    // they exercised.
 
     /// Defense-in-depth: a runner.caches entry whose length exceeds
     /// `CACHE_POOL_NAME_MAX_LEN` must reject at config load even when
