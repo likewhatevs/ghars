@@ -7069,6 +7069,291 @@ labels  = ["alpha", "beta"]
         );
     }
 
+    /// Cross-discriminant fixture: a `pat` block (`AuthSpec::Pat`)
+    /// paired with an `interactive` block (`AuthSpec::Interactive`).
+    /// Shared by the `pat ↔ interactive` direction-pair tests so
+    /// both directions re-derive from a single source.
+    fn auth_blocks_with_pat_and_interactive() -> IndexMap<String, AuthSpec> {
+        let mut auth_blocks = IndexMap::new();
+        auth_blocks.insert(
+            "pat".into(),
+            AuthSpec::Pat {
+                token_env: Some("GHARS_PAT".into()),
+                token_file: None,
+            },
+        );
+        auth_blocks.insert("interactive".into(), AuthSpec::Interactive);
+        auth_blocks
+    }
+
+    /// Cross-discriminant fixture: a `pat` block (`AuthSpec::Pat`)
+    /// paired with a `token_file` block (`AuthSpec::TokenFile`).
+    /// Shared by the `pat ↔ token_file` direction-pair tests.
+    fn auth_blocks_with_pat_and_token_file() -> IndexMap<String, AuthSpec> {
+        let mut auth_blocks = IndexMap::new();
+        auth_blocks.insert(
+            "pat".into(),
+            AuthSpec::Pat {
+                token_env: Some("GHARS_PAT".into()),
+                token_file: None,
+            },
+        );
+        auth_blocks.insert(
+            "token_file".into(),
+            AuthSpec::TokenFile {
+                path: Utf8PathBuf::from("/etc/ghars/registration.token"),
+            },
+        );
+        auth_blocks
+    }
+
+    /// Cross-discriminant fixture: a `github_app` block
+    /// (`AuthSpec::GithubApp`) paired with an `interactive` block
+    /// (`AuthSpec::Interactive`). Shared by the
+    /// `github_app ↔ interactive` direction-pair tests.
+    fn auth_blocks_with_github_app_and_interactive() -> IndexMap<String, AuthSpec> {
+        let mut auth_blocks = IndexMap::new();
+        auth_blocks.insert(
+            "github_app".into(),
+            AuthSpec::GithubApp {
+                app_id: 12345,
+                installation_id: 67890,
+                private_key_path: Utf8PathBuf::from("/etc/ghars/app.pem"),
+            },
+        );
+        auth_blocks.insert("interactive".into(), AuthSpec::Interactive);
+        auth_blocks
+    }
+
+    /// Cross-discriminant fixture: a `github_app` block
+    /// (`AuthSpec::GithubApp`) paired with a `token_file` block
+    /// (`AuthSpec::TokenFile`). Shared by the
+    /// `github_app ↔ token_file` direction-pair tests.
+    fn auth_blocks_with_github_app_and_token_file() -> IndexMap<String, AuthSpec> {
+        let mut auth_blocks = IndexMap::new();
+        auth_blocks.insert(
+            "github_app".into(),
+            AuthSpec::GithubApp {
+                app_id: 12345,
+                installation_id: 67890,
+                private_key_path: Utf8PathBuf::from("/etc/ghars/app.pem"),
+            },
+        );
+        auth_blocks.insert(
+            "token_file".into(),
+            AuthSpec::TokenFile {
+                path: Utf8PathBuf::from("/etc/ghars/registration.token"),
+            },
+        );
+        auth_blocks
+    }
+
+    /// Cross-discriminant fixture: an `interactive` block
+    /// (`AuthSpec::Interactive`) paired with a `token_file` block
+    /// (`AuthSpec::TokenFile`). Shared by the
+    /// `interactive ↔ token_file` direction-pair tests.
+    fn auth_blocks_with_interactive_and_token_file() -> IndexMap<String, AuthSpec> {
+        let mut auth_blocks = IndexMap::new();
+        auth_blocks.insert("interactive".into(), AuthSpec::Interactive);
+        auth_blocks.insert(
+            "token_file".into(),
+            AuthSpec::TokenFile {
+                path: Utf8PathBuf::from("/etc/ghars/registration.token"),
+            },
+        );
+        auth_blocks
+    }
+
+    /// Cross-discriminant pin: discovered side `AuthSpec::Pat`,
+    /// desired side `AuthSpec::Interactive`. Direction is
+    /// `pat → interactive`. Note: `AuthSpec::Interactive` is a
+    /// unit variant — it carries no payload fields. The
+    /// auth-name-in-place contract still holds because
+    /// `merge_defaults` strips the discriminant when lowering
+    /// to `EffectiveRunnerSpec.auth_name` (a bare String); the
+    /// classifier sees a pure auth_name string diff regardless of
+    /// whether either side has a payload. This test pins that the
+    /// payload-free Interactive variant participates in the
+    /// auth-name in-place contract identically to the
+    /// payload-bearing Pat / GithubApp / TokenFile variants.
+    ///
+    /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`
+    /// (recreate_reasons empty, requires_recreate=false, single
+    /// auth_name field_change with expected before/after,
+    /// drift_cause=SpecChanged, no auth_kind leakage, Modified
+    /// 00-ghars.conf drop-in entry). See the helper docstring for
+    /// the contract.
+    #[test]
+    fn plan_update_in_place_on_auth_name_change_pat_to_interactive_has_empty_recreate_reasons() {
+        assert_auth_name_change_is_in_place(
+            auth_blocks_with_pat_and_interactive(),
+            "pat",
+            "interactive",
+            FieldValue::String("pat".into()),
+            FieldValue::String("interactive".into()),
+        );
+    }
+
+    /// Inverse-direction pin of `pat_to_interactive`: discovered
+    /// side `AuthSpec::Interactive`, desired side `AuthSpec::Pat`.
+    /// Direction is `interactive → pat`. Pinned independently
+    /// because a regression that inspected only one direction's
+    /// discriminant pair could pass forward and break inverse.
+    ///
+    /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`.
+    #[test]
+    fn plan_update_in_place_on_auth_name_change_interactive_to_pat_has_empty_recreate_reasons() {
+        assert_auth_name_change_is_in_place(
+            auth_blocks_with_pat_and_interactive(),
+            "interactive",
+            "pat",
+            FieldValue::String("interactive".into()),
+            FieldValue::String("pat".into()),
+        );
+    }
+
+    /// Cross-discriminant pin: discovered side `AuthSpec::Pat`,
+    /// desired side `AuthSpec::TokenFile`. Direction is
+    /// `pat → token_file` — the operator-rare but
+    /// classifier-important transition (long-lived PAT
+    /// → short-lived pre-minted registration token). The
+    /// classifier must treat this as a pure auth_name string diff
+    /// despite the upstream discriminant flip.
+    ///
+    /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`.
+    #[test]
+    fn plan_update_in_place_on_auth_name_change_pat_to_token_file_has_empty_recreate_reasons() {
+        assert_auth_name_change_is_in_place(
+            auth_blocks_with_pat_and_token_file(),
+            "pat",
+            "token_file",
+            FieldValue::String("pat".into()),
+            FieldValue::String("token_file".into()),
+        );
+    }
+
+    /// Inverse-direction pin of `pat_to_token_file`: discovered
+    /// side `AuthSpec::TokenFile`, desired side `AuthSpec::Pat`.
+    /// Direction is `token_file → pat`.
+    ///
+    /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`.
+    #[test]
+    fn plan_update_in_place_on_auth_name_change_token_file_to_pat_has_empty_recreate_reasons() {
+        assert_auth_name_change_is_in_place(
+            auth_blocks_with_pat_and_token_file(),
+            "token_file",
+            "pat",
+            FieldValue::String("token_file".into()),
+            FieldValue::String("pat".into()),
+        );
+    }
+
+    /// Cross-discriminant pin: discovered side
+    /// `AuthSpec::GithubApp`, desired side `AuthSpec::Interactive`.
+    /// Direction is `github_app → interactive` — break-glass
+    /// debug after App credential issues.
+    ///
+    /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`.
+    #[test]
+    fn plan_update_in_place_on_auth_name_change_github_app_to_interactive_has_empty_recreate_reasons()
+    {
+        assert_auth_name_change_is_in_place(
+            auth_blocks_with_github_app_and_interactive(),
+            "github_app",
+            "interactive",
+            FieldValue::String("github_app".into()),
+            FieldValue::String("interactive".into()),
+        );
+    }
+
+    /// Inverse-direction pin of `github_app_to_interactive`:
+    /// discovered side `AuthSpec::Interactive`, desired side
+    /// `AuthSpec::GithubApp`. Direction is `interactive → github_app`
+    /// — typical promotion from operator-pasted token to
+    /// org-scale App.
+    ///
+    /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`.
+    #[test]
+    fn plan_update_in_place_on_auth_name_change_interactive_to_github_app_has_empty_recreate_reasons()
+    {
+        assert_auth_name_change_is_in_place(
+            auth_blocks_with_github_app_and_interactive(),
+            "interactive",
+            "github_app",
+            FieldValue::String("interactive".into()),
+            FieldValue::String("github_app".into()),
+        );
+    }
+
+    /// Cross-discriminant pin: discovered side
+    /// `AuthSpec::GithubApp`, desired side `AuthSpec::TokenFile`.
+    /// Direction is `github_app → token_file`.
+    ///
+    /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`.
+    #[test]
+    fn plan_update_in_place_on_auth_name_change_github_app_to_token_file_has_empty_recreate_reasons()
+    {
+        assert_auth_name_change_is_in_place(
+            auth_blocks_with_github_app_and_token_file(),
+            "github_app",
+            "token_file",
+            FieldValue::String("github_app".into()),
+            FieldValue::String("token_file".into()),
+        );
+    }
+
+    /// Inverse-direction pin of `github_app_to_token_file`:
+    /// discovered side `AuthSpec::TokenFile`, desired side
+    /// `AuthSpec::GithubApp`. Direction is `token_file → github_app`.
+    ///
+    /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`.
+    #[test]
+    fn plan_update_in_place_on_auth_name_change_token_file_to_github_app_has_empty_recreate_reasons()
+    {
+        assert_auth_name_change_is_in_place(
+            auth_blocks_with_github_app_and_token_file(),
+            "token_file",
+            "github_app",
+            FieldValue::String("token_file".into()),
+            FieldValue::String("github_app".into()),
+        );
+    }
+
+    /// Cross-discriminant pin: discovered side
+    /// `AuthSpec::Interactive`, desired side `AuthSpec::TokenFile`.
+    /// Direction is `interactive → token_file` — the operator
+    /// formalizes the token-paste workflow into a managed file.
+    ///
+    /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`.
+    #[test]
+    fn plan_update_in_place_on_auth_name_change_interactive_to_token_file_has_empty_recreate_reasons()
+    {
+        assert_auth_name_change_is_in_place(
+            auth_blocks_with_interactive_and_token_file(),
+            "interactive",
+            "token_file",
+            FieldValue::String("interactive".into()),
+            FieldValue::String("token_file".into()),
+        );
+    }
+
+    /// Inverse-direction pin of `interactive_to_token_file`:
+    /// discovered side `AuthSpec::TokenFile`, desired side
+    /// `AuthSpec::Interactive`. Direction is `token_file → interactive`.
+    ///
+    /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`.
+    #[test]
+    fn plan_update_in_place_on_auth_name_change_token_file_to_interactive_has_empty_recreate_reasons()
+    {
+        assert_auth_name_change_is_in_place(
+            auth_blocks_with_interactive_and_token_file(),
+            "token_file",
+            "interactive",
+            FieldValue::String("token_file".into()),
+            FieldValue::String("interactive".into()),
+        );
+    }
+
     // ---- caches in-place contract -----------------------------------
 
     /// caches change is in-place per design Part 3. The
