@@ -8,12 +8,12 @@
 //! 1. [`expand_counts`] — pre-plan flattening of `[[runner]]` entries
 //!    with `count > 1` into one `RunnerSpec` per generated name. Auto-
 //!    skips collisions with explicit `[[runner]]` blocks; errors on
-//!    cross-block overlap (Part 8 "Count expansion", F76 amended).
+//!    cross-block overlap (Part 8 "Count expansion").
 //! 2. [`merge_defaults`] — produces an [`EffectiveRunnerSpec`] from a
 //!    `RunnerSpec` + `Defaults` per the Part 3 merge table (scalars
 //!    override, labels concatenate-and-dedup, hardening field-by-field).
 //! 3. [`spec_hash`] — canonical-JSON sha256 of an
-//!    [`EffectiveRunnerSpec`] (Part 3 spec-hash, F17).
+//!    [`EffectiveRunnerSpec`] (Part 3 spec-hash).
 //! 4. [`plan_from`] — diff desired effective specs against
 //!    [`ActualState`] and emit ordered [`Action`]s applying the
 //!    `requires_recreate` policy (Part 3).
@@ -100,7 +100,7 @@ fn netns_subnet_for_slot(slot_idx: usize, runner_name: &str) -> Result<ipnet::Ip
 /// from netns capacity: netns mode is gated separately by
 /// [`NETNS_POOL_SLOTS`] (64 /30 slots in the default
 /// `10.200.0.0/24` pool); the operator hits whichever cap binds
-/// first for their config (Part 4 schema rules, F76 amended).
+/// first for their config (Part 4 schema rules).
 pub const MAX_COUNT: u32 = 1024;
 
 /// One scheduled action in a `Plan`.
@@ -722,9 +722,8 @@ pub struct CachePoolPlan {
     /// Resolved pool binding (name + kinds + size + mode + `trust_zone`).
     pub binding: EffectiveCacheBinding,
     /// Rendered `ghars-cache@POOL.service.d/00-ghars.conf` body. Built
-    /// at plan time by `systemd::render_cache_drop_in` so the F48
-    /// reset-on-empty validator runs before the bytes leave the planner
-    /// (Part 9b).
+    /// at plan time by `systemd::render_cache_drop_in` so the
+    /// reset-on-empty validator runs before the bytes leave the planner.
     pub drop_in_body: String,
     /// `sha256:HEX` of the pool config; annotated into the drop-in.
     pub spec_hash: String,
@@ -745,7 +744,7 @@ pub struct CachePoolDelta {
 }
 
 /// Expand `[[runner]]` entries with `count > 1` into one `RunnerSpec`
-/// per generated name (Part 8 "Count expansion", F76 amended).
+/// per generated name (Part 8 "Count expansion").
 ///
 /// Algorithm:
 /// 1. Collect explicit names (entries with `count` unset, `Some(0)`,
@@ -888,7 +887,7 @@ fn validate_generated_identifier(name: &str, parent_prefix: &str) -> Result<()> 
 ///   `/var/lib/ghars`.
 /// - `labels` — `concat(defaults.labels, runner.labels)` then dedup
 ///   preserving first-seen order; empty after merge ⇒ defaults to
-///   `[name]` (F34 Python parity).
+///   `[name]` (Python parity).
 /// - `memory_max`, `runner_version`, `runner_sha256` — scalar
 ///   override (runner > defaults).
 /// - `runner_tarball` — runner only (no defaults form).
@@ -1173,7 +1172,7 @@ fn pick_vec<T: Clone>(runner: &[T], defaults: &[T]) -> Vec<T> {
 }
 
 /// Compute the canonical-JSON sha256 of an [`EffectiveRunnerSpec`]
-/// (Part 3 spec-hash, F17 / Part 17).
+/// (Part 3 spec-hash / Part 17).
 ///
 /// Canonicalization:
 /// - Round-trip through `serde_json::Value` whose `Object` map is
@@ -1274,9 +1273,10 @@ pub fn spec_hash(spec: &EffectiveRunnerSpec) -> String {
 /// annotations.
 ///
 /// Missing-annotation handling: when a field's annotation is `None`
-/// (older ghars-applied unit predating BATCH C, or operator-edited
-/// unit with the line stripped), the corresponding Stage 1 check is
-/// skipped rather than treated as "annotation==empty != desired".
+/// (older ghars-applied unit predating the per-field annotation set,
+/// or operator-edited unit with the line stripped), the corresponding
+/// Stage 1 check is skipped rather than treated as
+/// "annotation==empty != desired".
 /// Without this, every existing runner would falsely recreate on the
 /// first apply post-upgrade because their on-disk units lack the new
 /// keys. The spec-hash mismatch path picks up the change once and
@@ -1328,7 +1328,7 @@ impl DiscoveredAnnotations {
     /// fixture that happens to put the lines in the unit text.
     ///
     /// Missing drop-in handling: a runner whose `00-ghars.conf` is
-    /// absent (pre-BATCH-C apply, operator-stripped) yields a default
+    /// absent (older apply, operator-stripped) yields a default
     /// `DiscoveredAnnotations` with every field `None`. The classifier
     /// treats `None` as "skip this field" (avoiding spurious recreates
     /// on first apply post-upgrade), so no annotations + a hash
@@ -1472,8 +1472,8 @@ impl DiscoveredAnnotations {
 /// the spurious recreate-class fallback.
 ///
 /// Missing-annotation handling: a field whose discovered annotation
-/// is `None` (older ghars-applied unit pre-BATCH-C, or operator-
-/// stripped) is SKIPPED here — comparing `None` against any desired
+/// is `None` (older ghars-applied unit, or operator-stripped) is
+/// SKIPPED here — comparing `None` against any desired
 /// value would falsely fire on first apply post-upgrade. The spec-
 /// hash mismatch propagates the change once; subsequent applies see
 /// the freshly-emitted annotations and Stage 1 covers the field.
@@ -1773,9 +1773,9 @@ fn classify_recreate_reasons_from_annotations(
 /// 2. Defaults-merge — runs in [`lower_to_effective`]. Cross-reference
 ///    resolution for auth, caches, network is validated and threaded
 ///    through.
-/// 3. Release lookup (Part 8 step 3) — NOT done here; the unit-text
-///    generator (B4) is responsible for resolving `runner_version`
-///    against the releases API. Plan emits the spec with whatever
+/// 3. Release lookup — NOT done here; the unit-text generator
+///    is responsible for resolving `runner_version` against the
+///    releases API. Plan emits the spec with whatever
 ///    `runner_version` is pinned in config; if unset it stays
 ///    `None` and the generator decides.
 /// 4. Spec hash (Part 8 step 4) — computed via [`spec_hash`].
@@ -1788,9 +1788,9 @@ fn classify_recreate_reasons_from_annotations(
 ///      `requires_recreate` + `recreate_reasons` from annotation diff;
 ///      hash mismatch with no identifiable Stage 1 reason and no
 ///      Stage 2 drop-in body diff falls back to a conservative
-///      `"uncovered"` recreate reason (BATCH C / Part 2 item 8 — the
-///      reason is named `uncovered` because the condition is broader
-///      than a hash mismatch alone).
+///      `"uncovered"` recreate reason — the reason is named
+///      `uncovered` because the condition is broader than a hash
+///      mismatch alone.
 /// 7. Apply Part 3 `requires_recreate` policy — done in
 ///    [`classify_recreate_reasons_from_annotations`].
 /// 8. Cache-pool diffs against the discovered set. State discovery
@@ -1932,8 +1932,8 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                     // preserves the install-phase digest.
                     //
                     // If the discovered drop-in is missing
-                    // X-Ghars-Runsvc-Sha256 entirely (pre-BATCH-C
-                    // runner or operator-stripped 00-ghars.conf), we
+                    // X-Ghars-Runsvc-Sha256 entirely (older runner
+                    // or operator-stripped 00-ghars.conf), we
                     // CANNOT silently emit an in-place update — the
                     // freshly-rendered drop-in would lack the annotation
                     // and runsvc-wrapper would fail-stop on the next
@@ -1978,7 +1978,7 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                         }
                     }
 
-                    // BATCH C / Part 2 / item 7: Stage 2 — re-render
+                    // Stage 2 — re-render
                     // the desired spec and diff drop-in bodies against
                     // the discovered drop-ins on disk. A change
                     // confined to drop-in bodies (memory_max, proxy,
@@ -2047,7 +2047,7 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                         });
                     }
 
-                    // BATCH C / C-1 + C-6: classify as in-place
+                    // Classify as in-place
                     // when ANY managed non-`00-ghars.conf` drop-in
                     // shows a body change of one of three
                     // positively-named shapes: Created, Modified, or
@@ -2183,8 +2183,8 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                         }
                     };
 
-                    // BATCH C item 9: populate
-                    // effective_unit_text + drop_ins on RunnerPlan
+                    // Populate effective_unit_text + drop_ins on
+                    // RunnerPlan
                     // from the rendered output we already computed
                     // above. apply.rs's in-place rewrite path consumes
                     // these directly.
@@ -2351,8 +2351,7 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                 // managed body.
                 let pool_in_sync = matches!(actual_pool.drift, Drift::InSync);
                 if plan.spec_hash != actual_pool.spec_hash || !pool_in_sync {
-                    // F79i invariant: pool-kind change is a
-                    // runner-membership no-op.
+                    // Pool-kind change is a runner-membership no-op.
                     // The per-pool group is `ghars-cache-NAME` —
                     // parameterized by pool name only, NOT by kinds.
                     // Group identity is unchanged across the update,
@@ -3662,13 +3661,11 @@ mod tests {
 
     #[test]
     fn plan_update_in_place_on_memory_max_change_via_drop_in_diff() {
-        // BATCH C: memory_max change is in-place, not recreate. Stage 1
+        // memory_max change is in-place, not recreate. Stage 1
         // (annotation diff) finds nothing; Stage 2 (drop-in body diff)
         // sees 10-memory.conf body change between desired render and
         // discovered drop-ins. Result: requires_recreate=false,
         // drop_in_changes contains a Modified entry for 10-memory.conf.
-        // Replaces the pre-BATCH-C "spec_hash_mismatch" fallback test
-        // (which over-recreated for memory-only edits).
         let cfg = config_with_runners(vec![{
             let mut r = minimal_runner("a");
             r.memory_max = Some("64G".into());
@@ -3870,9 +3867,8 @@ mod tests {
     // the Stage 2 drop-in body diff and surface as `drop_in_changes`,
     // not FieldChange entries. A spec-hash mismatch with no Stage 1
     // reason and no Stage 2 evidence falls through to the
-    // conservative `"uncovered"` recreate reason (renamed from
-    // `spec_hash_mismatch` in BATCH C / Part 2 item 8). These tests
-    // pin each row of the table.
+    // conservative `"uncovered"` recreate reason. These tests pin
+    // each row of the table.
 
     fn anns_with(url: &str, runner_version: Option<&str>) -> DiscoveredAnnotations {
         DiscoveredAnnotations {
@@ -4865,7 +4861,7 @@ mod tests {
 
     #[test]
     fn plan_renders_cache_pool_drop_in_body_at_plan_time() {
-        // Drop-in body is rendered at plan time so the F48 reset-on-empty
+        // Drop-in body is rendered at plan time so the reset-on-empty
         // validator runs before the bytes leave the planner. The body
         // must reflect the resolved kinds + spec_hash + config_source.
         let mut cfg = config_with_runners(vec![{
@@ -5331,7 +5327,7 @@ mod tests {
         // labels = concat(defaults, runner) deduped (membership
         // only — first-seen order is not load-bearing) and then
         // sorted alphabetically. If both are empty after dedup, falls
-        // back to [name] (F34 Python parity). Set semantics — labels
+        // back to [name] for Python parity. Set semantics — labels
         // are the GitHub Actions registration tag set, matched
         // order-independently against workflow `runs-on:`.
         #[test]
@@ -7907,7 +7903,7 @@ labels  = ["alpha", "beta"]
         }
     }
 
-    /// Edge case 1: discovered.caches = None (pre-BATCH-C runner that
+    /// Edge case 1: discovered.caches = None (older runner that
     /// predates the unconditional X-Ghars-Caches emit). Classifier
     /// MUST skip the caches comparison entirely so no spurious
     /// FieldChange and no recreate reason fire — the post-upgrade
@@ -8605,7 +8601,7 @@ labels  = ["alpha", "beta"]
         assert_eq!(mode_change.after, FieldValue::String("open".into()));
     }
 
-    // ---- T-296: missing-annotation tolerance + empty-value handling ---
+    // ---- missing-annotation tolerance + empty-value handling ---------
 
     /// When the discovered unit has no X-Ghars-Runner-Sha256 line at
     /// all and the desired spec ALSO has no runner_sha256 set, the
@@ -8727,7 +8723,7 @@ labels  = ["alpha", "beta"]
         );
     }
 
-    // ---- T-296: round-trip annotation symmetry -----------------------
+    // ---- round-trip annotation symmetry -------------------------------
 
     /// `render_identity` ↔ `DiscoveredAnnotations::from_drop_in_body`
     /// round-trip for ALL 12 annotation fields the parser tracks.
@@ -8987,7 +8983,7 @@ labels  = ["alpha", "beta"]
         );
     }
 
-    // ---- T-289: runsvc_integrity recreate when annotation missing ----
+    // ---- runsvc_integrity recreate when annotation missing -----------
 
     /// In-place class change (memory_max edit) on a discovered
     /// runner whose 00-ghars.conf is missing X-Ghars-Runsvc-Sha256
@@ -9019,7 +9015,7 @@ labels  = ["alpha", "beta"]
         old_spec.spec_hash = spec_hash(&old_spec);
         // The default fixture injects a fake runsvc_sha256 digest so
         // every other in-place test stays in-place. Here we want to
-        // exercise the MISSING-annotation path (pre-BATCH-C unit, or
+        // exercise the MISSING-annotation path (older unit, or
         // operator-stripped). Rebuild the discovered runner by hand
         // so the 00-ghars.conf body has NO X-Ghars-Runsvc-Sha256
         // line — render_identity at systemd.rs only emits the line

@@ -35,7 +35,7 @@ fn main() {
     //
     // The (quiet, verbose) → level truth table lives in
     // `cli::verbose_to_filter_level` so it can be exhaustively
-    // unit-tested without spawning a child process. DA-2: dependencies
+    // unit-tested without spawning a child process. Dependencies
     // (reqwest, hyper, zbus) stay at info so `-vv` doesn't drown the
     // operator in transport / protocol chatter. RUST_LOG (when set)
     // replaces the entire filter, letting operators dial in

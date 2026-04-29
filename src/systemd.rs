@@ -12,7 +12,7 @@
 //!   interface over the system bus via `zbus::blocking`.
 //! - Unit-text + drop-in + nft rule rendering are pure functions; no
 //!   D-Bus, no filesystem.
-//! - `validate_drop_in` enforces the F48 reset-on-empty rule on every
+//! - `validate_drop_in` enforces the reset-on-empty rule on every
 //!   generated drop-in body before it leaves the renderer.
 //!
 //! `ghars-net@.service` and `ghars-cache@.service` template bodies are
@@ -621,7 +621,7 @@ fn decode_object_path_value(
     })
 }
 
-// --- Reset-on-empty validator (F48) -------------------------------------
+// --- Reset-on-empty validator -------------------------------------------
 
 /// List-typed directives that systemd treats as RESET on empty
 /// assignment (per `systemd.exec.xml:2912-2920` for `SystemCallFilter`,
@@ -641,7 +641,8 @@ fn decode_object_path_value(
 // `DevicePolicy=closed` (which already denies-by-default once the
 // allowlist is empty). The other ten directives in this list have
 // multi-entry templates where an accidental empty-reset would silently
-// disable security hardening; F48's protection is preserved for them.
+// disable security hardening; the validator's protection is preserved
+// for them.
 const RESET_ON_EMPTY_DIRECTIVES: &[&str] = &[
     "SystemCallFilter",
     "CapabilityBoundingSet",
@@ -708,7 +709,7 @@ static RESET_ON_EMPTY_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// # Errors
 ///
 /// Returns `GharsError::Validation` with the offending directive name
-/// and a hint pointing at the F48 spec section.
+/// and a hint pointing at the reset-on-empty validator's contract.
 pub fn validate_drop_in(name: &str, body: &str) -> Result<()> {
     if let Some(m) = RESET_ON_EMPTY_RE.find(body) {
         let line = m.as_str().trim_end();
@@ -719,8 +720,8 @@ pub fn validate_drop_in(name: &str, body: &str) -> Result<()> {
                 "drop-in {name} emits an empty reset for {directive:?}; \
                 this would silently erase the template's allowlist"
             ),
-            "drop-ins must never emit list-typed directives with a bare `=`; \
-            see Part 9 reset-on-empty validator (F48)"
+            "drop-ins must never emit list-typed directives with a bare `=` — \
+            doing so would silently erase the template's allowlist"
                 .into(),
         ));
     }
@@ -834,7 +835,7 @@ ExecStart=!/usr/lib/ghars/runsvc-wrapper %i
 User=ghars-%i
 Group=ghars-%i
 WorkingDirectory=/var/lib/ghars/%i
-# F72: Slice=system.slice unconditional. No operator opt-in.
+# Slice=system.slice unconditional. No operator opt-in.
 Slice=system.slice
 
 # StateDirectory implies BindPaths under TemporaryFileSystem=/:ro and
@@ -862,7 +863,7 @@ Environment=SCCACHE_DIR=%C/ghars/%i/sccache
 Environment=CCACHE_MAXSIZE=200G
 Environment=SCCACHE_CACHE_SIZE=200G
 # SCCACHE_SERVER_UDS lives on tmpfs (RuntimeDirectory) — no stale
-# sockets after crash. (F32)
+# sockets after crash.
 Environment=SCCACHE_SERVER_UDS=%t/ghars/%i/sccache.sock
 
 KillMode=control-group
@@ -883,7 +884,7 @@ CapabilityBoundingSet=CAP_SETUID CAP_SETGID
 AmbientCapabilities=
 
 # Filesystem allowlist. Optional paths use `-` prefix for merged-usr
-# compat. (F35)
+# compat.
 TemporaryFileSystem=/:ro
 BindReadOnlyPaths=/usr -/lib -/lib64 -/bin -/sbin
 BindReadOnlyPaths=/etc/hosts /etc/nsswitch.conf
@@ -914,7 +915,7 @@ ProtectKernelLogs=yes
 # ProtectControlGroups=no is INTENTIONAL: workflows create
 # cpuset/memory cgroups on the host (buck2 nested virt, VM test
 # harnesses). yes here would make /sys/fs/cgroup read-only and break
-# those flows. (F33)
+# those flows.
 ProtectControlGroups=no
 ProtectClock=yes
 ProtectHostname=yes
@@ -936,7 +937,7 @@ ProtectHome=yes
 RemoveIPC=yes
 # RestrictRealtime=no is INTENTIONAL: KVM vCPU/watchdog threads need
 # SCHED_FIFO for stable guest latency. LimitRTPRIO=2 caps the
-# priority they can request. (F33)
+# priority they can request.
 RestrictRealtime=no
 RestrictSUIDSGID=yes
 
@@ -968,7 +969,7 @@ const NETNS_TEMPLATE: &str = r#"[Unit]
 Description=ghars netns + veth + nft for runner %i
 X-Ghars-Managed=true
 X-Ghars-Schema-Version=1
-# F79: StopWhenUnneeded=NO. The named netns at /var/run/netns/ghars-%i
+# StopWhenUnneeded=NO. The named netns at /var/run/netns/ghars-%i
 # is bind-mounted (persistent across unit deactivation). ghars-net@
 # stays in active state to symbolize "netns exists"; only torn down by
 # explicit `ghars apply` removal of the runner. Runner restarts do NOT
@@ -986,12 +987,12 @@ ExecStart=+/usr/bin/ghars _netns-setup %i
 ExecStart=+/usr/sbin/nft -f /etc/ghars/nft.d/%i-host.nft
 ExecStart=+/usr/bin/ghars _netns-veth %i /usr/sbin/nft -f /etc/ghars/nft.d/%i-ns.nft
 
-# LOAD-BEARING: ExecStop= MUST be present. systemd's
-# service.c:1364-1383 destroys runtime data on SERVICE_EXITED when no
-# ExecStop=, ExecReload=, or ExecStopPost= is defined — even with
-# RemainAfterExit=yes. The named netns is its own bind-mount so we
-# don't rely on systemd's runtime data, but having ExecStop= ensures
-# cleanup helpers run on unit deactivation. (F49)
+# LOAD-BEARING: ExecStop= MUST be present. systemd destroys runtime
+# data on SERVICE_EXITED when no ExecStop=, ExecReload=, or
+# ExecStopPost= is defined — even with RemainAfterExit=yes. The named
+# netns is its own bind-mount so we don't rely on systemd's runtime
+# data, but having ExecStop= ensures cleanup helpers run on unit
+# deactivation.
 ExecStop=+/usr/sbin/nft destroy table inet ghars_%i
 ExecStop=+/usr/bin/ghars _netns-veth %i /usr/sbin/nft destroy table inet ghars_%i_ns
 ExecStop=+/usr/bin/ghars _netns-teardown %i
@@ -1119,7 +1120,7 @@ WantedBy=multi-user.target
 /// Render the canonical runner unit template + all applicable
 /// drop-ins for an effective runner spec.
 ///
-/// Drop-ins emitted (ranges per Part 9 / F30):
+/// Drop-ins emitted (ranges per Part 9):
 /// - `00-ghars.conf` — identity annotations (always)
 /// - `10-memory.conf` — `MemoryMax=` (when set)
 /// - `15-resolv.conf` — `/etc/resolv.conf` bind source (always; switches
@@ -1131,7 +1132,7 @@ WantedBy=multi-user.target
 /// - `50-numa.conf` — `AllowedCPUs=` / `AllowedMemoryNodes=` (when set)
 /// - `60-proxy.conf` — proxy env + CA-trust env (when proxy resolved)
 /// - `70-hooks.conf` — pre/post-job hook env + `BindReadOnlyPaths` (when hooks resolved)
-/// - `80-lognamespace.conf` — `LogNamespace=ghars-NAME` (always; F78 confirmed)
+/// - `80-lognamespace.conf` — `LogNamespace=ghars-NAME` (always)
 ///
 /// # Errors
 ///
@@ -1192,7 +1193,7 @@ pub fn render_runner_unit(spec: &EffectiveRunnerSpec) -> Result<RenderedUnit> {
 
     drop_ins.insert("80-lognamespace.conf".into(), render_lognamespace(spec));
 
-    // F48 reset-on-empty validator — applied to EVERY generated drop-in.
+    // Reset-on-empty validator — applied to EVERY generated drop-in.
     for (name, body) in &drop_ins {
         validate_drop_in(name, body)?;
     }
@@ -1526,7 +1527,7 @@ fn render_hardening(
         // the resulting set is empty, combined with the template's
         // `DevicePolicy=closed` this denies all device access.
         //
-        // The F48 reset-on-empty validator treats `DeviceAllow`
+        // The reset-on-empty validator treats `DeviceAllow`
         // INTENTIONALLY as not-protected (see RESET_ON_EMPTY_DIRECTIVES
         // doc-comment) precisely so this branch can land. The other
         // directives in that list have multi-entry templates where an
@@ -1588,7 +1589,7 @@ fn render_hardening(
         // added, not substituted. Operators who want to revoke the base set must
         // use a 99-*.conf operator drop-in with the empty-reset form
         // (`CapabilityBoundingSet=` followed by the desired set), which
-        // the F48 validator does NOT police.
+        // the validator does NOT police.
         //
         // Canonicalization is upstream: this renderer emits whatever
         // is in `h.extra_capabilities` verbatim, including duplicates
@@ -1606,24 +1607,25 @@ fn render_hardening(
         );
     }
 
-    // BindReadOnlyPaths handling per Part 3 (R4). systemd.exec(5)
+    // BindReadOnlyPaths handling. systemd.exec(5)
     // documents BindReadOnlyPaths as a list-typed directive: each
     // assignment APPENDS to the cumulative list, and only the
     // empty-reset form (`BindReadOnlyPaths=`) clears it. Both
     // bind_readonly_paths and extra_bind_paths therefore APPEND to the
-    // template's accumulated list — neither replaces it. The F48
-    // validator (the `RESET_ON_EMPTY_DIRECTIVES` list)
-    // forbids a managed drop-in from emitting the bare-`=` reset
-    // form, so this generator only ever appends. Operators who want
-    // to *narrow* the bind-readonly set must use a 99-*.conf
-    // operator drop-in (which the F48 validator does NOT police).
+    // template's accumulated list — neither replaces it. The
+    // reset-on-empty validator (the `RESET_ON_EMPTY_DIRECTIVES`
+    // list) forbids a managed drop-in from emitting the bare-`=`
+    // reset form, so this generator only ever appends. Operators
+    // who want to *narrow* the bind-readonly set must use a
+    // 99-*.conf operator drop-in (which the validator does NOT
+    // police).
     if let Some(paths) = &h.bind_readonly_paths {
         if !paths.is_empty() {
             // Emit the operator's chosen entries on one
             // BindReadOnlyPaths= line. Multiple assignments would
             // also append; one line is the deterministic form. The
             // generator's branch above filters out the empty case,
-            // so the F48 reset-on-empty rule is never violated here.
+            // so the reset-on-empty rule is never violated here.
             let joined = paths
                 .iter()
                 .map(|p| p.as_str())
@@ -1710,8 +1712,8 @@ fn render_cache_pool(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
         // BindPaths is list-typed; emitting a non-empty value APPENDS
         // to the template's set (the template has no BindPaths line —
         // it relies on TemporaryFileSystem=/:ro + selective rebinds).
-        // F48 validator passes because we only get here with at least
-        // one entry.
+        // The reset-on-empty validator passes because we only get
+        // here with at least one entry.
         let _ = writeln!(s, "BindPaths={}", bind_paths.join(" "));
     }
     Ok(Some(s))
@@ -1775,8 +1777,11 @@ fn render_network(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
     s.push('\n');
     s.push_str("[Service]\n");
 
-    // F79 fail-closed: NetworkNamespacePath= refuses to start when the
-    // bind-mount path is missing or unjoinable (exec-invoke.c:4760-4761).
+    // Fail-closed: NetworkNamespacePath= refuses to start when the
+    // bind-mount path is missing or unjoinable. systemd's
+    // exec_invoke() opens the path via `open_shareable_ns_path` and
+    // returns EXIT_NETWORK on failure (see the `network_namespace_path`
+    // branch in `src/core/exec-invoke.c::exec_invoke`).
     let _ = writeln!(s, "NetworkNamespacePath=/var/run/netns/ghars-{}", spec.name);
 
     // Defense in depth at the cgroup-BPF layer.
@@ -1857,7 +1862,7 @@ fn render_proxy(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
     s.push_str("[Service]\n");
     if let Some(http) = &proxy.http {
         // Both upper- and lower-case env vars so apps that read either
-        // find a value (R2).
+        // find a value.
         let _ = writeln!(s, "Environment=HTTP_PROXY={http}");
         let _ = writeln!(s, "Environment=http_proxy={http}");
     }
@@ -1933,8 +1938,7 @@ fn render_hooks(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
 }
 
 fn render_lognamespace(spec: &EffectiveRunnerSpec) -> String {
-    // F78 confirmed: unconditional. systemd 254+ floor enforced at
-    // preflight.
+    // Unconditional. systemd 254+ floor enforced at preflight.
     let mut s = String::new();
     s.push_str("[Service]\n");
     let _ = writeln!(s, "LogNamespace=ghars-{}", spec.name);
@@ -1949,7 +1953,7 @@ fn render_lognamespace(spec: &EffectiveRunnerSpec) -> String {
 ///
 /// # Errors
 ///
-/// Returns `GharsError::Validation` from the F48 reset-on-empty
+/// Returns `GharsError::Validation` from the reset-on-empty
 /// validator.
 // Pedantic clippy flags ccache/sccache local bindings as confusable;
 // the variant names are load-bearing (they ARE the schema's
@@ -2026,7 +2030,7 @@ pub fn render_cache_drop_in(
         s.push_str("Environment=SCCACHE_NO_DAEMON=1\n");
         // SCCACHE_IDLE_TIMEOUT=0 prevents the server from exiting
         // mid-shift. Mismatch between server idle timeout and runner
-        // restart cycles would force re-init of the on-disk cache (F33).
+        // restart cycles would force re-init of the on-disk cache.
         s.push_str("Environment=SCCACHE_IDLE_TIMEOUT=0\n");
     }
     if serves_ccache {
@@ -2860,7 +2864,7 @@ mod tests {
 
     #[test]
     fn netns_template_has_load_bearing_execstop() {
-        // F49: ExecStop= is mandatory on RemainAfterExit=yes oneshot
+        // ExecStop= is mandatory on RemainAfterExit=yes oneshot
         // units to prevent systemd from destroying runtime data.
         let t = netns_template_text();
         assert!(t.contains("RemainAfterExit=yes"));
@@ -3004,7 +3008,7 @@ mod tests {
         // Explicit kvm=true is an override (the template default agrees,
         // but the operator's intent is recorded). The drop-in re-emits
         // `DeviceAllow=/dev/kvm rw` rather than relying on the template
-        // alone; this also exercises the F48 reset-on-empty validator
+        // alone; this also exercises the reset-on-empty validator
         // pass-through (a non-empty DeviceAllow line never triggers the
         // empty-reset rule).
         let mut spec = minimal_spec();
@@ -3048,12 +3052,13 @@ mod tests {
 
     #[test]
     fn validate_drop_in_now_allows_device_allow_reset() {
-        // F48 exempts DeviceAllow specifically (see the
-        // RESET_ON_EMPTY_DIRECTIVES doc-comment for rationale). Verify
-        // the validator does NOT reject a bare `DeviceAllow=` line.
-        // Other directives still trigger F48 — the validator continues
-        // to protect SystemCallFilter, BindReadOnlyPaths, etc. (covered
-        // by validate_drop_in_rejects_each_directive below).
+        // The reset-on-empty validator exempts DeviceAllow specifically
+        // (see the `RESET_ON_EMPTY_DIRECTIVES` doc-comment for rationale).
+        // Verify the validator does NOT reject a bare `DeviceAllow=`
+        // line. Other directives still trigger the validator — it
+        // continues to protect SystemCallFilter, BindReadOnlyPaths,
+        // etc. (covered by `validate_drop_in_rejects_each_directive`
+        // below).
         let body = "[Service]\nDeviceAllow=\n";
         validate_drop_in("20-hardening.conf", body).unwrap();
     }
@@ -3264,7 +3269,7 @@ mod tests {
         // BTreeMap iteration is alphabetic by key, which for the
         // numeric-prefix drop-in basenames (`20-hardening.conf` <
         // `40-network.conf`) is the same as systemd's load order
-        // (lower numbers load first per Part 9 / F30). Pin that the
+        // (lower numbers load first per Part 9). Pin that the
         // map's keys come out in the right order so plan output and
         // any future "concatenate drop-ins for systemd-analyze
         // verify" code observes the same order systemd will use.
@@ -3344,7 +3349,7 @@ mod tests {
             "hooks drop-in missing parent-dir bind line, got:\n{k}"
         );
 
-        // F48: none of these drop-ins emit a bare BindReadOnlyPaths=
+        // None of these drop-ins emit a bare BindReadOnlyPaths=
         // reset — that would silently erase the template's curated
         // /etc list and the union of every other contributor.
         for (name, body) in [("hardening", h), ("proxy", p), ("hooks", k)] {
@@ -3393,7 +3398,7 @@ mod tests {
             "hardening drop-in missing extra syscalls, got:\n{h}"
         );
 
-        // F48: hardening must not emit a bare SystemCallFilter=
+        // Hardening must not emit a bare SystemCallFilter=
         // reset (would erase BOTH template lines).
         assert!(
             !h.lines().any(|l| l.trim() == "SystemCallFilter="),
@@ -3427,9 +3432,9 @@ mod tests {
 
     #[test]
     fn validate_drop_in_rejects_each_directive() {
-        // F48 covers ALL of these directives — the test exercises every
-        // one so a future edit that drops one from the list is caught
-        // immediately.
+        // The reset-on-empty validator covers ALL of these directives
+        // — the test exercises every one so a future edit that drops
+        // one from the list is caught immediately.
         for d in RESET_ON_EMPTY_DIRECTIVES {
             let body = format!("[Service]\n{d}=\n");
             assert!(
@@ -3453,7 +3458,7 @@ mod tests {
         validate_drop_in("x", body).unwrap();
     }
 
-    // Multi-line edge cases for the F48 reset-on-empty regex.
+    // Multi-line edge cases for the reset-on-empty regex.
     // These pin the regex against systemd.syntax(7) parsing semantics:
     // leading whitespace is ignored, comments are skipped, multi-line
     // bodies must be scanned per-line, and continuation lines (trailing
@@ -3574,8 +3579,9 @@ mod tests {
         // can only arise from operator-edited 99-*.conf which the
         // validator does not gate.
         let crlf = "[Service]\nDeviceAllow=\r\n";
-        // DeviceAllow is in the F48 EXEMPT set anyway (single-entry
-        // template), so `validate_drop_in` accepts a bare reset
+        // DeviceAllow is in the validator's EXEMPT set anyway
+        // (single-entry template), so `validate_drop_in` accepts
+        // a bare reset
         // regardless. Use a different protected directive to test
         // the CRLF behavior on the regex itself.
         validate_drop_in("device-crlf.conf", crlf).unwrap();

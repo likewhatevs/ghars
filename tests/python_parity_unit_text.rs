@@ -1,6 +1,6 @@
-//! Port of the Python install_gha_runner.py unit-text generation tests
-//! (lines 2080-2400). The Python tool generated a single per-runner unit
-//! file via `generate_unit(UnitInputs)`; ghars splits the unit into a
+//! Port of the upstream Python tool's unit-text generation tests.
+//! The Python tool generated a single per-runner unit file via
+//! `generate_unit(UnitInputs)`; ghars splits the unit into a
 //! template body (`runner_template_text`) plus drop-ins
 //! (`render_runner_unit`).
 //!
@@ -64,7 +64,7 @@ fn unit_privilege_isolation_directives_present() {
 #[test]
 fn unit_kernel_hardening_directives_all_present() {
     // Python parity: test_unit_kernel_hardening — except cgroup tweaks
-    // intentionally diverge (ProtectControlGroups=no by design, F33).
+    // intentionally diverge (ProtectControlGroups=no by design).
     // Verifies every directive listed in the Python tool, plus the new
     // hardening fields ghars adds.
     let t = runner_template_text();
@@ -89,7 +89,7 @@ fn unit_kernel_hardening_directives_all_present() {
 #[test]
 fn unit_cgroup_permits_cpuset_writes() {
     // Python parity: test_unit_cgroup_no_permits_cpuset. KVM workloads
-    // need to write cpuset/memory cgroups (F33).
+    // need to write cpuset/memory cgroups.
     let t = runner_template_text();
     assert!(t.contains("ProtectControlGroups=no"));
 }

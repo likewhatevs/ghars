@@ -40,7 +40,7 @@ ExecStart=!/usr/lib/ghars/runsvc-wrapper %i
 User=ghars-%i
 Group=ghars-%i
 WorkingDirectory=/var/lib/ghars/%i
-# F72: Slice=system.slice unconditional. No operator opt-in.
+# Slice=system.slice unconditional. No operator opt-in.
 Slice=system.slice
 
 # StateDirectory implies BindPaths under TemporaryFileSystem=/:ro and
@@ -68,7 +68,7 @@ Environment=SCCACHE_DIR=%C/ghars/%i/sccache
 Environment=CCACHE_MAXSIZE=200G
 Environment=SCCACHE_CACHE_SIZE=200G
 # SCCACHE_SERVER_UDS lives on tmpfs (RuntimeDirectory) — no stale
-# sockets after crash. (F32)
+# sockets after crash.
 Environment=SCCACHE_SERVER_UDS=%t/ghars/%i/sccache.sock
 
 KillMode=control-group
@@ -89,7 +89,7 @@ CapabilityBoundingSet=CAP_SETUID CAP_SETGID
 AmbientCapabilities=
 
 # Filesystem allowlist. Optional paths use `-` prefix for merged-usr
-# compat. (F35)
+# compat.
 TemporaryFileSystem=/:ro
 BindReadOnlyPaths=/usr -/lib -/lib64 -/bin -/sbin
 BindReadOnlyPaths=/etc/hosts /etc/nsswitch.conf
@@ -120,7 +120,7 @@ ProtectKernelLogs=yes
 # ProtectControlGroups=no is INTENTIONAL: workflows create
 # cpuset/memory cgroups on the host (buck2 nested virt, VM test
 # harnesses). yes here would make /sys/fs/cgroup read-only and break
-# those flows. (F33)
+# those flows.
 ProtectControlGroups=no
 ProtectClock=yes
 ProtectHostname=yes
@@ -142,7 +142,7 @@ ProtectHome=yes
 RemoveIPC=yes
 # RestrictRealtime=no is INTENTIONAL: KVM vCPU/watchdog threads need
 # SCHED_FIFO for stable guest latency. LimitRTPRIO=2 caps the
-# priority they can request. (F33)
+# priority they can request.
 RestrictRealtime=no
 RestrictSUIDSGID=yes
 

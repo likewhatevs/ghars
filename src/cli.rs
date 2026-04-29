@@ -189,7 +189,7 @@ pub struct PlanArgs {
     /// Filter to a subset of runner names (substring match).
     #[arg(long, value_delimiter = ',')]
     pub only: Vec<String>,
-    /// Output as JSON; secrets are redacted in BOTH formats. (F27)
+    /// Output as JSON; secrets are redacted in BOTH formats.
     #[arg(long)]
     pub json: bool,
     /// Make exit code 2 mean "changes detected" (terraform plan parity).
@@ -536,10 +536,8 @@ pub fn dispatch(cli: Cli) -> Result<i32> {
 // ---------- Helpers ----------------------------------------------------
 
 /// Load config.toml from `path` using `toml::from_str` +
-/// `std::fs::read_to_string`. Mirrors the design's "config: load from
-/// TOML path via `toml::from_str` + `std::fs::read_to_string`" guidance
-/// for B5 — the library `config::load` is still a stub; the CLI does
-/// the IO.
+/// `std::fs::read_to_string`. The library `config::load` is still a
+/// stub; the CLI does the IO.
 fn load_config(path: &Utf8Path) -> Result<Config> {
     let raw = fs::read_to_string(path.as_std_path()).map_err(|e| {
         GharsError::Config(
@@ -1650,7 +1648,7 @@ fn render_plan(plan: &Plan, color: ColorMode, json: bool, quiet: bool, diff: boo
         let line = render_action_line(action, color, diff);
         writeln!(stdout, "{line}").map_err(GharsError::Io)?;
     }
-    // CLN-3: text-mode plan summary footer — operators reading
+    // Text-mode plan summary footer — operators reading
     // `ghars plan` without `--json` need the same disruption-class
     // counts CI consumers get from JSON `summary`. Emitted between
     // the action lines and the warnings tail so operator eyes see
@@ -1764,12 +1762,12 @@ fn render_action_line(action: &Action, color: ColorMode, diff: bool) -> String {
             //   ~ runner NAME (CAUSE; update: in-place)
             //   ! runner NAME (CAUSE; update: recreate (FIELDS))
             //
-            // F-DA2 (shell-safety): the `!` sigil is followed by a
+            // Shell-safety: the `!` sigil is followed by a
             // space (`! `) to avoid bash history-expansion (`!word`).
             // Future format changes that drop the space MUST move
             // `!` to a non-leading position.
             //
-            // F-DA4: `!` is NOT a uniform recreate-class marker — it
+            // `!` is NOT a uniform recreate-class marker — it
             // signals UpdateRunner escalated to recreate (the
             // surprising case). For all-recreate-class extraction,
             // grep `[recreate]` (text) or use `summary.recreates`
@@ -1835,7 +1833,7 @@ fn render_action_line(action: &Action, color: ColorMode, diff: bool) -> String {
     } else {
         format!("{sigil} {summary}")
     };
-    // BATCH C / PART 6: append per-field details under UpdateRunner.
+    // Append per-field details under UpdateRunner.
     // Plan engine emits `field_changes` for recreate-bound fields whose
     // annotation reconstruction differs from the desired spec, and
     // `drop_in_changes` for every basename in the union of rendered +
@@ -1898,7 +1896,7 @@ fn render_action_line(action: &Action, color: ColorMode, diff: bool) -> String {
             for (basename, body) in &d.after.drop_ins {
                 out.push('\n');
                 out.push_str(&format!("    + {basename}"));
-                // CLN-1/F8/F13: route through the same
+                // Route through the same
                 // render_drop_in_body_block as in-place Created
                 // entries. The synthesized DropInChangeKind::Created
                 // carries the post-render body verbatim — one
@@ -2296,7 +2294,7 @@ pub(crate) fn plan_to_json_value(plan: &Plan, diff: bool) -> serde_json::Value {
                         })
                         .collect();
                     let drop_in_changes: Vec<serde_json::Value> = if diff && d.requires_recreate {
-                        // CLN-5: synthesize Created entries from
+                        // Synthesize Created entries from
                         // delta.after.drop_ins (BTreeMap, so already
                         // alphabetically ordered) and route through
                         // the same drop_in_change_to_json the
@@ -2511,12 +2509,12 @@ pub(crate) fn plan_to_json_value(plan: &Plan, diff: bool) -> serde_json::Value {
 /// `jq -e '.summary.recreates | length == 0'` (exits 0 when the
 /// array is empty, non-zero otherwise).
 ///
-/// CLN-2: the `by_disruption` loop iterates
+/// The `by_disruption` loop iterates
 /// `disruption_summary_variants()` instead of hardcoding label
 /// strings — `Disruption::label()` stays the single source of
 /// truth for the label vocabulary.
 ///
-/// CLN-469-1: `recreates` is collected first; `by_disruption["recreate"]`
+/// `recreates` is collected first; `by_disruption["recreate"]`
 /// derives its count from `recreates.len()` and `any_recreate`
 /// derives from `!recreates.is_empty()`. The for-variant loop
 /// only counts the two non-recreate variants, removing a redundant
@@ -2559,7 +2557,7 @@ fn disruption_summary_variants() -> [plan::Disruption; 3] {
     ]
 }
 
-/// CLN-3: build the text-mode plan summary footer.
+/// Build the text-mode plan summary footer.
 ///
 /// Format:
 /// `Plan: N actions (N restart, N recreate, N none). any_recreate: true|false`
@@ -2571,7 +2569,7 @@ fn disruption_summary_variants() -> [plan::Disruption; 3] {
 /// `disruption_summary_variants()`'s least-to-most-disruptive order
 /// used for the JSON-key iteration. The disruption parenthetical
 /// + `any_recreate` suffix is delegated to
-/// `format_disruption_tail` (CLN-2) — the single source of truth
+/// `format_disruption_tail` — the single source of truth
 /// for the format string shared with `render_apply_summary_line`.
 #[must_use]
 pub(crate) fn render_plan_summary_line(actions: &[Action]) -> String {
@@ -2592,7 +2590,7 @@ pub(crate) fn render_plan_summary_line(actions: &[Action]) -> String {
     )
 }
 
-/// CLN-2: build the shared `(N restart, N recreate, N none).
+/// Build the shared `(N restart, N recreate, N none).
 /// any_recreate: bool` tail used by both `render_plan_summary_line`
 /// and `render_apply_summary_line`. Single source of truth for the
 /// disruption-parenthetical + `any_recreate` suffix format string,
@@ -2651,7 +2649,7 @@ fn format_disruption_tail(none: u64, restart: u64, recreate: u64) -> String {
 /// recreate-class actions stay tagged recreate even when they
 /// errored), so a partially-applied recreate-class action that
 /// errored mid-way still contributes to the `recreate` count.
-/// Delegated to `format_disruption_tail` (CLN-2) — single source of
+/// Delegated to `format_disruption_tail` — single source of
 /// truth for the format string shared with `render_plan_summary_line`.
 ///
 /// **`any_recreate`**: true ⇔ any outcome's `disruption()` is
@@ -4585,9 +4583,9 @@ mod tests {
         }
     }
 
-    // ---- T-1: cancel_exit_code missing cells --------------------------
+    // ---- cancel_exit_code missing cells -------------------------------
 
-    /// T-1a: cancel + recreate flag (alone) + recreate plan → 8.
+    /// cancel + recreate flag (alone) + recreate plan → 8.
     /// Pins recreate trumps default-0 even without `--detailed-exitcode`.
     #[test]
     fn cancel_exit_code_recreate_flag_only_with_recreate_returns_eight() {
@@ -4598,7 +4596,7 @@ mod tests {
         assert_eq!(cancel_exit_code(false, true, &plan), 8);
     }
 
-    /// T-1b: cancel + both flags + NoOp plan → 2 (recreate flag set
+    /// cancel + both flags + NoOp plan → 2 (recreate flag set
     /// but no recreate present, falls through to detailed-exitcode).
     #[test]
     fn cancel_exit_code_both_flags_no_recreate_returns_two() {
@@ -4609,7 +4607,7 @@ mod tests {
         assert_eq!(cancel_exit_code(true, true, &all_noop), 2);
     }
 
-    /// T-1c: cancel + recreate flag (alone) + NoOp plan → 0.
+    /// cancel + recreate flag (alone) + NoOp plan → 0.
     /// No detailed flag, no recreate present — default to 0.
     #[test]
     fn cancel_exit_code_recreate_flag_only_no_recreate_returns_zero() {
@@ -4620,9 +4618,9 @@ mod tests {
         assert_eq!(cancel_exit_code(false, true, &all_noop), 0);
     }
 
-    // ---- T-2: dry_run_exit_code missing cells -------------------------
+    // ---- dry_run_exit_code missing cells ------------------------------
 
-    /// T-2a: dry-run + recreate flag (alone) + recreate plan → 8.
+    /// dry-run + recreate flag (alone) + recreate plan → 8.
     /// Pins recreate trumps default-0 even without `--detailed-exitcode`.
     #[test]
     fn dry_run_exit_code_recreate_flag_only_with_recreate_returns_eight() {
@@ -4633,7 +4631,7 @@ mod tests {
         assert_eq!(dry_run_exit_code(false, true, &plan), 8);
     }
 
-    /// T-2b: dry-run + both flags + non-NoOp non-recreate plan → 2.
+    /// dry-run + both flags + non-NoOp non-recreate plan → 2.
     /// (Synthesized via UpdateRunner with `requires_recreate=false`,
     /// which is `Disruption::Restart`, not `Disruption::Recreate`.)
     /// Recreate flag set but no recreate present, falls through to
@@ -4658,7 +4656,7 @@ mod tests {
         assert_eq!(dry_run_exit_code(true, true, &plan), 2);
     }
 
-    /// T-2c: dry-run + recreate flag (alone) + NoOp plan → 0.
+    /// dry-run + recreate flag (alone) + NoOp plan → 0.
     /// No detailed flag, no recreate present — default to 0.
     #[test]
     fn dry_run_exit_code_recreate_flag_only_no_recreate_returns_zero() {
@@ -4669,9 +4667,9 @@ mod tests {
         assert_eq!(dry_run_exit_code(false, true, &all_noop), 0);
     }
 
-    // ---- T-3: apply_exit_code 8>2 precedence --------------------------
+    // ---- apply_exit_code 8>2 precedence -------------------------------
 
-    /// T-3: `apply_exit_code` with both flags set + success path +
+    /// `apply_exit_code` with both flags set + success path +
     /// recreate-class outcome → 8. Pins that recreate (8) trumps
     /// detailed-changes (2) at the apply layer too — symmetric with
     /// dry_run/cancel rule.
@@ -4686,7 +4684,7 @@ mod tests {
         assert_eq!(apply_exit_code(true, true, &result), 8);
     }
 
-    /// T-4: `apply_exit_code` total-failure-without-auth →
+    /// `apply_exit_code` total-failure-without-auth →
     /// 1 trumps recreate (8). Symmetric with the partial-failure (4)
     /// and auth-failure (5) precedence pins: failure precedence
     /// strictly trumps recreate, regardless of which failure class
@@ -4715,7 +4713,7 @@ mod tests {
         assert_eq!(apply_exit_code(false, true, &result), 1);
     }
 
-    /// T-6: `Plan::has_recreate` returns `true` for
+    /// `Plan::has_recreate` returns `true` for
     /// recreate-class actions BEYOND `CreateRunner`. Existing tests
     /// only cover Create + NoOp. `RemoveRunner` is unambiguously
     /// recreate per `Action::disruption` — pin so the helper does
@@ -4729,7 +4727,7 @@ mod tests {
         assert!(plan.has_recreate());
     }
 
-    /// T-5: inverse pin — `apply_exit_code` flag-OFF with a
+    /// Inverse pin — `apply_exit_code` flag-OFF with a
     /// recreate-class outcome in `result.details` MUST NOT return
     /// 8. The recreate signal is strictly opt-in; CI callers that
     /// did not pass `--detailed-exitcode-recreate` get the existing
@@ -4751,7 +4749,7 @@ mod tests {
         assert_eq!(apply_exit_code(true, false, &result), 2);
     }
 
-    /// T-4/T-5: `FieldValue::List` edge cases — empty Vec
+    /// `FieldValue::List` edge cases — empty Vec
     /// renders as the empty string in text, and as
     /// `{"type":"list","values":[]}` in JSON. Single-item Vec
     /// renders as the bare item with no trailing comma. Pins both
@@ -5522,7 +5520,7 @@ token_env = \"GHARS_PAT\"
                 assert!(!args.auto_approve);
                 assert!(!args.fail_fast);
                 assert!(!args.detailed_exitcode);
-                // T-7: pin clap default-false for the recreate
+                // Pin clap default-false for the recreate
                 // gate. Drift here would surprise CI consumers with
                 // unexpected exit code 8.
                 assert!(
@@ -7319,7 +7317,7 @@ auth = \"pat\"
         }
     }
 
-    /// CLN-2: build a recreate-class `RunnerDelta` with the given name +
+    /// Build a recreate-class `RunnerDelta` with the given name +
     /// recreate_reasons. All other fields default to the same values
     /// callers would otherwise inline. Use for any recreate-class
     /// `UpdateRunner` test fixture where only name + reasons matter.
@@ -7337,7 +7335,7 @@ auth = \"pat\"
         }
     }
 
-    /// CLN-2: build an in-place `RunnerDelta` (no recreate) with the
+    /// Build an in-place `RunnerDelta` (no recreate) with the
     /// given name. Symmetric to `recreate_delta` for the `~` sigil
     /// branch.
     fn inplace_delta(name: &str) -> plan::RunnerDelta {
@@ -7370,7 +7368,7 @@ auth = \"pat\"
 
     #[test]
     fn render_action_line_update_runner_emits_field_changes_indented() {
-        // BATCH C / PART 6: per-field FieldChange entries render as
+        // Per-field FieldChange entries render as
         // 4-space-indented `path: before → after` lines under the
         // header. The test exercises a recreate-class field (url) and
         // a list-typed field (labels) to confirm both paths produce a
@@ -7789,7 +7787,7 @@ auth = \"pat\"
 
     #[test]
     fn disruption_labels_are_snake_case_stable() {
-        // CLN-6/ADV-2: pin the JSON / text-mode label vocabulary
+        // Pin the JSON / text-mode label vocabulary
         // so a future refactor that touches Disruption::label()
         // cannot silently rename the tokens CI consumers grep on.
         assert_eq!(plan::Disruption::None.label(), "none");
@@ -7833,7 +7831,7 @@ auth = \"pat\"
 
     #[test]
     fn disruption_ordering_is_least_to_most() {
-        // CLN-6/ADV-2: pin the derived PartialOrd/Ord ordering so
+        // Pin the derived PartialOrd/Ord ordering so
         // callers can guard with `disruption >= Recreate` without
         // reading the enum's variant declaration order. Variant
         // declaration order IS the source of truth here, so the
@@ -7850,7 +7848,7 @@ auth = \"pat\"
         // footer comes from `Disruption::label()`, not from a
         // hardcoded string literal in the format string. If a
         // future refactor inlines the label strings (regressing
-        // the CLN-2 helper extraction), the substring assertions below
+        // the helper extraction), the substring assertions below
         // continue to pass — but the source-of-truth check at
         // the bottom (substring built from `label()` calls)
         // would still match. The load-bearing guarantee is the
@@ -8913,7 +8911,7 @@ auth = \"pat\"
             removed.get("before").is_none(),
             "recreate-path Removed must NOT carry a `before` body, got: {removed:?}"
         );
-        // API-1: explicit `body_suppressed: true` marker so JSON
+        // Explicit `body_suppressed: true` marker so JSON
         // consumers can distinguish "no body because suppressed" from
         // "no body because absent" without inferring from absence.
         assert_eq!(
@@ -9019,7 +9017,7 @@ auth = \"pat\"
 
     #[test]
     fn plan_to_json_value_update_runner_recreate_emits_recreate_disruption() {
-        // ADV-6: the all-variants test above covers in-place
+        // The all-variants test above covers in-place
         // UpdateRunner ("restart") but not the recreate branch
         // (`requires_recreate = true`). The plan-to-disruption
         // mapping at plan.rs::Action::disruption forks on
@@ -9460,7 +9458,7 @@ auth = \"pat\"
             ],
             "summary.recreates must list every Recreate-class action label, sorted alphabetically",
         );
-        // Structural pin (CLN-469-1): post-refactor,
+        // Structural pin: post-refactor,
         // by_disruption["recreate"] is sourced from `recreates.len()`
         // inside `plan_summary_value`, so the two fields cannot
         // diverge on input — they share a single counter. Asserting
@@ -9469,7 +9467,7 @@ auth = \"pat\"
         assert_eq!(
             body["summary"]["by_disruption"]["recreate"],
             serde_json::json!(actual.len()),
-            "summary.recreates length must equal summary.by_disruption.recreate (CLN-469-1: shared counter)",
+            "summary.recreates length must equal summary.by_disruption.recreate (shared counter)",
         );
         assert_eq!(body["summary"]["any_recreate"], true);
     }
@@ -11082,7 +11080,7 @@ auth = \"pat\"
 
     #[test]
     fn render_plan_json_update_runner_emits_field_changes_and_drop_in_changes() {
-        // BATCH C / PART 6: JSON output must surface
+        // JSON output must surface
         // RunnerDelta.field_changes and RunnerDelta.drop_in_changes so
         // CI / dashboard consumers can render the same per-field
         // detail the text path renders. drop_in_changes carries one
@@ -11244,7 +11242,7 @@ auth = \"pat\"
 
     #[test]
     fn render_plan_json_no_token_or_secret_keys() {
-        // F27 contract: secrets never appear in either format. We feed
+        // Secrets must never appear in either format. We feed
         // a plan with auth + cache references and assert the JSON keys
         // are bounded by the documented set.
         let plan = Plan {
@@ -14759,7 +14757,7 @@ auth = \"pat\"
     /// `Action::disruption` is `Disruption::Recreate` — CreateRunner,
     /// UpdateRunner-recreate, RemoveRunner, CreateCachePool,
     /// RemoveCachePool. The `!` sigil only marks the UpdateRunner-
-    /// recreate branch (F-DA4 in `render_action_line`'s doc-comment).
+    /// recreate branch (per `render_action_line`'s doc-comment).
     ///
     /// Fixture covers the asymmetry: CreateRunner + UpdateRunner-
     /// recreate + in-place UpdateRunner + RemoveRunner + RemoveCachePool.
@@ -14788,7 +14786,7 @@ auth = \"pat\"
             .collect();
         assert_eq!(
             bang_count, 1,
-            "F-DA4: only UpdateRunner-recreate uses `!`; got bang_count=\
+            "only UpdateRunner-recreate uses `!`; got bang_count=\
              {bang_count}, lines: {lines:?}",
         );
         assert_eq!(
@@ -14869,9 +14867,9 @@ auth = \"pat\"
     /// - RemoveRunner / RemoveCachePool → `-`
     /// - UpdateRunner-inplace / UpdateCachePool → `~`
     /// - NoOp → ` ` (space)
-    /// `!` is reserved for UpdateRunner with `requires_recreate=true`
-    /// (F-DA4). Pins the vocabulary so a future refactor cannot
-    /// silently broaden `!` to other variants.
+    /// `!` is reserved for UpdateRunner with `requires_recreate=true`.
+    /// Pins the vocabulary so a future refactor cannot silently
+    /// broaden `!` to other variants.
     #[test]
     fn render_action_line_bang_sigil_only_on_recreate_update_runner() {
         let cases: Vec<(&str, Action, char)> = vec![
@@ -14924,12 +14922,12 @@ auth = \"pat\"
             assert!(
                 !line.starts_with("! "),
                 "{name} must NOT lead with `!` (reserved for recreate-\
-                 class UpdateRunner per F-DA4); got: {line}",
+                 class UpdateRunner); got: {line}",
             );
         }
     }
 
-    /// F-DA2 shell-safety contract — `!` is followed by a space.
+    /// Shell-safety contract — `!` is followed by a space.
     /// Bash interprets `!word` as history expansion (e.g. `!1234`
     /// recalls a history entry); `! ` prevents that when an operator
     /// pastes a plan line into a shell. Two cases cover both format
@@ -14937,7 +14935,7 @@ auth = \"pat\"
     /// after the `\x1b[33m` ANSI prefix). Both must end the `!` byte
     /// with `b' '`. Other shape variants (with field_changes, with
     /// drop-in synthesis, etc.) test the body-block rendering, not
-    /// the F-DA2 byte contract — coverage is on the `!` itself, not
+    /// the byte contract — coverage is on the `!` itself, not
     /// the surrounding payload.
     #[test]
     fn render_action_line_bang_sigil_always_followed_by_space() {
@@ -14960,7 +14958,7 @@ auth = \"pat\"
             );
             assert_eq!(
                 bytes[after_bang], b' ',
-                "{name}: F-DA2 violation — `!` must be followed by ' ' \
+                "{name}: shell-safety violation — `!` must be followed by ' ' \
                  (bash history expansion guard); got byte 0x{:02x} at \
                  position {after_bang}; line: {line}",
                 bytes[after_bang],
@@ -15181,7 +15179,7 @@ auth = \"pat\"
     /// `render_apply_summary_line` emits the headline triple
     /// (`A applied, F failed, S skipped`) followed by the disruption
     /// parenthetical + `any_recreate` suffix produced by the shared
-    /// `format_disruption_tail` (CLN-2). Disruption labels come
+    /// `format_disruption_tail`. Disruption labels come
     /// from `Disruption::label()` (not hardcoded literals). This test
     /// pins the apply side only — for plan-side label sourcing see
     /// `render_plan_summary_line_uses_disruption_label_not_hardcoded`.
@@ -16405,10 +16403,10 @@ auth = \"pat\"
         /// Cross-field invariant on `plan_summary_value` output.
         /// The function builds `summary.recreates` (Vec<String>) and
         /// `summary.by_disruption.recreate` (u64) from two SEPARATE
-        /// passes over `actions` (CLN-469-1 sources both from the same
-        /// counter, but the production order — collect-then-count vs
-        /// count-then-collect — is an implementation detail the test
-        /// suite must not encode). The proptest generates an arbitrary
+        /// passes over `actions` (the production order — collect-then-
+        /// count vs count-then-collect — is an implementation detail
+        /// the test suite must not encode; both fields share a single
+        /// counter today). The proptest generates an arbitrary
         /// `Vec<Action>` (size 0..=8) mixing every variant + both
         /// UpdateRunner flavors (recreate vs in-place) + all three
         /// CachePool flavors (Create + Update + Remove) and asserts
@@ -16863,10 +16861,10 @@ auth = \"pat\"
         );
     }
 
-    // ---------- WO-S11C: remaining call-site sanitization wiring pins ---
+    // ---------- remaining call-site sanitization wiring pins ----------
 
-    /// WO-S11C item 1: pin that the IN-PLACE text path at
-    /// `render_action_line` (line ~1450) runs the drop-in basename
+    /// Pin that the IN-PLACE text path in `render_action_line`
+    /// runs the drop-in basename
     /// through `escape_control_chars` before stdout emission.
     /// Symmetric with the recreate-Removed text path pin at
     /// `render_action_line_recreate_removed_text_path_escapes_hostile_basename`
@@ -16920,9 +16918,9 @@ auth = \"pat\"
         );
     }
 
-    /// WO-S11C item 2: pin that the IN-PLACE JSON path at
-    /// `drop_in_change_to_json` (line ~2146) runs the drop-in
-    /// basename through `escape_control_chars` before serialization.
+    /// Pin that the IN-PLACE JSON path in `drop_in_change_to_json`
+    /// runs the drop-in basename through `escape_control_chars` before
+    /// serialization.
     /// Symmetric with the recreate-Removed JSON path pin at
     /// `plan_to_json_value_recreate_removed_json_path_escapes_hostile_basename`
     /// — the recreate path emits an inline `serde_json::json!`
@@ -17010,7 +17008,7 @@ auth = \"pat\"
         );
     }
 
-    /// WO-S11C item 3: pin the COMBINED defense-in-depth chain that
+    /// Pin the COMBINED defense-in-depth chain that
     /// scrubs `UndoStep::describe()` output before stderr emission.
     /// The chain has two intentionally-redundant layers:
     ///   1. `describe()` escapes each interpolated field per arm at

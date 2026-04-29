@@ -8,8 +8,8 @@
 //! issues (TTL 1h, clamped to `now + 1h - 30s`). `GithubAppToken` and
 //! `PatToken` mint via octocrab's
 //! `actions().create_*_runner_registration_token` /
-//! `create_*_runner_remove_token` (octocrab-0.42.1/src/api/actions.rs:542,
-//! 572, 734, 766) inside `block_on` (Part 6 enforcement rule item 3).
+//! `create_*_runner_remove_token` inside `block_on`
+//! (Part 6 enforcement rule item 3).
 //! `InteractiveToken` prompts the operator to paste a pre-minted token;
 //! `TokenFileToken` reads one from disk.
 //!
@@ -21,11 +21,11 @@
 //! guidance and asks the operator to re-run `ghars apply` once the
 //! rate-limit window passes. There is no in-process retry loop.
 //!
-//! Why no auto-retry: octocrab 0.42.1's retry path is implemented by
-//! `tower::retry::Policy` for `RetryConfig::Simple(count)` (see
-//! `octocrab-0.42.1/src/service/middleware/retry.rs`). The `retry()`
-//! method returns `Some(future::ready(()))` on every retryable
-//! response — no delay, no backoff, no `Retry-After` header parsing.
+//! Why no auto-retry: octocrab 0.42's retry path is implemented by
+//! `tower::retry::Policy` for `RetryConfig::Simple(count)`. The
+//! `retry()` method returns `Some(future::ready(()))` on every
+//! retryable response — no delay, no backoff, no `Retry-After`
+//! header parsing.
 //! Hammering the GitHub registration-token endpoint immediately on
 //! 429 deepens the rate-limit window and wastes ghars's per-IP quota,
 //! so the manual re-run path is strictly safer for v0.1. Adding a
@@ -39,11 +39,10 @@
 //! `MAX_RELEASES_BODY_BYTES` cap: the octocrab path through which
 //! `GithubAppToken` and `PatToken` mint registration tokens has NO
 //! body-size cap in v0.1. The blanket `impl<T: DeserializeOwned>
-//! FromResponse for T` in
-//! `octocrab-0.42.1/src/from_response.rs:14-25` collects the entire
-//! response body via `body.collect().await?.to_bytes()` before
-//! passing the buffer to `serde_json` — there is no `take()` /
-//! `Content-Length` pre-check anywhere along the chain. octocrab
+//! FromResponse for T` collects the entire response body via
+//! `body.collect().await?.to_bytes()` before passing the buffer to
+//! `serde_json` — there is no `take()` / `Content-Length` pre-check
+//! anywhere along the chain. octocrab
 //! uses hyper-util's `client-legacy` directly (Cargo.toml
 //! `default-client` feature) and pulls `tower-http` with only the
 //! `map-response-body` + `trace` features — `decompression` is NOT
@@ -212,10 +211,9 @@ pub fn build_token_source(spec: &AuthSpec, name: &str) -> Result<Box<dyn TokenSo
 // ---------- GithubAppToken ----------
 
 /// Auth source backed by a GitHub App private key. octocrab handles
-/// JWT minting (RS256, 9m lifetime per `octocrab::auth::create_jwt`,
-/// octocrab-0.42.1/src/auth.rs:61-86) and exchanges it for an
-/// installation token internally, caching the installation token
-/// in-memory until expiry.
+/// JWT minting (RS256, 9m lifetime per `octocrab::auth::create_jwt`)
+/// and exchanges it for an installation token internally, caching
+/// the installation token in-memory until expiry.
 #[derive(Debug)]
 pub struct GithubAppToken {
     name: String,
@@ -372,10 +370,10 @@ impl PatToken {
                 // of the process. Remove the var via the `env` crate's
                 // safe wrapper (which checks `num_threads::is_single_
                 // threaded()` and only calls the underlying unsafe stdlib
-                // mutator when the check passes — see env-1.0.1/src/
-                // lib.rs:74-79). Returning `None` means the operation
-                // was skipped because we could not prove single-thread
-                // safety; we warn rather than fail because the token
+                // mutator when the check passes). Returning `None` means
+                // the operation was skipped because we could not prove
+                // single-thread safety; we warn rather than fail
+                // because the token
                 // was already read into `value` and the caller's auth
                 // flow can still proceed. PatToken::new runs at config-
                 // load before any tokio runtime is built (the runtime
@@ -533,7 +531,7 @@ impl InteractiveToken {
 /// Convert a raw operator-pasted token into a [`RegistrationToken`].
 /// Pure logic split out from `InteractiveToken::prompt`
 /// so tests can drive every code path without an attached TTY:
-///   1. F39 trailing CR/LF strip — `trim_end_matches(['\r', '\n'])`,
+///   1. Trailing CR/LF strip — `trim_end_matches(['\r', '\n'])`,
 ///      NEVER `.trim()` (preserves embedded whitespace).
 ///   2. `validate_interactive_token_shape` — rejects empty / out-of-
 ///      bounds-length / control-char / whitespace-bearing tokens.
@@ -613,8 +611,8 @@ fn validate_interactive_token_shape(token: &str, name: &str) -> Result<()> {
 
 /// Auth source that reads a pre-minted registration token from a file
 /// (mode 0o600, owner root, not a symlink — same SEC-06 contract as
-/// the GitHub App private key). Trailing CR/LF stripped per F39
-/// (`s.trim_end_matches(['\r', '\n'])`, NEVER `.trim()`).
+/// the GitHub App private key). Trailing CR/LF stripped via
+/// `s.trim_end_matches(['\r', '\n'])`, NEVER `.trim()`.
 #[derive(Debug)]
 pub struct TokenFileToken {
     name: String,
@@ -747,11 +745,10 @@ async fn call_octocrab_token(
 ///
 /// `expires_at` passes through verbatim — octocrab's
 /// `SelfHostedRunnerToken.expires_at` is already
-/// `chrono::DateTime<Utc>` (per
-/// `octocrab-0.42.1/src/models/actions.rs:43`), and ghars stores the
-/// same type, so no conversion is needed. `source` is the per-runner
-/// `"github:NAME"` tag used by ApplyResult to attribute audit-log
-/// entries to the auth principal.
+/// `chrono::DateTime<Utc>`, and ghars stores the same type, so no
+/// conversion is needed. `source` is the per-runner `"github:NAME"`
+/// tag used by ApplyResult to attribute audit-log entries to the
+/// auth principal.
 #[must_use]
 fn registration_token_from_api(
     name: &str,
@@ -765,11 +762,11 @@ fn registration_token_from_api(
 }
 
 fn octocrab_to_auth(name: &str, op: &str, err: &octocrab::Error) -> GharsError {
-    // Pick the actionable hint by error class so the
-    // operator sees the right diagnosis — octocrab::Error is
-    // `#[non_exhaustive]` (see octocrab-0.42.1/src/error.rs:25), the
-    // catch-all keeps the build healthy across upstream variant
-    // additions. The individual arms below speak for themselves.
+    // Pick the actionable hint by error class so the operator sees
+    // the right diagnosis — octocrab::Error is `#[non_exhaustive]`,
+    // so the catch-all keeps the build healthy across upstream
+    // variant additions. The individual arms below speak for
+    // themselves.
     let hint = match err {
         octocrab::Error::GitHub { source, .. } => {
             let code = source.status_code.as_u16();
@@ -838,7 +835,7 @@ fn octocrab_to_auth(name: &str, op: &str, err: &octocrab::Error) -> GharsError {
     GharsError::Auth(format!("auth {name:?}: {op} failed: {err}"), hint)
 }
 
-/// Strip ONLY trailing `\r` / `\n` — F39. Operator content (including
+/// Strip ONLY trailing `\r` / `\n`. Operator content (including
 /// embedded whitespace) is preserved on purpose.
 fn strip_trailing_newlines(s: &str) -> String {
     s.trim_end_matches(['\r', '\n']).to_string()
@@ -957,11 +954,11 @@ mod tests {
         assert_eq!(strip_trailing_newlines(" abc \n"), " abc ");
     }
 
-    /// F39 contract edge cases — every input shape `read_root_owned_0600`
-    /// might receive from a credential file. The contract is:
-    /// `trim_end_matches(['\r', '\n'])` — NOT `.trim()`. Embedded
-    /// whitespace and any non-`\r\n` characters anywhere in the string
-    /// must survive verbatim.
+    /// Trailing-newline-strip contract edge cases — every input shape
+    /// `read_root_owned_0600` might receive from a credential file.
+    /// The contract is: `trim_end_matches(['\r', '\n'])` — NOT
+    /// `.trim()`. Embedded whitespace and any non-`\r\n` characters
+    /// anywhere in the string must survive verbatim.
     #[test]
     fn strip_trailing_newlines_handles_edge_cases() {
         // Empty input is a fixed point.
@@ -1330,8 +1327,8 @@ mod tests {
 
         // Probe single-threadedness via /proc/self/stat field 20
         // (nr_threads). Same mechanism env's num_threads dep uses on
-        // Linux (num_threads-0.1.7/src/linux.rs:5-12). Inlined here
-        // to avoid pulling num_threads into dev-deps.
+        // Linux. Inlined here to avoid pulling num_threads into
+        // dev-deps.
         fn is_single_threaded() -> bool {
             std::fs::read_to_string("/proc/self/stat")
                 .ok()
@@ -1492,7 +1489,7 @@ mod tests {
     #[test]
     fn assemble_interactive_token_strips_trailing_newlines_and_validates_shape() {
         // Happy path: 40-char alphanumeric token with trailing CRLF
-        // (typical paste from a browser). F39 strip + validate accept.
+        // (typical paste from a browser). Trim-end + validate accept.
         let raw = format!("{}\r\n", "A".repeat(40));
         let tok = assemble_interactive_token("ifc", &raw).unwrap();
         assert_eq!(tok.value, "A".repeat(40));
@@ -1846,11 +1843,10 @@ mod tests {
     // bodies would silently leak operator credentials into stderr
     // (cmd_apply renders failed actions via writeln!).
     //
-    // Empirical truth in octocrab 0.42.1 (verified by reading
-    // octocrab-0.42.1/src/error.rs and snafu-derive-0.8.9/src/
-    // shared.rs:537-549): the `Error::GitHub { source, backtrace }`
-    // variant carries no `#[snafu(display(...))]` attribute and no
-    // doc-comment, so snafu falls back to the variant-name default
+    // Empirical truth in octocrab 0.42: the
+    // `Error::GitHub { source, backtrace }` variant carries no
+    // `#[snafu(display(...))]` attribute and no doc-comment, so
+    // snafu falls back to the variant-name default
     // (`stringify!(GitHub)`). Display output is literally the 6-byte
     // string "GitHub" — no message, no status code, no URL, no
     // bearer header, no request body. Even the response message is

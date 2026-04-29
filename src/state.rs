@@ -152,14 +152,13 @@ pub struct DiscoveredRunner {
 /// (the desired spec re-rendered with a different hash than the
 /// recorded one) is detected later by the plan engine.
 ///
-/// BATCH C: `DropInsModified` and `Both` carry the list of unmanaged
-/// drop-in basenames (sorted by `BTreeMap` key iteration order) so
-/// the plan engine and CLI renderer can name the offending files
-/// without re-walking the directory. The list is non-empty by
-/// construction; `Vec::new()` would mean "no drift" and that's
-/// `InSync`. Copy is dropped because Vec isn't Copy — most callers
-/// already pattern-match by reference, and the few that did
-/// `let d = drift;` now use clone() instead.
+/// `DropInsModified` and `Both` carry the list of unmanaged drop-in
+/// basenames (sorted by `BTreeMap` key iteration order) so the plan
+/// engine and CLI renderer can name the offending files without
+/// re-walking the directory. The list is non-empty by construction;
+/// `Vec::new()` would mean "no drift" and that's `InSync`. The
+/// variant is not `Copy` because `Vec` isn't `Copy`; callers
+/// pattern-match by reference or clone explicitly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Drift {
     /// On-disk content matches the canonical template + only managed
@@ -484,7 +483,7 @@ fn read_drop_ins(dir: &Utf8Path) -> std::io::Result<BTreeMap<String, String>> {
 /// [`crate::systemd::runner_template_text`]; `DropInsModified` is any
 /// drop-in basename outside [`MANAGED_DROP_IN_BASENAMES`].
 ///
-/// BATCH C: collect the unmanaged basenames into the
+/// Collect the unmanaged basenames into the
 /// `DropInsModified(Vec<String>)` / `Both(Vec<String>)` payload. Sort
 /// is implicit — `BTreeMap` keys iterate in lexicographic order, so
 /// the resulting Vec is sorted without an explicit `.sort()` call.
@@ -1539,9 +1538,9 @@ mod tests {
     fn parser_empty_value_after_equals_is_kept_with_empty_string() {
         // `Key=` (empty RHS) is a legal systemd reset-directive form.
         // The parser must keep the assignment with an empty-string
-        // value so downstream validators (F48) can detect it. A
-        // mutant that drops empty values would silently lose the
-        // reset semantics.
+        // value so downstream reset-on-empty validators can detect
+        // it. A mutant that drops empty values would silently lose
+        // the reset semantics.
         let p = ParsedUnit::from_text("[Service]\nKey=\nNext=second\n");
         assert_eq!(p.first("Service", "Key"), Some(""));
         assert_eq!(p.first("Service", "Next"), Some("second"));

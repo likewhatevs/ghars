@@ -6,7 +6,7 @@
 //! `github.rs` row of Part 2 (module layout) + Part 9f (multi-arch
 //! tarball URL template).
 //!
-//! ## Tokio runtime (F73 enforcement rule)
+//! ## Tokio runtime (Part 6 enforcement rule)
 //!
 //! `fn main()` is sync. Only octocrab calls touch tokio, and only via
 //! `block_on(...)`. zbus blocking-api MUST NEVER be invoked inside an
@@ -16,7 +16,7 @@
 //!
 //! ## Releases API
 //!
-//! Direct port of `install_gha_runner.py:992-1106`:
+//! Direct port of the legacy Python install tool's release lookup:
 //! - `https://api.github.com/repos/actions/runner/releases/latest`
 //! - `https://api.github.com/repos/actions/runner/releases/tags/v{version}`
 //!
@@ -61,7 +61,7 @@ const TARBALL_URL_TEMPLATE: &str =
 
 /// HTTP-API timeout. GitHub releases responses come back in a second or
 /// two; 10s is generous and surfaces a hung API call quickly. Matches
-/// `install_gha_runner.py:1021`.
+/// the legacy Python install tool's HTTP timeout.
 const HTTP_API_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Hard cap on bytes read from a GitHub releases-API response.
@@ -79,10 +79,9 @@ const HTTP_API_TIMEOUT: Duration = Duration::from_secs(10);
 ///     appliance) can reply with a small compressed payload that
 ///     decompresses to gigabytes — the ratio is operator-uncontrolled.
 ///   - `reqwest::blocking::Response::content_length()` returns `None`
-///     when gzip auto-decode is in effect (verified at
-///     reqwest-0.12.28/src/blocking/response.rs:193-208 and
-///     async_impl/response.rs:78-94 — the doc-comment explicitly calls
-///     this out). The pre-decompression byte size is only available via
+///     when gzip auto-decode is in effect (the doc-comment on the
+///     blocking response explicitly calls this out). The
+///     pre-decompression byte size is only available via
 ///     the raw `Content-Length` HTTP header, which is the on-wire
 ///     compressed size — useful as a fast pre-check for non-compressed
 ///     oversize responses, but useless against gzip bombs because the
@@ -432,13 +431,14 @@ struct ReleaseApiPayload {
     body: Option<String>,
 }
 
-/// Strip a single leading `v` from a tag name, matching
-/// `install_gha_runner.py:1050-1051`.
+/// Strip a single leading `v` from a tag name, matching the legacy
+/// Python install tool's `strip_v` helper.
 fn strip_v(tag: &str) -> &str {
     tag.strip_prefix('v').unwrap_or(tag)
 }
 
-/// Lower-case 64-hex check, matching `install_gha_runner.py:1004-1007`.
+/// Lower-case 64-hex check, matching the legacy Python install tool's
+/// digest-shape check.
 fn is_hex64(s: &str) -> bool {
     s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
@@ -447,7 +447,7 @@ fn is_hex64(s: &str) -> bool {
 ///
 /// Prefers the per-asset `digest` field (`sha256:HEX`); falls back to a
 /// `<hex>  <filename>` line in the release body (sha256sum -c format).
-/// Direct port of `install_gha_runner.py:1054-1076`.
+/// Direct port of the legacy Python install tool's digest extractor.
 ///
 /// # Errors
 ///
@@ -666,9 +666,8 @@ fn http_get_payload_with_cap(
     }
 
     // Layer 1: raw Content-Length header pre-check. resp.content_length()
-    // returns None for gzipped responses (reqwest-0.12.28 docs at
-    // blocking/response.rs:193-208), so we read the header directly to
-    // get the on-wire size before reqwest's gzip decoder mangles the
+    // returns None for gzipped responses, so we read the header directly
+    // to get the on-wire size before reqwest's gzip decoder mangles the
     // size hint.
     // Malformed Content-Length silently falls through to Layer 2 streaming backstop.
     if let Some(cl_header) = resp.headers().get(reqwest::header::CONTENT_LENGTH) {
@@ -1357,8 +1356,8 @@ mod tests {
     // pin the same coverage at the `parse_url` entry point so any
     // regression in the validate_url -> parse_url chain (e.g. the
     // `validate_url` pre-check getting accidentally removed) surfaces
-    // here. The list mirrors install_gha_runner.py:1857-1882 plus an
-    // explicit-port case.
+    // here. The list mirrors the legacy Python install tool's URL
+    // rejection cases plus an explicit-port case.
 
     #[rstest]
     #[case("", "empty")]
@@ -2171,8 +2170,8 @@ mod tests {
     /// mockito with a chunked-transfer body (no Content-Length
     /// header). Mockito's `with_chunked_body` routes through
     /// `Body::FnWithWriter` which the server emits without setting
-    /// `content-length` (mockito-1.7.2/src/server.rs:587 only adds CL
-    /// for `ResponseBody::Bytes`). This forces Layer 1 to skip and
+    /// `content-length` (the chunked-body path skips the CL header
+    /// that the bytes-body path adds). This forces Layer 1 to skip and
     /// Layer 2 (the streaming `read_body_capped` post-decompression
     /// gate) to fire — the actual gzip-bomb defense surface.
     ///
@@ -2740,11 +2739,11 @@ mod tests {
     ///
     /// Source-of-truth read: io/error.rs Display impl for the
     /// inner-Custom variant calls `fmt::Display::fmt(&c.error, fmt)`
-    /// which delegates outright. reqwest::Error Display (verified at
-    /// reqwest-0.12.28/src/error.rs:227-273) writes ONLY its own
-    /// kind-specific text and the URL — it does NOT walk into the
-    /// source chain. So `format_error_chain` over a reqwest::Error
-    /// produces `<outer-kind-text>: <source-text>` with no doubling.
+    /// which delegates outright. reqwest::Error Display writes ONLY
+    /// its own kind-specific text and the URL — it does NOT walk
+    /// into the source chain. So `format_error_chain` over a
+    /// reqwest::Error produces `<outer-kind-text>: <source-text>`
+    /// with no doubling.
     #[test]
     fn format_error_chain_no_doubling_on_distinct_outer_display() {
         use std::error::Error;
@@ -2833,10 +2832,9 @@ mod tests {
     /// `format_error_chain(&reqwest_err)` and
     /// `format_error_chain(&io_err)` directly on the outermost
     /// type, never wrapping reqwest::Error in io::Error::other.
-    /// Reqwest::Error Display (verified at
-    /// reqwest-0.12.28/src/error.rs:227-273) writes ONLY its own
-    /// kind-specific text and URL, never embedding the source — so
-    /// the production no-doubling regime is pinned by
+    /// Reqwest::Error Display writes ONLY its own kind-specific
+    /// text and URL, never embedding the source — so the production
+    /// no-doubling regime is pinned by
     /// `format_error_chain_no_doubling_on_distinct_outer_display`.
     ///
     /// This pin defends against a regression that "fixes" the

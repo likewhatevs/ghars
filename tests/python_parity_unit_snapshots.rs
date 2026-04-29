@@ -17,15 +17,15 @@
 //! - `dropin_00_identity`         — identity annotations only (always emitted).
 //! - `dropin_10_memory`           — `MemoryMax=` only.
 //! - `dropin_20_hardening_kvm_off`— operator-strict profile that revokes
-//!   `DeviceAllow=/dev/kvm rw` (exercises the F48 reset
-//!   exemption).
+//!   `DeviceAllow=/dev/kvm rw` (exercises the reset-on-empty
+//!   validator's exemption).
 //! - `dropin_20_hardening_strict` — every overridable directive flipped.
 //! - `dropin_30_cache_pool_ccache`/`_sccache`/`_unified` — three pool
 //!   shapes (Part 9b).
-//! - `dropin_40_network_netns`    — F79 fail-closed netns binding.
+//! - `dropin_40_network_netns`    — fail-closed netns binding.
 //! - `dropin_50_numa`             — `AllowedCPUs=` + `AllowedMemoryNodes=`.
-//! - `dropin_60_proxy`            — proxy + CA-trust env (R2).
-//! - `dropin_70_hooks`            — pre/post-job hooks (R3).
+//! - `dropin_60_proxy`            — proxy + CA-trust env.
+//! - `dropin_70_hooks`            — pre/post-job hooks.
 //! - `dropin_80_lognamespace`     — `LogNamespace=ghars-NAME` (always).
 //! - `cache_drop_in_*`            — `ghars-cache@NAME.service.d/00-ghars.conf`
 //!   per-pool drop-ins (ccache-only, sccache-only, both).
@@ -221,7 +221,7 @@ fn dropin_30_cache_pool_sccache_only_snapshot() {
 
 #[test]
 fn dropin_30_cache_pool_unified_snapshot() {
-    // F68: a pool can serve BOTH kinds out of one ghars-cache@.service.
+    // A pool can serve BOTH kinds out of one ghars-cache@.service.
     // The drop-in must layer ccache + sccache env vars in deterministic
     // order so two reviewers comparing the output see identical bytes.
     let mut spec = base_spec();
@@ -241,7 +241,7 @@ fn dropin_30_cache_pool_unified_snapshot() {
 
 #[test]
 fn dropin_40_network_netns_snapshot() {
-    // F79 fail-closed binding: NetworkNamespacePath= REFUSES TO START
+    // Fail-closed binding: NetworkNamespacePath= REFUSES TO START
     // when the netns bind-mount path is missing (per
     // exec-invoke.c:4760-4761). The snapshot pins the binding line +
     // every defense-in-depth directive (IPAddressAllow / IPAddressDeny
@@ -320,7 +320,7 @@ fn dropin_70_hooks_snapshot() {
 
 #[test]
 fn dropin_80_lognamespace_snapshot() {
-    // F78 confirmed: unconditional. The snapshot anchors the exact
+    // Unconditional. The snapshot anchors the exact
     // line so a future edit that drops/renames LogNamespace fails
     // here AND in `python_parity_unit_text.rs` (defense in depth).
     let r = render_runner_unit(&base_spec()).unwrap();

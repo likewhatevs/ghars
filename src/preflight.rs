@@ -6,7 +6,7 @@
 //! Design spec: Part 10 (Preflight). Surfaced by `ghars status`
 //! (system-health section) and gated at apply-time via `run_preflight`.
 //!
-//! Behavior ported from `install_gha_runner.py:838-985`, with
+//! Behavior ported from the legacy Python install tool, with
 //! design-spec extensions:
 //!
 //! - OS support widened to Ubuntu 24+, Fedora 40+, RHEL/CentOS/Rocky/

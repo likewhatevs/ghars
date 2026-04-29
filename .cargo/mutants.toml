@@ -35,8 +35,7 @@ exclude_globs = [
   # systemd.rs DbusSystemd is the live D-Bus adapter — pure-logic
   # mutation runs would still load it. The render_* + validate_*
   # functions ARE pure, but cargo-mutants operates at file granularity
-  # in v25.x. Re-include when DbusSystemd is split into its own module
-  # (B3 follow-up).
+  # in v25.x. Re-include when DbusSystemd is split into its own module.
   "src/systemd.rs",
 ]
 

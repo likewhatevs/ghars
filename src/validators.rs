@@ -2,9 +2,9 @@
 //! shape, sha256 64-hex, runner version `X.Y.Z`, label charset, memory
 //! grammar, CIDR.
 //!
-//! Behavior ported field-for-field from `install_gha_runner.py:87-289`.
-//! Every regex and rejection case is preserved verbatim so the v0.1
-//! parity tests reuse the Python suite directly.
+//! Behavior ported field-for-field from the legacy Python install
+//! tool. Every regex and rejection case is preserved verbatim so the
+//! v0.1 parity tests reuse the Python suite directly.
 
 // Module-local regexes are compile-time-constant patterns. `Regex::new`
 // here is unfallible by inspection; using `expect` makes the panic site
@@ -140,9 +140,10 @@ const _: () = assert!(IFNAMSIZ > VETH_NAME_OVERHEAD + 1);
 
 /// Reserved top-level filesystem paths that `--prefix` MUST NOT equal.
 ///
-/// Mirrors `install_gha_runner.py:113-117`. `/` and one-segment
-/// directories under it like `/etc`, `/var`, `/usr`. Refuses both
-/// because writing runner state into these would clobber the host.
+/// Mirrors the legacy Python install tool's reserved-path check.
+/// `/` and one-segment directories under it like `/etc`, `/var`,
+/// `/usr`. Refuses both because writing runner state into these
+/// would clobber the host.
 const TOP_LEVEL_RESERVED: &[&str] = &[
     "/", "/bin", "/sbin", "/boot", "/dev", "/etc", "/home", "/lib", "/lib32", "/lib64", "/proc",
     "/root", "/run", "/srv", "/sys", "/tmp", "/usr", "/var",
@@ -295,7 +296,7 @@ pub fn validate_cache_pool_name(name: &str) -> Result<()> {
 /// # Errors
 ///
 /// Returns `GharsError::Validation` for empty input or any pattern
-/// mismatch. Matches `install_gha_runner.py:178-185`.
+/// mismatch. Matches the legacy Python install tool's URL validator.
 pub fn validate_url(u: &str) -> Result<()> {
     if u.is_empty() {
         return Err(validation(
@@ -321,7 +322,7 @@ pub fn validate_url(u: &str) -> Result<()> {
 /// # Errors
 ///
 /// Returns `GharsError::Validation` for any of the above conditions.
-/// Matches `install_gha_runner.py:233-248`.
+/// Matches the legacy Python install tool's prefix validator.
 pub fn validate_prefix(p: &str) -> Result<()> {
     if p.is_empty() {
         return Err(validation(
@@ -382,7 +383,7 @@ pub fn validate_prefix(p: &str) -> Result<()> {
 ///
 /// Returns `GharsError::Validation` for empty input, length above
 /// [`USER_MAX_LEN`], or pattern mismatch.
-/// Matches `install_gha_runner.py:251-257`.
+/// Matches the legacy Python install tool's user validator.
 pub fn validate_user(u: &str) -> Result<()> {
     if u.is_empty() {
         return Err(validation(
@@ -418,7 +419,7 @@ pub fn validate_user(u: &str) -> Result<()> {
 /// # Errors
 ///
 /// Returns `GharsError::Validation` for any other shape or out-of-range
-/// percent. Matches `install_gha_runner.py:260-274`.
+/// percent. Matches the legacy Python install tool's memory-max validator.
 pub fn validate_memory_max(m: &str) -> Result<()> {
     if m.is_empty() {
         return Ok(());
@@ -459,7 +460,9 @@ pub fn validate_memory_max(m: &str) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns `GharsError::Validation` per `install_gha_runner.py:219-230`.
+/// Returns `GharsError::Validation` for empty entries (leading,
+/// trailing, or adjacent commas) or for any token that fails the
+/// label charset.
 pub fn validate_labels(csv: &str) -> Result<()> {
     if csv.is_empty() {
         return Ok(());
@@ -485,7 +488,7 @@ pub fn validate_labels(csv: &str) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns `GharsError::Validation` per `install_gha_runner.py:209-211`.
+/// Returns `GharsError::Validation` if the input is not 64 hex digits.
 pub fn validate_sha256(h: &str) -> Result<()> {
     if !SHA256_RE.is_match(h) {
         return Err(validation(
@@ -500,7 +503,7 @@ pub fn validate_sha256(h: &str) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns `GharsError::Validation` per `install_gha_runner.py:214-216`.
+/// Returns `GharsError::Validation` if the input does not match `X.Y.Z`.
 pub fn validate_version(v: &str) -> Result<()> {
     if !VERSION_RE.is_match(v) {
         return Err(validation(
@@ -533,9 +536,10 @@ pub fn validate_version(v: &str) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns `GharsError::Validation` for any failed gate. Matches
-/// `install_gha_runner.py:277-288` plus the absolute-path and
-/// magic-byte gates ghars adds for stronger config-load validation.
+/// Returns `GharsError::Validation` for any failed gate. Matches the
+/// legacy Python install tool's tarball-path checks plus the
+/// absolute-path and magic-byte gates ghars adds for stronger
+/// config-load validation.
 pub fn validate_runner_tarball(path: &str) -> Result<()> {
     let p = Path::new(path);
     if !p.is_absolute() {
@@ -799,9 +803,9 @@ pub fn validate_network_spec(spec: &crate::config::NetworkSpec) -> Result<()> {
 /// Normalize a prefix path: strip a single trailing `/` unless the
 /// prefix is the root `"/"` itself.
 ///
-/// Mirrors `install_gha_runner.py:291-294`. The validator does not
-/// require a normalized form; this helper makes equality comparisons
-/// stable (e.g. `/opt/gha` vs `/opt/gha/`).
+/// Mirrors the legacy Python install tool's prefix normalization.
+/// The validator does not require a normalized form; this helper
+/// makes equality comparisons stable (e.g. `/opt/gha` vs `/opt/gha/`).
 #[must_use]
 pub fn normalize_prefix(p: &str) -> String {
     if p != "/" && p.ends_with('/') {
@@ -826,7 +830,7 @@ pub fn normalize_prefix(p: &str) -> String {
 /// - `CAP_SYS_RAWIO` — direct port I/O and `/dev/mem`-equivalent
 ///   primitives; reads physical memory.
 /// - `CAP_NET_RAW` — craft raw L2/L3 packets, bypassing the netns
-///   egress allowlist (R1) and reaching the host's neighbor cache.
+///   egress allowlist and reaching the host's neighbor cache.
 ///
 /// SEC-01. Tokens are matched case-insensitively against the input —
 /// operators write either `CAP_SYS_ADMIN` or `cap_sys_admin`, both

@@ -6,11 +6,8 @@
 //! (the latter for `--json` plan output and snapshot tests). Each
 //! struct uses `deny_unknown_fields` so typos at the operator's TOML
 //! surface fail at load time rather than silently dropping to default.
-//! (F19 — "won't fix": forward-evolving schema is handled by adding
-//! fields with `#[serde(default)]`, not by tolerating unknown keys.)
-//!
-//! The actual config loader (`load`) and the count-expansion + defaults-
-//! merge functions are stubbed and land in subsequent B1 tasks.
+//! Forward-evolving schema is handled by adding fields with
+//! `#[serde(default)]`, not by tolerating unknown keys.
 
 use std::net::IpAddr;
 
@@ -23,11 +20,11 @@ use crate::Result;
 
 /// Identifier regex shared by runner names, auth keys, cache pool keys,
 /// network keys: `^[a-z]([a-z0-9-]*[a-z0-9])?$`. One rule everywhere
-/// (Part 3 / F11).
+/// (Part 3).
 pub const IDENTIFIER_REGEX: &str = r"^[a-z]([a-z0-9-]*[a-z0-9])?$";
 
 /// Maximum identifier length (after the `-N` suffix is appended for
-/// count blocks). 64 chars (Part 3 / F11).
+/// count blocks). 64 chars (Part 3).
 pub const IDENTIFIER_MAX_LEN: usize = 64;
 
 /// Top-level config (parsed from `/etc/ghars/ghars.toml`).
@@ -35,7 +32,7 @@ pub const IDENTIFIER_MAX_LEN: usize = 64;
 /// `[[runner]]` blocks hold both literal-named runners (`count` unset
 /// or `1`) and prefix runners (`count > 1` expanded to `name-1` ..
 /// `name-N`). `RunnerGroupSpec` and `RunnerOverride` are not part of
-/// the schema — F76 amended (Part 3 / Part 4).
+/// the schema (Part 3 / Part 4).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -44,42 +41,40 @@ pub struct Config {
     pub defaults: Defaults,
 
     /// `[auth.NAME]` table — keyed by identifier. The only place auth
-    /// is declared; runners reference one by name (F12).
+    /// is declared; runners reference one by name.
     #[serde(default)]
     pub auth: IndexMap<String, AuthSpec>,
 
     /// `[cache_pools.NAME]` table — keyed by identifier. ccache and/or
-    /// sccache pools (F47, F50, F51, F68).
+    /// sccache pools.
     #[serde(default)]
     pub cache_pools: IndexMap<String, CachePoolSpec>,
 
     /// `[network.NAME]` table — keyed by identifier. Open mode is
     /// implicit (a runner with no `network` reference uses the host
-    /// netns); explicit `[network.NAME]` entries declare Netns mode
-    /// (F75 amended).
+    /// netns); explicit `[network.NAME]` entries declare Netns mode.
     #[serde(default, rename = "network")]
     pub networks: IndexMap<String, NetworkSpec>,
 
     /// Top-level proxy config — singleton. Most deployments use one
-    /// proxy. Per-runner overrides via `[[runner]].proxy` (R2 / #38).
+    /// proxy. Per-runner overrides via `[[runner]].proxy`.
     #[serde(default)]
     pub proxy: Option<ProxySpec>,
 
     /// Top-level job hooks — singleton. Per-runner overrides via
-    /// `[[runner]].hooks` (R3 / #40).
+    /// `[[runner]].hooks`.
     #[serde(default)]
     pub hooks: Option<HooksSpec>,
 
     /// `[[runner]]` array. Each entry produces 1 (no `count`) or N
-    /// (count = N) effective runners after expansion (F76 amended).
+    /// (count = N) effective runners after expansion.
     #[serde(default, rename = "runner")]
     pub runners: Vec<RunnerSpec>,
 }
 
 /// Global defaults inherited field-by-field by every runner. The
 /// merge rules are documented in Part 3's "Defaults merge rules"
-/// table; the implementation lives in the merge function (B1
-/// follow-up).
+/// table; the implementation lives in the merge function.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Defaults {
@@ -115,14 +110,14 @@ pub struct Defaults {
     /// the canonical Python-tool profile (#41).
     #[serde(default)]
     pub hardening: Hardening,
-    // F72: no `slice` field. All ghars-managed units use
+    // No `slice` field. All ghars-managed units use
     // `Slice=system.slice` unconditionally.
 }
 
 /// One `[[runner]]` declaration. When `count` is None or 1 the
 /// `name` is the literal runner name; when `count > 1` it is the
-/// prefix and ghars expands to `name-1` .. `name-{count}` (F76
-/// amended — `RunnerGroupSpec` and `RunnerOverride` are removed).
+/// prefix and ghars expands to `name-1` .. `name-{count}`.
+/// `RunnerGroupSpec` and `RunnerOverride` are not part of the schema.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RunnerSpec {
@@ -139,7 +134,7 @@ pub struct RunnerSpec {
     /// supported here — declare a separate `[[runner]]` block for
     /// the divergent runner. The count block AUTO-SKIPS any index
     /// whose generated name matches an explicit
-    /// `[[runner]] name = "..."` block elsewhere (F76 amended).
+    /// `[[runner]] name = "..."` block elsewhere.
     #[serde(default)]
     pub count: Option<u32>,
 
@@ -147,7 +142,7 @@ pub struct RunnerSpec {
     pub url: String,
 
     /// Reference to a key in `[auth.NAME]`. The ONLY way to specify
-    /// auth on a runner — token paths are not declared inline (F12).
+    /// auth on a runner — token paths are not declared inline.
     pub auth: Option<String>,
 
     /// Per-runner labels, concatenated (dedup, preserve order) with
@@ -187,16 +182,15 @@ pub struct RunnerSpec {
     pub trust_zone: String,
 
     /// Reference to a key in `[network.NAME]`. None ≡ implicit Open
-    /// (host netns) (F16, F75 amended).
+    /// (host netns).
     pub network: Option<String>,
 
     /// Per-runner proxy override (replaces top-level `[proxy]` for
-    /// this runner). None ≡ inherit top-level `[proxy]` or no proxy
-    /// (R2 / #38).
+    /// this runner). None ≡ inherit top-level `[proxy]` or no proxy.
     pub proxy: Option<ProxySpec>,
 
     /// Per-runner hooks override. None ≡ inherit top-level `[hooks]`
-    /// or none (R3 / #40).
+    /// or none.
     pub hooks: Option<HooksSpec>,
 
     /// Per-runner hardening overrides; merged field-by-field over
@@ -209,15 +203,15 @@ pub struct RunnerSpec {
     pub allowed_cpus: Option<String>,
     /// `AllowedMemoryNodes=` (cgroup v2 cpuset).
     pub allowed_memory_nodes: Option<String>,
-    // F72: no `slice` field. All units use Slice=system.slice
+    // No `slice` field. All units use Slice=system.slice
     // unconditionally.
 }
 
 /// A runner spec after count-expansion + `[defaults]` merge. Plan/apply
 /// consume this; the count expander produces one `EffectiveRunnerSpec`
-/// per generated runner. The merge logic lives with the loader (B1
-/// follow-up); the fields below are the SHAPE that the unit-text
-/// generator (B2 / Part 9) and plan engine (B3 / Part 8) require.
+/// per generated runner. The merge logic lives with the loader; the
+/// fields below are the SHAPE that the unit-text generator and plan
+/// engine require.
 ///
 /// Resolved bindings (`auth_name`, `caches`, `network`) carry the
 /// looked-up auxiliary data inline so downstream code never needs to
@@ -241,7 +235,7 @@ pub struct EffectiveRunnerSpec {
     pub prefix: Utf8PathBuf,
     /// Effective labels after `concat(defaults.labels, runner.labels)`
     /// + dedup (preserves order). Empty after merge ⇒ defaults to
-    /// `[name]` per Python parity (`install_gha_runner.py:1627`, F34).
+    /// `[name]` per Python parity.
     pub labels: Vec<String>,
     /// Free-form `MemoryMax=` value. None ⇒ no `10-memory.conf` drop-in.
     pub memory_max: Option<String>,
@@ -276,7 +270,7 @@ pub struct EffectiveRunnerSpec {
     pub allowed_cpus: Option<String>,
     /// `AllowedMemoryNodes=` (cgroup v2 cpuset).
     pub allowed_memory_nodes: Option<String>,
-    /// Spec hash (sha256 of canonical JSON; F17). The generator emits
+    /// Spec hash (sha256 of canonical JSON). The generator emits
     /// this verbatim into the X-Ghars-Spec-Hash annotation; computing
     /// it is the loader's responsibility.
     pub spec_hash: String,
@@ -379,14 +373,13 @@ pub struct Hardening {
     #[serde(default)]
     pub extra_syscalls: Vec<String>,
     /// `BindReadOnlyPaths` style: `Curated` (Python default, narrow
-    /// /etc list) or `Broad` (whole /etc bound). User uses Broad
-    /// (#41).
+    /// /etc list) or `Broad` (whole /etc bound).
     #[serde(default)]
     pub etc_bind_style: EtcBindStyle,
     /// Explicit `BindReadOnlyPaths` replacement list. None ≡ use the
     /// template's curated set (or whole /etc per `etc_bind_style`).
     /// Some(list) ≡ REPLACE the template's BindReadOnlyPaths entirely
-    /// (F48 reset-on-empty validator gates safety) (R4).
+    /// (the reset-on-empty validator gates safety).
     pub bind_readonly_paths: Option<Vec<Utf8PathBuf>>,
     /// Additional `BindReadOnlyPaths` entries APPENDED to the
     /// template's set (or to `bind_readonly_paths` if set). Use this
@@ -411,8 +404,7 @@ pub enum EtcBindStyle {
 }
 
 /// Proxy configuration. Generates `HTTP_PROXY` / `HTTPS_PROXY` /
-/// `NO_PROXY` env vars + an extensible CA-trust env-var list (R2 /
-/// #38).
+/// `NO_PROXY` env vars + an extensible CA-trust env-var list.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ProxySpec {
@@ -457,14 +449,13 @@ pub struct HooksSpec {
     pub post_job: Option<Utf8PathBuf>,
 }
 
-/// Auth source. The ONLY way to express auth in v0.1 (F12). The
-/// `kind` discriminator is serialized as a TOML/JSON tag (e.g.
+/// Auth source. The `kind` discriminator is serialized as a TOML/JSON tag (e.g.
 /// `kind = "pat"`) — `serde(tag = "kind", rename_all = "snake_case")`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AuthSpec {
     /// GitHub App. octocrab handles JWT minting + installation-token
-    /// caching (F73, F77).
+    /// caching.
     GithubApp {
         /// GitHub App ID (numeric).
         app_id: u64,
@@ -502,8 +493,8 @@ pub enum AuthSpec {
 }
 
 /// Cache pool declaration. ccache via cooperative flock on a shared
-/// dir (F50); sccache via per-pool single-server unit (F51); both
-/// can co-exist in one pool (F68).
+/// dir; sccache via per-pool single-server unit; both can co-exist
+/// in one pool.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct CachePoolSpec {
@@ -535,8 +526,7 @@ fn default_trust_zone() -> String {
     "default".into()
 }
 
-/// Per-pool cache kind. ccache and sccache only; "Generic" was
-/// dropped — no defined semantics (F14).
+/// Per-pool cache kind. ccache and sccache only.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CacheKind {
@@ -548,7 +538,7 @@ pub enum CacheKind {
 
 /// Pool sharing mode. `Shared` is the default; `Isolated` rejects
 /// configs where >1 runner references the pool (sccache pools are
-/// always shared regardless — F47/F51).
+/// always shared regardless of this setting).
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CacheMode {
@@ -560,19 +550,17 @@ pub enum CacheMode {
 }
 
 /// `[network.NAME]` declaration. Drives nft rule generation for the
-/// netns mode; `Open` is implicit (no `[network.NAME]` entry needed)
-/// (F75 amended, R1).
+/// netns mode; `Open` is implicit (no `[network.NAME]` entry needed).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkSpec {
-    /// Network mode. `Netns` is the only non-Open mode in v0.1
-    /// (F75 amended).
+    /// Network mode. `Netns` is the only non-Open mode in v0.1.
     pub mode: NetworkMode,
 
     /// Allowed egress destinations. Each entry: addr (IpAddr or
     /// CIDR), port (single / range / set), proto (tcp/udp/both),
     /// optional comment. Maps directly to
-    /// `ip daddr ADDR PROTO dport PORT accept` (R1).
+    /// `ip daddr ADDR PROTO dport PORT accept`.
     #[serde(default)]
     pub allowed_egress: Vec<EgressRule>,
 
@@ -595,7 +583,7 @@ pub struct NetworkSpec {
     /// binding on the veth IP). Override with
     /// `dns = { mode = "static", servers = [...] }` when the host
     /// doesn't run systemd-resolved or operator wants explicit
-    /// upstream nameservers. NO no-DNS mode (F79c).
+    /// upstream nameservers. No no-DNS mode is provided.
     #[serde(default)]
     pub dns: DnsMode,
 
@@ -603,15 +591,11 @@ pub struct NetworkSpec {
     /// a /64 from a configurable ULA pool when set to `Enabled`.
     #[serde(default)]
     pub ipv6: Ipv6Mode,
-    // F75 amended: `loopback` field REMOVED — was a cgroup-nft
-    // workaround (mark-and-check pattern); netns has its own private
-    // `lo` so the workaround is unnecessary.
 }
 
 /// Network mode. `Open` ≡ no isolation (host netns); `Netns` ≡ full
 /// network namespace via `ghars-net@RUNNER.service` + per-runner
-/// veth + nft rules. `CgroupNft` and `BpfFilter` were REMOVED —
-/// either weaker fallbacks or redundant (F75 amended).
+/// veth + nft rules. Only `Open` and `Netns` modes are supported.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkMode {
@@ -622,7 +606,7 @@ pub enum NetworkMode {
 }
 
 /// One egress allow rule. addr is parsed as `IpAddr` or `IpNet` at
-/// validate time; bad values reject with serde-derived spans (R1).
+/// validate time; bad values reject with serde-derived spans.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct EgressRule {
@@ -675,7 +659,7 @@ pub enum Proto {
 /// DNS policy inside a Netns runner. Default `Forward` uses the
 /// host's systemd-resolved via `DNSStubListenerExtra=` on the veth
 /// IP; `Static` lists explicit upstream nameservers and bypasses
-/// systemd-resolved (F79c).
+/// systemd-resolved.
 ///
 /// `serde(tag = "mode", content = "servers")` matches the design
 /// example `dns = { mode = "static", servers = ["1.1.1.1"] }`.
@@ -719,7 +703,7 @@ pub enum Ipv6Mode {
 /// Returns `GharsError::Config` on parse failure and
 /// `GharsError::Validation` on structural / cross-reference failure.
 pub fn load(_path: &camino::Utf8Path) -> crate::Result<Config> {
-    todo!("config loader: B1")
+    todo!("config loader")
 }
 
 /// Validate every `[network.NAME]` block in `config` using the
@@ -830,8 +814,8 @@ mod tests {
 
     #[test]
     fn validate_networks_with_no_networks_is_no_op() {
-        // Open-mode runners don't get a [network.NAME] block at all
-        // (per F75 amended). Empty IndexMap should validate cleanly.
+        // Open-mode runners don't get a [network.NAME] block at all.
+        // Empty IndexMap should validate cleanly.
         let cfg = Config::default();
         validate_networks(&cfg).unwrap();
     }

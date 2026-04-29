@@ -3,20 +3,21 @@
 //! Design spec: Part 11 (behavioral edge cases) + Part 9f (versioned bin/) +
 //! Part 17 SEC-09/SEC-10/SEC-31/SEC-33.
 //!
-//! Behavior ports `install_gha_runner.py:1108-1533`:
+//! Behavior ports the legacy Python install tool:
 //! - `http_download` streams via reqwest blocking 64KiB chunks with a finite
 //!   timeout (matches Python `httpx.stream` + `HTTP_DOWNLOAD_TIMEOUT`).
 //! - `sha256_of` reads in 64KiB chunks, returns lowercase hex.
 //! - `download_and_verify` deletes the dest file on SHA256 mismatch
-//!   (Python lines 1503-1506) and compares case-insensitively (F40).
+//!   and compares case-insensitively.
 //! - `safe_member_filter` rejects path traversal, symlink/hardlink escape,
-//!   and device/fifo/char/block entries; strips setuid/setgid/sticky
-//!   (`mode & 0o777 & ~0o7000`); forces uid/gid to the extracting process.
-//!   Ports lines 1161-1199 (SEC-10).
+//!   and device/fifo/char/block entries. Mode stripping (setuid/setgid/
+//!   sticky) and uid/gid inheritance happen via tar-rs `Archive` defaults
+//!   (`preserve_permissions = false`, `preserve_ownerships = false`),
+//!   not via the filter itself (SEC-10).
 //! - `install_runner_binary` (Part 9f + SEC-09/SEC-33) extracts into a
 //!   root-owned staging dir under `<state_dir>/.staging/`, then atomically
 //!   renames into `bin.<version>/` under runner home. Root-owned end to end.
-//! - `verify_local_tarball` (F37 / SEC-16 residual) re-stats `--runner-tarball`
+//! - `verify_local_tarball` (SEC-16 residual) re-stats `--runner-tarball`
 //!   at use time, refusing if it has become a symlink or non-regular file
 //!   between validation and use.
 
@@ -231,7 +232,7 @@ pub fn sha256_of(path: &Utf8Path) -> Result<String> {
 }
 
 /// Download `url` to `dest` and verify its SHA-256 matches `expected_sha256`.
-/// Comparison is case-insensitive (F40); both sides are lowercased before
+/// Comparison is case-insensitive; both sides are lowercased before
 /// comparing. On mismatch, `dest` is deleted before returning the error.
 ///
 /// # Errors
@@ -239,7 +240,7 @@ pub fn sha256_of(path: &Utf8Path) -> Result<String> {
 /// - Whatever [`http_download`] or [`sha256_of`] returns on transport / IO failure.
 /// - `GharsError::Sha256Mismatch` if the digest does not match. The
 ///   destination file is unlinked before the error is returned (matches
-///   `install_gha_runner.py:1503-1506`).
+///   the legacy Python install tool's behavior).
 pub fn download_and_verify(
     url: &str,
     dest: &Utf8Path,
@@ -279,7 +280,7 @@ pub enum FilterDecision {
 }
 
 /// Validate one tarball entry against the safe-extraction policy ported
-/// from `install_gha_runner.py:1161-1199`:
+/// from the legacy Python install tool:
 ///
 /// - Reject device / fifo / char / block entries (typeflag 3, 4, 6).
 /// - Reject member paths that are absolute or contain `..` components.
@@ -373,17 +374,17 @@ fn is_safe_relative_path(bytes: &[u8]) -> bool {
 ///    link target is absolute or contains `..`. This is the primary
 ///    defense.
 /// 2. `tar::Entry::unpack_in` canonicalizes the parent of every member
-///    before writing — see `tar::entry::EntryFields::validate_inside_dst`
-///    at tar-0.4.45/src/entry.rs:924-950. Any pre-extracted symlink in
-///    the staging tree that points outside dest is detected when the
-///    next member's parent path is canonicalized.
+///    before writing via `tar::entry::EntryFields::validate_inside_dst`.
+///    Any pre-extracted symlink in the staging tree that points
+///    outside dest is detected when the next member's parent path is
+///    canonicalized.
 /// 3. After every successful unpack, this function additionally
 ///    canonicalizes the rendered path's parent and asserts it stays
 ///    inside the canonical dest. This catches a future filter
 ///    regression or a tar-crate bug that lets an entry through layer
 ///    1 + 2 — a third independent gate.
 ///
-/// Mode and ownership rules (matches `install_gha_runner.py:1182-1187`):
+/// Mode and ownership rules (matches the legacy Python install tool):
 ///
 /// - `Archive` is constructed with `preserve_permissions = false` (the
 ///   crate default), which causes `tar::entry::_set_perms` to write
@@ -500,7 +501,7 @@ fn verify_extracted_inside_dest(
 }
 
 /// Verify a `--runner-tarball` path is still a regular file (not a symlink)
-/// at use time, closing the F37 / SEC-16 residual TOCTOU window. Validators
+/// at use time, closing the SEC-16 residual TOCTOU window. Validators
 /// check this at parse time; this function re-checks just before extraction.
 ///
 /// # Errors
@@ -1044,7 +1045,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dest = Utf8PathBuf::from_path_buf(tmp.path().join("x")).unwrap();
         let url = format!("{}/x", server.url());
-        // Uppercase hex digest; F40 says case-insensitive comparison.
+        // Uppercase hex digest; comparison is case-insensitive.
         let expected_upper = "B94D27B9934D3E08A52E52D7DA7DABFAC484EFE37A5380EE9088F7ACE2EFCDE9";
         download_and_verify(&url, &dest, expected_upper, Duration::from_secs(10)).unwrap();
         assert!(dest.exists());
@@ -1725,7 +1726,7 @@ mod tests {
 
     #[test]
     fn extract_tarball_strips_setuid_on_disk_end_to_end() {
-        // Python parity: install_gha_runner.py test_extract_tarball_strips_setuid.
+        // Python parity: setuid-strip test from the legacy install tool.
         // The tar crate's `unpack_in` strips setuid/setgid for unprivileged
         // unpack by default. This test is the load-bearing assertion:
         // the EXTRACTED FILE on disk has zero setuid + setgid bits.

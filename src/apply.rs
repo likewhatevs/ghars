@@ -456,7 +456,7 @@ impl ApplyResult {
     }
 }
 
-// ---------- Undo log (BATCH D) ----------------------------------
+// ---------- Undo log -----------------------------------------------
 
 /// One mutating step recorded by an `execute_*` handler. On failure with
 /// `--rollback-on-failure`, [`undo`] walks the per-action log in reverse
@@ -1003,7 +1003,7 @@ pub fn acquire_lock(paths: &Paths) -> Result<ApplyLock> {
     if mode != 0o600 {
         let mut perms = meta.permissions();
         perms.set_mode(0o600);
-        // F2: the open() above already passed, which on a
+        // The open() above already passed, which on a
         // root-owned `/run/ghars` means we're running as root. An
         // EACCES on chmod here is therefore NOT "you're not root";
         // it's a different problem (read-only mount, MAC policy like
@@ -1226,8 +1226,7 @@ impl Tarball for RealTarball {
         dest_path: &Utf8Path,
         expected_sha256: &str,
     ) -> Result<()> {
-        // Spec Part 11 / Python `install_gha_runner.py:1503-1506`: on
-        // SHA256 mismatch the destination is deleted; if the file is
+        // On SHA256 mismatch the destination is deleted; if the file is
         // already present and correct, no download. download_and_verify
         // already implements both paths.
         download_and_verify(
@@ -2006,8 +2005,9 @@ pub fn apply(
     // GC orphan `<state_dir>/.staging/<runner-name>-<version>-<pid>/`
     // staging directories left behind when extract::install_runner_binary
     // crashed past its own cleanup branch. Same own-PID + age gates
-    // as gc_stale_temp_files (no PID-liveness probe — see ADV-5 doc on
-    // gc_stale_staging_dirs for why liveness was removed). Targets a
+    // as gc_stale_temp_files (no PID-liveness probe — see the
+    // `gc_stale_staging_dirs` doc-comment for the rationale).
+    // Targets a
     // disjoint filesystem subtree (state_dir/.staging vs unit_dir +
     // config_dir/nft.d + config_dir/netns.d), so it runs as a
     // separate pass alongside gc_stale_temp_files.
@@ -2036,7 +2036,7 @@ pub fn apply(
             result.details.push((label, ApplyOutcome::DryRunSkipped));
             continue;
         }
-        // Per-action UndoLog (BATCH D). Each execute_* pushes
+        // Per-action UndoLog. Each execute_* pushes
         // after every successful side effect; on Err we walk the log
         // in reverse via `undo` when --rollback-on-failure is set.
         // Scope is per-action — earlier successful actions are NOT
@@ -2112,7 +2112,7 @@ pub fn apply(
                         plan_disruption,
                     },
                 ));
-                // CLN-5: single failed.push covers both fail_fast and
+                // Single failed.push covers both fail_fast and
                 // accumulate-and-continue paths — the only difference
                 // is whether the loop short-circuits afterwards.
                 result.failed.push((label.clone(), wrapped));
@@ -2345,7 +2345,7 @@ fn execute_create_runner(
 
     // 2) Runner binary. Two paths:
     //    (a) `runner_tarball` set on the spec → use the local file
-    //        verbatim after re-stat'ing (verify_local closes the F37 /
+    //        verbatim after re-stat'ing (verify_local closes the
     //        SEC-16 stat-then-extract TOCTOU window).
     //    (b) Otherwise the plan resolved a `Release` and we fetch its
     //        `tarball_url` into a runtime dir, verify SHA256, then
@@ -2449,7 +2449,7 @@ fn execute_create_runner(
     populated_spec.runsvc_sha256 = runsvc_sha;
     let rendered = render_runner_unit(&populated_spec)?;
 
-    // 6) Write unit file + drop-ins. F48 reset-on-empty validation
+    // 6) Write unit file + drop-ins. The reset-on-empty validation
     //    already ran inside `render_runner_unit`.
     let unit_file = paths.unit_file(&spec.name);
     write_record_undo(&unit_file, rendered.template.as_bytes(), log)?;
@@ -2484,8 +2484,8 @@ fn execute_create_runner(
     //     (config TOML, nft files, ghars-net@.service template) and
     //     start `ghars-net@INSTANCE.service` BEFORE the runner unit so
     //     the runner's `NetworkNamespacePath=/var/run/netns/ghars-%i`
-    //     join succeeds. F79 fail-closed: missing netns => runner
-    //     refuses to start. Open mode is a no-op.
+    //     join succeeds. Fail-closed contract: missing netns =>
+    //     runner refuses to start. Open mode is a no-op.
     provision_netns_artifacts(spec, deps, paths, log)?;
 
     deps.systemd.start_unit(&unit_name)?;
@@ -2493,10 +2493,10 @@ fn execute_create_runner(
         name: unit_name.clone(),
     });
 
-    // 8) Post-start netns verification. Belt-and-suspenders against an
-    //    F79 regression: if the runner has Netns mode but landed in
-    //    the host netns, the systemd unit was misjoined and we abort
-    //    the action. The runner's PID is read from
+    // 8) Post-start netns verification. Belt-and-suspenders against
+    //    a fail-open regression: if the runner has Netns mode but
+    //    landed in the host netns, the systemd unit was misjoined
+    //    and we abort the action. The runner's PID is read from
     //    Service.MainPID via `systemd.get_unit_property`.
     if matches!(
         spec.network.as_ref().map(|n| &n.spec.mode),
@@ -2719,9 +2719,9 @@ fn execute_update_runner(
     // plan would see no diff, skip the supplementary-group step, and
     // bake in the partial state until the next caches edit.
     //
-    // F79i step 3 still applies: the gpasswd ops must complete before
-    // stop+start so the freshly-restarted unit picks up the new group
-    // set on its next exec credentials. Both invariants land by
+    // The netns-vs-cache invariant still applies: the gpasswd ops
+    // must complete before stop+start so the freshly-restarted unit
+    // picks up the new group set on its next exec credentials. Both invariants land by
     // running gpasswd FIRST in the in-place path.
     //
     // The diff is computed from the discovered `X-Ghars-Caches`
@@ -2980,7 +2980,7 @@ pub(crate) fn cache_pool_group(pool: &str) -> String {
 /// `execute_create_runner` BEFORE the runner unit is started, because
 /// the runner's drop-in has `Requires=ghars-net@%i.service` and joins
 /// the netns via `NetworkNamespacePath=/var/run/netns/ghars-%i` — which
-/// fails-closed (per F79) if the netns is missing.
+/// fails-closed if the netns is missing.
 ///
 /// Steps (Part 9c "Lifecycle — apply CreateRunner"):
 /// 1. Write `<config_dir>/netns.d/<name>.toml` (`NetnsConfig`) so the
@@ -3162,8 +3162,8 @@ fn execute_create_cache_pool(
     write_root_owned(&template_path, cache_template_text().as_bytes())?;
 
     // 2) Per-pool drop-in. The body was rendered at plan time via
-    //    systemd::render_cache_drop_in (F48 reset-on-empty validator
-    //    runs there). We just install the bytes.
+    //    `systemd::render_cache_drop_in` (the reset-on-empty
+    //    validator runs there). We just install the bytes.
     let drop_in_dir = paths.cache_drop_in_dir(pool);
     let drop_in_dir_existed = drop_in_dir.exists();
     fs::create_dir_all(drop_in_dir.as_std_path())?;
@@ -3232,17 +3232,18 @@ fn execute_update_cache_pool(
 
     // Pool-kind change is a membership no-op.
     //
-    // F79i invariant: the per-pool group is `ghars-cache-NAME`,
-    // parameterized by pool name only — NOT by kinds.
-    // A pool's `kinds` change (ccache-only → ccache+sccache or vice
-    // versa) leaves group identity unchanged, so runners enrolled at
-    // runner-create time retain valid membership across the update. No
-    // groupadd / usermod / gpasswd is needed in this handler.
+    // The per-pool group is `ghars-cache-NAME`, parameterized by
+    // pool name only — NOT by kinds. A pool's `kinds` change
+    // (ccache-only → ccache+sccache or vice versa) leaves group
+    // identity unchanged, so runners enrolled at runner-create time
+    // retain valid membership across the update. No groupadd /
+    // usermod / gpasswd is needed in this handler.
     //
     // The runner-caches-list-change case (a runner's `caches = [...]`
-    // entry changed in the operator's TOML) IS a real apply action and
-    // does require usermod per F79i step 3, but that's
-    // execute_update_runner's responsibility, not execute_update_cache_pool.
+    // entry changed in the operator's TOML) IS a real apply action
+    // and does require usermod, but that's
+    // `execute_update_runner`'s responsibility, not
+    // `execute_update_cache_pool`'s.
 
     // Skip daemon-reload + stop + start when nothing on disk
     // changed. Mirror of the runner-side optimization. No
@@ -3448,7 +3449,7 @@ fn write_root_owned(path: &Utf8Path, bytes: &[u8]) -> Result<()> {
     // collision impossible in practice, but if an attacker pre-plants
     // the file we refuse to write rather than reuse their inode.
     //
-    // F-1: create at 0o600 (owner read/write only) and widen to 0o644
+    // Create at 0o600 (owner read/write only) and widen to 0o644
     // *after* chown_to_root succeeds. The create-restrictive-then-
     // widen pattern means that during the brief window between
     // creat(2) and the final rename(2), the file is invisible to
@@ -3488,7 +3489,7 @@ fn write_root_owned(path: &Utf8Path, bytes: &[u8]) -> Result<()> {
     // to the inode we wrote, not whatever a concurrent attacker might
     // swap in at this path.
     chown_to_root(&f, &temp_path)?;
-    // F-1: now that ownership is root:root, widen the mode from
+    // Now that ownership is root:root, widen the mode from
     // 0o600 to 0o644 so systemd / readers can stat the published
     // file. File::set_permissions on Unix calls fchmod(fd, mode)
     // (std/sys/fs/unix.rs — same primitive `tighten_credential_perms`
@@ -3816,19 +3817,18 @@ pub fn guard_home_dir_rmrf(
 /// Compare `readlink /proc/PID/ns/net` against `/proc/1/ns/net` for the
 /// given runner unit. The `MainPID` D-Bus property carries the runner's
 /// PID; if the symlink target matches PID 1's, the runner has fallen
-/// back to the host network namespace and the action aborts (F79
-/// belt-and-suspenders).
+/// back to the host network namespace and the action aborts as a
+/// belt-and-suspenders defense against a netns fail-open regression.
 ///
 /// The kernel-side netns join races MainPID's recording. systemd
-/// calls service_set_main_pidref (service.c:2596) the moment exec_spawn
-/// returns the child PID — which is post-vfork-unblock, but BEFORE
+/// calls service_set_main_pidref the moment exec_spawn returns the
+/// child PID — which is post-vfork-unblock, but BEFORE
 /// systemd-executor reaches the apply_namespace step that calls
-/// setns(CLONE_NEWNET) (namespace.c:3503, invoked from
-/// exec-invoke.c:5547 for NetworkNamespacePath=). The send_handoff
-/// timestamp (exec-invoke.c:6713) only fires "as last thing before
-/// the execve()", AFTER apply_namespace. So a readlink at the moment
+/// setns(CLONE_NEWNET) for NetworkNamespacePath=. The send_handoff
+/// timestamp only fires "as last thing before the execve()", AFTER
+/// apply_namespace. So a readlink at the moment
 /// StartUnit returns can observe the still-host netns symlink for the
-/// runner's PID and false-positive an F79 fail-open.
+/// runner's PID and false-positive a netns fail-open.
 ///
 /// Mitigation: poll-with-timeout. 5s deadline at 100ms cadence (50
 /// attempts max) — short enough that legitimate setup completes well
@@ -3981,7 +3981,7 @@ fn verify_runner_netns_at(
                 target = runner_target.display(),
                 total_ms = deadline_dur.as_millis(),
             ),
-            "this is an F79 fail-closed regression; check ghars-net@%i.service status \
+            "this is a netns fail-closed regression; check ghars-net@%i.service status \
              and `ip netns list` for the expected named netns"
                 .into(),
         )),
@@ -4768,7 +4768,7 @@ mod tests {
 
     #[test]
     fn write_root_owned_creates_file_at_0644() {
-        // F-1: write_root_owned promises root:root + 0644
+        // `write_root_owned` promises root:root + 0644
         // ownership for the inode it wrote. The temp file is created
         // at 0o600 (create-restrictive) and widened to 0o644 via
         // fchmod on the open fd after chown_to_root succeeds. Tests
@@ -4792,7 +4792,7 @@ mod tests {
             & 0o7777;
         assert_eq!(
             mode, 0o644,
-            "F-1: published file must end at exactly 0o644 (fchmod-widen \
+            "published file must end at exactly 0o644 (fchmod-widen \
              from initial 0o600); got {mode:o}"
         );
     }
@@ -4812,7 +4812,7 @@ mod tests {
         assert_eq!(std::fs::read(dest.as_std_path()).unwrap(), b"short");
     }
 
-    // -------- managed-write helper family (BATCH 16) --------
+    // -------- managed-write helper family --------
 
     #[test]
     fn read_then_write_if_changed_writes_when_file_missing() {
@@ -5892,7 +5892,7 @@ mod tests {
     /// None) so the test exercises the full `plan_disruption` mapping
     /// surface.
     ///
-    /// Asserts (per apirev API-6, R6 ruling):
+    /// Asserts:
     /// 1. Length parity — `failed.len() == details(Failed-filtered).len()`.
     /// 2. Positional alignment — `failed[i].0 == details(Failed-filtered)[i].0`
     ///    for every i. cmd_apply's renderer walks `details` in execution
@@ -6724,8 +6724,8 @@ mod tests {
         let systemd = MockSystemd::default();
         // verify_runner_netns reads /proc/MainPID/ns/net and compares it
         // to /proc/1/ns/net. In CI the test process IS in the host netns
-        // so the readlinks match — the post-start check fires
-        // F79-fail-closed and returns an error. We don't care: every
+        // so the readlinks match — the post-start check fires the
+        // netns fail-closed branch and returns an error. We don't care: every
         // pre-start side effect is what this test guards.
         systemd.set_property(
             "ghars-runner@a.service",
@@ -6961,10 +6961,9 @@ mod tests {
         std::os::unix::fs::symlink(host_target, &host_link).unwrap();
     }
 
-    /// 50ms deadline for verify_runner_netns_at unit tests. Short
+    /// 50ms deadline for `verify_runner_netns_at` unit tests. Short
     /// enough that fail-path tests don't slow the suite. Production
-    /// uses NETNS_VERIFY_DEADLINE (5s) per the design Part 17 F79i
-    /// timing contract.
+    /// uses `NETNS_VERIFY_DEADLINE` (5s).
     const TEST_NETNS_VERIFY_DEADLINE: std::time::Duration = std::time::Duration::from_millis(50);
 
     /// 5ms backoff for verify_runner_netns_at unit tests. Combined
@@ -7092,7 +7091,7 @@ mod tests {
         };
         // Must succeed: attempt 1 sees PID=1 (host-netns'd), attempt 2
         // sees PID=5678 (isolated). Without the retry, this would
-        // false-positive an F79 fail-open and abort.
+        // false-positive a netns fail-open and abort.
         verify_runner_netns_at(
             tmp.path(),
             "ghars-runner@buckos.service",
@@ -7180,8 +7179,9 @@ mod tests {
 
     #[test]
     fn verify_runner_netns_at_aborts_when_targets_match_host() {
-        // Fail path: runner symlink target == host's. F79 fail-closed
-        // regression — abort with a Validation error wrapped in Apply.
+        // Fail path: runner symlink target == host's. The netns
+        // fail-closed branch fires — abort with a Validation error
+        // wrapped in Apply.
         let tmp = tempfile::tempdir().unwrap();
         synth_proc_netns_layout(tmp.path(), 5678, "net:[4026531992]", "net:[4026531992]");
         let systemd = MockSystemd::default();
@@ -7198,7 +7198,7 @@ mod tests {
         assert!(msg.contains("HOST network namespace"), "{msg}");
         assert!(msg.contains("5678"), "{msg}");
         // Error message must record that we polled before giving
-        // up — operator triaging an F79 fail-open needs to know the
+        // up — operator triaging a netns fail-open needs to know the
         // verify ran multiple readlinks against the deadline, not a
         // single shot.
         assert!(
@@ -7297,7 +7297,7 @@ mod tests {
         }
     }
 
-    // ---------- BATCH D: UndoLog + rollback-on-failure tests ------------
+    // ---------- UndoLog + rollback-on-failure tests ----------------------
 
     #[test]
     fn undo_log_starts_empty() {
@@ -8688,7 +8688,7 @@ mod tests {
 
     #[test]
     fn execute_update_runner_in_place_grows_caches_calls_add() {
-        // T-271.1: caches grows from [] → ["pool-new"]. add_user_to_group
+        // Caches grows from [] → ["pool-new"]. `add_user_to_group`
         // must be called once for "ghars-cache-pool-new"; no remove.
         let tmp = tempfile::tempdir().unwrap();
         let paths = make_paths(&tmp);
@@ -8728,7 +8728,7 @@ mod tests {
 
     #[test]
     fn execute_update_runner_in_place_shrinks_caches_calls_remove() {
-        // T-271.2: caches shrinks from ["pool-old"] → []. The diff
+        // Caches shrinks from ["pool-old"] → []. The diff
         // must call remove_user_from_group for "ghars-cache-pool-old"
         // and NOT touch add.
         let tmp = tempfile::tempdir().unwrap();
@@ -8762,7 +8762,7 @@ mod tests {
 
     #[test]
     fn execute_update_runner_in_place_caches_reorder_is_noop() {
-        // T-271.3: caches reorder ["a","b"] → ["b","a"]. Set diff is
+        // Caches reorder ["a","b"] → ["b","a"]. Set diff is
         // empty; neither add nor remove must fire.
         let tmp = tempfile::tempdir().unwrap();
         let paths = make_paths(&tmp);
@@ -11062,9 +11062,9 @@ mod tests {
         );
     }
 
-    // ---------- WO-S11C: remaining wiring + rollback + describe pins ----
+    // ---------- remaining wiring + rollback + describe pins ------------
 
-    /// WO-S11C item 4: pin that the synthetic post-loop `daemon_reload`
+    /// Pin that the synthetic post-loop `daemon_reload`
     /// failure path runs the underlying `e.to_string()` through
     /// `escape_control_chars` before storing the result in
     /// `ApplyOutcome::Failed.error_summary`. Symmetric with the
@@ -11170,7 +11170,7 @@ mod tests {
         );
     }
 
-    /// WO-S11C item 5: per-variant `UndoStep::describe()` escape pin.
+    /// Per-variant `UndoStep::describe()` escape pin.
     /// Helper-level coverage already lives in `lib.rs`; the WriteFile
     /// arm is pinned at
     /// `undo_step_write_file_describe_escapes_hostile_path`.
@@ -11181,7 +11181,7 @@ mod tests {
     /// (every variant except `WriteFile`), plus a second
     /// `GitHubRegistration` row so the `name` and `url` interpolation
     /// paths each get an independent pin. A 14th sub-case
-    /// (`GitHubRegistration[hostile-runner_home]`, OPT-2 / Tester F5)
+    /// (`GitHubRegistration[hostile-runner_home]`)
     /// is included as a forward-looking pin: today `describe()` does
     /// NOT interpolate `runner_home`, so the case asserts only the
     /// "no raw ESC survives" property — if a future refactor adds
@@ -11318,7 +11318,7 @@ mod tests {
                 },
                 true,
             ),
-            // OPT-2 (Tester F5): forward-looking pin for runner_home.
+            // Forward-looking pin for runner_home.
             // Today `describe()`'s `GitHubRegistration` arm does NOT
             // interpolate `runner_home` (it reads only `name` and
             // `url`), so the hostile bytes never reach the format
@@ -11376,7 +11376,7 @@ mod tests {
         }
     }
 
-    /// WO-S11C item 6: T3-sibling pin for the recreate path with
+    /// T3-sibling pin for the recreate path with
     /// `rollback_on_failure = true`. The T3 test at
     /// `execute_update_runner_recreate_create_failure_after_remove`
     /// drives the same fixture (remove succeeds, create fails at the
@@ -11525,7 +11525,7 @@ mod tests {
              removed={removed:?}, added={added:?}"
         );
 
-        // OPT-1 (Tester F4): end-to-end advisory shape pin. Run the
+        // End-to-end advisory shape pin. Run the
         // result through `render_rollback_advisory` and assert the
         // operator-visible output ties back to the recorded
         // mutations: header present, label sub-block present, at

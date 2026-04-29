@@ -27,16 +27,15 @@
 //!     info that doesn't disclose the credential itself),
 //!   - environment variable names (auth.rs:263 emits `{env:?}` where
 //!     `env` is the variable NAME like `"GHARS_PAT"`),
-//!   - `octocrab::Error` Display output. In octocrab 0.42.1 (verified
-//!     against octocrab-0.42.1/src/error.rs and snafu-derive-0.8.9/
-//!     src/shared.rs:537-549) the `GitHub` variant carries no
-//!     `#[snafu(display(...))]` attribute, so its Display output is
-//!     literally the variant-name string `"GitHub"` — no message,
-//!     no status code, no URL, no header, no body. Other variants
-//!     (`Hyper`, `Service`, `Http`, `Json`, `Serde`, `JWT`,
-//!     `Installation`, etc.) chain to the wrapped error's Display
-//!     plus a `snafu::Backtrace`. Operator-actionable status code
-//!     and hint text are extracted by `auth::octocrab_to_auth`
+//!   - `octocrab::Error` Display output. In octocrab 0.42, the
+//!     `GitHub` variant carries no `#[snafu(display(...))]` attribute,
+//!     so its Display output is literally the variant-name string
+//!     `"GitHub"` — no message, no status code, no URL, no header,
+//!     no body. Other variants (`Hyper`, `Service`, `Http`, `Json`,
+//!     `Serde`, `JWT`, `Installation`, etc.) chain to the wrapped
+//!     error's Display plus a `snafu::Backtrace`. Operator-actionable
+//!     status code and hint text are extracted by
+//!     `auth::octocrab_to_auth`
 //!     from the typed `source.status_code` field
 //!     (auth.rs::octocrab_to_auth), not from the upstream Display
 //!     surface. The supply-chain pin in
