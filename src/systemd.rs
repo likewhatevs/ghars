@@ -1710,23 +1710,40 @@ fn render_cache_pool(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
         check_identity_field("caches[].size", &c.size)?;
     }
     let mut s = String::new();
-    s.push_str("[Unit]\n");
-    for c in &spec.caches {
-        let _ = writeln!(s, "Requires=ghars-cache@{}.service", c.name);
-        let _ = writeln!(s, "After=ghars-cache@{}.service", c.name);
+    let unit_section_pools: Vec<&EffectiveCacheBinding> = spec
+        .caches
+        .iter()
+        .filter(|c| c.kinds.contains(&CacheKind::Sccache))
+        .collect();
+    if !unit_section_pools.is_empty() {
+        // [Unit] Requires=/After= the per-pool sccache server unit.
+        // ccache-only pools do NOT have a server unit (filesystem-only
+        // mechanism via shared HOME under trust_zone), so they are
+        // omitted from this list.
+        s.push_str("[Unit]\n");
+        for c in &unit_section_pools {
+            let _ = writeln!(s, "Requires=ghars-cache@{}.service", c.name);
+            let _ = writeln!(s, "After=ghars-cache@{}.service", c.name);
+        }
+        s.push('\n');
     }
-    s.push('\n');
     s.push_str("[Service]\n");
     let mut bind_paths: Vec<String> = Vec::new();
     let mut needs_run_ghars = false;
     for c in &spec.caches {
         let pool_dir = format!("/var/cache/ghars/pools/{}", c.name);
         if c.kinds.contains(&CacheKind::Ccache) {
-            let _ = writeln!(s, "Environment=CCACHE_DIR={pool_dir}/ccache");
+            // ccache uses filesystem mode: the shared $HOME/.cache/ccache/
+            // directory under the trust_zone-shared HOME is the entire
+            // mechanism. No daemon, no Requires=, no BindPaths to a
+            // pool dir — runners with the same trust_zone share the
+            // ccache directory by virtue of the shared DynamicUser UID.
+            // CCACHE_DIR points at the shared HOME location so every
+            // runner in the trust_zone hits the same backing store.
+            let _ = writeln!(s, "Environment=CCACHE_DIR=%h/.cache/ccache/{}", c.name);
             // Pool-size override; the template defaults to 200G but the
             // pool's configured size wins.
             let _ = writeln!(s, "Environment=CCACHE_MAXSIZE={}", c.size);
-            bind_paths.push(pool_dir.clone());
         }
         if c.kinds.contains(&CacheKind::Sccache) {
             let _ = writeln!(
@@ -3121,7 +3138,7 @@ mod tests {
     }
 
     #[test]
-    fn render_emits_cache_pool_for_ccache() {
+    fn render_emits_cache_pool_for_ccache_filesystem_only() {
         let mut spec = minimal_spec();
         spec.caches.push(EffectiveCacheBinding {
             name: "build".into(),
@@ -3132,10 +3149,14 @@ mod tests {
         });
         let r = render_runner_unit(&spec).unwrap();
         let c = r.drop_ins.get("30-cache-pool.conf").unwrap();
-        assert!(c.contains("Requires=ghars-cache@build.service"));
-        assert!(c.contains("Environment=CCACHE_DIR=/var/cache/ghars/pools/build/ccache"));
+        // ccache-only pools use the filesystem-mode mechanism — no
+        // ghars-cache@ unit dependency, no BindPaths to a pool dir,
+        // no sccache server. CCACHE_DIR points at the trust_zone-
+        // shared HOME path so co-trust_zone runners share the cache.
+        assert!(!c.contains("Requires=ghars-cache@build.service"));
+        assert!(!c.contains("BindPaths="));
+        assert!(c.contains("Environment=CCACHE_DIR=%h/.cache/ccache/build"));
         assert!(c.contains("Environment=CCACHE_MAXSIZE=200G"));
-        assert!(c.contains("BindPaths="));
         assert!(!c.contains("SCCACHE_NO_DAEMON"));
     }
 

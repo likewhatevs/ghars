@@ -21,7 +21,6 @@
 //! - `test_unit_filesystem_allowlist`    → BindReadOnlyPaths set
 //! - `test_unit_private_devices`         → PrivateDevices=yes
 
-use camino::Utf8PathBuf;
 use ghars::config::{Arch, EffectiveRunnerSpec, Hardening};
 use ghars::systemd::{render_runner_unit, runner_template_text};
 

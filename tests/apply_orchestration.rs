@@ -275,7 +275,7 @@ fn make_paths(tmp: &tempfile::TempDir) -> Paths {
     }
 }
 
-fn make_spec(name: &str, prefix: &Utf8Path) -> EffectiveRunnerSpec {
+fn make_spec(name: &str, _prefix: &Utf8Path) -> EffectiveRunnerSpec {
     EffectiveRunnerSpec {
         name: name.into(),
         url: "https://github.com/example/repo".into(),

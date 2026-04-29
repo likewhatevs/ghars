@@ -31,7 +31,6 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use nix::unistd::User;
 #[cfg(not(test))]
 use nix::unistd::{Gid, Uid, fchown};
 
@@ -3227,110 +3226,6 @@ fn chown_to_root(_f: &File, _path: &Utf8Path) -> Result<()> {
     Ok(())
 }
 
-fn tighten_credential_perms(runner_home: &Utf8Path, user_name: &str) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    // Both `.credentials` and `.credentials_rsaparams` are written by
-    // config.sh; tighten any that exist. Missing files are ignored —
-    // not all auth modes write both.
-    //
-    // SEC-NEW: we MUST NOT use the path-based `fs::metadata` /
-    // `fs::set_permissions` pair here. Each is a separate syscall and
-    // each follows symlinks. The runner user owns these files (config.sh
-    // writes them under <runner_home>) so a malicious runner could
-    // race the apply, replace `.credentials` with a symlink to
-    // `/etc/shadow` between our stat and our chmod, and trick the
-    // root-running apply into chmod'ing the symlink target down to
-    // 0600.
-    //
-    // Fix: open the path with `O_NOFOLLOW` (the kernel returns
-    // `ELOOP` if the final component is a symlink, so we never hand
-    // out a chmod'able fd that points at an attacker-chosen target),
-    // then call `File::set_permissions` which on Unix translates to
-    // `fchmod(fd, mode)` (std/sys/fs/unix.rs:1787-1788). This pins
-    // the chmod target to the inode we opened.
-    //
-    // Also fchown to the current runner user. config.sh writes
-    // these files owned by whichever user ran config.sh (per
-    // ConfigShellCtx.user). If the operator changes `user=` on a runner
-    // between applies, leftover credentials keep their old ownership and
-    // the new runner cannot read them. fchown ties ownership to the
-    // currently-configured user. Resolve via getpwnam_r (User::from_name);
-    // if the user doesn't exist yet (e.g. apply is running before
-    // useradd has landed for a brand-new runner), skip the chown with
-    // a tracing::warn! so the operator sees the divergence.
-    let target_user = match User::from_name(user_name) {
-        Ok(Some(u)) => Some(u),
-        Ok(None) => {
-            tracing::warn!(
-                user = user_name,
-                runner_home = runner_home.as_str(),
-                "tighten_credential_perms: runner user not found in /etc/passwd; skipping fchown (credentials retain their existing ownership)"
-            );
-            None
-        }
-        Err(errno) => {
-            return Err(GharsError::Apply {
-                action: format!(
-                    "tighten_credential_perms({runner_home}): User::from_name({user_name}) failed: {errno}"
-                ),
-                source: Box::new(GharsError::Io(std::io::Error::from_raw_os_error(
-                    errno as i32,
-                ))),
-            });
-        }
-    };
-    for name in [".credentials", ".credentials_rsaparams", ".runner"] {
-        let p = runner_home.join(name);
-        let mut opts = OpenOptions::new();
-        opts.read(true).custom_flags(libc::O_NOFOLLOW);
-        let f = match opts.open(p.as_std_path()) {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
-                // Symlink injected by the runner. Refuse — the file
-                // is no longer the credential file we wrote, and
-                // chmod'ing through the symlink would touch an
-                // attacker-chosen target.
-                return Err(GharsError::Apply {
-                    action: format!(
-                        "tighten_credential_perms({}): refusing to chmod through symlink at {}",
-                        runner_home, p
-                    ),
-                    source: Box::new(GharsError::Io(e)),
-                });
-            }
-            Err(e) => return Err(GharsError::Io(e)),
-        };
-        let mut perms = f.metadata()?.permissions();
-        perms.set_mode(0o600);
-        f.set_permissions(perms)?;
-        if let Some(ref u) = target_user {
-            chown_credential_to_user(&f, &p, u)?;
-        }
-    }
-    Ok(())
-}
-
-#[cfg(not(test))]
-fn chown_credential_to_user(f: &File, path: &Utf8Path, user: &User) -> Result<()> {
-    fchown(f.as_raw_fd(), Some(user.uid), Some(user.gid)).map_err(|e| GharsError::Apply {
-        action: format!(
-            "fchown {}:{} {} (user={})",
-            user.uid, user.gid, path, user.name
-        ),
-        source: Box::new(GharsError::Io(std::io::Error::from_raw_os_error(e as i32))),
-    })?;
-    Ok(())
-}
-
-#[cfg(test)]
-fn chown_credential_to_user(_f: &File, _path: &Utf8Path, _user: &User) -> Result<()> {
-    // Tests run unprivileged: fchown to an arbitrary uid would EPERM.
-    // The fchmod path is exercised by tests; the fchown path is
-    // covered by integration tests under sudo.
-    Ok(())
-}
-
 /// Refuse to recursively remove `home_dir` unless it is the canonical
 /// `<prefix>/<name>` path. This guards against five failure modes:
 /// 1. `home_dir == "/"` (or any root-equivalent) — never delete root.
@@ -3908,7 +3803,7 @@ mod tests {
         }
     }
 
-    fn make_spec(name: &str, prefix: &Utf8Path) -> EffectiveRunnerSpec {
+    fn make_spec(name: &str, _prefix: &Utf8Path) -> EffectiveRunnerSpec {
         EffectiveRunnerSpec {
             name: name.into(),
             url: "https://github.com/example/repo".into(),
@@ -4623,136 +4518,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn tighten_credential_perms_refuses_chmod_through_symlink() {
-        // SEC-NEW: config.sh writes .credentials at
-        // <runner_home>/.credentials owned by the runner user. Between
-        // the write and apply's tighten_credential_perms call, a
-        // malicious runner could swap the file for a symlink to (e.g.)
-        // /etc/shadow. The path-based set_permissions would have
-        // followed the symlink and chmod'd /etc/shadow to 0600. The
-        // O_NOFOLLOW + fchmod approach must fail-closed instead.
-        let tmp = tempfile::tempdir().unwrap();
-        let runner_home = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
-        // Create a sensitive "victim" file the symlink will point at.
-        // tighten_credential_perms must NOT chmod this.
-        let victim = tmp.path().join("victim");
-        std::fs::write(&victim, b"sensitive\n").unwrap();
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&victim).unwrap().permissions();
-            perms.set_mode(0o644);
-            std::fs::set_permissions(&victim, perms).unwrap();
-        }
-        // Plant the symlink in place of one of the credential
-        // filenames.
-        let credentials = runner_home.join(".credentials");
-        std::os::unix::fs::symlink(&victim, credentials.as_std_path()).unwrap();
-
-        // Use a clearly-fake username so the User::from_name call hits
-        // the Ok(None) warn-and-skip path. The function still has to
-        // refuse the symlink before it ever gets to the fchown stage.
-        let err = tighten_credential_perms(&runner_home, "nonexistent-ghars-test-user")
-            .expect_err("tighten_credential_perms must refuse to chmod through a symlink");
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("symlink") || msg.to_lowercase().contains("eloop"),
-            "error must signal symlink/ELOOP refusal, got: {msg}"
-        );
-        // Victim's mode is unchanged — fchmod never ran on its inode.
-        let victim_mode = {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::metadata(&victim).unwrap().permissions().mode() & 0o7777
-        };
-        assert_eq!(
-            victim_mode, 0o644,
-            "victim mode must remain 0644; tighten_credential_perms leaked through the symlink"
-        );
-    }
-
-    #[test]
-    fn tighten_credential_perms_chmods_real_file_to_0600() {
-        // Positive control: with a real (non-symlink) credential file
-        // owned by the test user, tighten_credential_perms drops the
-        // mode to 0600 via fchmod-on-fd.
-        let tmp = tempfile::tempdir().unwrap();
-        let runner_home = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
-        let creds = runner_home.join(".credentials");
-        std::fs::write(creds.as_std_path(), b"{}").unwrap();
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(creds.as_std_path())
-                .unwrap()
-                .permissions();
-            perms.set_mode(0o644);
-            std::fs::set_permissions(creds.as_std_path(), perms).unwrap();
-        }
-
-        // Pass a clearly-fake username so User::from_name returns
-        // Ok(None) and the fchown step is skipped (chown_credential_to_user
-        // is a cfg(test) no-op anyway). The fchmod path still runs.
-        tighten_credential_perms(&runner_home, "nonexistent-ghars-test-user").unwrap();
-
-        let mode = {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::metadata(creds.as_std_path())
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o7777
-        };
-        assert_eq!(mode, 0o600, "credentials must be chmod'd to 0600");
-    }
-
-    #[test]
-    fn tighten_credential_perms_no_op_when_files_missing() {
-        // Many auth modes write only `.credentials` (no
-        // `.credentials_rsaparams`). tighten_credential_perms must
-        // not error when an expected file is absent.
-        let tmp = tempfile::tempdir().unwrap();
-        let runner_home = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
-        // Empty runner_home — no credential files.
-        tighten_credential_perms(&runner_home, "nonexistent-ghars-test-user").unwrap();
-    }
-
-    #[test]
-    fn tighten_credential_perms_handles_missing_user_without_error() {
-        // When the operator names a user that does not yet exist
-        // in /etc/passwd (e.g. apply is racing with useradd, or the
-        // runner block was renamed mid-config), tighten_credential_perms
-        // must NOT error. The fchmod path runs to drop credentials to
-        // 0600 and the fchown step is skipped with a tracing::warn!.
-        // The end-state is the same as the prior behaviour for the
-        // mode check: 0600. Ownership is left untouched (whatever
-        // config.sh wrote).
-        let tmp = tempfile::tempdir().unwrap();
-        let runner_home = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
-        let creds = runner_home.join(".credentials");
-        std::fs::write(creds.as_std_path(), b"{}").unwrap();
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(creds.as_std_path())
-                .unwrap()
-                .permissions();
-            perms.set_mode(0o644);
-            std::fs::set_permissions(creds.as_std_path(), perms).unwrap();
-        }
-        // No such user — tighten_credential_perms must still succeed.
-        tighten_credential_perms(&runner_home, "definitely-not-a-real-user-xyzzy").unwrap();
-        // Mode dropped to 0600 even though fchown was skipped.
-        let mode = {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::metadata(creds.as_std_path())
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o7777
-        };
-        assert_eq!(
-            mode, 0o600,
-            "fchmod must run even when the runner user is missing"
-        );
-    }
+    // The tighten_credential_perms tests were deleted alongside the
+    // helper. Under DynamicUser, systemd's StateDirectory= owns the
+    // credentials directory and chowns it to the trust_zone's
+    // transient UID at unit start; apply.rs no longer chmod/chowns
+    // credential files post-config.sh.
 
     #[test]
     fn remove_runner_orphan_skips_mint_token_and_config_remove() {
@@ -4931,7 +4701,7 @@ mod tests {
         }
     }
 
-    fn sort_test_identity(name: &str, prefix: &Utf8Path) -> RunnerIdentity {
+    fn sort_test_identity(name: &str, _prefix: &Utf8Path) -> RunnerIdentity {
         RunnerIdentity {
             name: name.into(),
             url: "https://github.com/example/repo".into(),

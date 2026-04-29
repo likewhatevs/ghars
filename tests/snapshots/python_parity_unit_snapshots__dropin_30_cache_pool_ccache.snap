@@ -2,11 +2,6 @@
 source: tests/python_parity_unit_snapshots.rs
 expression: "dropin(&r.drop_ins, \"30-cache-pool.conf\")"
 ---
-[Unit]
-Requires=ghars-cache@build.service
-After=ghars-cache@build.service
-
 [Service]
-Environment=CCACHE_DIR=/var/cache/ghars/pools/build/ccache
+Environment=CCACHE_DIR=%h/.cache/ccache/build
 Environment=CCACHE_MAXSIZE=200G
-BindPaths=/var/cache/ghars/pools/build

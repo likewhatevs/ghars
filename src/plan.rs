@@ -27,7 +27,8 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use camino::{Utf8Path, Utf8PathBuf};
+#[cfg(test)]
+use camino::Utf8PathBuf;
 
 use crate::Result;
 use crate::config::{
@@ -38,10 +39,6 @@ use crate::error::GharsError;
 use crate::github::Release;
 use crate::paths::Paths;
 use crate::state::{ActualState, DiscoveredRunner, Drift, extract_x_ghars};
-
-/// Default state-dir prefix when neither runner nor defaults pin one
-/// (matches `Paths::default().state_dir`).
-const DEFAULT_PREFIX: &str = "/var/lib/ghars";
 
 /// Default trust zone — keeps the merge in lock-step with config.rs's
 /// `default_trust_zone` (SEC-03).
@@ -1814,7 +1811,7 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
     // /24 this leaves headroom for typical deployments while keeping
     // the slot rule trivially deterministic across plan/apply runs.
     let mut desired: BTreeMap<String, EffectiveRunnerSpec> = BTreeMap::new();
-    let mut warnings: Vec<String> = Vec::new();
+    let warnings: Vec<String> = Vec::new();
     for (slot_idx, runner) in expanded.iter().enumerate() {
         let effective = lower_to_effective(
             runner,
@@ -1822,7 +1819,6 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
             host_arch,
             config_source.clone(),
             slot_idx,
-            &mut warnings,
         )?;
         desired.insert(effective.name.clone(), effective);
     }
@@ -2506,43 +2502,12 @@ fn reconstruct_identity(
     }
 }
 
-fn parse_user_from_unit(unit_text: &str) -> Option<String> {
-    // Find `User=NAME` (first occurrence in any section). Drop-ins
-    // can override at apply-time, but for identity reconstruction the
-    // first hit is sufficient — apply.rs's `User=` lookup is by
-    // discovered runner home directory anyway.
-    for line in unit_text.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("User=") {
-            let value = rest.trim();
-            if !value.is_empty() {
-                return Some(value.to_owned());
-            }
-        }
-    }
-    None
-}
-
-fn parse_working_directory_from_unit(unit_text: &str) -> Option<Utf8PathBuf> {
-    for line in unit_text.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("WorkingDirectory=") {
-            let value = rest.trim();
-            if !value.is_empty() {
-                return Some(Utf8PathBuf::from(value));
-            }
-        }
-    }
-    None
-}
-
 fn lower_to_effective(
     runner: &RunnerSpec,
     config: &Config,
     host_arch: Arch,
     config_source: String,
     slot_idx: usize,
-    warnings: &mut Vec<String>,
 ) -> Result<EffectiveRunnerSpec> {
     // Auth resolution.
     let auth_name = runner

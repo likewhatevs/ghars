@@ -7,7 +7,7 @@ Requires=ghars-cache@build.service
 After=ghars-cache@build.service
 
 [Service]
-Environment=CCACHE_DIR=/var/cache/ghars/pools/build/ccache
+Environment=CCACHE_DIR=%h/.cache/ccache/build
 Environment=CCACHE_MAXSIZE=200G
 Environment=SCCACHE_SERVER_UDS=/run/ghars/cache-build.sock
 Environment=SCCACHE_NO_DAEMON=1
