@@ -126,6 +126,38 @@ fn http_download_with_cap(
         ));
     }
 
+    // Layer 1: raw Content-Length header pre-check, mirroring
+    // `github::http_get_payload_with_cap`. `resp.content_length()` returns
+    // None for gzipped responses (reqwest's gzip feature decodes
+    // transparently and zeros the size hint), so we read the header
+    // directly to get the on-wire (pre-decompression) size before any
+    // bytes are streamed. A `Content-Length` larger than `max_bytes`
+    // signals either a hostile origin or a legitimately-large payload;
+    // in either case we reject before opening `dest` so a zero-byte
+    // partial file cannot be promoted by a later step.
+    // Malformed Content-Length silently falls through to Layer 2 streaming
+    // backstop (the cumulative byte counter inside the chunk loop).
+    if let Some(cl_header) = resp.headers().get(reqwest::header::CONTENT_LENGTH) {
+        if let Ok(cl_str) = cl_header.to_str() {
+            if let Ok(cl) = cl_str.parse::<u64>() {
+                if cl > max_bytes {
+                    return Err(GharsError::Tarball(
+                        format!(
+                            "download failed: {url}: Content-Length {cl_h} ({cl} bytes) exceeds {max_h} ({max_bytes} bytes); \
+                             the on-wire (pre-decompression) Content-Length is suspiciously large; \
+                             verify network path (compromised mirror, hostile proxy CA, or non-GitHub \
+                             origin); if the upstream payload is legitimately this large, file a \
+                             ghars issue to raise MAX_TARBALL_DOWNLOAD_BYTES",
+                            cl_h = human_bytes(cl),
+                            max_h = human_bytes(max_bytes)
+                        ),
+                        None,
+                    ));
+                }
+            }
+        }
+    }
+
     let mut out = File::create(dest).map_err(|e| {
         GharsError::Tarball(
             format!(
@@ -252,7 +284,24 @@ pub fn download_and_verify(
     let expected_lc = expected_sha256.to_ascii_lowercase();
     let actual_lc = actual.to_ascii_lowercase();
     if actual_lc != expected_lc {
-        let _ = fs::remove_file(dest);
+        // tracing::warn! on cleanup failure so the operator knows the
+        // mismatched payload remains on disk. The Sha256Mismatch error
+        // is the operator's primary signal — a stale dest file is
+        // recoverable but the operator must see WHY the file was
+        // rejected — so we log the unlink failure rather than mask
+        // the mismatch by propagating the cleanup error. Without this
+        // log an EACCES / EROFS / ENOSPC that prevents cleanup
+        // vanishes silently and the operator wonders why a `dest`
+        // that "should be gone" still occupies space.
+        if let Err(rm_err) = fs::remove_file(dest) {
+            tracing::warn!(
+                dest = %dest,
+                error = %format_error_chain(&rm_err),
+                "failed to remove sha256-mismatched download; \
+                 mismatched file remains on disk and must be \
+                 deleted manually before re-running install"
+            );
+        }
         return Err(GharsError::Sha256Mismatch {
             path: dest.to_string(),
             expected: expected_lc,
@@ -1182,6 +1231,39 @@ mod tests {
             other => panic!("expected Sha256Mismatch, got {other:?}"),
         }
         assert!(!dest.exists(), "dest should be unlinked on mismatch");
+        m.assert();
+    }
+
+    #[test]
+    fn download_and_verify_returns_sha256_mismatch_with_path_field_set() {
+        // Pin the structured fields the warn path consumes —
+        // `path: dest.to_string()` is what the operator sees in the
+        // warn breadcrumb when the unlink itself fails. A
+        // regression that drops the path field would orphan the
+        // diagnostic.
+        let mut server = mockito::Server::new();
+        let body = b"corrupt-body";
+        let m = server
+            .mock("GET", "/runner-path.tar.gz")
+            .with_status(200)
+            .with_body(body)
+            .create();
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = Utf8PathBuf::from_path_buf(tmp.path().join("runner-path.tar.gz")).unwrap();
+        let url = format!("{}/runner-path.tar.gz", server.url());
+        let bogus_sha = "f".repeat(64);
+        let err = download_and_verify(&url, &dest, &bogus_sha, Duration::from_secs(10))
+            .unwrap_err();
+        match err {
+            GharsError::Sha256Mismatch { path, .. } => {
+                assert_eq!(
+                    path,
+                    dest.to_string(),
+                    "Sha256Mismatch.path must surface the dest the operator sees"
+                );
+            }
+            other => panic!("expected Sha256Mismatch, got {other:?}"),
+        }
         m.assert();
     }
 
@@ -2213,26 +2295,33 @@ mod tests {
         m.assert();
     }
 
-    /// Over-cap rejection + unlink pin: a body larger than the
-    /// test cap (128 bytes vs cap of 64) triggers the cap-firing
-    /// branch in `http_download_with_cap`. Asserts (a) the call
-    /// returns Err with the "exceeds … post-decompression" diagnostic,
-    /// AND (b) the destination file does NOT exist post-call —
-    /// exercising the `drop(out); fs::remove_file(dest)` cleanup
-    /// path. This is the load-bearing security pin: a half-written
-    /// file surviving a cap-fire could be promoted by a later SHA256
-    /// check. Also pins format prefix ("download failed:"), URL
-    /// presence, "post-decompression" qualifier (parity with
-    /// github.rs Layer 2 framing), network-path triage hint,
-    /// MAX_TARBALL_DOWNLOAD_BYTES escape hatch, and anti-doubling
-    /// invariant (single occurrence of "response body exceeds"). The
-    /// framing uses neutral "larger than expected" language rather
-    /// than alarming "compression bomb" wording, and includes
-    /// human-readable byte sizes alongside the raw cap value so
-    /// operators don't have to mentally divide.
+
+    /// Over-cap rejection + no-leak pin: a body whose Content-Length
+    /// exceeds the test cap fires the Layer-1 pre-check in
+    /// `http_download_with_cap`. mockito auto-populates Content-Length
+    /// to body length, so a 128-byte body with cap=64 exercises the
+    /// header-only rejection path. Pins (a) the operator-visible
+    /// format prefix ("download failed:"), (b) URL presence, (c) cap
+    /// value + "exceeds" + "Content-Length" + "on-wire" /
+    /// "pre-decompression" vocabulary, (d) network-path triage hint
+    /// (mirrors github.rs Layer-1 surface), (e) the
+    /// MAX_TARBALL_DOWNLOAD_BYTES escape hatch, and (f) the
+    /// load-bearing security invariant: dest does NOT exist
+    /// post-call. Layer-2 (cumulative byte counter) is harder to
+    /// exercise from mockito because the mock always sets
+    /// Content-Length; Layer 1 is the production-relevant path for
+    /// any well-behaved server.
     #[test]
     fn http_download_with_cap_rejects_over_cap_and_unlinks_dest() {
         let mut server = mockito::Server::new();
+        // mockito's `with_body` auto-populates the Content-Length header
+        // to the body length. With body=128 bytes and cap=64, Layer 1
+        // (pre-streaming Content-Length pre-check) fires first and
+        // surfaces the on-wire diagnostic before any bytes stream.
+        // This is the production-relevant path: any HTTP/1.1 server
+        // that doesn't use chunked transfer encoding sets
+        // Content-Length, so Layer 1 is what catches the over-cap
+        // rejection in the wild.
         let body = vec![0xEF_u8; 128];
         let m = server
             .mock("GET", "/over-test-cap.bin")
@@ -2245,101 +2334,41 @@ mod tests {
         let err = http_download_with_cap(&url, &dest, Duration::from_secs(5), 64).unwrap_err();
         match err {
             GharsError::Tarball(msg, _hint) => {
-                // Pin operator-visible format prefix.
                 assert!(
                     msg.starts_with("download failed:"),
                     "msg must start with 'download failed:'; got: {msg}"
                 );
-                // Pin URL presence so operators can identify the
-                // affected upstream from log scrape.
-                assert!(
-                    msg.contains(&url),
-                    "msg must surface the request URL; got: {msg}"
-                );
+                assert!(msg.contains(&url), "msg must surface URL; got: {msg}");
                 assert!(
                     msg.contains("exceeds") && msg.contains("64 bytes"),
                     "msg must surface cap value + 'exceeds'; got: {msg}"
                 );
-                // Pin "post-decompression" parity with github.rs Layer 2
-                // framing — operators triaging across both surfaces see
-                // consistent on-wire vs post-decompression vocabulary.
+                assert!(msg.contains("Content-Length"), "Layer-1 pin: {msg}");
                 assert!(
-                    msg.contains("post-decompression"),
-                    "msg must surface 'post-decompression' framing; got: {msg}"
-                );
-                // Alarming "compression bomb" framing is dropped in
-                // favor of neutral "larger than expected" wording
-                // that names both threat-model and legitimate-payload
-                // possibilities. Pin the wording so a regression
-                // back to the alarming framing surfaces here.
-                assert!(
-                    msg.contains("larger than expected"),
-                    "msg must surface neutral 'larger than expected' framing; got: {msg}"
+                    msg.contains("on-wire") && msg.contains("pre-decompression"),
+                    "msg must surface on-wire / pre-decompression framing: {msg}"
                 );
                 assert!(
-                    msg.contains("deliberately-crafted") && msg.contains("legitimately large"),
-                    "msg must name both threat-model + legitimate-payload possibilities; got: {msg}"
-                );
-                assert!(
-                    !msg.contains("compression bomb"),
-                    "msg MUST NOT surface alarming 'compression bomb' framing; got: {msg}"
-                );
-                // Pin operator hint parity with github.rs cap-exceeded
-                // hint so a post-cap operator gets the same
-                // network-path triage breadcrumb regardless of which
-                // download path tripped the cap.
-                assert!(
-                    msg.contains("verify network path"),
-                    "msg must surface network-path triage hint; got: {msg}"
-                );
-                assert!(
-                    msg.contains("compromised mirror")
+                    msg.contains("verify network path")
+                        && msg.contains("compromised mirror")
                         && msg.contains("hostile proxy CA")
                         && msg.contains("non-GitHub origin"),
-                    "msg must enumerate compromised-mirror/proxy/non-GitHub origin causes; got: {msg}"
+                    "msg must enumerate triage causes; got: {msg}"
                 );
-                // Pin escape-hatch breadcrumb so an operator with a
-                // legitimately-large payload can find the constant to
-                // raise.
                 assert!(
                     msg.contains("MAX_TARBALL_DOWNLOAD_BYTES"),
-                    "msg must surface MAX_TARBALL_DOWNLOAD_BYTES escape hatch; got: {msg}"
+                    "msg must surface escape-hatch symbol: {msg}"
                 );
-                // Anti-doubling: single occurrence defends against future shared-helper wrapping.
-                assert_eq!(
-                    msg.matches("response body exceeds").count(),
-                    1,
-                    "single occurrence of 'response body exceeds' required; got: {msg}"
-                );
-                // Human-readable byte size for cap value (64 B
-                // for sub-KiB integer-byte path) alongside raw "64
-                // bytes" so an operator reads "64 B (64 bytes)"
-                // without mental conversion.
-                assert!(
-                    msg.contains("64 B (64 bytes)"),
-                    "msg must include human-readable byte size '64 B (64 bytes)'; got: {msg}"
-                );
-                // No `(current limit: ...)` trailing parenthetical
-                // (parity with github.rs Layer 1 / Layer 2). The cap
-                // value already appears in the body (`exceeds 64 B
-                // (64 bytes) post-decompression`); the load-bearing
-                // breadcrumb is the symbol-name reference
-                // (`MAX_TARBALL_DOWNLOAD_BYTES`, pinned above).
-                // Negative pin guards against regression that
-                // re-introduces a duplicated suffix.
-                assert!(
-                    !msg.contains("current limit:"),
-                    "msg MUST NOT surface 'current limit:' suffix; got: {msg}"
-                );
+                // Defense-in-depth: dest must NOT have been created.
+                // Pre-fix path opened dest BEFORE the header check;
+                // re-ordering regression would leak a zero-byte file
+                // that a later SHA256 check could promote.
             }
             other => panic!("expected GharsError::Tarball, got {other:?}"),
         }
-        // The destination file must be unlinked after the cap fires —
-        // otherwise a partial write could be promoted by a subsequent
-        // SHA256 check (the SEC-09/SEC-31 invariant).
         assert!(
             !dest.as_std_path().exists(),
-            "dest file must be unlinked after cap-fire; still exists at {dest}"
+            "dest file must NOT exist when cap fires; still found at {dest}"
         );
         m.assert();
     }

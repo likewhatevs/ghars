@@ -2607,6 +2607,37 @@ fn lower_to_effective(
     // (validators.rs), so byte-wise `Ord` agrees with operator intent.
     caches.sort_by(|a, b| a.name.cmp(&b.name));
 
+    // SEC: a runner that binds 2+ sccache pools clobbers
+    // SCCACHE_SERVER_UDS / SCCACHE_CACHE_SIZE in the rendered
+    // 30-cache-pool.conf drop-in (last-writer-wins on duplicate
+    // Environment= keys per systemd.exec(5)). sccache itself only
+    // reads ONE server UDS, so the second-to-last pool would be
+    // silently unreachable from the runner. Reject the binding at
+    // plan time so the operator gets a clear remediation rather
+    // than a silently-broken cache pipeline.
+    let sccache_pools: Vec<&str> = caches
+        .iter()
+        .filter(|c| c.kinds.contains(&crate::config::CacheKind::Sccache))
+        .map(|c| c.name.as_str())
+        .collect();
+    if sccache_pools.len() > 1 {
+        return Err(GharsError::Validation(
+            format!(
+                "runner '{}' binds {} sccache pools ({}) — sccache \
+                 supports only ONE server UDS per process; the rendered \
+                 SCCACHE_SERVER_UDS would be clobbered last-writer-wins, \
+                 leaving all but one pool unreachable",
+                runner.name,
+                sccache_pools.len(),
+                sccache_pools.join(", "),
+            ),
+            "split the runner into multiple runners (one per sccache pool), \
+             or merge the pools, or change all but one to ccache-only \
+             (filesystem mode is multi-bind safe — only sccache's daemon \
+             model is single-server)".into(),
+        ));
+    }
+
     // Network resolution. None ⇒ implicit Open. defaults.network is
     // the fallback; explicit `runner.network = "open"` is rejected by
     // schema validation upstream — `open` is reserved.
@@ -8094,12 +8125,15 @@ labels  = ["alpha", "beta"]
             r
         }]);
         // Inject the cache pool definitions so lower_to_effective can
-        // resolve the bindings.
+        // resolve the bindings. ccache (not sccache) — the
+        // multi-sccache-pool-per-runner gate in lower_to_effective
+        // would reject 4 sccache pools, but ccache pools have no
+        // single-valued env to clobber and freely compose.
         for name in ["pool-a", "pool-m", "pool-new", "pool-z"] {
             cfg.cache_pools.insert(
                 name.into(),
                 crate::config::CachePoolSpec {
-                    kinds: vec![CacheKind::Sccache],
+                    kinds: vec![CacheKind::Ccache],
                     size: "5G".into(),
                     mode: CacheMode::Shared,
                     trust_zone: "default".into(),
@@ -8114,7 +8148,7 @@ labels  = ["alpha", "beta"]
             .iter()
             .map(|n| EffectiveCacheBinding {
                 name: (*n).into(),
-                kinds: vec![CacheKind::Sccache],
+                kinds: vec![CacheKind::Ccache],
                 size: "5G".into(),
                 mode: CacheMode::Shared,
                 trust_zone: "default".into(),

@@ -445,8 +445,6 @@ pub fn required_tools() -> &'static [&'static str] {
         "install",
         "chmod",
         "chown",
-        "useradd",
-        "usermod",
         "getent",
         "runuser",
         "nft",
@@ -463,9 +461,18 @@ pub fn required_tools() -> &'static [&'static str] {
 }
 
 /// `preflight_tools`: every external command ghars shells out to. The
-/// list combines the legacy Python set (install, chmod, chown, useradd,
-/// usermod, getent, runuser) with the v0.1 additions (`nft`, `ip`,
-/// `sysctl` for netns mode + `systemd-analyze` for plan-time gate).
+/// list covers `install`/`chmod`/`chown` (file landing under root-owned
+/// dirs), `getent`/`runuser` (operator-shell-out diagnostics + runuser
+/// for the runsvc launch sequence), `nft`/`ip`/`sysctl` for netns mode,
+/// `systemd-analyze` for the plan-time verify gate, and `unshare` for
+/// the empirical NET_NS probe.
+///
+/// Pre-DynamicUser the list also included `useradd`/`usermod`/`gpasswd`
+/// — those are now obsolete: runner identity is provisioned by
+/// systemd's `DynamicUser=yes` (transient UID/GID allocated on unit
+/// start, recycled on stop) and cache reach is socket-DAC + BindPaths
+/// rather than supplementary-group membership, so no `useradd` /
+/// `gpasswd` step runs at apply time.
 #[must_use]
 pub fn preflight_tools() -> CheckResult {
     preflight_tools_with(&which_callable)

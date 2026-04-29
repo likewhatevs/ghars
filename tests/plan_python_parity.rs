@@ -515,6 +515,83 @@ caches = ["nonexistent-pool"]
 }
 
 #[test]
+fn multi_sccache_pool_binding_rejected_at_plan_time() {
+    // sccache supports only ONE server UDS per process, so a runner
+    // bound to 2+ sccache pools would have its
+    // SCCACHE_SERVER_UDS / SCCACHE_CACHE_SIZE clobbered last-writer-
+    // wins in the rendered drop-in (systemd.exec(5) directive
+    // semantics). All but one pool would be silently unreachable
+    // from the runner. Plan-time rejection points the operator at
+    // the three viable remediations: split into multiple runners,
+    // merge the pools, or downgrade all-but-one to ccache-only
+    // (filesystem mode is multi-bind safe).
+    let cfg = parse(
+        r#"
+[auth.pat]
+kind = "pat"
+token_env = "GHARS_PAT"
+
+[cache_pools.build]
+kinds = ["sccache"]
+size = "200G"
+
+[cache_pools.test]
+kinds = ["sccache"]
+size = "100G"
+
+[[runner]]
+name = "multi"
+url = "https://github.com/example/multi"
+auth = "pat"
+caches = ["build", "test"]
+"#,
+    );
+    let err = plan_from(&cfg, &ActualState::default(), &Paths::default()).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("sccache pools"), "msg must name the directive: {msg}");
+    assert!(
+        msg.contains("clobbered") || msg.contains("last-writer-wins"),
+        "msg must explain the clobber: {msg}"
+    );
+    // Both offending pool names appear in the error so the
+    // operator knows which to split / merge / downgrade.
+    assert!(msg.contains("build"), "must name pool 'build': {msg}");
+    assert!(msg.contains("test"), "must name pool 'test': {msg}");
+}
+
+#[test]
+fn unified_cache_pool_with_sccache_plus_ccache_pool_does_not_double_count() {
+    // Defense in depth: the multi-sccache check counts pools whose
+    // `kinds` LIST contains Sccache, not pools whose ONLY kind is
+    // Sccache. A `kinds = ["sccache", "ccache"]` unified pool is
+    // ONE sccache server, so binding ONE such pool plus a
+    // ccache-only pool must NOT trigger rejection.
+    let cfg = parse(
+        r#"
+[auth.pat]
+kind = "pat"
+token_env = "GHARS_PAT"
+
+[cache_pools.unified]
+kinds = ["sccache", "ccache"]
+size = "200G"
+
+[cache_pools.fsonly]
+kinds = ["ccache"]
+size = "100G"
+
+[[runner]]
+name = "ok"
+url = "https://github.com/example/ok"
+auth = "pat"
+caches = ["unified", "fsonly"]
+"#,
+    );
+    plan_from(&cfg, &ActualState::default(), &Paths::default())
+        .expect("one sccache pool + one ccache-only pool must NOT reject");
+}
+
+#[test]
 fn unknown_network_reference_errors() {
     let cfg = parse(
         r#"

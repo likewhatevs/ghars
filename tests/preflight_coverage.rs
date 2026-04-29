@@ -313,12 +313,29 @@ fn preflight_tools_fails_when_install_missing() {
 }
 
 #[test]
-fn preflight_tools_fails_when_useradd_missing() {
-    // Python parity: useradd is shadow-utils, often absent in minimal
-    // base images.
+fn preflight_tools_does_not_require_useradd() {
+    // Post-DynamicUser: runner identity is provisioned by systemd's
+    // DynamicUser=yes — no useradd / usermod / gpasswd at apply time.
+    // The preflight tool list MUST NOT demand `useradd`; a probe that
+    // returns true for every other tool while `useradd` is missing
+    // must still pass.
     let r = preflight_tools_with(&|name| name != "useradd");
-    assert_eq!(r.outcome, Outcome::Fail);
-    assert!(r.detail.contains("useradd"));
+    assert_eq!(r.outcome, Outcome::Pass);
+    // Belt-and-suspenders: required_tools itself MUST NOT contain
+    // useradd. Future regression that re-adds it (e.g. a misguided
+    // "Python parity" revert) flips this assertion.
+    assert!(
+        !required_tools().contains(&"useradd"),
+        "required_tools must not list useradd post-DynamicUser; \
+         got: {:?}",
+        required_tools()
+    );
+    assert!(
+        !required_tools().contains(&"usermod"),
+        "required_tools must not list usermod post-DynamicUser; \
+         got: {:?}",
+        required_tools()
+    );
 }
 
 #[test]
@@ -348,14 +365,13 @@ fn preflight_tools_lists_every_missing_command() {
 fn required_tools_includes_v0_1_additions() {
     // The list should include nft, ip, sysctl, systemd-analyze, unshare
     // (v0.1 additions over the Python set). If a future refactor drops
-    // any of these the test catches it.
+    // any of these the test catches it. `useradd`/`usermod` are NOT
+    // listed — see `preflight_tools_does_not_require_useradd`.
     let need = required_tools();
     for must_have in [
         "install",
         "chmod",
         "chown",
-        "useradd",
-        "usermod",
         "getent",
         "runuser",
         "nft",

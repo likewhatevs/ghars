@@ -2713,12 +2713,29 @@ fn execute_update_runner(
             }
             let path = drop_in_dir.join(&change.basename);
             let prior = read_prior(&path);
-            let removed = fs::remove_file(path.as_std_path()).is_ok();
-            if removed {
-                if let Some(content) = prior {
-                    log.push(UndoStep::RemoveFile { path, content });
+            // Differentiate "file is missing" (ENOENT — already
+            // removed, treat as no-op success) from any other I/O
+            // failure (EACCES on read-only mount, EBUSY on a held
+            // descriptor, EROFS, etc. — the file is still present
+            // and the convergence target was NOT reached). The
+            // pre-fix `is_ok()` collapsed every Err into a silent
+            // skip, so a real EACCES would let `apply` claim
+            // success while leaving the stale drop-in on disk.
+            match fs::remove_file(path.as_std_path()) {
+                Ok(()) => {
+                    if let Some(content) = prior {
+                        log.push(UndoStep::RemoveFile { path, content });
+                    }
+                    files_changed += 1;
                 }
-                files_changed += 1;
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // Already gone — operator concurrently removed
+                    // or Stage 2 saw a race. Convergence target is
+                    // satisfied, no UndoStep to push (nothing to
+                    // restore), no files_changed bump (we did NOT
+                    // mutate disk this apply).
+                }
+                Err(e) => return Err(GharsError::Io(e)),
             }
         }
     }
@@ -5758,6 +5775,175 @@ mod tests {
             unrelated.as_std_path().exists(),
             "non-managed drop-in custom-tweak.conf was deleted"
         );
+    }
+
+    #[test]
+    fn update_runner_in_place_treats_already_missing_managed_dropin_as_no_op() {
+        // Regression pin for the ENOENT branch of the deletion loop.
+        // Stage 2 may flag a managed drop-in as Removed even when an
+        // earlier concurrent operation (operator manual `rm`, prior
+        // partial apply) already deleted it. The deletion loop must
+        // accept ENOENT as "convergence target satisfied" and
+        // continue without bumping files_changed (we did NOT mutate
+        // disk this run) and without pushing an UndoStep (nothing
+        // to restore — there's no prior bytes to read).
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = make_paths(&tmp);
+        fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
+        let drop_in_dir = paths.drop_in_dir("a");
+        fs::create_dir_all(drop_in_dir.as_std_path()).unwrap();
+        // Pre-stage the unit file (so the path checks succeed) but
+        // do NOT plant 10-memory.conf — the Removed entry below
+        // refers to a file that's already missing.
+        let unit_file = paths.unit_file("a");
+        fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
+        fs::write(
+            unit_file.as_std_path(),
+            crate::systemd::runner_template_text().as_bytes(),
+        )
+        .unwrap();
+
+        let mut after = make_spec("a", &paths.state_dir);
+        after.spec_hash = "sha256:after".into();
+        let delta = crate::plan::RunnerDelta {
+            identity: crate::plan::RunnerIdentity {
+                name: "a".into(),
+                url: after.url.clone(),
+                auth_name: after.auth_name.clone(),
+                trust_zone: after.trust_zone.clone(),
+            },
+            after: crate::plan::RunnerPlan {
+                spec: after.clone(),
+                resolved_release: None,
+                effective_unit_text: crate::systemd::runner_template_text(),
+                drop_ins: BTreeMap::new(),
+                spec_hash: "sha256:after".into(),
+            },
+            requires_recreate: false,
+            recreate_reasons: vec![],
+            drift_cause: crate::plan::DriftCause::SpecChanged,
+            field_changes: vec![],
+            drop_in_changes: vec![crate::plan::DropInChange {
+                basename: "10-memory.conf".into(),
+                change: DropInChangeKind::Removed {
+                    before: "[Service]\nMemoryMax=8G\n".into(),
+                },
+            }],
+            before_caches: None,
+            before_drop_in_basenames: None,
+        };
+        let systemd = MockSystemd::default();
+        let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+        let tarball = MockTarball::default();
+        let config_shell = MockConfigShell::default();
+        let deps = Deps {
+            systemd: &systemd,
+            auth: &auth_map,
+            tarball: &tarball,
+            config_shell: &config_shell,
+        };
+        // Must NOT propagate ENOENT — Stage 2's Removed verdict is
+        // satisfied by "file already absent on disk".
+        execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2)
+            .expect("ENOENT during managed-drop-in removal must be tolerated");
+    }
+
+    fn running_as_root_apply_test_helper() -> bool {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata("/proc/self")
+            .map(|m| m.uid() == 0)
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn update_runner_in_place_propagates_eacces_on_managed_dropin_remove() {
+        // Regression pin for the EACCES (and other non-ENOENT)
+        // branch. The pre-fix `is_ok()` collapse silently dropped
+        // every error class, so a read-only mount, a held
+        // descriptor, or operator chmod 0500 on the drop-in dir
+        // would let `apply` claim success while leaving the stale
+        // drop-in in place. The post-fix path propagates as
+        // GharsError::Io.
+        if running_as_root_apply_test_helper() {
+            // chmod 0500 doesn't deny root via DAC; the test would
+            // fail to provoke EACCES on a root-running suite.
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = make_paths(&tmp);
+        fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
+        let drop_in_dir = paths.drop_in_dir("a");
+        fs::create_dir_all(drop_in_dir.as_std_path()).unwrap();
+        // Plant the managed drop-in so the file exists; then chmod
+        // the dir to read-only so `unlink` returns EACCES.
+        let stale = drop_in_dir.join("10-memory.conf");
+        fs::write(stale.as_std_path(), b"[Service]\nMemoryMax=8G\n").unwrap();
+        let unit_file = paths.unit_file("a");
+        fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
+        fs::write(
+            unit_file.as_std_path(),
+            crate::systemd::runner_template_text().as_bytes(),
+        )
+        .unwrap();
+        // Make the dir non-writable so unlink(2) fails with EACCES.
+        let mut perms = fs::metadata(drop_in_dir.as_std_path())
+            .unwrap()
+            .permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o500);
+        fs::set_permissions(drop_in_dir.as_std_path(), perms).unwrap();
+
+        let mut after = make_spec("a", &paths.state_dir);
+        after.spec_hash = "sha256:after".into();
+        let delta = crate::plan::RunnerDelta {
+            identity: crate::plan::RunnerIdentity {
+                name: "a".into(),
+                url: after.url.clone(),
+                auth_name: after.auth_name.clone(),
+                trust_zone: after.trust_zone.clone(),
+            },
+            after: crate::plan::RunnerPlan {
+                spec: after.clone(),
+                resolved_release: None,
+                effective_unit_text: crate::systemd::runner_template_text(),
+                drop_ins: BTreeMap::new(),
+                spec_hash: "sha256:after".into(),
+            },
+            requires_recreate: false,
+            recreate_reasons: vec![],
+            drift_cause: crate::plan::DriftCause::SpecChanged,
+            field_changes: vec![],
+            drop_in_changes: vec![crate::plan::DropInChange {
+                basename: "10-memory.conf".into(),
+                change: DropInChangeKind::Removed {
+                    before: "[Service]\nMemoryMax=8G\n".into(),
+                },
+            }],
+            before_caches: None,
+            before_drop_in_basenames: None,
+        };
+        let systemd = MockSystemd::default();
+        let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+        let tarball = MockTarball::default();
+        let config_shell = MockConfigShell::default();
+        let deps = Deps {
+            systemd: &systemd,
+            auth: &auth_map,
+            tarball: &tarball,
+            config_shell: &config_shell,
+        };
+        let err = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2)
+            .expect_err("EACCES on managed-drop-in remove must propagate, not silently succeed");
+        assert!(
+            matches!(err, GharsError::Io(_)),
+            "expected GharsError::Io for EACCES; got {err:?}"
+        );
+
+        // Restore perms so tempdir cleanup works.
+        let mut perms = fs::metadata(drop_in_dir.as_std_path())
+            .unwrap()
+            .permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        fs::set_permissions(drop_in_dir.as_std_path(), perms).unwrap();
     }
 
     #[test]

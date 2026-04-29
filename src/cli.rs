@@ -631,6 +631,7 @@ fn load_config(path: &Utf8Path) -> Result<Config> {
     validate_security_overrides(&cfg)?;
     validate_identity_fields(&cfg)?;
     validate_no_duplicate_caches(&cfg)?;
+    validate_single_sccache_pool_per_runner(&cfg)?;
     validate_cache_pool_names(&cfg)?;
     validate_runner_names(&cfg)?;
     validate_auth_keys(&cfg)?;
@@ -754,6 +755,58 @@ fn validate_no_duplicate_caches(cfg: &Config) -> Result<()> {
                         .into(),
                 ));
             }
+        }
+    }
+    Ok(())
+}
+
+// ---------- single-sccache-pool-per-runner validator --------------------
+
+/// Reject configs where a runner references 2+ cache pools that each
+/// host an sccache server. The runner unit emits one
+/// `Environment=SCCACHE_SERVER_UDS=` per sccache pool referenced;
+/// systemd's last-writer-wins semantics for `Environment=` would route
+/// every sccache call to the LAST pool's UDS, silently dropping cache
+/// hits from earlier pools and entangling builds across what the
+/// operator declared as separate pools. Catching at config load
+/// surfaces a scoped error (`runner "NAME": ...`) before any units are
+/// rendered or applied.
+///
+/// ccache pools are not affected — they use filesystem-mode bindings
+/// keyed on `CCACHE_DIR=%h/.cache/ccache/{pool}` (no per-pool UDS), and
+/// distinct CCACHE_DIR values do compose. Only the sccache UDS is
+/// single-valued.
+///
+/// # Errors
+///
+/// `GharsError::Validation` naming the runner and the conflicting
+/// sccache pools. The hint tells the operator to merge or drop one.
+fn validate_single_sccache_pool_per_runner(cfg: &Config) -> Result<()> {
+    use crate::config::CacheKind;
+    for runner in &cfg.runners {
+        let mut sccache_refs: Vec<&str> = Vec::new();
+        for cache_ref in &runner.caches {
+            if let Some(spec) = cfg.cache_pools.get(cache_ref) {
+                if spec.kinds.contains(&CacheKind::Sccache) {
+                    sccache_refs.push(cache_ref.as_str());
+                }
+            }
+        }
+        if sccache_refs.len() > 1 {
+            return Err(GharsError::Validation(
+                format!(
+                    "runner {:?}: references {} sccache pools ({}); only one sccache pool \
+                     binding is permitted per runner",
+                    runner.name,
+                    sccache_refs.len(),
+                    sccache_refs.join(", ")
+                ),
+                "remove all but one sccache pool from [[runner]].caches; \
+                 SCCACHE_SERVER_UDS is single-valued and additional pools \
+                 would be silently shadowed by systemd's last-writer-wins \
+                 Environment= semantics"
+                    .into(),
+            ));
         }
     }
     Ok(())
@@ -1454,7 +1507,17 @@ fn cmd_validate(config_path: &Utf8Path, args: &ValidateArgs, quiet: bool) -> Res
     })?;
     let paths = Paths::default();
     let actual = state::ActualState::default();
-    let _plan = plan::plan_from(&cfg, &actual, &paths)?;
+    let plan = plan::plan_from(&cfg, &actual, &paths)?;
+    // `cmd_plan` / `cmd_apply` route through `compute_plan`, which runs
+    // `unit_verify::verify_plan` on the rendered drop-ins (audit #18 /
+    // Part 13 Tier 5). `cmd_validate` ALSO renders drop-ins (via
+    // `plan_from` above), so without the same gate here, an operator
+    // running `ghars validate` and getting "config OK" would still see
+    // a `systemd-analyze verify` failure on `ghars plan` / `ghars
+    // apply`. The validate command must be a strict superset gate —
+    // anything `plan` would reject, `validate` must reject too.
+    let verifier = crate::unit_verify::RealVerifier;
+    crate::unit_verify::verify_plan(&plan, &paths.runtime_dir, &verifier)?;
 
     if args.deep {
         // Round-trip token mints. We do NOT print or persist the
@@ -1573,6 +1636,16 @@ fn render_plan(plan: &Plan, color: ColorMode, json: bool, quiet: bool, diff: boo
     let mut stdout = io::stdout().lock();
     if plan.actions.is_empty() {
         writeln!(stdout, "Plan: no changes.").map_err(GharsError::Io)?;
+        // Empty action list does NOT mean empty warning list. The
+        // planner emits warnings for situations that produce no
+        // disruption-class action but still demand operator attention
+        // (e.g. count-block name collisions, cache-trust-zone gloss,
+        // discovered orphans that don't map to a Remove action). The
+        // pre-fix early-return dropped these silently; an operator who
+        // saw "Plan: no changes." would never know a warning fired.
+        for warning in &plan.warnings {
+            writeln!(stdout, "warning: {warning}").map_err(GharsError::Io)?;
+        }
         return Ok(());
     }
     for action in &plan.actions {
@@ -3441,6 +3514,15 @@ fn render_status_text(
                 .map_err(GharsError::Io)?;
         }
         for ext in &runners.external {
+            // External runners (units present on disk but not declared
+            // in the operator's TOML) MUST honor `--names` the same way
+            // managed runners do. Without this filter, `ghars status
+            // --names foo` would list every external unit on the host
+            // even when `foo` isn't among them — drowning the operator's
+            // scoped query in unrelated output.
+            if !name_filter.is_empty() && !name_filter.iter().any(|n| n == ext) {
+                continue;
+            }
             writeln!(stdout, "  {ext:<24} external   -          -").map_err(GharsError::Io)?;
         }
         writeln!(stdout).map_err(GharsError::Io)?;
@@ -12298,6 +12380,134 @@ token_env = \"GHARS_PAT\"";
         second.caches = vec!["build".into()];
         cfg.runners.push(second);
         validate_no_duplicate_caches(&cfg).expect("cross-runner pool reuse must pass validation");
+    }
+
+    // -------- single sccache pool per runner ---------------------------
+
+    /// Insert a `[cache_pools.NAME]` of the given kind into `cfg`.
+    /// Used by the sccache-binding tests to compose pools with
+    /// distinct kind sets without copy-pasting the literal each time.
+    fn insert_cache_pool(cfg: &mut Config, name: &str, kinds: Vec<crate::config::CacheKind>) {
+        cfg.cache_pools.insert(
+            name.into(),
+            crate::config::CachePoolSpec {
+                kinds,
+                size: "200G".into(),
+                mode: crate::config::CacheMode::default(),
+                trust_zone: "default".into(),
+            },
+        );
+    }
+
+    /// A runner referencing two sccache pools must reject. The renderer
+    /// would emit two `Environment=SCCACHE_SERVER_UDS=` lines in the
+    /// 30-cache-pool drop-in; systemd's last-writer-wins Environment=
+    /// semantics mean the second value silently shadows the first,
+    /// routing every sccache call to one pool while the operator
+    /// expected both to receive traffic.
+    #[test]
+    fn validate_single_sccache_pool_per_runner_rejects_two_sccache_refs() {
+        let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+        insert_cache_pool(&mut cfg, "build", vec![crate::config::CacheKind::Sccache]);
+        insert_cache_pool(&mut cfg, "test", vec![crate::config::CacheKind::Sccache]);
+        cfg.runners[0].caches = vec!["build".into(), "test".into()];
+        let err = validate_single_sccache_pool_per_runner(&cfg)
+            .expect_err("must reject two sccache pool refs");
+        match err {
+            GharsError::Validation(msg, hint) => {
+                assert!(
+                    msg.contains("runner") && msg.contains("buckos"),
+                    "msg must scope to the offending runner; got: {msg}"
+                );
+                assert!(
+                    msg.contains("sccache") && msg.contains("build") && msg.contains("test"),
+                    "msg must name both conflicting pools; got: {msg}"
+                );
+                assert!(
+                    hint.contains("SCCACHE_SERVER_UDS")
+                        || hint.contains("last-writer")
+                        || hint.contains("single-valued"),
+                    "hint must explain the env-clobber root cause; got: {hint}"
+                );
+            }
+            other => panic!("expected GharsError::Validation, got {other:?}"),
+        }
+    }
+
+    /// A runner referencing one sccache pool plus one ccache-only pool
+    /// must pass. ccache pools use filesystem mode (CCACHE_DIR per pool)
+    /// and do not emit SCCACHE_SERVER_UDS, so they don't conflict.
+    #[test]
+    fn validate_single_sccache_pool_per_runner_accepts_one_sccache_plus_ccache() {
+        let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+        insert_cache_pool(&mut cfg, "build", vec![crate::config::CacheKind::Sccache]);
+        insert_cache_pool(&mut cfg, "obj", vec![crate::config::CacheKind::Ccache]);
+        cfg.runners[0].caches = vec!["build".into(), "obj".into()];
+        validate_single_sccache_pool_per_runner(&cfg)
+            .expect("one sccache + one ccache must pass validation");
+    }
+
+    /// A runner referencing one combined-kind pool (both ccache and
+    /// sccache in the same `[cache_pools.NAME]`) must pass. The single
+    /// pool emits exactly one SCCACHE_SERVER_UDS line.
+    #[test]
+    fn validate_single_sccache_pool_per_runner_accepts_one_combined_pool() {
+        let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+        insert_cache_pool(
+            &mut cfg,
+            "build",
+            vec![
+                crate::config::CacheKind::Ccache,
+                crate::config::CacheKind::Sccache,
+            ],
+        );
+        cfg.runners[0].caches = vec!["build".into()];
+        validate_single_sccache_pool_per_runner(&cfg)
+            .expect("single combined-kind pool must pass validation");
+    }
+
+    /// A runner referencing two ccache-only pools must pass. Only
+    /// sccache is single-valued; ccache pools have distinct CCACHE_DIR
+    /// values and compose without conflict.
+    #[test]
+    fn validate_single_sccache_pool_per_runner_accepts_two_ccache_pools() {
+        let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+        insert_cache_pool(&mut cfg, "obj-a", vec![crate::config::CacheKind::Ccache]);
+        insert_cache_pool(&mut cfg, "obj-b", vec![crate::config::CacheKind::Ccache]);
+        cfg.runners[0].caches = vec!["obj-a".into(), "obj-b".into()];
+        validate_single_sccache_pool_per_runner(&cfg)
+            .expect("two ccache pools must pass validation");
+    }
+
+    /// Cross-runner sccache binding does NOT trip the per-runner gate.
+    /// Each runner is checked independently; two runners each with one
+    /// sccache pool must pass even if the pools differ.
+    #[test]
+    fn validate_single_sccache_pool_per_runner_accepts_cross_runner_sccache() {
+        let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+        insert_cache_pool(&mut cfg, "build", vec![crate::config::CacheKind::Sccache]);
+        insert_cache_pool(&mut cfg, "test", vec![crate::config::CacheKind::Sccache]);
+        cfg.runners[0].caches = vec!["build".into()];
+        let mut second = cfg.runners[0].clone();
+        second.name = "ci".into();
+        second.url = "https://github.com/example/ci".into();
+        second.caches = vec!["test".into()];
+        cfg.runners.push(second);
+        validate_single_sccache_pool_per_runner(&cfg)
+            .expect("distinct sccache pool per runner must pass validation");
+    }
+
+    /// Unknown pool refs (referenced but not declared in
+    /// `[cache_pools.NAME]`) are silently skipped here — plan_from's
+    /// unknown-pool gate surfaces them later. The validator must not
+    /// panic on `cfg.cache_pools.get(unknown) == None`.
+    #[test]
+    fn validate_single_sccache_pool_per_runner_skips_unknown_refs() {
+        let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+        insert_cache_pool(&mut cfg, "build", vec![crate::config::CacheKind::Sccache]);
+        cfg.runners[0].caches = vec!["build".into(), "no-such-pool".into()];
+        validate_single_sccache_pool_per_runner(&cfg)
+            .expect("unknown ref must not interact with sccache count");
     }
 
     // -------- AuthSpec::Pat XOR shape gate ------------------------------
