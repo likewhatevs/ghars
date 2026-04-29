@@ -130,43 +130,43 @@ pub enum ApplyOutcome {
     /// `execute_update_runner` in-place branch took the
     /// `files_changed == 0 && pools_added.is_empty() &&
     /// pools_removed.is_empty()` short-circuit: no daemon-
-    /// reload, no stop+start, no usermod. Equivalent to
+    /// reload, no stop+start. Equivalent to
     /// [`crate::plan::Disruption::None`] at apply time.
     InPlaceSkipped,
     /// `execute_update_runner` in-place branch wrote one or more
-    /// managed files and / or applied one or more supplementary-group
-    /// changes, then issued daemon-reload + stop+start.
+    /// managed files and / or observed one or more cache-pool
+    /// membership changes, then issued daemon-reload + stop+start.
     /// `files_changed` counts the managed files whose bytes diverged
     /// from disk (unit + every drop-in basename); `pools_added` /
-    /// `pools_removed` carry the cache-pool NAMES (not group names —
-    /// the inputs to `cache_pool_group()`) whose membership was
-    /// reconciled via `gpasswd -a` / `gpasswd -d` on the runner's
-    /// system user. The struct field `group_ops: usize` was replaced
-    /// by `pools_added` + `pools_removed`; [`Self::detail`]
-    /// derives the count locally as `pools_added.len() +
-    /// pools_removed.len()`. See [`Self::detail`] for the rendered
-    /// string format.
+    /// `pools_removed` carry the cache-pool NAMES whose binding was
+    /// added or removed from the runner's caches list. The Vecs are
+    /// informational — cache reach is materialized by the rendered
+    /// 30-cache-pool.conf drop-in's `BindPaths=` entries, not by any
+    /// system-level group reconciliation. [`Self::detail`] renders a
+    /// `(added: …; removed: …)` suffix when either Vec is non-empty.
     InPlaceRestarted {
         /// Number of managed files whose bytes were rewritten this
-        /// apply (unit text + drop-ins). `0` ⇒ pure group-op
-        /// reconciliation triggered the restart.
+        /// apply (unit text + drop-ins). `0` with non-empty
+        /// `pools_added` / `pools_removed` cannot occur — pool
+        /// changes always re-render `30-cache-pool.conf`, which
+        /// bumps `files_changed`.
         files_changed: usize,
-        /// Cache-pool names this apply added the runner's user to via
-        /// `gpasswd -a` (one entry per pool). Sorted by
+        /// Cache-pool names whose binding was added to this runner's
+        /// caches list since the last apply, sorted by
         /// `BTreeSet::difference` order at the construction site
         /// (apply.rs `execute_update_runner` in-place caches diff)
         /// so the rendered detail line is deterministic. Empty when
         /// the diff was a no-op or `delta.before_caches` was `None`
         /// (pre-annotation runner — no annotation to diff against).
         pools_added: Vec<String>,
-        /// Cache-pool names this apply removed the runner's user from
-        /// via `gpasswd -d` (one entry per pool). Sorted; empty
+        /// Cache-pool names whose binding was removed from this
+        /// runner's caches list since the last apply. Sorted; empty
         /// semantics symmetric with `pools_added`.
         ///
         /// Symmetric counterpart on the cache-pool side:
         /// [`Self::PoolUpdated`] / [`Self::PoolSkipped`] intentionally
-        /// lack these Vecs (pool-kind changes don't reconcile
-        /// membership — group identity is name-parameterized).
+        /// lack these Vecs — pool-kind changes don't change runner-
+        /// side bindings.
         pools_removed: Vec<String>,
     },
     /// `execute_update_runner` recreate branch — `requires_recreate
@@ -191,11 +191,10 @@ pub enum ApplyOutcome {
     /// `execute_update_cache_pool` finished — drop-in rewritten,
     /// daemon-reload + stop + start cycled the existing
     /// ghars-cache@POOL.service.
-    /// (No pool-membership Vecs — pool updates don't trigger
-    /// runner-side gpasswd; the per-pool group identity is
-    /// parameterized by pool name only. See
-    /// [`Self::InPlaceRestarted`] for the runner-side pool-membership
-    /// diff that DOES carry `pools_added` / `pools_removed`.)
+    /// (No pool-membership Vecs — pool updates don't change runner-
+    /// side bindings. See [`Self::InPlaceRestarted`] for the runner-
+    /// side caches-list diff that DOES carry `pools_added` /
+    /// `pools_removed`.)
     PoolUpdated,
     /// `execute_update_cache_pool` took the byte-equality short-circuit
     /// (symmetric with [`Self::InPlaceSkipped`]): the
@@ -209,11 +208,10 @@ pub enum ApplyOutcome {
     /// match. When both conditions hold: no daemon-reload, no
     /// stop+start, no host mutation. Equivalent to
     /// [`crate::plan::Disruption::None`] at apply time.
-    /// (No pool-membership Vecs: pool-kind changes do not trigger
-    /// usermod/gpasswd — the per-pool group identity is parameterized
-    /// by pool name only, see comment in `execute_update_cache_pool`.
-    /// Symmetric to [`Self::InPlaceRestarted`]'s `pools_added`/
-    /// `pools_removed` which DO carry runner-side membership diff.)
+    /// (No pool-membership Vecs — pool-kind changes don't change
+    /// runner-side bindings. Symmetric to
+    /// [`Self::InPlaceRestarted`]'s `pools_added`/`pools_removed`
+    /// which DO carry runner-side caches-list diff.)
     PoolSkipped,
     /// `execute_remove_cache_pool` finished — drop-in + per-pool
     /// group + storage dir removed.
@@ -293,7 +291,7 @@ impl ApplyOutcome {
                 let group_ops = pools_added.len() + pools_removed.len();
                 let mut s =
                     format!("in-place: {files_changed} file(s) changed, {group_ops} group op(s)");
-                // Surface pool names when the gpasswd diff was
+                // Surface pool names when the caches-list diff was
                 // non-empty so the operator sees WHICH pools moved,
                 // not just how many. Suffix shape:
                 //   no group ops:                 (no parenthetical)
@@ -2309,12 +2307,12 @@ fn execute_create_runner(
         labels: &spec.labels,
         token: &token.value,
     })?;
-    // Push GitHubRegistration AFTER run_register succeeds. Undo path
-    // mints a fresh removal token via the auth registry and calls
-    // run_remove. The runner_home/user fields are
-    // captured here because by the time undo runs, spec.user could
-    // have been usermod'd (in-place update) and the runner_home path
-    // is the canonical location config.sh writes credentials to.
+    // Push GitHubRegistration AFTER run_register succeeds. Undo
+    // path mints a fresh removal token via the auth registry and
+    // calls run_remove. The runner_home is captured here because
+    // it is the canonical location config.sh writes credentials
+    // to, and we want the undo to target this exact path even if
+    // the spec is mutated between push-time and undo-time.
     log.push(UndoStep::GitHubRegistration {
         name: spec.name.clone(),
         url: spec.url.clone(),
@@ -2566,9 +2564,9 @@ fn execute_update_runner(
     // — `RunnerDelta` does not yet distinguish [Service] from [Unit]
     // drift, so to avoid spurious restarts we skip the daemon-reload +
     // stop + start when (a) every managed file's on-disk bytes match
-    // what we would render and (b) the supplementary-group diff is a
-    // no-op. The byte comparison reuses `read_prior` snapshots that
-    // were already needed for rollback.
+    // what we would render and (b) the caches-list diff is empty.
+    // The byte comparison reuses `read_prior` snapshots that were
+    // already needed for rollback.
     //
     // When delta.after.spec.runsvc_sha256 is empty here, plan was
     // unable to recover the digest from the discovered 00-ghars.conf
@@ -2604,48 +2602,37 @@ fn execute_update_runner(
     // and the WHICH-pools detail for cmd_apply's per-action line.
     // The `is_empty()` checks at the daemon-reload gate below
     // preserve the short-circuit semantics ("skip rewrite when bytes
-    // match"): the gate fires iff `files_changed
-    // == 0` AND both pool Vecs are empty. The total gpasswd
-    // invocation count (`group_ops` in the public detail string) is
-    // derived as `pools_added.len() + pools_removed.len()` at
-    // render time — single source of truth.
+    // match"): the gate fires iff `files_changed == 0` AND both
+    // pool Vecs are empty. The public-detail "group op(s)" count
+    // is `pools_added.len() + pools_removed.len()` at render time
+    // — operator-visible vocabulary is retained for compatibility
+    // with existing log scrapes; no system-level group operation
+    // is dispatched.
     let mut files_changed: usize = 0;
     let mut pools_added: Vec<String> = Vec::new();
     let mut pools_removed: Vec<String> = Vec::new();
 
-    // Reconcile supplementary-group memberships BEFORE the drop-in
-    // rewrite. If `gpasswd -a` or `gpasswd -d` fails partway through the
-    // diff, this function returns Err with the on-disk 00-ghars.conf
-    // still carrying the OLD `X-Ghars-Caches=` annotation. The next
-    // `ghars plan` re-diffs that old annotation against the same
-    // desired caches list, regenerates the same gpasswd add/remove
-    // operations, and retries. If we wrote drop-ins first, a failed
-    // gpasswd would leave the annotation already showing the NEW list
-    // while the actual group state is partially-reconciled — the next
-    // plan would see no diff, skip the supplementary-group step, and
-    // bake in the partial state until the next caches edit.
+    // Compute the caches-list diff for the operator-facing
+    // "added: …; removed: …" detail string.
     //
-    // The netns-vs-cache invariant still applies: the gpasswd ops
-    // must complete before stop+start so the freshly-restarted unit
-    // picks up the new group set on its next exec credentials. Both invariants land by
-    // running gpasswd FIRST in the in-place path.
+    // No system-level group reconciliation runs here. Cache reach
+    // is materialized by socket-DAC + BindPaths under DynamicUser
+    // (cache server runs at the same trust_zone DynamicUser as the
+    // runner), not by /etc/group membership. The set diff below
+    // captures `pools_added` / `pools_removed` purely for the
+    // detail surface ("runner X gained pool Y / lost pool Z");
+    // the runner unit's 30-cache-pool.conf drop-in (re-rendered
+    // below) carries the BindPaths entries that actually grant
+    // pool access.
     //
     // The diff is computed from the discovered `X-Ghars-Caches`
-    // annotation (`delta.before_caches`) against the desired post-
-    // update binding list (`delta.after.spec.caches`). When the
-    // discovered annotation is absent (`None`) — pre-annotation runner or
-    // operator-stripped 00-ghars.conf — we skip the diff entirely
-    // rather than guess at the prior membership; the next apply will
-    // land annotations and a future caches-list edit can reconcile
-    // from a known baseline.
-    //
-    // No gpasswd add/remove. Cache reach is socket-DAC + BindPaths
-    // under DynamicUser, not /etc/group membership. The set diff
-    // below still records pools_added / pools_removed for the plan-
-    // emission detail surface ("runner X gained pool Y / lost pool
-    // Z"), but no system-level operation is dispatched — the runner
-    // unit's 30-cache-pool.conf drop-in (re-rendered below) carries
-    // the BindPaths entries that materialize cache reach.
+    // annotation (`delta.before_caches`) against the desired
+    // post-update binding list (`delta.after.spec.caches`). When
+    // the discovered annotation is absent (`None`) — pre-annotation
+    // runner or operator-stripped 00-ghars.conf — we skip the diff
+    // entirely rather than guess at the prior membership; the next
+    // apply will land annotations and a future caches-list edit
+    // can reconcile from a known baseline.
     if let Some(before) = delta.before_caches.as_ref() {
         let after_set: std::collections::BTreeSet<&str> = delta
             .after
@@ -2668,16 +2655,11 @@ fn execute_update_runner(
         }
     }
 
-    // After gpasswd reconciles successfully, write managed unit text
-    // (this block) and drop-ins (loop further down). The 00-ghars.conf
-    // X-Ghars-Caches annotation lives in the drop-in body written by
-    // the `for (name, body) in &delta.after.drop_ins` loop, NOT in the
-    // systemd template body written here. But both writes are gated
-    // behind the same gpasswd success above, so on a gpasswd failure
-    // before this point, every managed file on disk still reflects the
-    // OLD caches list. The next `ghars plan` re-diffs that old
-    // annotation against the same desired list and retries the gpasswd
-    // ops.
+    // Write managed unit text (this block) and drop-ins (loop
+    // further down). The 00-ghars.conf X-Ghars-Caches annotation
+    // lives in the drop-in body written by the `for (name, body)
+    // in &delta.after.drop_ins` loop, NOT in the systemd template
+    // body written here.
     let unit_file = paths.unit_file(&delta.identity.name);
     if read_then_write_if_changed(&unit_file, delta.after.effective_unit_text.as_bytes(), log)? {
         files_changed += 1;
@@ -2756,16 +2738,20 @@ fn execute_update_runner(
     }
 
     // Skip daemon-reload + stop + start when nothing on disk
-    // changed AND the supplementary-group set was a no-op. The next
-    // exec credentials snapshot only changes when the unit restarts,
-    // so a group-op MUST trigger a restart even if no file bytes
-    // moved. verify_runner_netns runs only when we actually start the
-    // unit; otherwise the prior PID is still in the netns we already
-    // verified on the last apply.
+    // changed AND the caches-list diff was empty. A non-empty
+    // pools_added/pools_removed implies the 30-cache-pool.conf
+    // drop-in was re-rendered (its body changed when bindings
+    // changed), so files_changed > 0 in that case — but the
+    // pool-Vec checks below stay as belt-and-suspenders so a
+    // future code path that records pool changes without
+    // re-rendering can't slip past the restart gate.
+    // verify_runner_netns runs only when we actually start the
+    // unit; otherwise the prior PID is still in the netns we
+    // already verified on the last apply.
     if files_changed == 0 && pools_added.is_empty() && pools_removed.is_empty() {
         tracing::info!(
             runner = delta.identity.name.as_str(),
-            "in-place: all managed bytes + group memberships match on disk; skipping daemon-reload + restart"
+            "in-place: all managed bytes match on disk and caches list is unchanged; skipping daemon-reload + restart"
         );
         return Ok(ApplyOutcome::InPlaceSkipped);
     }
@@ -3096,20 +3082,14 @@ fn execute_update_cache_pool(
         files_changed += 1;
     }
 
-    // Pool-kind change is a membership no-op.
-    //
-    // The per-pool group is `ghars-cache-NAME`, parameterized by
-    // pool name only — NOT by kinds. A pool's `kinds` change
-    // (ccache-only → ccache+sccache or vice versa) leaves group
-    // identity unchanged, so runners enrolled at runner-create time
-    // retain valid membership across the update. No groupadd /
-    // usermod / gpasswd is needed in this handler.
-    //
-    // The runner-caches-list-change case (a runner's `caches = [...]`
-    // entry changed in the operator's TOML) IS a real apply action
-    // and does require usermod, but that's
-    // `execute_update_runner`'s responsibility, not
-    // `execute_update_cache_pool`'s.
+    // No runner-side reconciliation runs in this handler. A pool's
+    // `kinds` change (ccache-only → ccache+sccache or vice versa)
+    // is fully expressed by the per-pool drop-in body that this
+    // handler just rewrote; runners that reference the pool see
+    // the new behavior on their next restart. The runner-caches-
+    // list-change case (a runner's `caches = [...]` entry changed
+    // in the operator's TOML) is `execute_update_runner`'s
+    // responsibility, not `execute_update_cache_pool`'s.
 
     // Skip daemon-reload + stop + start when nothing on disk
     // changed. Mirror of the runner-side optimization. No
@@ -7330,18 +7310,15 @@ mod tests {
         };
         let result = apply(&plan, &deps, &paths, &opts).unwrap();
         assert!(!result.failed.is_empty(), "plan must fail");
-        // The pre-DynamicUser version asserted that useradd ran but
-        // userdel did not. Both calls are gone; the surviving signal
-        // is just that the action failed (asserted by the apply
-        // result above). Rollback-OFF semantics for the surviving
-        // UndoStep variants are covered by other tests.
+        // Rollback-OFF semantics for the surviving UndoStep variants
+        // are covered by other tests.
     }
 
     #[test]
     fn apply_with_rollback_on_walks_undo_log_on_failure() {
         // Same plan as above but with --rollback-on-failure ON. The
-        // useradd that ran before the no-release error fires must be
-        // matched by a userdel from the undo walk.
+        // create path's pre-error mutations must be inverted by the
+        // undo walk.
         let tmp = tempfile::tempdir().unwrap();
         let paths = make_paths(&tmp);
         let mut plan_data = make_runner_plan("a", &paths.state_dir);
@@ -7375,9 +7352,6 @@ mod tests {
         };
         let result = apply(&plan, &deps, &paths, &opts).unwrap();
         assert!(!result.failed.is_empty(), "plan must fail");
-        // The pre-DynamicUser version asserted that the rollback walk
-        // inverted UserAdd → userdel via the trait. Both are gone;
-        // the action-failed assertion above is the remaining signal.
     }
 
     #[test]
@@ -8956,8 +8930,8 @@ mod tests {
     }
 
     /// When every managed file on disk byte-matches what we would
-    /// render AND the supplementary-group set is unchanged, the
-    /// in-place path skips daemon-reload + stop + start entirely.
+    /// render AND the caches-list diff is empty, the in-place path
+    /// skips daemon-reload + stop + start entirely.
     #[test]
     fn execute_update_runner_in_place_skips_restart_when_bytes_match() {
         let tmp = tempfile::tempdir().unwrap();
@@ -9371,10 +9345,8 @@ mod tests {
         let delta = make_caches_delta(&paths, None, vec!["pool"]);
         let mut log = UndoLog::new();
         execute_update_runner(&delta, &deps, &paths, &mut log, 2).unwrap();
-        // before_caches=None ⇒ no caches-list diff is computed; the
-        // pre-DynamicUser version also asserted no gpasswd ops fire,
-        // but that machinery is gone — just exercising the no-panic
-        // path is the remaining signal.
+        // before_caches=None ⇒ no caches-list diff is computed.
+        // Exercising the no-panic path is the remaining signal.
     }
 
     // ---------- call-site sanitization wiring pins (apply.rs) -----------
@@ -9432,9 +9404,9 @@ mod tests {
 
     /// T1: recreate full-success log ordering pin. When
     /// `delta.requires_recreate=true`, the ordered side-effect log
-    /// must be: stop_unit → disable_unit (remove) → useradd → unit
-    /// + drop-in writes → enable_unit → start_unit (create). Pin
-    /// the systemd-call sequence so a refactor that reorders
+    /// must be: stop_unit → disable_unit (remove) → unit + drop-in
+    /// writes → enable_unit → start_unit (create). Pin the
+    /// systemd-call sequence so a refactor that reorders
     /// stop/disable vs enable/start (which would race the
     /// runner's lifecycle on real hosts) is caught at test time.
     #[test]
@@ -9521,8 +9493,7 @@ mod tests {
     /// an empty auth_map: `mint_token` inside execute_remove_runner
     /// fails at the deregister step. Asserts (i) the function
     /// returns Err, (ii) `tarball.installed` is empty (no create
-    /// side effect ran), (iii) `users.added` is empty
-    /// (`useradd_if_missing` from create's step 1 never ran).
+    /// side effect ran).
     #[test]
     fn execute_update_runner_recreate_remove_failure_skips_create() {
         let tmp = tempfile::tempdir().unwrap();
@@ -9667,7 +9638,8 @@ mod tests {
     /// assert (i) Recreated outcome, (ii) config_shell.removed
     /// is empty (run_remove never ran — the deregister step
     /// short-circuited), (iii) the create path still ran fully
-    /// (registered Vec has the runner, useradd ran).
+    /// (registered Vec has the runner, tarball install + config.sh
+    /// register both ran).
     #[test]
     fn execute_update_runner_recreate_orphan_identity_skips_token_mint() {
         let tmp = tempfile::tempdir().unwrap();
@@ -9861,12 +9833,10 @@ mod tests {
     /// dispatches `execute_remove_runner` first; that function's very
     /// first systemd call is `deps.systemd.stop_unit(&unit_name)?` —
     /// when it fails, the `?` propagates and `execute_create_runner`
-    /// MUST NOT run. Pin via `MockSystemd::fail_stop_unit` injection
-    /// (added for this test alongside the `fail_remove_group` pattern
-    /// on `MockUsers`). Asserts (i) Err returns, (ii) the error
-    /// surface mentions the injected stop_unit failure, (iii)
-    /// useradd never ran (create-side step 1 was never reached),
-    /// (iv) tarball.installed is empty, and (v) config_shell.registered
+    /// MUST NOT run. Pin via `MockSystemd::fail_stop_unit` injection.
+    /// Asserts (i) Err returns, (ii) the error surface mentions the
+    /// injected stop_unit failure, (iii) tarball.installed is empty
+    /// (create-side step 1 was never reached), (iv) config_shell.registered
     /// is empty. Symmetric with T2 which proves create-skip via an
     /// empty auth_map (which fails inside mint_token AFTER stop_unit
     /// already succeeded); T7 closes the gap for the more upstream
@@ -10390,22 +10360,18 @@ mod tests {
     /// missing paths. The fixture does not populate any drop-in files
     /// (drop_in_dir is created but empty), so no RemoveFile is pushed
     /// to the UndoLog from the remove path; the load-bearing remove-
-    /// side steps for this test are StopUnit, DisableUnit, and the
-    /// terminal UserDel after run_remove succeeds.
+    /// side steps for this test are StopUnit and DisableUnit. There
+    /// is no system-user delete step under DynamicUser — systemd
+    /// recycles the transient UID/GID on unit stop, and the remove
+    /// path's `fs::remove_dir_all(runner_home)` cleans up the per-
+    /// runner state subtree.
     ///
-    /// Discriminator design: `MockUsers::removed` records every
-    /// `userdel_if_present` call regardless of trigger. The remove
-    /// path always pushes `"ghars-a"` via `execute_remove_runner`'s
-    /// `userdel_if_present` call (which fires after `run_remove`
-    /// succeeds), so a count of 1 in `removed` is *consistent with*
-    /// the no-rollback path. The rollback walk's UserAdd→userdel
-    /// inverse arm in `undo` fires AFTER the create-side useradd
-    /// recorded into `added`, pushing a
-    /// SECOND `"ghars-a"` entry. The `count == 2` assertion is the
-    /// discriminator: without `rollback_on_failure=true` the count
-    /// would be 1 (remove-side only); with rollback it must be 2
-    /// (remove-side + undo-walk inverse). Asserting `contains` alone
-    /// would pass the no-rollback path silently.
+    /// Discriminator design: the test asserts that the recreate
+    /// path's remove leg ran (StopUnit + DisableUnit pushed to the
+    /// UndoLog) BEFORE the create leg's Validation gate fired,
+    /// AND that `apply()` walked the per-action UndoLog in reverse
+    /// when `rollback_on_failure=true` (the inverse StartUnit /
+    /// EnableUnit ops would land on the rollback walk).
     #[test]
     fn execute_update_runner_recreate_create_failure_with_rollback() {
         let tmp = tempfile::tempdir().unwrap();
@@ -10496,20 +10462,11 @@ mod tests {
             disable_runner,
             "remove-side DisableUnit must appear in log; got: {steps:?}",
         );
-        // The pre-DynamicUser version asserted that `MockUsers`
-        // recorded a userdel from the rollback walk inverting a
-        // UserAdd. Both the trait and the variants are gone — the
-        // remove-side StopUnit/DisableUnit assertions above are the
-        // remaining observable signal that the recreate path ran the
-        // remove leg before the create leg's Validation gate fired.
-
-        // End-to-end advisory shape pin. Run the
-        // result through `render_rollback_advisory` and assert the
-        // operator-visible output ties back to the recorded
-        // mutations: header present, label sub-block present, at
-        // least one remove-side step in the body. The pre-DynamicUser
-        // version also asserted a create-side UserAdd bullet in LIFO
-        // order — both the variant and the create-side step are gone.
+        // End-to-end advisory shape pin. Run the result through
+        // `render_rollback_advisory` and assert the operator-visible
+        // output ties back to the recorded mutations: header present,
+        // label sub-block present, at least one remove-side step in
+        // the body.
         let advisory = crate::cli::render_rollback_advisory(&result)
             .expect("rollback advisory must render when failed.len() > 0");
         assert!(
