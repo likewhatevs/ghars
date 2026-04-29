@@ -820,8 +820,8 @@ fn validate_single_sccache_pool_per_runner(cfg: &Config) -> Result<()> {
 /// cache pool" before the length cap matters. But a future code path
 /// that synthesizes an EffectiveCacheBinding without round-tripping
 /// through that lookup would let an oversize string slip past —
-/// usermod -aG would then fail mid-apply with a half-applied
-/// groupadd. Validating both surfaces here closes that gap
+/// the DynamicUser name would exceed systemd's limit mid-apply.
+/// Validating both surfaces here closes that gap
 /// pre-emptively.
 ///
 /// # Errors
@@ -3657,12 +3657,10 @@ fn cmd_init(config_path: &Utf8Path, args: &InitArgs, quiet: bool) -> Result<i32>
     f.write_all(INIT_EXAMPLE_CONFIG.as_bytes())?;
     f.flush()?;
 
-    // SEC-27: ghars does not create a shared `ghars` system user at
-    // init time. Per-runner system users (`ghars-RUNNERNAME`) are
-    // provisioned by `apply::execute_create_runner` via
-    // `RealUsers::useradd_if_missing` — that's where they belong, since
-    // the runner name is known and the per-runner UID gives cross-
-    // runner ptrace/signal/DAC isolation for free. A vestigial shared
+    // SEC-27: ghars does not create any system users at init time.
+    // Per-runner identity is handled by DynamicUser=yes in the runner
+    // unit — systemd allocates a transient UID per trust_zone, giving
+    // cross-runner ptrace/signal/DAC isolation for free. A vestigial shared
     // `ghars` user contradicts that model and would have led operators
     // into the SEC-27 hole that per-runner UIDs are designed to close.
     if !quiet {

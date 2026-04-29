@@ -44,9 +44,8 @@ pub const USER_MAX_LEN: usize = SYSTEMD_GROUP_NAME_MAX;
 /// from this single source.
 pub(crate) const SYSTEMD_GROUP_NAME_MAX: usize = 31;
 
-/// Prefix `apply::cache_pool_group` prepends to a pool name to form
-/// the per-pool group name (consumed by the gpasswd / groupadd /
-/// groupdel call sites in apply.rs). Centralized so
+/// Prefix for the per-pool DynamicUser name (e.g. `ghars-cache-build`).
+/// Centralized so
 /// `CACHE_POOL_NAME_MAX_LEN` derives from `prefix.len()` instead of a
 /// hand-counted constant — a future rename of the prefix automatically
 /// adjusts the pool-name cap. systemd's per-pool drop-in does not use
