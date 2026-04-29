@@ -10,6 +10,8 @@ table inet ghars_buckos {
     chain output_filter {
         ct state established,related accept
         meta l4proto icmp icmp type destination-unreachable icmp code frag-needed accept
+        ip daddr 10.200.0.1 udp dport 53 accept comment "ghars dns auto-allow"
+        ip daddr 10.200.0.1 tcp dport 53 accept comment "ghars dns auto-allow"
         ip daddr 192.168.2.84 tcp dport 3128 accept comment "squid proxy"
         log prefix "ghars-buckos drop: " level info
         drop
