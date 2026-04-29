@@ -50,7 +50,6 @@ auth = "pat"
 fn defaults_block_parses_and_propagates_through_serde() {
     let text = r#"
 [defaults]
-prefix = "/srv/runners"
 runner_version = "2.334.0"
 labels = ["self-hosted", "linux"]
 arch = "x86_64"
@@ -65,10 +64,6 @@ url = "https://github.com/example/buckos"
 auth = "pat"
 "#;
     let cfg = parse(text).unwrap();
-    assert_eq!(
-        cfg.defaults.prefix.as_ref().unwrap().as_str(),
-        "/srv/runners"
-    );
     assert_eq!(cfg.defaults.runner_version.as_deref(), Some("2.334.0"));
     assert_eq!(cfg.defaults.labels, vec!["self-hosted", "linux"]);
     assert_eq!(cfg.defaults.arch, Some(Arch::X86_64));
@@ -277,7 +272,6 @@ fn full_realistic_config_parses() {
     // file. Tracks the example in Part 4.
     let text = r#"
 [defaults]
-prefix = "/var/lib/ghars"
 runner_version = "2.334.0"
 labels = ["self-hosted", "linux"]
 

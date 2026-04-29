@@ -264,7 +264,6 @@ fn defaults_flow_into_each_runner() {
     let cfg = parse(
         r#"
 [defaults]
-prefix = "/srv/runners"
 runner_version = "2.334.0"
 labels = ["self-hosted", "linux"]
 
@@ -294,8 +293,6 @@ auth = "pat"
                 _ => None,
             })
             .unwrap_or_else(|| panic!("missing {name}"));
-        // defaults.prefix → spec.prefix.
-        assert_eq!(r.spec.prefix.as_str(), "/srv/runners");
         // defaults.runner_version → spec.runner_version.
         assert_eq!(r.spec.runner_version.as_deref(), Some("2.334.0"));
         // defaults.labels concatenated with runner.labels (and deduped
@@ -374,7 +371,6 @@ fn realistic_full_config_parses_and_plans() {
     let cfg = parse(
         r#"
 [defaults]
-prefix = "/var/lib/ghars"
 runner_version = "2.334.0"
 labels = ["self-hosted", "linux"]
 

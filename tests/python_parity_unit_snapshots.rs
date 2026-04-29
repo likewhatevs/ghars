@@ -62,8 +62,6 @@ fn base_spec() -> EffectiveRunnerSpec {
         name: "buckos".into(),
         url: "https://github.com/example/buckos".into(),
         arch: Arch::X86_64,
-        user: "ghars-buckos".into(),
-        prefix: Utf8PathBuf::from("/var/lib/ghars"),
         labels: vec!["self-hosted".into(), "linux".into()],
         memory_max: None,
         runner_version: Some("2.334.0".into()),

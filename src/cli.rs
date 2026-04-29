@@ -633,8 +633,6 @@ fn load_config(path: &Utf8Path) -> Result<Config> {
     validate_no_duplicate_caches(&cfg)?;
     validate_cache_pool_names(&cfg)?;
     validate_runner_names(&cfg)?;
-    validate_user_overrides(&cfg)?;
-    validate_prefix_overrides(&cfg)?;
     validate_auth_keys(&cfg)?;
     validate_pat_xor(&cfg)?;
     validate_runner_tarballs(&cfg)?;
@@ -833,81 +831,6 @@ fn validate_runner_names(cfg: &Config) -> Result<()> {
         let scope = format!("runner {:?}", runner.name);
         validators::validate_runner_name(&runner.name)
             .map_err(|e| crate::error::prepend_validation_scope(&scope, e))?;
-    }
-    Ok(())
-}
-
-// ---------- user-override length + charset cap --------------------------
-
-/// Reject `[defaults] user = "..."` and `[[runner]] user = "..."` values
-/// that would push systemd's strict-mode `valid_user_group_name` check
-/// (src/basic/user-util.c:824) over its 31-char cap, or that contain
-/// any character outside the Linux user-name charset.
-///
-/// `validate_user` (validators::validate_user) enforces both gates: an
-/// explicit length check above [`validators::USER_MAX_LEN`] and the
-/// regex `^[a-z_][a-z0-9_-]{0,30}$`. Without this load-time validator,
-/// the rendered runner template emits `User=<value>` and systemd
-/// refuses unit load with an opaque error during apply. Catching at
-/// load gives the operator a scoped diagnostic (`defaults: ...` /
-/// `runner "NAME": ...`) before any side effect.
-///
-/// Both surfaces are validated even though most operators omit `user`
-/// (per-runner `ghars-{name}` derivation is the secure default per
-/// SEC-27): a single explicit override at either layer reaches
-/// `merge_defaults` and the renderer.
-///
-/// # Errors
-///
-/// `GharsError::Validation` wrapping the underlying `validate_user`
-/// error with the `defaults:` or `runner "NAME":` scope prefix.
-fn validate_user_overrides(cfg: &Config) -> Result<()> {
-    if let Some(u) = cfg.defaults.user.as_deref() {
-        validators::validate_user(u)
-            .map_err(|e| crate::error::prepend_validation_scope("defaults", e))?;
-    }
-    for runner in &cfg.runners {
-        if let Some(u) = runner.user.as_deref() {
-            let scope = format!("runner {:?}", runner.name);
-            validators::validate_user(u)
-                .map_err(|e| crate::error::prepend_validation_scope(&scope, e))?;
-        }
-    }
-    Ok(())
-}
-
-/// Gate `defaults.prefix` and per-runner `prefix` overrides
-/// through `validators::validate_prefix` at config-load time. The
-/// validator already exists (`validators::validate_prefix`) and
-/// rejects empty input, disallowed charset, `..` traversal segments,
-/// top-level reserved directories, and symlinks — but no caller wired
-/// it into the config-load pipeline before this fix, so an
-/// operator-supplied hostile prefix (control chars, traversal,
-/// reserved root) flowed straight to `merge_defaults` and downstream
-/// `Paths` construction.
-///
-/// Defense-in-depth: the path-charset rejection here covers prefix
-/// values that later participate in `UndoStep::WriteFile` describe()
-/// output (sanitized at the renderer) and any future code that joins
-/// `<prefix>/<name>/...` into shell-visible diagnostics. The
-/// renderer-side scrubs are the last line of defense — the validator
-/// is the first.
-///
-/// # Errors
-///
-/// `GharsError::Validation` wrapping the underlying `validate_prefix`
-/// error with the `defaults:` or `runner "NAME":` scope prefix.
-fn validate_prefix_overrides(cfg: &Config) -> Result<()> {
-    if let Some(p) = cfg.defaults.prefix.as_ref() {
-        validators::validate_prefix(p.as_str())
-            .map_err(|e| crate::error::prepend_validation_scope("defaults", e))?;
-    }
-    for runner in &cfg.runners {
-        if let Some(p) = runner.prefix.as_ref() {
-            let scope = format!("runner {:?}", runner.name);
-            validators::validate_prefix(p.as_str())
-                .map_err(|e| crate::error::prepend_validation_scope(&scope, e))?;
-        }
     }
     Ok(())
 }
@@ -3620,7 +3543,6 @@ const INIT_EXAMPLE_CONFIG: &str = "\
 
 [defaults]
 # user: leave unset so each runner gets `ghars-RUNNERNAME` (SEC-27).
-prefix = \"/var/lib/ghars\"
 runner_version = \"2.334.0\"
 auth = \"pat\"
 arch = \"x86_64\"
@@ -4842,8 +4764,6 @@ mod tests {
                 name: "buckos".into(),
                 url: "https://github.com/example/buckos".into(),
                 arch: crate::config::Arch::X86_64,
-                user: "ghars-buckos".into(),
-                prefix: Utf8PathBuf::from("/var/lib/ghars"),
                 labels: vec!["x".into()],
                 memory_max: None,
                 runner_version: None,
@@ -4966,7 +4886,6 @@ mod tests {
         // block + an [auth.pat] entry the cmd_add validator can find.
         let body = "\
 [defaults]
-prefix = \"/var/lib/ghars\"
 
 [auth.pat]
 kind = \"pat\"
@@ -5674,7 +5593,6 @@ token_env = \"GHARS_PAT\"
         let body = format!(
             "\
 [defaults]
-prefix = \"/var/lib/ghars\"
 
 [auth.pat]
 kind = \"pat\"
@@ -5741,7 +5659,6 @@ size = \"200G\"
         let body = format!(
             "\
 [defaults]
-prefix = \"/var/lib/ghars\"
 
 [auth.pat]
 kind = \"pat\"
@@ -5792,130 +5709,6 @@ auth = \"pat\"
         );
     }
 
-    /// End-to-end: a `[[runner]] user = "..."` longer than
-    /// `USER_MAX_LEN` must reject through `cmd_status` because
-    /// `validate_user_overrides` is wired into `load_config` (the 7th
-    /// post-load validator). Symmetric to the runner-name and
-    /// cache-pool tests above — proves the lift covers the operator-
-    /// supplied User= surface end-to-end.
-    #[test]
-    fn cmd_status_rejects_oversize_runner_user_via_load_config() {
-        let tmp = tempfile::tempdir().unwrap();
-        let config_path = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
-            .unwrap()
-            .join("ghars.toml");
-        let oversize_user = "a".repeat(crate::validators::USER_MAX_LEN + 1);
-        let body = format!(
-            "\
-[defaults]
-prefix = \"/var/lib/ghars\"
-
-[auth.pat]
-kind = \"pat\"
-token_env = \"GHARS_PAT\"
-
-[[runner]]
-name = \"buckos\"
-url = \"https://github.com/example/repo\"
-auth = \"pat\"
-user = \"{oversize_user}\"
-"
-        );
-        fs::write(config_path.as_std_path(), body).unwrap();
-
-        let paths = Paths::default();
-        let args = StatusArgs {
-            json: false,
-            metrics: false,
-            health_only: false,
-            runners_only: true,
-            names: vec![],
-        };
-        let err = cmd_status(
-            &config_path,
-            &paths,
-            &args,
-            ColorMode { enabled: false },
-            true,
-        )
-        .expect_err("oversize runner user must propagate via load_config");
-        match &err {
-            GharsError::Validation(msg, _) => {
-                assert!(
-                    msg.contains("runner") && msg.contains("buckos"),
-                    "msg must scope to the offending runner by name; got: {msg}"
-                );
-                assert!(
-                    msg.contains("too long")
-                        && msg.contains(&crate::validators::USER_MAX_LEN.to_string()),
-                    "msg must come from the user-length-cap layer; got: {msg}"
-                );
-            }
-            other => panic!("expected GharsError::Validation, got: {other:?}"),
-        }
-        assert_eq!(
-            err_to_exit_code(&err),
-            6,
-            "Validation must map to exit code 6 (Part 5)"
-        );
-    }
-
-    /// Defaults variant: `[defaults] user = "..."` longer than
-    /// `USER_MAX_LEN` must reject with the `defaults:` scope (NOT a
-    /// per-runner scope). Pairs with the runner-scope test above to
-    /// cover both surfaces of `validate_user_overrides`.
-    #[test]
-    fn cmd_status_rejects_oversize_defaults_user_via_load_config() {
-        let tmp = tempfile::tempdir().unwrap();
-        let config_path = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
-            .unwrap()
-            .join("ghars.toml");
-        let oversize_user = "a".repeat(crate::validators::USER_MAX_LEN + 1);
-        let body = format!(
-            "\
-[defaults]
-prefix = \"/var/lib/ghars\"
-user = \"{oversize_user}\"
-
-[auth.pat]
-kind = \"pat\"
-token_env = \"GHARS_PAT\"
-"
-        );
-        fs::write(config_path.as_std_path(), body).unwrap();
-
-        let paths = Paths::default();
-        let args = StatusArgs {
-            json: false,
-            metrics: false,
-            health_only: false,
-            runners_only: true,
-            names: vec![],
-        };
-        let err = cmd_status(
-            &config_path,
-            &paths,
-            &args,
-            ColorMode { enabled: false },
-            true,
-        )
-        .expect_err("oversize defaults user must propagate via load_config");
-        match &err {
-            GharsError::Validation(msg, _) => {
-                assert!(
-                    msg.contains("defaults"),
-                    "msg must scope to defaults block; got: {msg}"
-                );
-                assert!(
-                    msg.contains("too long"),
-                    "msg must come from the user-length-cap layer; got: {msg}"
-                );
-            }
-            other => panic!("expected GharsError::Validation, got: {other:?}"),
-        }
-        assert_eq!(err_to_exit_code(&err), 6);
-    }
-
     /// End-to-end: a `[[runner]] trust_zone` containing a control
     /// character (here `\n`) must reject through `cmd_status` because
     /// `validate_identity_fields` is wired into `load_config` as one
@@ -5942,7 +5735,6 @@ token_env = \"GHARS_PAT\"
         // second X-Ghars-* line into the rendered drop-in body).
         let body = "\
 [defaults]
-prefix = \"/var/lib/ghars\"
 
 [auth.pat]
 kind = \"pat\"
@@ -6010,7 +5802,6 @@ trust_zone = \"audited\\nInjected=stuff\"
             .join("ghars.toml");
         let body = "\
 [defaults]
-prefix = \"/var/lib/ghars\"
 
 [auth.pat]
 kind = \"pat\"
@@ -6081,7 +5872,6 @@ trust_zone = \"audited\\rsmuggled\"
             .join("ghars.toml");
         let body = "\
 [defaults]
-prefix = \"/var/lib/ghars\"
 
 [auth.pat]
 kind = \"pat\"
@@ -6154,7 +5944,6 @@ trust_zone = \"audited\"
         let body = format!(
             "\
 [defaults]
-prefix = \"/var/lib/ghars\"
 
 [auth.pat]
 kind = \"pat\"
@@ -6229,7 +6018,6 @@ runner_tarball = \"{nonexistent}\"
         let body = format!(
             "\
 [defaults]
-prefix = \"/var/lib/ghars\"
 
 [auth.pat]
 kind = \"pat\"
@@ -6301,7 +6089,6 @@ runner_tarball = \"{}\"
         let body = format!(
             "\
 [defaults]
-prefix = \"/var/lib/ghars\"
 
 [auth.pat]
 kind = \"pat\"
@@ -6378,7 +6165,6 @@ runner_tarball = \"{}\"
         let body = format!(
             "\
 [defaults]
-prefix = \"/var/lib/ghars\"
 
 [auth.pat]
 kind = \"pat\"
@@ -6463,7 +6249,6 @@ network = \"isolated\"
         let body = format!(
             "\
 [defaults]
-prefix = \"/var/lib/ghars\"
 network = \"isolated\"
 
 [auth.pat]
@@ -6541,7 +6326,6 @@ auth = \"pat\"
         let body = format!(
             "\
 [defaults]
-prefix = \"/var/lib/ghars\"
 
 [auth.pat]
 kind = \"pat\"
@@ -6592,7 +6376,6 @@ auth = \"pat\"
         let body = format!(
             "\
 [defaults]
-prefix = \"/var/lib/ghars\"
 
 [auth.pat]
 kind = \"pat\"
@@ -6631,7 +6414,6 @@ auth = \"pat\"
         let body = format!(
             "\
 [defaults]
-prefix = \"/var/lib/ghars\"
 
 [auth.pat]
 kind = \"pat\"
@@ -6716,7 +6498,6 @@ network = \"isolated\"
         let body = format!(
             "\
 [defaults]
-prefix = \"/var/lib/ghars\"
 
 [auth.pat]
 kind = \"pat\"
@@ -6758,7 +6539,6 @@ network = \"isolated\"
         let body = format!(
             "\
 [defaults]
-prefix = \"/var/lib/ghars\"
 
 [auth.pat]
 kind = \"pat\"
@@ -6804,7 +6584,6 @@ network = \"isolated\"
         let body = format!(
             "\
 [defaults]
-prefix = \"/var/lib/ghars\"
 
 [auth.pat]
 kind = \"pat\"
@@ -6853,7 +6632,6 @@ network = \"isolated\"
         let body = format!(
             "\
 [defaults]
-prefix = \"/var/lib/ghars\"
 network = \"isolated\"
 
 [auth.pat]
@@ -7263,8 +7041,6 @@ auth = \"pat\"
             name: name.into(),
             url: format!("https://github.com/example/{name}"),
             arch: crate::config::Arch::X86_64,
-            user: format!("ghars-{name}"),
-            prefix: Utf8PathBuf::from("/var/lib/ghars"),
             labels: vec![name.into()],
             memory_max: None,
             runner_version: None,
@@ -7300,8 +7076,6 @@ auth = \"pat\"
             name: name.into(),
             url: format!("https://github.com/example/{name}"),
             auth_name: "pat".into(),
-            prefix: Utf8PathBuf::from("/var/lib/ghars"),
-            user: format!("ghars-{name}"),
         }
     }
 
@@ -9983,8 +9757,6 @@ auth = \"pat\"
             runner_sha256: None,
             runner_tarball: None,
             arch: None,
-            user: None,
-            prefix: None,
             caches: Vec::new(),
             trust_zone: "default".into(),
             network: None,
@@ -10296,13 +10068,6 @@ auth = \"pat\"
             name: "old-web".into(),
             url: "https://github.com/example/old-web".into(),
             arch: crate::config::Arch::X86_64,
-            // Non-default user + prefix values flow into
-            // X-Ghars-User / X-Ghars-Prefix annotations so the
-            // assertions below can distinguish annotation-path
-            // values from `reconstruct_identity`'s fallback values
-            // (`ghars-old-web` / `/var/lib/ghars`).
-            user: "alice".into(),
-            prefix: Utf8PathBuf::from("/srv/runners-old"),
             labels: vec!["old-web".into()],
             memory_max: None,
             runner_version: None,
@@ -10380,30 +10145,6 @@ auth = \"pat\"
             remove_identity.auth_name, "pat",
             "RemoveRunner.auth_name must reflect the X-Ghars-Auth-Name \
              annotation, not the empty fallback",
-        );
-        assert_eq!(
-            remove_identity.user, "alice",
-            "RemoveRunner.user must reflect the X-Ghars-User \
-             annotation in `00-ghars.conf` (\"alice\" — set on \
-             discovered_spec and emitted by render_identity), not \
-             reconstruct_identity's RUNNER_USER_PREFIX+name fallback \
-             (which would yield `ghars-old-web`). The on-disk unit \
-             body's `User=ghars-%i` line resolves to the same \
-             fallback value, so this assertion is falsified the \
-             moment the annotation path stops firing.",
-        );
-        assert_eq!(
-            remove_identity.prefix.as_str(),
-            "/srv/runners-old",
-            "RemoveRunner.prefix must reflect the X-Ghars-Prefix \
-             annotation in `00-ghars.conf` (\"/srv/runners-old\" — \
-             set on discovered_spec and emitted by render_identity), \
-             not `paths.state_dir` (`/var/lib/ghars` for \
-             Paths::default()). The on-disk unit body's \
-             `WorkingDirectory=/var/lib/ghars/%i` line resolves to \
-             the same fallback value via parse + parent, so this \
-             assertion is falsified the moment the annotation path \
-             stops firing.",
         );
 
         // Pin the docstring's "desired-only arm fires for 'web'
@@ -11342,7 +11083,6 @@ auth = \"pat\"
         // Config has defaults.auth = "pat", which matches the --auth.
         let body = "\
 [defaults]
-prefix = \"/var/lib/ghars\"
 auth = \"pat\"
 
 [auth.pat]
@@ -11408,19 +11148,15 @@ token_env = \"GHARS_PAT\"
     fn init_example_config_content_invariants() {
         // Pin the load-bearing fields of INIT_EXAMPLE_CONFIG so a
         // future edit can't silently drop them. Each invariant maps
-        // to operator-visible behavior: prefix is the per-runner home
-        // root, GHARS_PAT is the documented env var name, x86_64 is
-        // the v0.1 default arch, [auth.pat] is the placeholder block
-        // operators reference from [defaults].auth.
-        assert!(INIT_EXAMPLE_CONFIG.contains("prefix = \"/var/lib/ghars\""));
+        // to operator-visible behavior: GHARS_PAT is the documented
+        // env var name, x86_64 is the v0.1 default arch, [auth.pat]
+        // is the placeholder block operators reference from
+        // [defaults].auth.
         assert!(INIT_EXAMPLE_CONFIG.contains("runner_version = \""));
         assert!(INIT_EXAMPLE_CONFIG.contains("token_env = \"GHARS_PAT\""));
         assert!(INIT_EXAMPLE_CONFIG.contains("arch = \"x86_64\""));
         assert!(INIT_EXAMPLE_CONFIG.contains("[auth.pat]"));
         assert!(INIT_EXAMPLE_CONFIG.contains("kind = \"pat\""));
-        // SEC-27 hint must remain so operators don't paste a shared
-        // user= line back in by mistake.
-        assert!(INIT_EXAMPLE_CONFIG.contains("SEC-27"));
         // Personal-fork URL must not appear.
         assert!(!INIT_EXAMPLE_CONFIG.contains("likewhatevs"));
         assert!(INIT_EXAMPLE_CONFIG.contains("OWNER/REPO"));
@@ -11463,7 +11199,6 @@ token_env = \"GHARS_PAT\"
             .join("ghars.toml");
         let body = "\
 [defaults]
-prefix = \"/var/lib/ghars\"
 
 [auth.pat]
 kind = \"pat\"
@@ -11512,7 +11247,6 @@ auth = \"pat\"
             .join("ghars.toml");
         let body = "\
 [defaults]
-prefix = \"/var/lib/ghars\"
 auth = \"pat\"
 
 [auth.pat]
@@ -11628,7 +11362,6 @@ kind = \"interactive\"
         // Note: NO trailing newline.
         let body = "\
 [defaults]
-prefix = \"/var/lib/ghars\"
 
 [auth.pat]
 kind = \"pat\"
@@ -12092,8 +11825,6 @@ token_env = \"GHARS_PAT\"";
             runner_sha256: None,
             runner_tarball: None,
             arch: None,
-            user: None,
-            prefix: None,
             caches: Vec::new(),
             trust_zone,
             network: None,
@@ -14201,7 +13932,6 @@ token_env = \"GHARS_PAT\"";
         // validate_pat_xor gate).
         let body = "\
 [defaults]
-prefix = \"/var/lib/ghars\"
 
 [auth.\"bad key\"]
 kind = \"pat\"
@@ -14318,279 +14048,16 @@ auth = \"bad key\"
         });
     }
 
-    // -------- validate_user_overrides direct unit tests ---------------
+    // -------- validate_user_overrides + validate_prefix_overrides ----
     //
-    // The end-to-end variants
-    // (`cmd_status_rejects_oversize_runner_user_via_load_config` /
-    // `cmd_status_rejects_oversize_defaults_user_via_load_config`) prove
-    // the validator is wired into `load_config`. These direct tests pin
-    // the function's two-scope contract — (1) `defaults.user` produces
-    // the `defaults:` prefix; (2) `runner.user` produces the
-    // `runner "NAME":` prefix — without going through cmd_status's
-    // dependency on Paths / D-Bus. A future refactor that swaps the
-    // scope-prefix wrapper would surface here directly instead of
-    // through a dispatch-layer test.
+    // The user_overrides + prefix_overrides validators were deleted
+    // alongside the spec.user / spec.prefix fields they validated.
+    // Test bodies that targeted those validators are gone.
 
-    /// `validate_user_overrides` direct call: a `[defaults] user = "..."`
-    /// over the cap rejects with the `defaults:` scope prefix (no
-    /// per-runner scope). Pinned because the regex `{0,31}`
-    /// accepted 32-char names; the explicit length gate is what
-    /// rejects them now, and this test exercises that gate at the
-    /// defaults surface.
-    #[test]
-    fn validate_user_overrides_rejects_oversize_defaults_user() {
-        let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
-        let oversize_user = "a".repeat(crate::validators::USER_MAX_LEN + 1);
-        cfg.defaults.user = Some(oversize_user.clone());
-        let err = validate_user_overrides(&cfg).expect_err("oversize defaults.user must reject");
-        match &err {
-            GharsError::Validation(msg, _) => {
-                assert!(
-                    msg.contains("defaults"),
-                    "msg must scope to defaults (NOT a runner); got: {msg}"
-                );
-                assert!(
-                    !msg.contains("runner \""),
-                    "msg must NOT carry a runner scope when the offending \
-                     field lives in [defaults]; got: {msg}"
-                );
-                assert!(
-                    msg.contains("too long")
-                        && msg.contains(&crate::validators::USER_MAX_LEN.to_string()),
-                    "msg must come from the user-length-cap layer; got: {msg}"
-                );
-            }
-            other => panic!("expected GharsError::Validation, got {other:?}"),
-        }
-    }
-
-    /// `validate_user_overrides` direct call: a `[[runner]] user = "..."`
-    /// over the cap rejects with the `runner "NAME":` scope prefix (NOT
-    /// the `defaults:` scope). Pairs with the defaults-scope test above
-    /// to pin both branches in `validate_user_overrides`.
-    #[test]
-    fn validate_user_overrides_rejects_oversize_runner_user() {
-        let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
-        let oversize_user = "a".repeat(crate::validators::USER_MAX_LEN + 1);
-        cfg.runners[0].user = Some(oversize_user.clone());
-        let err = validate_user_overrides(&cfg).expect_err("oversize runner.user must reject");
-        match &err {
-            GharsError::Validation(msg, _) => {
-                assert!(
-                    msg.contains("runner") && msg.contains("buckos"),
-                    "msg must scope to the offending runner by name; got: {msg}"
-                );
-                assert!(
-                    !msg.starts_with("defaults"),
-                    "msg must NOT carry the defaults scope when the offending \
-                     field lives on a runner; got: {msg}"
-                );
-                assert!(
-                    msg.contains("too long")
-                        && msg.contains(&crate::validators::USER_MAX_LEN.to_string()),
-                    "msg must come from the user-length-cap layer; got: {msg}"
-                );
-            }
-            other => panic!("expected GharsError::Validation, got {other:?}"),
-        }
-    }
-
-    // -------- validate_prefix_overrides direct unit tests -------------
-    //
-    // `validators::validate_prefix` existed but had no caller in the
-    // config-load pipeline before this fix; an
-    // operator-supplied hostile prefix (control chars, `..` traversal,
-    // top-level reserved root) flowed straight to `merge_defaults` and
-    // downstream `Paths` construction. These direct tests pin the
-    // function's two-scope contract — (1) `defaults.prefix` produces
-    // the `defaults:` prefix; (2) `runner.prefix` produces the
-    // `runner "NAME":` prefix — and exercise the regex-charset gate
-    // (which fires before the lstat, so the test is fs-free).
-
-    /// `validate_prefix_overrides` direct call: `[defaults] prefix`
-    /// containing a control char (ESC) rejects with the `defaults:`
-    /// scope prefix. The regex-charset gate inside `validate_prefix`
-    /// fires before the lstat, so this test runs without filesystem
-    /// touch — the hostile string is short-circuited at the
-    /// `PREFIX_RE.is_match` step.
-    #[test]
-    fn validate_prefix_overrides_rejects_hostile_defaults_prefix() {
-        let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
-        cfg.defaults.prefix = Some(Utf8PathBuf::from("/var/lib/\x1b[31mghars"));
-        let err = validate_prefix_overrides(&cfg).expect_err("hostile defaults.prefix must reject");
-        match &err {
-            GharsError::Validation(msg, _) => {
-                assert!(
-                    msg.contains("defaults"),
-                    "msg must scope to defaults (NOT a runner); got: {msg}"
-                );
-                assert!(
-                    !msg.contains("runner \""),
-                    "msg must NOT carry a runner scope when the offending \
-                     field lives in [defaults]; got: {msg}"
-                );
-                assert!(
-                    msg.contains("prefix"),
-                    "msg must mention 'prefix' so the operator locates the \
-                     offending TOML key; got: {msg}"
-                );
-                assert!(
-                    msg.contains("disallowed characters"),
-                    "msg must come from the prefix-charset gate (PREFIX_RE \
-                     mismatch), not the lstat or traversal layer; got: {msg}"
-                );
-            }
-            other => panic!("expected GharsError::Validation, got {other:?}"),
-        }
-    }
-
-    /// `validate_prefix_overrides` direct call: `[[runner]] prefix`
-    /// containing a control char (ESC) rejects with the
-    /// `runner "NAME":` scope prefix (NOT `defaults:`). Pairs with
-    /// the defaults-scope test above to pin both branches.
-    #[test]
-    fn validate_prefix_overrides_rejects_hostile_runner_prefix() {
-        let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
-        cfg.runners[0].prefix = Some(Utf8PathBuf::from("/srv/\x1b[31mevil"));
-        let err = validate_prefix_overrides(&cfg).expect_err("hostile runner.prefix must reject");
-        match &err {
-            GharsError::Validation(msg, _) => {
-                assert!(
-                    msg.contains("runner") && msg.contains("buckos"),
-                    "msg must scope to the offending runner by name; got: {msg}"
-                );
-                assert!(
-                    !msg.starts_with("defaults"),
-                    "msg must NOT carry the defaults scope when the offending \
-                     field lives on a runner; got: {msg}"
-                );
-                assert!(
-                    msg.contains("prefix"),
-                    "msg must mention 'prefix' so the operator locates the \
-                     offending TOML key; got: {msg}"
-                );
-                assert!(
-                    msg.contains("disallowed characters"),
-                    "msg must come from the prefix-charset gate (PREFIX_RE \
-                     mismatch); got: {msg}"
-                );
-            }
-            other => panic!("expected GharsError::Validation, got {other:?}"),
-        }
-    }
-
-    /// `validate_prefix_overrides` direct call: traversal segments
-    /// (`..`) reject independently of the charset gate. The
-    /// `validate_prefix` body checks `..` AFTER the regex match
-    /// succeeds, so a string like `/var/lib/../etc` clears the
-    /// charset gate and trips the traversal guard. Pin to ensure
-    /// future regex tweaks don't drop the traversal layer.
-    #[test]
-    fn validate_prefix_overrides_rejects_traversal_in_runner_prefix() {
-        let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
-        cfg.runners[0].prefix = Some(Utf8PathBuf::from("/var/lib/../etc"));
-        let err = validate_prefix_overrides(&cfg).expect_err("traversal runner.prefix must reject");
-        match &err {
-            GharsError::Validation(msg, _) => {
-                assert!(
-                    msg.contains("runner") && msg.contains("buckos"),
-                    "msg must scope to the offending runner by name; got: {msg}"
-                );
-                assert!(
-                    msg.contains(".."),
-                    "msg must come from the traversal layer (mentions '..'); \
-                     got: {msg}"
-                );
-            }
-            other => panic!("expected GharsError::Validation, got {other:?}"),
-        }
-    }
-
-    /// `validate_prefix_overrides` accepts well-formed prefixes on
-    /// both surfaces. Symmetric coverage with the rejection tests
-    /// pins that the validator does NOT spuriously reject the
-    /// canonical `/var/lib/ghars` deployment path; without this
-    /// the rejection tests alone would not catch a regression that
-    /// flipped accept/reject polarity.
-    #[test]
-    fn validate_prefix_overrides_accepts_canonical_paths() {
-        let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
-        cfg.defaults.prefix = Some(Utf8PathBuf::from("/var/lib/ghars"));
-        cfg.runners[0].prefix = Some(Utf8PathBuf::from("/srv/ghars-runner"));
-        validate_prefix_overrides(&cfg)
-            .expect("canonical /var/lib/ghars and /srv/ghars-runner must accept");
-    }
-
-    /// End-to-end via `load_config`: a TOML fixture with a hostile
-    /// `[defaults] prefix` containing a control char must reach
-    /// `cmd_status` as a `Validation` error scoped to `defaults`
-    /// mentioning `prefix`. Pins the load_config wiring — a
-    /// future refactor that drops `validate_prefix_overrides` from
-    /// the `load_config` dispatch chain would surface here.
-    #[test]
-    fn cmd_status_rejects_hostile_defaults_prefix_via_load_config() {
-        let tmp = tempfile::tempdir().unwrap();
-        let config_path = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
-            .unwrap()
-            .join("ghars.toml");
-        // ESC byte (\x1b) embedded in defaults.prefix. PREFIX_RE rejects
-        // anything outside [A-Za-z0-9/_.-], so the charset gate fires
-        // before any filesystem lookup.
-        let body = "\
-[defaults]
-prefix = \"/var/lib/\\u001b[31mghars\"
-
-[auth.pat]
-kind = \"pat\"
-token_env = \"GHARS_PAT\"
-
-[[runner]]
-name = \"buckos\"
-url = \"https://github.com/example/repo\"
-auth = \"pat\"
-";
-        fs::write(config_path.as_std_path(), body).unwrap();
-
-        let paths = Paths::default();
-        let args = StatusArgs {
-            json: false,
-            metrics: false,
-            health_only: false,
-            runners_only: true,
-            names: vec![],
-        };
-        let err = cmd_status(
-            &config_path,
-            &paths,
-            &args,
-            ColorMode { enabled: false },
-            true,
-        )
-        .expect_err("hostile defaults.prefix must propagate via load_config");
-        match &err {
-            GharsError::Validation(msg, _) => {
-                assert!(
-                    msg.contains("defaults"),
-                    "msg must scope to defaults; got: {msg}"
-                );
-                assert!(
-                    msg.contains("prefix"),
-                    "msg must mention 'prefix' so the operator locates the \
-                     offending TOML key; got: {msg}"
-                );
-                assert!(
-                    msg.contains("disallowed characters"),
-                    "msg must come from the prefix-charset gate; got: {msg}"
-                );
-            }
-            other => panic!("expected GharsError::Validation, got: {other:?}"),
-        }
-        assert_eq!(
-            err_to_exit_code(&err),
-            6,
-            "Validation must map to exit code 6 (Part 5)"
-        );
-    }
+    // The user/prefix-override tests that lived here were deleted
+    // alongside the spec.user / spec.prefix fields and the
+    // validate_user_overrides / validate_prefix_overrides validators
+    // they exercised.
 
     /// Defense-in-depth: a runner.caches entry whose length exceeds
     /// `CACHE_POOL_NAME_MAX_LEN` must reject at config load even when

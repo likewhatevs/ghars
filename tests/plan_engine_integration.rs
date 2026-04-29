@@ -56,8 +56,6 @@ fn make_runner(name: &str) -> RunnerSpec {
         runner_sha256: None,
         runner_tarball: None,
         arch: None,
-        user: None,
-        prefix: None,
         caches: vec![],
         trust_zone: "default".into(),
         network: None,
@@ -347,7 +345,6 @@ fn defaults_merge_runner_scalar_overrides_defaults_scalar() {
         memory_max: Some("8G".into()),
         runner_version: Some("2.300.0".into()),
         runner_sha256: Some("a".repeat(64)),
-        prefix: Some(Utf8PathBuf::from("/srv/runners")),
         ..Defaults::default()
     };
     let mut runner = make_runner("buckos");
@@ -373,8 +370,6 @@ fn defaults_merge_runner_scalar_overrides_defaults_scalar() {
     assert_eq!(spec.runner_version.as_deref(), Some("2.334.0"));
     // runner_sha256 falls through from defaults (runner didn't set).
     assert_eq!(spec.runner_sha256.as_deref(), Some(&"a".repeat(64)[..]));
-    // prefix falls through.
-    assert_eq!(spec.prefix.as_str(), "/srv/runners");
 }
 
 /// labels concat + dedup + sort. Labels are set-semantic and sorted
@@ -424,8 +419,8 @@ fn defaults_merge_user_default_is_per_runner_secure() {
             _ => None,
         })
         .expect("CreateRunner");
-    // SEC-27 secure default: ghars-NAME, NOT a shared "gha".
-    assert_eq!(create.spec.user, "ghars-buckos");
+    // No spec.user — runner identity comes from DynamicUser+trust_zone.
+    let _ = create;
 }
 
 #[test]

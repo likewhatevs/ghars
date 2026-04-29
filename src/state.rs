@@ -1082,8 +1082,6 @@ mod tests {
             name: "regguard".into(),
             url: "https://github.com/example/regguard".into(),
             arch: Arch::X86_64,
-            user: "ghars-regguard".into(),
-            prefix: Utf8PathBuf::from("/var/lib/ghars"),
             labels: vec!["self-hosted".into()],
             memory_max: Some("8G".into()),
             runner_version: Some("2.334.0".into()),

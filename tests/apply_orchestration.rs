@@ -280,8 +280,6 @@ fn make_spec(name: &str, prefix: &Utf8Path) -> EffectiveRunnerSpec {
         name: name.into(),
         url: "https://github.com/example/repo".into(),
         arch: Arch::X86_64,
-        user: format!("ghars-{name}"),
-        prefix: prefix.to_path_buf(),
         labels: vec!["self-hosted".into(), "linux".into()],
         memory_max: None,
         runner_version: Some("2.334.0".into()),

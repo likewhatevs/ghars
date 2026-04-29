@@ -1288,8 +1288,6 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
     for label in &spec.labels {
         check("labels[]", label)?;
     }
-    check("user", &spec.user)?;
-    check("prefix", spec.prefix.as_str())?;
     for binding in &spec.caches {
         check("caches[].name", &binding.name)?;
     }
@@ -1341,14 +1339,6 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
         crate::config::Arch::Aarch64 => "aarch64",
     };
     let _ = writeln!(s, "X-Ghars-Arch={arch_str}");
-    // Emit User and Prefix so the plan engine can surface the
-    // operator's intent on update-runner (e.g. show a
-    // "user: gha → ghars-buckos" line in the diff). Both are
-    // identity-bound (changing either forces a recreate) but having
-    // the before-value lets the renderer say what changed instead of
-    // emitting an opaque "spec_hash_mismatch" reason.
-    let _ = writeln!(s, "X-Ghars-User={}", spec.user);
-    let _ = writeln!(s, "X-Ghars-Prefix={}", spec.prefix);
     // emit X-Ghars-Caches unconditionally (matches the X-Ghars-Labels
     // pattern at render_identity above) so the planner can detect
     // caches-list shrinks. Without an unconditional emit, a runner
@@ -2378,8 +2368,6 @@ mod tests {
             name: "buckos".into(),
             url: "https://github.com/example/buckos".into(),
             arch: Arch::X86_64,
-            user: "ghars-buckos".into(),
-            prefix: Utf8PathBuf::from("/var/lib/ghars"),
             labels: vec!["self-hosted".into(), "linux".into()],
             memory_max: None,
             runner_version: Some("2.334.0".into()),
@@ -2555,15 +2543,6 @@ mod tests {
     }
 
     #[test]
-    fn render_identity_rejects_control_char_in_user() {
-        let mut spec = minimal_spec();
-        // \x07 (BEL) is a control character that is not NUL, newline,
-        // or carriage return — falls through to the generic class.
-        spec.user = "ghars-buckos\x07".into();
-        assert_render_identity_rejects(&spec, "user", "control character", '\x07');
-    }
-
-    #[test]
     fn render_identity_rejects_newline_in_label() {
         let mut spec = minimal_spec();
         spec.labels = vec!["self-hosted".into(), "linux\nbad".into()];
@@ -2684,13 +2663,12 @@ mod tests {
     /// FIRST validated field surfaces — render_identity validates
     /// in order (spec_hash, name, url, auth_name, ...) and the `?`
     /// short-circuits on the first failure. Pin that order: a bad
-    /// `url` AND bad `prefix` MUST report `url` (validated earlier),
-    /// not `prefix`.
+    /// `url` AND bad `name` MUST report `url` (validated earlier),
+    /// not `name`.
     #[test]
     fn render_identity_validation_runs_before_any_write() {
         let mut spec = minimal_spec();
         spec.url = "https://github.com/example/buckos\nbad".into();
-        spec.prefix = camino::Utf8PathBuf::from("/var/lib/ghars\nbad");
         let err = render_runner_unit(&spec).unwrap_err();
         let msg = format!("{err}");
         assert!(

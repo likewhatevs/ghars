@@ -78,14 +78,6 @@ pub struct Config {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Defaults {
-    /// Default user override. NOT set in v0.1 — each runner gets an
-    /// auto-generated `ghars-RUNNERNAME` system user for cross-runner
-    /// isolation (SEC-27 fix). Setting `user` here forces a shared UID
-    /// across ALL runners; apply emits a `WARNING: shared UID disables
-    /// cross-runner isolation`.
-    pub user: Option<String>,
-    /// Default state-dir prefix (typically `/var/lib/ghars`).
-    pub prefix: Option<Utf8PathBuf>,
     /// Default GitHub Actions runner version (e.g. `"2.334.0"`).
     pub runner_version: Option<String>,
     /// Default tarball SHA256 (64 hex). Only meaningful with
@@ -163,12 +155,6 @@ pub struct RunnerSpec {
     /// (#39).
     pub arch: Option<Arch>,
 
-    /// User override (rarely set — auto-`ghars-RUNNERNAME` is the
-    /// secure default).
-    pub user: Option<String>,
-    /// State-dir prefix override.
-    pub prefix: Option<Utf8PathBuf>,
-
     /// References to keys in `[cache_pools.NAME]`. Ordered, dedup-on-
     /// validate.
     #[serde(default)]
@@ -228,11 +214,6 @@ pub struct EffectiveRunnerSpec {
     pub url: String,
     /// CPU architecture (resolved against host arch when omitted).
     pub arch: Arch,
-    /// Resolved system user (`ghars-NAME` by default; explicit override
-    /// when `defaults.user` or `runner.user` was set).
-    pub user: String,
-    /// State-dir prefix (typically `/var/lib/ghars`).
-    pub prefix: Utf8PathBuf,
     /// Effective labels after `concat(defaults.labels, runner.labels)`
     /// + dedup (preserves order). Empty after merge ⇒ defaults to
     /// `[name]` per Python parity.

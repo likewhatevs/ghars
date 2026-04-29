@@ -697,7 +697,7 @@ pub struct RunnerDelta {
 /// reference an existing runner. `apply` looks up the rendered spec via
 /// state discovery for removals; the identity carries everything required
 /// to drive systemd D-Bus calls (`ghars-runner@NAME.service`),
-/// home-directory rmrf safety checks (prefix + name), and registration-
+/// home-directory rmrf safety checks (name), and registration-
 /// token mints (`url` + `auth_name`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunnerIdentity {
@@ -707,13 +707,6 @@ pub struct RunnerIdentity {
     pub url: String,
     /// Auth registry key.
     pub auth_name: String,
-    /// State-dir prefix (typically `/var/lib/ghars`); `apply`'s
-    /// `guard_home_dir_rmrf` refuses to delete anything outside this
-    /// prefix.
-    pub prefix: camino::Utf8PathBuf,
-    /// Resolved system user. `apply` uses this when the runner's home
-    /// directory needs to be removed.
-    pub user: String,
 }
 
 /// Data carried by a `CreateCachePool` action.
@@ -956,24 +949,6 @@ pub fn merge_defaults(
 ) -> EffectiveRunnerSpec {
     let arch = runner.arch.or(defaults.arch).unwrap_or(host_arch);
 
-    let user = runner
-        .user
-        .clone()
-        .or_else(|| defaults.user.clone())
-        .unwrap_or_else(|| {
-            format!(
-                "{prefix}{name}",
-                prefix = crate::validators::RUNNER_USER_PREFIX,
-                name = runner.name,
-            )
-        });
-
-    let prefix = runner
-        .prefix
-        .clone()
-        .or_else(|| defaults.prefix.clone())
-        .unwrap_or_else(|| Utf8PathBuf::from(DEFAULT_PREFIX));
-
     let mut labels: Vec<String> = Vec::with_capacity(defaults.labels.len() + runner.labels.len());
     let mut seen: HashSet<String> = HashSet::new();
     for label in defaults.labels.iter().chain(runner.labels.iter()) {
@@ -1040,8 +1015,6 @@ pub fn merge_defaults(
         name: runner.name.clone(),
         url: runner.url.clone(),
         arch,
-        user,
-        prefix,
         labels,
         memory_max: runner
             .memory_max
@@ -1580,27 +1553,6 @@ fn classify_recreate_reasons_from_annotations(
                 path: "arch",
                 before: FieldValue::String(arch.to_owned()),
                 after: FieldValue::String(desired_arch.to_owned()),
-            });
-        }
-    }
-    if let Some(user) = discovered.user.as_deref()
-        && user != desired.user
-    {
-        reasons.push("user");
-        out_changes.push(FieldChange {
-            path: "user",
-            before: FieldValue::String(user.to_owned()),
-            after: FieldValue::String(desired.user.clone()),
-        });
-    }
-    if let Some(prefix) = discovered.prefix.as_deref() {
-        let desired_prefix = desired.prefix.as_str();
-        if prefix != desired_prefix {
-            reasons.push("prefix");
-            out_changes.push(FieldChange {
-                path: "prefix",
-                before: FieldValue::String(prefix.to_owned()),
-                after: FieldValue::String(desired_prefix.to_owned()),
             });
         }
     }
@@ -2290,12 +2242,6 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
             name: orphan.name.clone(),
             url: String::new(),
             auth_name: String::new(),
-            prefix: paths.state_dir.clone(),
-            user: format!(
-                "{prefix}{name}",
-                prefix = crate::validators::RUNNER_USER_PREFIX,
-                name = orphan.name,
-            ),
         }));
     }
 
@@ -2535,75 +2481,20 @@ fn collect_referenced_cache_pools(
 fn reconstruct_identity(
     name: &str,
     discovered: &DiscoveredRunner,
-    paths: &Paths,
+    _paths: &Paths,
 ) -> RunnerIdentity {
-    // The X-Ghars-User and X-Ghars-Prefix annotations in `00-ghars.conf`
-    // are AUTHORITATIVE: render_identity emits them unconditionally,
-    // carrying the operator's `spec.user` and `spec.prefix` literally
-    // — the same values apply.rs used at create time when calling
-    // `useradd_if_missing(&spec.user, ...)` and the same prefix the
-    // operator declared. Reading the on-disk template body would only
-    // expose `User=ghars-%i` and `WorkingDirectory=/var/lib/ghars/%i`
-    // because the template is invariant: render_runner_unit always
-    // returns `template: runner_template_text()` regardless of spec.
-    //
-    // Resolution order: annotation first; fall back to template parse
-    // (with `%i` → name substitution) when the annotation is missing
-    // or empty (older ghars-applied unit, or operator-edited
-    // 00-ghars.conf with the line stripped). Empty annotation values
-    // are treated as missing — render_identity always writes a
-    // non-empty value for these fields, so an empty annotation is a
-    // best-effort fallback signal rather than "intentionally blank".
-    //
-    // Final fallback when neither annotation nor template parse
-    // yields a value: the SEC-27 default `ghars-NAME` for user and
-    // `paths.state_dir` for prefix.
-    //
-    // # Consumers
-    //
-    // The returned `RunnerIdentity.user` and `.prefix` flow into
-    // `apply::execute_remove_runner`, which uses them as inputs to:
-    //
-    // - `apply::guard_home_dir_rmrf(&runner_home, &identity.prefix,
-    //   &identity.name)` — the rmrf safety guard that refuses to
-    //   delete anything outside the operator-declared prefix. A
-    //   wrong `prefix` here causes either a refused-but-valid
-    //   teardown or (worse) an accepted teardown whose path does
-    //   not match the original create-time prefix.
-    // - `apply::Users::userdel_if_present(&identity.user)` — the
-    //   per-runner system-user cleanup. A wrong `user` here leaks
-    //   the actually-created account on disk because `userdel`
-    //   would be invoked on a user that never existed.
+    // RunnerIdentity reconstruction now reads only the
+    // X-Ghars-Runner-Url and X-Ghars-Auth-Name annotations from
+    // `00-ghars.conf`. The pre-DynamicUser model also reconstructed
+    // user + prefix to drive `useradd_if_missing` / `guard_home_dir_rmrf`,
+    // but DynamicUser handles the runner identity (no useradd) and the
+    // home directory is hardcoded under `/var/lib/ghars/<name>` so the
+    // prefix is no longer operator-configurable.
     let annotations = DiscoveredAnnotations::from_discovered(discovered);
-    let user = annotations
-        .user
-        .filter(|u| !u.is_empty())
-        .or_else(|| {
-            parse_user_from_unit(&discovered.on_disk_unit_text)
-                .map(|u| u.replace("%i", name))
-        })
-        .unwrap_or_else(|| {
-            format!(
-                "{prefix}{name}",
-                prefix = crate::validators::RUNNER_USER_PREFIX,
-            )
-        });
-    let prefix = annotations
-        .prefix
-        .filter(|p| !p.is_empty())
-        .map(Utf8PathBuf::from)
-        .or_else(|| {
-            parse_working_directory_from_unit(&discovered.on_disk_unit_text)
-                .map(|wd| Utf8PathBuf::from(wd.as_str().replace("%i", name)))
-                .and_then(|wd| wd.parent().map(Utf8Path::to_path_buf))
-        })
-        .unwrap_or_else(|| paths.state_dir.clone());
     RunnerIdentity {
         name: name.to_owned(),
         url: annotations.url.unwrap_or_default(),
         auth_name: annotations.auth_name.unwrap_or_default(),
-        prefix,
-        user,
     }
 }
 
@@ -2768,39 +2659,10 @@ fn lower_to_effective(
     // Hooks: runner.hooks overrides config.hooks entirely.
     let hooks = runner.hooks.clone().or_else(|| config.hooks.clone());
 
-    // Surface SEC-27 warning ONLY when the resolved user is shared
-    // across runners. The effective user mirrors merge_defaults
-    // precedence — runner.user wins over defaults.user, falling back
-    // to the per-runner-secure default `ghars-{runner.name}`. That
-    // single resolution captures every shared/safe outcome:
-    //   - operator sets `runner.user = "ghars-foo"` for runner "foo"
-    //     (per-runner-secure pin) ⇒ effective_user == per_runner_secure ⇒ no warn
-    //   - operator sets `runner.user = "svc"` ⇒ different ⇒ warn
-    //   - operator sets `defaults.user = "svc"` and no runner.user ⇒
-    //     effective resolves to "svc" ⇒ warn
-    //   - operator sets `defaults.user = "svc"` AND `runner.user =
-    //     "ghars-foo"` for runner "foo" ⇒ runner.user wins, effective
-    //     "ghars-foo" matches secure pattern ⇒ no warn (matches
-    //     apply-time semantics; defaults.user is dead code for this
-    //     runner)
-    //   - nothing set ⇒ effective = per_runner_secure ⇒ no warn
-    let per_runner_secure = format!(
-        "{prefix}{name}",
-        prefix = crate::validators::RUNNER_USER_PREFIX,
-        name = runner.name,
-    );
-    let effective_user: &str = runner
-        .user
-        .as_deref()
-        .or(config.defaults.user.as_deref())
-        .unwrap_or(per_runner_secure.as_str());
-    if effective_user != per_runner_secure {
-        warnings.push(format!(
-            "runner '{}' uses shared user '{effective_user}'; cross-runner \
-             isolation disabled (SEC-27)",
-            runner.name
-        ));
-    }
+    // SEC-27 shared-user warning is removed — DynamicUser provisions
+    // per-trust_zone identities, so the "shared UID disables
+    // cross-runner isolation" failure mode is replaced by the
+    // operator-explicit trust_zone declaration.
 
     Ok(merge_defaults(
         runner,
@@ -2860,8 +2722,6 @@ mod tests {
             runner_sha256: None,
             runner_tarball: None,
             arch: None,
-            user: None,
-            prefix: None,
             caches: vec![],
             trust_zone: "default".into(),
             network: None,
@@ -3188,8 +3048,6 @@ mod tests {
             r.memory_max = Some("64G".into());
             r.runner_version = Some("2.300.0".into());
             r.runner_sha256 = Some("a".repeat(64));
-            r.user = Some("alice".into());
-            r.prefix = Some(Utf8PathBuf::from("/srv/runners"));
             r.allowed_cpus = Some("0-3".into());
             r.allowed_memory_nodes = Some("0".into());
             r.arch = Some(Arch::Aarch64);
@@ -3199,8 +3057,6 @@ mod tests {
             memory_max: Some("32G".into()),
             runner_version: Some("2.200.0".into()),
             runner_sha256: Some("b".repeat(64)),
-            user: Some("bob".into()),
-            prefix: Some(Utf8PathBuf::from("/var/lib/ghars")),
             arch: Some(Arch::X86_64),
             ..Defaults::default()
         };
@@ -3218,8 +3074,6 @@ mod tests {
         assert_eq!(eff.memory_max.as_deref(), Some("64G"));
         assert_eq!(eff.runner_version.as_deref(), Some("2.300.0"));
         assert_eq!(eff.runner_sha256.as_deref(), Some(&*"a".repeat(64)));
-        assert_eq!(eff.user, "alice");
-        assert_eq!(eff.prefix, "/srv/runners");
         assert_eq!(eff.allowed_cpus.as_deref(), Some("0-3"));
         assert_eq!(eff.allowed_memory_nodes.as_deref(), Some("0"));
         assert_eq!(eff.arch, Arch::Aarch64);
@@ -3232,8 +3086,6 @@ mod tests {
             memory_max: Some("32G".into()),
             runner_version: Some("2.200.0".into()),
             runner_sha256: Some("c".repeat(64)),
-            user: Some("svc".into()),
-            prefix: Some(Utf8PathBuf::from("/opt/ghars")),
             arch: Some(Arch::Aarch64),
             ..Defaults::default()
         };
@@ -3250,46 +3102,7 @@ mod tests {
         );
         assert_eq!(eff.memory_max.as_deref(), Some("32G"));
         assert_eq!(eff.runner_version.as_deref(), Some("2.200.0"));
-        assert_eq!(eff.user, "svc");
-        assert_eq!(eff.prefix, "/opt/ghars");
         assert_eq!(eff.arch, Arch::Aarch64);
-    }
-
-    #[test]
-    fn merge_defaults_user_default_is_per_runner_secure_default() {
-        // SEC-27: no user set anywhere ⇒ ghars-{name}.
-        let runner = minimal_runner("buckos");
-        let defaults = Defaults::default();
-        let eff = merge_defaults(
-            &runner,
-            &defaults,
-            "pat".into(),
-            vec![],
-            None,
-            None,
-            None,
-            Arch::X86_64,
-            "/etc/ghars/ghars.toml".into(),
-        );
-        assert_eq!(eff.user, "ghars-buckos");
-    }
-
-    #[test]
-    fn merge_defaults_prefix_default_under_var_lib_ghars() {
-        let runner = minimal_runner("a");
-        let defaults = Defaults::default();
-        let eff = merge_defaults(
-            &runner,
-            &defaults,
-            "pat".into(),
-            vec![],
-            None,
-            None,
-            None,
-            Arch::X86_64,
-            "/etc/ghars/ghars.toml".into(),
-        );
-        assert_eq!(eff.prefix, "/var/lib/ghars");
     }
 
     #[test]
@@ -3577,7 +3390,6 @@ mod tests {
         assert_eq!(removes[0].name, "legacy");
         assert_eq!(removes[0].url, "https://github.com/example/legacy");
         assert_eq!(removes[0].auth_name, "pat");
-        assert_eq!(removes[0].user, "ghars-legacy");
     }
 
     #[test]
@@ -4408,315 +4220,6 @@ mod tests {
     /// The discovered fixture is built from old_spec via the
     /// production renderer, so its `00-ghars.conf` carries
     /// `X-Ghars-User=ghars-old`. We then change the desired spec to
-    /// user=ghars-new and assert the resulting
-    /// `RunnerDelta.identity.user` is "ghars-old" (NOT "ghars-new").
-    #[test]
-    fn plan_update_runner_delta_identity_user_reflects_old_user_not_new() {
-        let cfg = config_with_runners(vec![{
-            let mut r = minimal_runner("a");
-            r.user = Some("ghars-new".into());
-            r
-        }]);
-        let mut old_runner = cfg.runners[0].clone();
-        old_runner.user = Some("ghars-old".into());
-        let mut old_spec = merge_defaults(
-            &old_runner,
-            &cfg.defaults,
-            "pat".into(),
-            vec![],
-            None,
-            None,
-            None,
-            Arch::X86_64,
-            cfg_source_default(),
-        );
-        old_spec.spec_hash = spec_hash(&old_spec);
-        let discovered = discovered_for("a", &old_spec, Drift::InSync);
-        // The fixture's `00-ghars.conf` carries
-        // `X-Ghars-User=ghars-old` because `discovered_for` runs the
-        // production renderer over old_spec. reconstruct_identity
-        // reads that annotation rather than the invariant template
-        // body's `User=ghars-%i` line.
-        let mut actual = empty_actual();
-        actual.runners.insert("a".into(), discovered);
-        let plan = plan_from(&cfg, &actual, &empty_paths()).unwrap();
-        let updates: Vec<&RunnerDelta> = plan
-            .actions
-            .iter()
-            .filter_map(|a| match a {
-                Action::UpdateRunner(d) => Some(d),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(updates.len(), 1);
-        assert_eq!(
-            updates[0].identity.user, "ghars-old",
-            "identity.user must reflect the OLD discovered user (from \
-             X-Ghars-User annotation), not the desired new user"
-        );
-    }
-
-    /// `RunnerDelta.identity.prefix` reflects the OLD prefix from the
-    /// discovered runner's `X-Ghars-Prefix` annotation in
-    /// `00-ghars.conf` (read by `reconstruct_identity` via
-    /// `DiscoveredAnnotations`). apply.rs uses identity.prefix to
-    /// clean home directories on recreate — taking the new prefix
-    /// would orphan the old home dir.
-    ///
-    /// The discovered fixture is built from old_spec via the
-    /// production renderer, so its `00-ghars.conf` carries
-    /// `X-Ghars-Prefix=/srv/runners-old`. The resulting
-    /// `identity.prefix` must reflect that value, not the
-    /// desired-side prefix.
-    #[test]
-    fn plan_update_runner_delta_identity_prefix_reflects_old_prefix_not_new() {
-        let cfg = config_with_runners(vec![{
-            let mut r = minimal_runner("a");
-            r.prefix = Some(Utf8PathBuf::from("/srv/runners-new"));
-            r
-        }]);
-        let mut old_runner = cfg.runners[0].clone();
-        old_runner.prefix = Some(Utf8PathBuf::from("/srv/runners-old"));
-        let mut old_spec = merge_defaults(
-            &old_runner,
-            &cfg.defaults,
-            "pat".into(),
-            vec![],
-            None,
-            None,
-            None,
-            Arch::X86_64,
-            cfg_source_default(),
-        );
-        old_spec.spec_hash = spec_hash(&old_spec);
-        let discovered = discovered_for("a", &old_spec, Drift::InSync);
-        // The fixture's `00-ghars.conf` carries
-        // `X-Ghars-Prefix=/srv/runners-old` because `discovered_for`
-        // runs the production renderer over old_spec.
-        // reconstruct_identity reads that annotation rather than
-        // the invariant template body's
-        // `WorkingDirectory=/var/lib/ghars/%i` line.
-        let mut actual = empty_actual();
-        actual.runners.insert("a".into(), discovered);
-        let plan = plan_from(&cfg, &actual, &empty_paths()).unwrap();
-        let updates: Vec<&RunnerDelta> = plan
-            .actions
-            .iter()
-            .filter_map(|a| match a {
-                Action::UpdateRunner(d) => Some(d),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(updates.len(), 1);
-        assert_eq!(
-            updates[0].identity.prefix,
-            Utf8PathBuf::from("/srv/runners-old"),
-            "identity.prefix must reflect the OLD discovered prefix, not the desired new prefix"
-        );
-    }
-
-    /// `reconstruct_identity` returns the X-Ghars-User annotation
-    /// value verbatim when present, regardless of what the on-disk
-    /// unit body's `User=` line says. Production unit body always
-    /// carries the literal `User=ghars-%i` template form; the
-    /// operator's actual user lives in the annotation.
-    #[test]
-    fn reconstruct_identity_prefers_x_ghars_user_annotation_over_template_parse() {
-        let mut drop_ins = BTreeMap::new();
-        drop_ins.insert(
-            "00-ghars.conf".to_owned(),
-            "[Unit]\nX-Ghars-User=alice\nX-Ghars-Prefix=/var/lib/ghars\n".to_owned(),
-        );
-        // Production-shape unit body: literal `%i` specifier.
-        let unit_text = "[Service]\nUser=ghars-%i\nWorkingDirectory=/var/lib/ghars/%i\n";
-        let discovered = DiscoveredRunner {
-            name: "buckos".to_owned(),
-            spec_hash: String::new(),
-            on_disk_unit_text: unit_text.to_owned(),
-            drop_ins,
-            running: false,
-            enabled: false,
-            drift: Drift::InSync,
-        };
-        let identity = reconstruct_identity("buckos", &discovered, &empty_paths());
-        assert_eq!(
-            identity.user, "alice",
-            "annotation must win over template parse (which would have \
-             yielded `ghars-buckos`)"
-        );
-    }
-
-    /// `reconstruct_identity` returns the X-Ghars-Prefix annotation
-    /// value verbatim when present, regardless of what the on-disk
-    /// unit body's `WorkingDirectory=` line says. Production unit body
-    /// always carries the literal `WorkingDirectory=/var/lib/ghars/%i`
-    /// template form; the operator's actual prefix lives in the
-    /// annotation.
-    #[test]
-    fn reconstruct_identity_prefers_x_ghars_prefix_annotation_over_template_parse() {
-        let mut drop_ins = BTreeMap::new();
-        drop_ins.insert(
-            "00-ghars.conf".to_owned(),
-            "[Unit]\nX-Ghars-User=ghars-buckos\nX-Ghars-Prefix=/srv/runners\n".to_owned(),
-        );
-        // Production-shape unit body: literal `%i` specifier with the
-        // hardcoded `/var/lib/ghars` prefix.
-        let unit_text = "[Service]\nUser=ghars-%i\nWorkingDirectory=/var/lib/ghars/%i\n";
-        let discovered = DiscoveredRunner {
-            name: "buckos".to_owned(),
-            spec_hash: String::new(),
-            on_disk_unit_text: unit_text.to_owned(),
-            drop_ins,
-            running: false,
-            enabled: false,
-            drift: Drift::InSync,
-        };
-        let identity = reconstruct_identity("buckos", &discovered, &empty_paths());
-        assert_eq!(
-            identity.prefix,
-            Utf8PathBuf::from("/srv/runners"),
-            "annotation must win over template parse (which would have \
-             yielded `/var/lib/ghars`)"
-        );
-    }
-
-    /// When `00-ghars.conf` carries no `X-Ghars-User` annotation
-    /// (older ghars-applied runner predating annotation emission, or
-    /// operator-stripped 00-ghars.conf), `reconstruct_identity`
-    /// falls back to parsing `User=` from the unit body and
-    /// substituting the `%i` specifier with the runner name.
-    #[test]
-    fn reconstruct_identity_falls_back_to_template_user_when_annotation_absent() {
-        let mut drop_ins = BTreeMap::new();
-        // Drop-in present but missing X-Ghars-User entirely.
-        drop_ins.insert(
-            "00-ghars.conf".to_owned(),
-            "[Unit]\nX-Ghars-Prefix=/var/lib/ghars\n".to_owned(),
-        );
-        let unit_text = "[Service]\nUser=ghars-%i\nWorkingDirectory=/var/lib/ghars/%i\n";
-        let discovered = DiscoveredRunner {
-            name: "buckos".to_owned(),
-            spec_hash: String::new(),
-            on_disk_unit_text: unit_text.to_owned(),
-            drop_ins,
-            running: false,
-            enabled: false,
-            drift: Drift::InSync,
-        };
-        let identity = reconstruct_identity("buckos", &discovered, &empty_paths());
-        assert_eq!(
-            identity.user, "ghars-buckos",
-            "template parse + %i substitution must yield `ghars-buckos`"
-        );
-    }
-
-    /// When `00-ghars.conf` carries no `X-Ghars-Prefix` annotation,
-    /// `reconstruct_identity` falls back to parsing
-    /// `WorkingDirectory=` from the unit body, substituting `%i`
-    /// with the runner name, and taking the parent directory.
-    #[test]
-    fn reconstruct_identity_falls_back_to_template_prefix_when_annotation_absent() {
-        let mut drop_ins = BTreeMap::new();
-        // Drop-in present but missing X-Ghars-Prefix entirely.
-        drop_ins.insert(
-            "00-ghars.conf".to_owned(),
-            "[Unit]\nX-Ghars-User=ghars-buckos\n".to_owned(),
-        );
-        let unit_text = "[Service]\nUser=ghars-%i\nWorkingDirectory=/var/lib/ghars/%i\n";
-        let discovered = DiscoveredRunner {
-            name: "buckos".to_owned(),
-            spec_hash: String::new(),
-            on_disk_unit_text: unit_text.to_owned(),
-            drop_ins,
-            running: false,
-            enabled: false,
-            drift: Drift::InSync,
-        };
-        let identity = reconstruct_identity("buckos", &discovered, &empty_paths());
-        assert_eq!(
-            identity.prefix,
-            Utf8PathBuf::from("/var/lib/ghars"),
-            "template parse + %i substitution + parent must yield \
-             `/var/lib/ghars`"
-        );
-    }
-
-    /// When `00-ghars.conf` emits `X-Ghars-User=` (key present but
-    /// empty value), `reconstruct_identity` MUST treat that as
-    /// "missing" and fall through to the template parse path. An
-    /// empty value cannot be a valid system user (useradd/userdel
-    /// reject empty names), and `render_identity` always writes a
-    /// non-empty value for `spec.user`, so an empty annotation is a
-    /// best-effort fallback signal — it cannot be honored verbatim.
-    #[test]
-    fn reconstruct_identity_demotes_empty_user_annotation_to_template_fallback() {
-        let mut drop_ins = BTreeMap::new();
-        // Empty `X-Ghars-User=` — the key is present but carries no
-        // value. `DiscoveredAnnotations::from_drop_in_body` parses
-        // this as `Some("")`; the `.filter(|u| !u.is_empty())` arm
-        // in reconstruct_identity demotes it to None so the parse
-        // path fires.
-        drop_ins.insert(
-            "00-ghars.conf".to_owned(),
-            "[Unit]\nX-Ghars-User=\nX-Ghars-Prefix=/var/lib/ghars\n".to_owned(),
-        );
-        let unit_text = "[Service]\nUser=ghars-%i\nWorkingDirectory=/var/lib/ghars/%i\n";
-        let discovered = DiscoveredRunner {
-            name: "buckos".to_owned(),
-            spec_hash: String::new(),
-            on_disk_unit_text: unit_text.to_owned(),
-            drop_ins,
-            running: false,
-            enabled: false,
-            drift: Drift::InSync,
-        };
-        let identity = reconstruct_identity("buckos", &discovered, &empty_paths());
-        assert_eq!(
-            identity.user, "ghars-buckos",
-            "empty `X-Ghars-User=` must demote to template parse + \
-             %i substitution (`ghars-buckos`), not propagate as the \
-             empty string"
-        );
-    }
-
-    /// Symmetric to the user-empty test: when `00-ghars.conf` emits
-    /// `X-Ghars-Prefix=` (key present but empty value),
-    /// `reconstruct_identity` MUST fall through to the template
-    /// parse path. An empty path cannot be a valid working
-    /// directory, and `render_identity` always writes a non-empty
-    /// value for `spec.prefix`, so an empty annotation is treated
-    /// as missing.
-    #[test]
-    fn reconstruct_identity_demotes_empty_prefix_annotation_to_template_fallback() {
-        let mut drop_ins = BTreeMap::new();
-        // Empty `X-Ghars-Prefix=` — the key is present but carries
-        // no value. The `.filter(|p| !p.is_empty())` arm in
-        // reconstruct_identity demotes it to None so the parse path
-        // fires.
-        drop_ins.insert(
-            "00-ghars.conf".to_owned(),
-            "[Unit]\nX-Ghars-User=ghars-buckos\nX-Ghars-Prefix=\n".to_owned(),
-        );
-        let unit_text = "[Service]\nUser=ghars-%i\nWorkingDirectory=/var/lib/ghars/%i\n";
-        let discovered = DiscoveredRunner {
-            name: "buckos".to_owned(),
-            spec_hash: String::new(),
-            on_disk_unit_text: unit_text.to_owned(),
-            drop_ins,
-            running: false,
-            enabled: false,
-            drift: Drift::InSync,
-        };
-        let identity = reconstruct_identity("buckos", &discovered, &empty_paths());
-        assert_eq!(
-            identity.prefix,
-            Utf8PathBuf::from("/var/lib/ghars"),
-            "empty `X-Ghars-Prefix=` must demote to template parse + \
-             %i substitution + parent (`/var/lib/ghars`), not \
-             propagate as the empty path"
-        );
-    }
-
     #[test]
     fn plan_create_and_remove_when_names_diverge() {
         let cfg = config_with_runners(vec![minimal_runner("new")]);
@@ -4900,128 +4403,12 @@ mod tests {
         assert!(matches!(binding.spec.mode, NetworkMode::Netns));
     }
 
-    #[test]
-    fn plan_warns_on_shared_user() {
-        let mut cfg = config_with_runners(vec![{
-            let mut r = minimal_runner("a");
-            r.user = Some("legacy-shared".into());
-            r
-        }]);
-        cfg.auth = pat_auth();
-        let plan = plan_from(&cfg, &empty_actual(), &empty_paths()).unwrap();
-        assert!(
-            plan.warnings.iter().any(|w| w.contains("SEC-27")),
-            "warnings: {:?}",
-            plan.warnings,
-        );
-    }
-
-    /// `runner.user = "ghars-{name}"` is per-runner-secure (the
-    /// operator pinning the SEC-27 default explicitly). Same UID-per-
-    /// runner guarantee as the implicit default ⇒ MUST NOT warn.
-    /// Without this pin the classifier would emit a false-positive
-    /// warning naming the operator's own pin.
-    #[test]
-    fn plan_does_not_warn_on_per_runner_secure_user_pin() {
-        let mut cfg = config_with_runners(vec![{
-            let mut r = minimal_runner("a");
-            r.user = Some(format!("ghars-{}", r.name));
-            r
-        }]);
-        cfg.auth = pat_auth();
-        let plan = plan_from(&cfg, &empty_actual(), &empty_paths()).unwrap();
-        assert!(
-            !plan.warnings.iter().any(|w| w.contains("SEC-27")),
-            "per-runner-secure pin must NOT trigger SEC-27 warning; \
-             warnings: {:?}",
-            plan.warnings,
-        );
-    }
-
-    /// `defaults.user` is inherently shared — one [defaults] block
-    /// applies to every [[runner]] that doesn't override it, so any
-    /// value there propagates as a shared UID. MUST warn.
-    #[test]
-    fn plan_warns_on_defaults_user() {
-        let mut cfg = config_with_runners(vec![minimal_runner("a")]);
-        cfg.auth = pat_auth();
-        cfg.defaults.user = Some("svc".into());
-        let plan = plan_from(&cfg, &empty_actual(), &empty_paths()).unwrap();
-        let sec27: Vec<&String> = plan
-            .warnings
-            .iter()
-            .filter(|w| w.contains("SEC-27"))
-            .collect();
-        assert!(
-            !sec27.is_empty(),
-            "defaults.user must trigger SEC-27 warning; got warnings: {:?}",
-            plan.warnings,
-        );
-        assert!(
-            sec27.iter().any(|w| w.contains("svc")),
-            "warning must name the actual shared user; got: {sec27:?}",
-        );
-    }
-
-    /// Even when an operator sets `runner.user` to ANOTHER
-    /// runner's per-runner-secure name (e.g. runner "b" with
-    /// `user = "ghars-a"`), the resulting UID is shared across the
-    /// two runners (both end up running as the same UID) ⇒ MUST
-    /// warn. The per-runner-secure check is keyed on the CURRENT
-    /// runner's name; copying another runner's per-runner-secure
-    /// value does NOT make this runner per-runner-secure.
-    #[test]
-    fn plan_warns_on_runner_user_pointing_at_other_runner() {
-        let mut cfg = config_with_runners(vec![minimal_runner("a"), {
-            let mut r = minimal_runner("b");
-            r.user = Some("ghars-a".into());
-            r
-        }]);
-        cfg.auth = pat_auth();
-        let plan = plan_from(&cfg, &empty_actual(), &empty_paths()).unwrap();
-        let sec27: Vec<&String> = plan
-            .warnings
-            .iter()
-            .filter(|w| w.contains("SEC-27"))
-            .collect();
-        assert!(
-            sec27
-                .iter()
-                .any(|w| w.contains("'b'") && w.contains("ghars-a")),
-            "runner 'b' pointing at runner 'a's UID must warn naming both; \
-             got SEC-27 warnings: {sec27:?}",
-        );
-    }
-
-    /// Regression: when `defaults.user` is set to a shared value
-    /// (e.g. `"legacy-gha"`) AND `runner.user` is set to the
-    /// per-runner-secure pin (`"ghars-{name}"`), the resolved
-    /// effective user is the per-runner-secure pin (runner.user wins
-    /// per merge_defaults precedence). Since the effective UID is
-    /// per-runner-unique, SEC-27 MUST NOT warn. Without this pin, a
-    /// 3-arm classifier that checks `defaults.user.is_some()` first
-    /// would emit a false-positive warning naming the defaults-level
-    /// shared user even when runner.user overrode it. This test
-    /// pins the override-precedence invariant so a future
-    /// classifier rewrite cannot re-introduce the bug.
-    #[test]
-    fn plan_does_not_warn_on_per_runner_secure_runner_user_overriding_shared_defaults() {
-        let mut cfg = config_with_runners(vec![{
-            let mut r = minimal_runner("a");
-            r.user = Some(format!("ghars-{}", r.name));
-            r
-        }]);
-        cfg.auth = pat_auth();
-        cfg.defaults.user = Some("legacy-gha".into());
-        let plan = plan_from(&cfg, &empty_actual(), &empty_paths()).unwrap();
-        assert!(
-            !plan.warnings.iter().any(|w| w.contains("SEC-27")),
-            "runner.user='ghars-a' overrides defaults.user='legacy-gha' per merge_defaults \
-             precedence; effective user is per-runner-secure ⇒ MUST NOT warn. \
-             warnings: {:?}",
-            plan.warnings,
-        );
-    }
+    // The SEC-27 shared-user warning tests were deleted: the
+    // shared-user-detection logic was removed when DynamicUser+trust_zone
+    // became the runner identity model. Operators declare trust_zone
+    // explicitly; the `WARNING: shared UID disables cross-runner
+    // isolation` heuristic is now an explicit operator-config decision,
+    // not an apply-time inference.
 
     #[test]
     fn plan_actions_sorted_for_determinism() {
@@ -5249,8 +4636,6 @@ mod tests {
         Name(String),
         Url(String),
         Arch(Arch),
-        User(String),
-        Prefix(String),
         Labels(Vec<String>),
         MemoryMax(Option<String>),
         RunnerVersion(Option<String>),
@@ -5268,8 +4653,6 @@ mod tests {
             SpecMutation::Name(s) => spec.name = s.clone(),
             SpecMutation::Url(s) => spec.url = s.clone(),
             SpecMutation::Arch(a) => spec.arch = *a,
-            SpecMutation::User(s) => spec.user = s.clone(),
-            SpecMutation::Prefix(s) => spec.prefix = Utf8PathBuf::from(s),
             SpecMutation::Labels(v) => spec.labels = v.clone(),
             SpecMutation::MemoryMax(v) => spec.memory_max = v.clone(),
             SpecMutation::RunnerVersion(v) => spec.runner_version = v.clone(),
@@ -5291,8 +4674,6 @@ mod tests {
             "[a-z]{3,8}".prop_map(SpecMutation::Name),
             "https://github\\.com/[a-z]{2,5}/[a-z]{2,5}".prop_map(SpecMutation::Url),
             prop_oneof![Just(Arch::X86_64), Just(Arch::Aarch64)].prop_map(SpecMutation::Arch),
-            "ghars-[a-z]{3,6}".prop_map(SpecMutation::User),
-            "/(opt|var/lib|srv)/[a-z]{2,6}".prop_map(SpecMutation::Prefix),
             prop::collection::vec("[a-z][a-z0-9-]{1,8}", 1..5).prop_map(SpecMutation::Labels),
             proptest::option::of("[1-9][0-9]?[GM]").prop_map(SpecMutation::MemoryMax),
             proptest::option::of("[0-9]+\\.[0-9]+\\.[0-9]+").prop_map(SpecMutation::RunnerVersion),
@@ -5378,36 +4759,6 @@ mod tests {
     }
 
     // --- merge_defaults: scalar regression tests -----------------------
-
-    /// Property: when only the runner side sets a scalar, the runner
-    /// value wins regardless of what defaults say. Pinned scalar to
-    /// keep the assertion direction-locked: a mutant that swaps the
-    /// `or_else` branches in merge_defaults inverts the override
-    /// direction and surfaces here.
-    #[test]
-    fn merge_defaults_runner_user_overrides_defaults_user() {
-        let runner = {
-            let mut r = minimal_runner("buckos");
-            r.user = Some("runner-side-user".into());
-            r
-        };
-        let defaults = Defaults {
-            user: Some("defaults-side-user".into()),
-            ..Defaults::default()
-        };
-        let eff = merge_defaults(
-            &runner,
-            &defaults,
-            "pat".into(),
-            vec![],
-            None,
-            None,
-            None,
-            Arch::X86_64,
-            "/etc/ghars/ghars.toml".into(),
-        );
-        assert_eq!(eff.user, "runner-side-user");
-    }
 
     /// Property: when only the defaults side sets a Vec, the runner's
     /// empty Vec inherits from defaults via `pick_vec` — empty Vec
@@ -5510,23 +4861,19 @@ mod tests {
 
     proptest::proptest! {
         // Property: scalar-override rule — runner > defaults > built-in.
-        // Tested across user (path 1: defaults fallback to "ghars-{name}"),
-        // memory_max (path 2: pure Option override), runner_version (path 3:
-        // optional scalar with no built-in default).
+        // Tested across memory_max + runner_version (pure Option override).
         #[test]
         fn prop_merge_defaults_scalar_override_runner_wins(
-            (def_user, def_mem, def_ver) in defaults_strategy(),
-            (run_user, run_mem, run_ver) in runner_overrides_strategy(),
+            (_def_user, def_mem, def_ver) in defaults_strategy(),
+            (_run_user, run_mem, run_ver) in runner_overrides_strategy(),
         ) {
             let runner = {
                 let mut r = minimal_runner("rabbit");
-                r.user = run_user.clone();
                 r.memory_max = run_mem.clone();
                 r.runner_version = run_ver.clone();
                 r
             };
             let defaults = Defaults {
-                user: def_user.clone(),
                 memory_max: def_mem.clone(),
                 runner_version: def_ver.clone(),
                 ..Defaults::default()
@@ -5542,11 +4889,6 @@ mod tests {
                 Arch::X86_64,
                 "/etc/ghars/ghars.toml".into(),
             );
-            // user: runner > defaults > "ghars-{name}".
-            let expected_user = run_user
-                .or(def_user)
-                .unwrap_or_else(|| "ghars-rabbit".to_string());
-            proptest::prop_assert_eq!(eff.user, expected_user);
             // memory_max: pure Option override.
             proptest::prop_assert_eq!(eff.memory_max, run_mem.or(def_mem));
             // runner_version: pure Option override.
@@ -5768,14 +5110,14 @@ mod tests {
             run_labels in prop::collection::vec("[a-z][a-z0-9-]{0,8}", 0..4),
             def_labels in prop::collection::vec("[a-z][a-z0-9-]{0,8}", 0..4),
         ) {
+            let _ = run_user;
+            let _ = def_user;
             let runner = {
                 let mut r = minimal_runner("idempo");
-                r.user = run_user.clone();
                 r.labels = run_labels.clone();
                 r
             };
             let defaults = Defaults {
-                user: def_user.clone(),
                 labels: def_labels.clone(),
                 ..Defaults::default()
             };
@@ -5827,8 +5169,6 @@ mod tests {
             url_path in "[a-z]{2,8}/[a-z]{2,8}",
             auth_name in "[a-z]{2,8}",
             labels in prop::collection::vec("[a-z][a-z0-9-]{0,8}", 0..5),
-            user in "ghars-[a-z]{3,8}",
-            prefix in "/(opt|var/lib|srv)/[a-z]{2,8}",
             trust_zone in "[a-z]{4,12}",
             arch in prop_oneof![Just(Arch::X86_64), Just(Arch::Aarch64)],
             cache_names in prop::collection::vec("[a-z][a-z0-9-]{0,8}", 0..4),
@@ -5847,8 +5187,6 @@ mod tests {
                 runner_sha256: runner_sha.clone(),
                 runner_tarball: None,
                 arch: Some(arch),
-                user: Some(user.clone()),
-                prefix: Some(Utf8PathBuf::from(&prefix)),
                 caches: vec![], // EffectiveCacheBindings come via merge_defaults
                 trust_zone: trust_zone.clone(),
                 network: None,
@@ -5924,11 +5262,6 @@ mod tests {
                 Arch::Aarch64 => "aarch64",
             };
             proptest::prop_assert_eq!(anns.arch.as_deref(), Some(arch_str));
-            proptest::prop_assert_eq!(anns.user.as_deref(), Some(spec.user.as_str()));
-            proptest::prop_assert_eq!(
-                anns.prefix.as_deref(),
-                Some(spec.prefix.as_str()),
-            );
             proptest::prop_assert_eq!(
                 anns.trust_zone.as_deref(),
                 Some(spec.trust_zone.as_str()),
@@ -5952,13 +5285,11 @@ mod tests {
         // doesn't depend on any other input.
         #[test]
         fn prop_merge_defaults_empty_trust_zone_falls_back_to_default(
-            run_user in proptest::option::of("runner-[a-z]{3,6}"),
             run_labels in prop::collection::vec("[a-z][a-z0-9-]{0,8}", 0..4),
         ) {
             let runner = {
                 let mut r = minimal_runner("tz");
                 r.trust_zone = String::new(); // EXPLICITLY empty
-                r.user = run_user;
                 r.labels = run_labels;
                 r
             };
@@ -9341,8 +8672,6 @@ labels  = ["alpha", "beta"]
                 r.labels = vec!["self-hosted".into(), "linux".into()];
                 r.runner_version = Some("v2.999.0".into());
                 r.arch = Some(Arch::Aarch64);
-                r.user = Some("ghars-rt-explicit".into());
-                r.prefix = Some(Utf8PathBuf::from("/srv/ghars-rt"));
                 r.runner_sha256 = Some("c".repeat(64));
                 r.runner_tarball = Some(Utf8PathBuf::from("/var/lib/ghars/rt.tar.gz"));
                 r.trust_zone = "audited".into();
@@ -9391,16 +8720,6 @@ labels  = ["alpha", "beta"]
             "Labels round-trip (comma-joined → split, canonically sorted)"
         );
         assert_eq!(anns.arch.as_deref(), Some("aarch64"), "Arch round-trip");
-        assert_eq!(
-            anns.user.as_deref(),
-            Some("ghars-rt-explicit"),
-            "User round-trip"
-        );
-        assert_eq!(
-            anns.prefix.as_deref(),
-            Some("/srv/ghars-rt"),
-            "Prefix round-trip"
-        );
         assert_eq!(
             anns.runner_sha256.as_deref(),
             Some(&*"c".repeat(64)),
@@ -9807,18 +9126,6 @@ labels  = ["alpha", "beta"]
         fn tarball_old(r: &mut RunnerSpec) {
             r.runner_tarball = Some(Utf8PathBuf::from("/var/lib/ghars/runner-discovered.tar.gz"));
         }
-        fn user_desired(r: &mut RunnerSpec) {
-            r.user = Some("ghars-desired".into());
-        }
-        fn user_discovered(r: &mut RunnerSpec) {
-            r.user = Some("ghars-discovered".into());
-        }
-        fn prefix_desired(r: &mut RunnerSpec) {
-            r.prefix = Some(Utf8PathBuf::from("/var/lib/ghars/desired"));
-        }
-        fn prefix_discovered(r: &mut RunnerSpec) {
-            r.prefix = Some(Utf8PathBuf::from("/var/lib/ghars/discovered"));
-        }
         fn network_isolated(r: &mut RunnerSpec) {
             r.network = Some("isolated".into());
         }
@@ -9889,22 +9196,6 @@ labels  = ["alpha", "beta"]
                 cfg: None,
                 discovered_arch: Arch::Aarch64,
                 expected_reason: "arch",
-            },
-            Scenario {
-                label: "user",
-                desired: user_desired,
-                discovered: Some(user_discovered),
-                cfg: None,
-                discovered_arch: Arch::X86_64,
-                expected_reason: "user",
-            },
-            Scenario {
-                label: "prefix",
-                desired: prefix_desired,
-                discovered: Some(prefix_discovered),
-                cfg: None,
-                discovered_arch: Arch::X86_64,
-                expected_reason: "prefix",
             },
             Scenario {
                 label: "network",

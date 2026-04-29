@@ -558,8 +558,6 @@ pub enum UndoStep {
         auth_name: String,
         /// Per-runner home directory (`/var/lib/ghars/NAME`).
         runner_home: Utf8PathBuf,
-        /// System user the original `config.sh` was invoked as.
-        user: String,
     },
 }
 
@@ -812,7 +810,6 @@ fn undo_one(step: &UndoStep, deps: &Deps<'_>) -> Result<()> {
             url,
             auth_name,
             runner_home,
-            user,
         } => {
             // Mint a fresh removal token; if the registry has no
             // matching entry, warn and skip per the registration
@@ -834,7 +831,6 @@ fn undo_one(step: &UndoStep, deps: &Deps<'_>) -> Result<()> {
                 name,
                 url,
                 labels: &[],
-                user,
                 token: &token.value,
             })
         }
@@ -1259,8 +1255,6 @@ pub struct ConfigShellCtx<'a> {
     pub url: &'a str,
     /// Runner labels for `--labels`.
     pub labels: &'a [String],
-    /// Effective system user to drop privileges to.
-    pub user: &'a str,
     /// Registration / removal token value.
     pub token: &'a str,
 }
@@ -1286,27 +1280,25 @@ const RUNNER_TOKEN_ENV: &str = "ACTIONS_RUNNER_INPUT_TOKEN";
 /// strips the token before exec'ing config.sh.
 fn build_register_cmd(ctx: &ConfigShellCtx<'_>) -> Command {
     let labels_csv = ctx.labels.join(",");
-    let mut cmd = Command::new("/usr/bin/sudo");
-    cmd.arg(format!("--preserve-env={RUNNER_TOKEN_ENV}"))
-        .arg("-u")
-        .arg(ctx.user)
-        .arg("--")
-        .arg(ctx.runner_home.join("config.sh"))
-        // SEC-05: token rides in the env var, not argv. argv contains
-        // no secret material; `/proc/PID/cmdline` of the running
-        // config.sh subprocess is now safe to read.
-        .args([
-            "--url",
-            ctx.url,
-            "--name",
-            ctx.name,
-            "--labels",
-            &labels_csv,
-            "--unattended",
-            "--replace",
-        ])
-        .env(RUNNER_TOKEN_ENV, ctx.token)
-        .current_dir(ctx.runner_home.as_std_path());
+    let mut cmd = Command::new(ctx.runner_home.join("config.sh"));
+    // SEC-05: token rides in the env var, not argv. argv contains no
+    // secret material; `/proc/PID/cmdline` of the running config.sh
+    // subprocess is now safe to read. config.sh runs as root in apply;
+    // systemd takes ownership at unit start via DynamicUser=yes +
+    // StateDirectory=, which chowns the home + credentials to the
+    // trust_zone's transient UID at start-of-unit time.
+    cmd.args([
+        "--url",
+        ctx.url,
+        "--name",
+        ctx.name,
+        "--labels",
+        &labels_csv,
+        "--unattended",
+        "--replace",
+    ])
+    .env(RUNNER_TOKEN_ENV, ctx.token)
+    .current_dir(ctx.runner_home.as_std_path());
     cmd
 }
 
@@ -1317,13 +1309,8 @@ fn build_register_cmd(ctx: &ConfigShellCtx<'_>) -> Command {
 /// (`GetRunnerDeletionToken` / `GetArgOrPrompt` in actions/runner),
 /// so the env-var mapping applies identically to register and remove.
 fn build_remove_cmd(ctx: &ConfigShellCtx<'_>) -> Command {
-    let mut cmd = Command::new("/usr/bin/sudo");
-    cmd.arg(format!("--preserve-env={RUNNER_TOKEN_ENV}"))
-        .arg("-u")
-        .arg(ctx.user)
-        .arg("--")
-        .arg(ctx.runner_home.join("config.sh"))
-        .args(["remove", "--unattended"])
+    let mut cmd = Command::new(ctx.runner_home.join("config.sh"));
+    cmd.args(["remove", "--unattended"])
         .env(RUNNER_TOKEN_ENV, ctx.token)
         .current_dir(ctx.runner_home.as_std_path());
     cmd
@@ -2119,7 +2106,6 @@ fn execute_create_runner(
         name: &spec.name,
         url: &spec.url,
         labels: &spec.labels,
-        user: &spec.user,
         token: &token.value,
     })?;
     // Push GitHubRegistration AFTER run_register succeeds. Undo path
@@ -2133,15 +2119,12 @@ fn execute_create_runner(
         url: spec.url.clone(),
         auth_name: spec.auth_name.clone(),
         runner_home: runner_home.clone(),
-        user: spec.user.clone(),
     });
 
-    // 5) Tighten credential perms. config.sh writes
-    //    `<runner_home>/.credentials` mode 0644 by default; drop it to
-    //    0600 owner=runner-user. (SEC-05 / SEC-25 residual.)
-    //    pass spec.user so fchown reattaches ownership to the current
-    //    user when the operator changes `user=` on a runner.
-    tighten_credential_perms(&runner_home, &spec.user)?;
+    // No tighten_credential_perms call. DynamicUser=yes manages
+    // StateDirectory ownership at the systemd level; .credentials is
+    // owned by the trust_zone's transient UID and inherits the
+    // StateDirectoryMode=0700 from the unit template.
 
     // 5b) SEC-02: hash the runsvc.sh that `config.sh` wrote into the
     //     runner home. config.sh (the upstream actions/runner script)
@@ -2293,7 +2276,6 @@ fn execute_remove_runner(
             name: &identity.name,
             url: &identity.url,
             labels: &[],
-            user: &identity.user,
             token: &token.value,
         })?;
         // No UndoStep for run_remove: it is itself the inverse of
@@ -2327,7 +2309,7 @@ fn execute_remove_runner(
 
     // 4) Remove the runner home directory after the rmrf safety check.
     if runner_home.exists() {
-        guard_home_dir_rmrf(&runner_home, &identity.prefix, &identity.name)?;
+        guard_home_dir_rmrf(&runner_home, &paths.state_dir, &identity.name)?;
         fs::remove_dir_all(runner_home.as_std_path())?;
         log.push(UndoStep::RemoveDir {
             path: runner_home.clone(),
@@ -3926,8 +3908,6 @@ mod tests {
             name: name.into(),
             url: "https://github.com/example/repo".into(),
             arch: Arch::X86_64,
-            user: format!("ghars-{name}"),
-            prefix: prefix.to_path_buf(),
             labels: vec!["self-hosted".into(), "linux".into()],
             memory_max: None,
             runner_version: Some("2.334.0".into()),
@@ -4803,8 +4783,6 @@ mod tests {
             name: "ghost".into(),
             url: String::new(),
             auth_name: String::new(),
-            prefix: paths.state_dir.clone(),
-            user: "ghars-ghost".into(),
         };
         let systemd = MockSystemd::default();
         // Empty auth registry — guarantees mint_token would fail if
@@ -4855,8 +4833,6 @@ mod tests {
             name: "x".into(),
             url: "https://github.com/example/repo".into(),
             auth_name: "pat".into(),
-            prefix: paths.state_dir.clone(),
-            user: "ghars-x".into(),
         };
         let actions = vec![
             Action::CreateRunner(plan_b.clone()),
@@ -4907,8 +4883,6 @@ mod tests {
                 name: name.into(),
                 url: "https://github.com/example/repo".into(),
                 auth_name: "pat".into(),
-                prefix: prefix.to_path_buf(),
-                user: format!("ghars-{name}"),
             },
             after,
             requires_recreate,
@@ -4954,8 +4928,6 @@ mod tests {
             name: name.into(),
             url: "https://github.com/example/repo".into(),
             auth_name: "pat".into(),
-            prefix: prefix.to_path_buf(),
-            user: format!("ghars-{name}"),
         }
     }
 
@@ -5722,8 +5694,6 @@ mod tests {
                 name: "a".into(),
                 url: "https://github.com/example/repo".into(),
                 auth_name: "pat".into(),
-                prefix: paths.state_dir.clone(),
-                user: "ghars-a".into(),
             },
             after: plan,
             requires_recreate: false,
@@ -5813,8 +5783,6 @@ mod tests {
             name: "a".into(),
             url: "https://github.com/example/repo".into(),
             auth_name: "pat".into(),
-            prefix: paths.state_dir.clone(),
-            user: "ghars-a".into(),
         };
         let systemd = MockSystemd::default();
         let mut auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -6030,7 +5998,6 @@ mod tests {
             name: "buckos",
             url: "https://github.com/example/repo",
             labels: &[],
-            user: "ghars-buckos",
             token,
         }
     }
@@ -6086,14 +6053,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn sec05_register_includes_preserve_env() {
-        let ctx = sec05_ctx(Utf8Path::new("/var/lib/ghars/buckos"), "TOKEN");
-        let cmd = build_register_cmd(&ctx);
-        let argv = argv_strings(&cmd);
-        // The first argv slot is the --preserve-env flag.
-        assert_eq!(argv[0], format!("--preserve-env={RUNNER_TOKEN_ENV}"));
-    }
+    // sec05_register_includes_preserve_env was deleted: the
+    // pre-DynamicUser model wrapped config.sh in `sudo --preserve-env=
+    // ACTIONS_RUNNER_INPUT_TOKEN -u USER --` so sudo's env_reset
+    // wouldn't strip the token before exec. Under DynamicUser, apply
+    // runs config.sh directly as root (systemd takes ownership of
+    // StateDirectory at unit start) so there's no sudo wrapper and
+    // no --preserve-env argv slot. The SEC-05 token-via-env contract
+    // still holds — `sec05_register_argv_does_not_contain_token`
+    // (sibling) pins that argv carries no token.
 
     #[test]
     fn sec05_remove_argv_does_not_contain_token() {
@@ -6336,8 +6304,6 @@ mod tests {
             name: "a".into(),
             url: "https://github.com/example/repo".into(),
             auth_name: "pat".into(),
-            prefix: paths.state_dir.clone(),
-            user: "ghars-a".into(),
         };
         let systemd = MockSystemd::default();
         let mut auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -6813,7 +6779,6 @@ mod tests {
                 url: "u".into(),
                 auth_name: "a".into(),
                 runner_home: Utf8PathBuf::from("/h"),
-                user: "u".into(),
             },
         ];
         for s in &forward {
@@ -7035,7 +7000,6 @@ mod tests {
             url: "https://github.com/example/repo".into(),
             auth_name: "pat".into(),
             runner_home: runner_home.clone(),
-            user: "ghars-a".into(),
         });
         undo(&log, &deps, &paths).unwrap();
         let removed = config_shell.removed.lock().unwrap().clone();
@@ -7061,7 +7025,6 @@ mod tests {
             url: "https://github.com/example/repo".into(),
             auth_name: "missing".into(),
             runner_home: runner_home.clone(),
-            user: "ghars-a".into(),
         });
         undo(&log, &deps, &paths).unwrap();
         let removed = config_shell.removed.lock().unwrap().clone();
@@ -8049,8 +8012,6 @@ mod tests {
                 name: "a".into(),
                 url: "https://github.com/example/repo".into(),
                 auth_name: "pat".into(),
-                prefix: paths.state_dir.clone(),
-                user: "ghars-a".into(),
             },
             after: plan,
             requires_recreate: false,
@@ -8491,7 +8452,6 @@ mod tests {
                 url: "https://github.com/example/repo".into(),
                 auth_name: "pat".into(),
                 runner_home: camino::Utf8PathBuf::from("/var/lib/ghars/foo"),
-                user: "ghars-foo".into(),
             }
             .describe(),
             "registered runner foo against https://github.com/example/repo",
@@ -8585,8 +8545,6 @@ mod tests {
                 name: "a".into(),
                 url: "https://github.com/example/repo".into(),
                 auth_name: "pat".into(),
-                prefix: paths.state_dir.clone(),
-                user: "ghars-a".into(),
             },
             after: plan,
             requires_recreate: false,
@@ -9971,7 +9929,6 @@ mod tests {
                     url: "https://github.com/example/repo".into(),
                     auth_name: "pat".into(),
                     runner_home: benign_runner_home.clone(),
-                    user: "ghars-buckos".into(),
                 },
                 true,
             ),
@@ -9982,7 +9939,6 @@ mod tests {
                     url: hostile_url.into(),
                     auth_name: "pat".into(),
                     runner_home: benign_runner_home.clone(),
-                    user: "ghars-buckos".into(),
                 },
                 true,
             ),
@@ -10006,7 +9962,6 @@ mod tests {
                     url: "https://github.com/example/repo".into(),
                     auth_name: "pat".into(),
                     runner_home: hostile_runner_home.clone(),
-                    user: "ghars-buckos".into(),
                 },
                 false,
             ),

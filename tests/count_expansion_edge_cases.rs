@@ -59,8 +59,6 @@ fn make_runner(name: &str) -> RunnerSpec {
         runner_sha256: None,
         runner_tarball: None,
         arch: None,
-        user: None,
-        prefix: None,
         caches: vec![],
         trust_zone: "default".into(),
         network: None,

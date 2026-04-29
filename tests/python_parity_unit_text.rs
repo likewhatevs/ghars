@@ -30,8 +30,6 @@ fn minimal_spec(name: &str) -> EffectiveRunnerSpec {
         name: name.into(),
         url: format!("https://github.com/example/{name}"),
         arch: Arch::X86_64,
-        user: format!("ghars-{name}"),
-        prefix: Utf8PathBuf::from("/var/lib/ghars"),
         labels: vec!["self-hosted".into()],
         memory_max: None,
         runner_version: Some("2.334.0".into()),
