@@ -139,7 +139,18 @@ impl Paths {
     /// stale pool state does not survive a config drop.
     #[must_use]
     pub fn cache_pool_dir(&self, pool: &str) -> Utf8PathBuf {
-        self.cache_dir.join("pools").join(pool)
+        self.cache_pool_root().join(pool)
+    }
+
+    /// `<cache_dir>/pools` — the directory under which every
+    /// per-pool subdir lives. Exposed separately so
+    /// `apply::execute_remove_cache_pool` can hand it to
+    /// `guard_home_dir_rmrf` as the prefix the per-pool dir must be
+    /// a child of (defense in depth against path-separator or `..`
+    /// regressions in pool name validation).
+    #[must_use]
+    pub fn cache_pool_root(&self) -> Utf8PathBuf {
+        self.cache_dir.join("pools")
     }
 
     /// `<runtime_dir>/apply.lock` — POSIX advisory file lock for `apply`.

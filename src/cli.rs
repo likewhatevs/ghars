@@ -13940,14 +13940,17 @@ token_env = \"GHARS_PAT\"";
         );
     }
 
-    /// Reverse-ordering pin: multi-Pat where the lexicographically
-    /// FIRST entry (BTreeMap iteration order) fails on hidden-char and
-    /// the second entry fails on charset. The validator early-returns
-    /// on the first bad Pat — the diagnostic must surface the
-    /// hidden-char gate's text, never the charset text. Symmetric with
-    /// the charset-before-hidden pin above; together they pin
+    /// Reverse-ordering pin: multi-Pat where the FIRST entry
+    /// (IndexMap insertion order — `cfg.auth` is
+    /// `IndexMap<String, AuthSpec>` so iteration follows insertion,
+    /// NOT alphabetical) fails on hidden-char and the second entry
+    /// fails on charset. The validator early-returns on the first
+    /// bad Pat — the diagnostic must surface the hidden-char gate's
+    /// text, never the charset text. Symmetric with the
+    /// charset-before-hidden pin above; together they pin
     /// iteration-order independence: whichever fault comes first in
-    /// BTreeMap order is the one surfaced, regardless of fault class.
+    /// IndexMap insertion order is the one surfaced, regardless of
+    /// fault class.
     #[test]
     fn validate_pat_xor_rejects_first_bad_pat_hidden_char_before_charset_pat() {
         let mut cfg = cfg_with_pat_auth("aa-bad-hidden", Some("FOO\u{FEFF}BAR"), None);

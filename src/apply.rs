@@ -3144,12 +3144,22 @@ fn execute_remove_cache_pool(
 
     // Per-pool cache storage directory. systemd's CacheDirectory=
     // creates this at unit start; ghars removes it on RemoveCachePool
-    // so a config drop does not leave stale 200G on disk. We do
-    // NOT call guard_home_dir_rmrf — the path is fixed
-    // `<cache_dir>/pools/<name>` and `name` already passed
-    // IDENTIFIER_REGEX upstream (no `/` or `..` possible).
+    // so a config drop does not leave stale 200G on disk.
+    //
+    // Defense-in-depth via guard_home_dir_rmrf, symmetric with
+    // execute_remove_runner. The pool name already passes
+    // IDENTIFIER_REGEX at config-load (no `/` or `..` possible) and
+    // the path is constructed from a fixed prefix
+    // `<cache_dir>/pools` + the validated name, so a regression
+    // would have to slip past TWO upstream gates AND change the
+    // path-construction shape to escape. The guard catches that
+    // shape change at the rmrf boundary — it asserts the
+    // pool_dir is the literal `<prefix>/<name>` join and rejects
+    // symlinks at the dir itself.
     let pool_dir = paths.cache_pool_dir(name);
     if pool_dir.exists() {
+        let pool_root = paths.cache_pool_root();
+        guard_home_dir_rmrf(&pool_dir, &pool_root, name)?;
         fs::remove_dir_all(pool_dir.as_std_path())?;
         log.push(UndoStep::RemoveDir {
             path: pool_dir.clone(),
@@ -6099,6 +6109,57 @@ mod tests {
             calls
                 .iter()
                 .any(|c| c == "disable_unit(ghars-cache@build.service)")
+        );
+    }
+
+    #[test]
+    fn remove_cache_pool_rejects_symlink_at_pool_dir() {
+        // SEC: defense-in-depth pin. If the per-pool storage dir
+        // path resolves to a symlink (operator tampering, slipped
+        // parent-dir perms), execute_remove_cache_pool's
+        // guard_home_dir_rmrf call must reject before fs::remove_dir_all
+        // would unlink the symlink target. The runner-side
+        // execute_remove_runner uses the same guard; this test pins
+        // the symmetric protection on the cache-pool side.
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = make_paths(&tmp);
+        fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
+        // Plant a real target dir somewhere unrelated, then symlink
+        // the expected pool_dir at it. The symlink at pool_dir
+        // makes guard_home_dir_rmrf fire its symlink-rejection arm.
+        let real_target = camino::Utf8PathBuf::from_path_buf(tmp.path().join("real-target"))
+            .unwrap();
+        fs::create_dir_all(real_target.as_std_path()).unwrap();
+        fs::write(real_target.join("important-data.bin").as_std_path(), b"sensitive")
+            .unwrap();
+        let pool_root = paths.cache_pool_root();
+        fs::create_dir_all(pool_root.as_std_path()).unwrap();
+        let pool_dir = paths.cache_pool_dir("hostile");
+        std::os::unix::fs::symlink(real_target.as_std_path(), pool_dir.as_std_path())
+            .unwrap();
+
+        let systemd = MockSystemd::default();
+        let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+        let tarball = MockTarball::default();
+        let config_shell = MockConfigShell::default();
+        let deps = Deps {
+            systemd: &systemd,
+            auth: &auth_map,
+            tarball: &tarball,
+            config_shell: &config_shell,
+        };
+        let err = execute_remove_cache_pool("hostile", &deps, &paths, &mut UndoLog::new())
+            .expect_err("symlink at pool_dir must be rejected by guard_home_dir_rmrf");
+        assert!(
+            matches!(err, GharsError::Validation(_, _)),
+            "expected Validation, got {err:?}"
+        );
+        // Defense-in-depth: target must NOT have been touched. The
+        // pre-fix path would have followed the symlink and removed
+        // important-data.bin via remove_dir_all.
+        assert!(
+            real_target.join("important-data.bin").as_std_path().exists(),
+            "remove_dir_all must NOT follow symlinked pool_dir"
         );
     }
 

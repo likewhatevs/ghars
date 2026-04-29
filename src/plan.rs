@@ -653,14 +653,13 @@ pub struct RunnerDelta {
     /// `delta.after.spec.caches` to surface added / removed pool
     /// names in the per-action `ApplyOutcome::InPlaceRestarted`
     /// detail string, and the rendered 30-cache-pool.conf drop-in
-    /// reflects the new pool list verbatim (the post-DynamicUser
-    /// model: cache reach is governed by the trust_zone-shared
-    /// transient UID + the BindPaths in the drop-in, not by static
-    /// supplementary-group membership). `None` ⇒ the runner predates
-    /// the unconditional `X-Ghars-Caches` emit; apply skips the diff
-    /// rendering to avoid spurious "removed: …" messages (the next
-    /// apply will land annotations and a future change can show the
-    /// proper diff).
+    /// reflects the new pool list verbatim (cache reach is
+    /// materialized by the trust_zone-shared DynamicUser + the
+    /// `BindPaths=` entries in the drop-in). `None` ⇒ the runner
+    /// predates the unconditional `X-Ghars-Caches` emit; apply skips
+    /// the diff rendering to avoid spurious "removed: …" messages
+    /// (the next apply will land annotations and a future change
+    /// can show the proper diff).
     ///
     /// Order: when `Some`, the Vec is sorted alphabetically.
     /// `plan_from` sorts the discovered annotation at population time
@@ -1293,10 +1292,8 @@ struct DiscoveredAnnotations {
     /// `delta.after.spec.caches` to surface added / removed pool
     /// names in the per-action detail string, and the rendered
     /// 30-cache-pool.conf drop-in body reflects the post-update
-    /// pool list verbatim. (Pre-DynamicUser model used static
-    /// supplementary-group membership reconciled via gpasswd; the
-    /// DynamicUser pivot replaced that with trust_zone-shared
-    /// transient UID + BindPaths in the drop-in.)
+    /// pool list verbatim. Cache reach is materialized by the
+    /// `BindPaths=` entries in that drop-in.
     caches: Option<Vec<String>>,
 }
 
@@ -2525,13 +2522,11 @@ fn reconstruct_identity(
 ) -> RunnerIdentity {
     // RunnerIdentity reconstruction reads only the X-Ghars-Runner-Url,
     // X-Ghars-Auth-Name, and X-Ghars-Trust-Zone annotations from
-    // `00-ghars.conf`. The pre-DynamicUser model also reconstructed
-    // user + prefix to drive `useradd_if_missing` /
-    // `guard_home_dir_rmrf`, but DynamicUser handles the runner
-    // identity (transient UID/GID allocated by systemd at unit
-    // start, recycled at unit stop), and the home directory is at
-    // `<state_dir>/<trust_zone>/ghars-<name>` per Paths::runner_home
-    // so the prefix is not operator-configurable.
+    // `00-ghars.conf`. The user is allocated by `DynamicUser=yes`
+    // at unit start (transient UID/GID, recycled at unit stop), and
+    // the home directory is at `<state_dir>/<trust_zone>/ghars-<name>`
+    // per Paths::runner_home — neither is operator-configurable, so
+    // neither is reconstructed from annotations.
     let annotations = DiscoveredAnnotations::from_discovered(discovered);
     RunnerIdentity {
         name: name.to_owned(),
