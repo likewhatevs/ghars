@@ -129,12 +129,11 @@ pub enum Action {
 /// "Worst-case" because plan time cannot know whether `apply` will
 /// short-circuit at apply time. `execute_update_runner`'s in-place
 /// path (apply.rs) skips daemon-reload + restart when every managed
-/// drop-in's bytes already match disk AND the supplementary-group
-/// diff is empty — a route that is genuinely [`Disruption::None`]
-/// when it fires but cannot be predicted from the plan because the
-/// optimization keys on on-disk bytes the planner does not consult.
-/// The disruption tag therefore reports the maximum disruption an
-/// in-place `UpdateRunner` could cause.
+/// drop-in's bytes already match disk — a route that is genuinely
+/// [`Disruption::None`] when it fires but cannot be predicted from
+/// the plan because the optimization keys on on-disk bytes the
+/// planner does not consult. The disruption tag therefore reports
+/// the maximum disruption an in-place `UpdateRunner` could cause.
 ///
 /// Variants are ordered from least to most disruptive so callers
 /// that compare or sort by severity get a consistent ordering.
@@ -157,10 +156,7 @@ pub enum Disruption {
     /// jobs (SIGTERM at stop) and brings the unit back up with
     /// refreshed exec credentials and any updated drop-in bodies.
     /// `apply` reaches this for every non-skip in-place
-    /// `UpdateRunner` (covers both file-byte changes and pure
-    /// supplementary-group reconciliation, where the unit cycles
-    /// even though no managed file moved) and every
-    /// `UpdateCachePool`.
+    /// `UpdateRunner` and every `UpdateCachePool`.
     Restart,
     /// Tear down + reconstruct the unit, including a GitHub-side
     /// re-registration when the action is runner-class. Strictly
@@ -223,9 +219,8 @@ impl Action {
     /// - [`Self::UpdateRunner`] with `requires_recreate = false` →
     ///   `Restart` — `execute_update_runner`'s in-place branch issues
     ///   `daemon-reload` + `stop_unit` + `start_unit` whenever any
-    ///   managed file body changes or the supplementary-group diff
-    ///   is non-empty. The byte-equality short-circuit at
-    ///   `apply.rs::execute_update_runner` IS in-place's
+    ///   managed file body changes. The byte-equality short-circuit
+    ///   at `apply.rs::execute_update_runner` IS in-place's
     ///   [`Disruption::None`] path at apply time, but plan cannot
     ///   predict it (keys on on-disk bytes), so we report `Restart`.
     /// - [`Self::RemoveRunner`] → `Recreate` —
@@ -233,9 +228,12 @@ impl Action {
     ///   and tears down per-runner netns side-units (apply.rs step
     ///   1, 1b), THEN mints a removal token and calls
     ///   `config.sh remove` to deregister with GitHub (step 2),
-    ///   THEN deletes the home directory + system user (steps 3+).
-    ///   The GitHub-side mutation is the same disruption class as
-    ///   a fresh registration, regardless of execution order.
+    ///   THEN deletes the home directory (step 3+). DynamicUser
+    ///   handles the runner's transient UID/GID lifecycle — systemd
+    ///   recycles them on unit stop, so there is no system user to
+    ///   delete. The GitHub-side mutation is the same disruption
+    ///   class as a fresh registration, regardless of execution
+    ///   order.
     /// - [`Self::CreateCachePool`] → `Recreate` —
     ///   `execute_create_cache_pool` provisions per-pool group +
     ///   storage dir + unit drop-in; the host-state construction is
@@ -497,10 +495,11 @@ pub struct FieldChange {
     /// Flat tokens for schema v2 (the value the JSON renderer
     /// emits under `"schema_version": "2"`):
     /// - Recreate-class (apply does remove → create): `url`,
-    ///   `runner_version`, `labels`, `arch`, `user`, `prefix`,
-    ///   `runner_sha256`, `runner_tarball`, `network`.
-    /// - In-place (apply does supplementary-group / registry diffs,
-    ///   not unit rewrites): `auth_name`, `trust_zone`, `caches`.
+    ///   `runner_version`, `labels`, `arch`, `runner_sha256`,
+    ///   `runner_tarball`, `network`.
+    /// - In-place (apply rewrites the per-runner drop-in body and
+    ///   cycles the unit, no remove → create): `auth_name`,
+    ///   `trust_zone`, `caches`.
     ///
     /// The flat-token list mixes both classes; presence of a
     /// `FieldChange` does NOT imply `requires_recreate=true` — read
@@ -626,13 +625,13 @@ pub struct RunnerDelta {
     /// classifier detected. CLI renderer prints one line per entry.
     ///
     /// Populated for both recreate-class diffs (e.g. `url`,
-    /// `runner_version`, `labels`, `arch`, `user`, `prefix`,
-    /// `runner_sha256`, `runner_tarball`, `network`) and in-place
-    /// diffs that have an annotation source (`auth_name`,
-    /// `trust_zone`, `caches` — the apply-time reconciliation runs
-    /// supplementary-group diffs, not unit rewrites). The presence
-    /// of a FieldChange does NOT imply
-    /// `requires_recreate=true`; check `recreate_reasons` for that.
+    /// `runner_version`, `labels`, `arch`, `runner_sha256`,
+    /// `runner_tarball`, `network`) and in-place diffs that have
+    /// an annotation source (`auth_name`, `trust_zone`, `caches` —
+    /// the apply-time reconciliation rewrites the per-runner drop-in
+    /// body and cycles the unit, not remove → create). The presence
+    /// of a FieldChange does NOT imply `requires_recreate=true`;
+    /// check `recreate_reasons` for that.
     ///
     /// Empty when:
     /// - the recreate fired via the `"uncovered"` fallback (no
@@ -650,13 +649,18 @@ pub struct RunnerDelta {
     pub drop_in_changes: Vec<DropInChange>,
     /// Pre-update cache pool list reconstructed from the discovered
     /// `X-Ghars-Caches` annotation. Drives apply.rs's in-place
-    /// supplementary-group reconciliation: apply diffs this against
-    /// `delta.after.spec.caches` and calls
-    /// `users.add_user_to_group` / `users.remove_user_from_group`
-    /// for added / removed pools. `None` ⇒ the runner predates
-    /// the unconditional `X-Ghars-Caches` emit; apply skips the
-    /// group-diff to avoid spurious gpasswd churn (the next apply
-    /// will land annotations and a future change can reconcile).
+    /// drop-in reconciliation: apply diffs this against
+    /// `delta.after.spec.caches` to surface added / removed pool
+    /// names in the per-action `ApplyOutcome::InPlaceRestarted`
+    /// detail string, and the rendered 30-cache-pool.conf drop-in
+    /// reflects the new pool list verbatim (the post-DynamicUser
+    /// model: cache reach is governed by the trust_zone-shared
+    /// transient UID + the BindPaths in the drop-in, not by static
+    /// supplementary-group membership). `None` ⇒ the runner predates
+    /// the unconditional `X-Ghars-Caches` emit; apply skips the diff
+    /// rendering to avoid spurious "removed: …" messages (the next
+    /// apply will land annotations and a future change can show the
+    /// proper diff).
     ///
     /// Order: when `Some`, the Vec is sorted alphabetically.
     /// `plan_from` sorts the discovered annotation at population time
@@ -664,9 +668,6 @@ pub struct RunnerDelta {
     /// serialization, error messages that name "removed pools") see a
     /// canonical order regardless of the order the on-disk
     /// `X-Ghars-Caches=` annotation happened to be written in.
-    /// Membership reconciliation in apply collects this Vec into a
-    /// BTreeSet before computing the gpasswd diff, so the sort is
-    /// correctness-neutral for that path; it only normalizes display.
     pub before_caches: Option<Vec<String>>,
     /// Pre-update on-disk drop-in basenames discovered in the runner's
     /// drop-in directory (alphabetically ordered, parity with
@@ -865,12 +866,14 @@ fn validate_generated_identifier(name: &str, parent_prefix: &str) -> Result<()> 
     })?;
     // Layer the runner-name length cap on top. Catches the case
     // where the prefix passes validate_identifier on its own but the
-    // generated `prefix-COUNT` overflows RUNNER_NAME_MAX_LEN. The cap
-    // is unconditional on runner.name (independent of any explicit
-    // user= override) — symmetric to validate_cache_pool_name's
-    // unconditional layering: if the operator sets user= today and
-    // removes it later, removal must not silently break apply with
-    // an opaque `useradd: name too long` error.
+    // generated `prefix-COUNT` overflows RUNNER_NAME_MAX_LEN. The
+    // cap is unconditional on runner.name — symmetric to
+    // validate_cache_pool_name's unconditional layering. The cap
+    // protects downstream consumers that interpolate the runner
+    // name into bounded surfaces (systemd unit filenames, the
+    // `ghars-runner@<NAME>.service.d` drop-in path, the
+    // `ghars-tz-<TRUST_ZONE>` DynamicUser identity, the
+    // `ghars-<NAME>-h` netns veth name with its IFNAMSIZ-1 ceiling).
     crate::validators::validate_runner_name(name).map_err(|e| match e {
         GharsError::Validation(msg, hint) => GharsError::Validation(
             format!(
@@ -1286,9 +1289,14 @@ struct DiscoveredAnnotations {
     network_mode: Option<String>,
     /// `X-Ghars-Caches` value. Comma-split list of cache pool
     /// names the runner was registered against. Drives in-place
-    /// supplementary-group reconciliation: apply diffs this against
-    /// `delta.after.spec.caches` and calls `add_user_to_group` /
-    /// `remove_user_from_group` for added / removed pools.
+    /// drop-in reconciliation: apply diffs this against
+    /// `delta.after.spec.caches` to surface added / removed pool
+    /// names in the per-action detail string, and the rendered
+    /// 30-cache-pool.conf drop-in body reflects the post-update
+    /// pool list verbatim. (Pre-DynamicUser model used static
+    /// supplementary-group membership reconciled via gpasswd; the
+    /// DynamicUser pivot replaced that with trust_zone-shared
+    /// transient UID + BindPaths in the drop-in.)
     caches: Option<Vec<String>>,
 }
 
@@ -1383,14 +1391,14 @@ impl DiscoveredAnnotations {
                     //   was registered with no cache pools).
                     // - Absent ⇒ this arm never runs ⇒ out.caches
                     //   stays at its default None ⇒ "unknown" ⇒ the
-                    //   planner skips the supplementary-group diff
-                    //   at apply time. render_identity emits the line
-                    //   unconditionally, so None means the runner
-                    //   predates that unconditional-emit change.
+                    //   classifier skips the cache-pool diff
+                    //   rendering at apply time. render_identity
+                    //   emits the line unconditionally, so None
+                    //   means the runner predates that
+                    //   unconditional-emit change.
                     //
                     // Sort at parse time (matches labels above):
-                    // caches are set-semantic (supplementary-group
-                    // membership is unordered) and the renderer +
+                    // caches are set-semantic and the renderer +
                     // classifier both sort. Canonicalizing here keeps
                     // those downstream sorts true defense-in-depth so
                     // any future caller of `out.caches` sees stable
@@ -1448,12 +1456,13 @@ impl DiscoveredAnnotations {
 ///   `trust_zone` dependency. The annotation lets the operator-
 ///   visible diff surface `trust_zone: a → b` while keeping the
 ///   apply path in-place (no host-state migration).
-/// - `caches` — supplementary-group reconciliation is in-place
-///   per design Part 3. `apply::execute_update_runner`'s
-///   in-place path diffs `delta.before_caches` against the
-///   desired list and calls `add_user_to_group` /
-///   `remove_user_from_group` for added / removed pools — no
-///   recreate needed.
+/// - `caches` — pool-list change is in-place per design Part 3.
+///   `apply::execute_update_runner`'s in-place path rewrites the
+///   30-cache-pool.conf drop-in with the new pool list, diffs
+///   `delta.before_caches` against the desired list to produce
+///   the `(added: …; removed: …)` detail string, and cycles the
+///   unit so the post-update BindPaths take effect — no recreate
+///   needed.
 ///
 /// All three of these record FieldChanges WITHOUT pushing a
 /// recreate reason; the `uncovered` guard at the call site gates
@@ -1477,7 +1486,8 @@ impl DiscoveredAnnotations {
 /// when the sets differ. Used by both the labels and caches branches
 /// of `classify_recreate_reasons_from_annotations` — both fields are
 /// set-semantic (GitHub Actions matches labels order-independently;
-/// supplementary-group membership is unordered) and must use the same
+/// cache-pool bindings are unordered — the rendered drop-in body
+/// sorts pool names alphabetically) and must use the same
 /// sort-then-compare contract that apply enforces.
 ///
 /// `before`: the discovered annotation Vec, or `None` for the
@@ -1706,23 +1716,26 @@ fn classify_recreate_reasons_from_annotations(
         });
     }
     // caches change is in-place per design Part 3 — apply.rs's
-    // execute_update_runner in-place path reconciles supplementary
-    // group membership via add_user_to_group / remove_user_from_group
-    // diffs against `delta.before_caches`. Recording a FieldChange here
-    // (without pushing a recreate reason) makes the change visible in
-    // plan output and gates the `uncovered` fallback the same way
-    // auth_name / trust_zone do.
+    // execute_update_runner in-place path rewrites the
+    // 30-cache-pool.conf drop-in with the new pool list and diffs
+    // `delta.before_caches` against the desired list to produce
+    // the `(added: …; removed: …)` per-action detail string.
+    // Recording a FieldChange here (without pushing a recreate
+    // reason) makes the change visible in plan output and gates
+    // the `uncovered` fallback the same way auth_name / trust_zone
+    // do.
     //
-    // Cache pool membership is set-semantics (group memberships
-    // are unordered; execute_update_runner's BTreeSet difference
-    // block in apply.rs runs the actual gpasswd diff). The plan
-    // classifier MUST mirror that contract or a pure reorder
-    // ["a","b"] → ["b","a"] would record a misleading FieldChange in
-    // plan output even though apply does no group ops.
+    // Cache pool membership is set-semantics (the rendered drop-in
+    // body sorts pool names alphabetically; execute_update_runner's
+    // BTreeSet difference block in apply.rs computes the diff for
+    // the detail string). The plan classifier MUST mirror that
+    // contract or a pure reorder ["a","b"] → ["b","a"] would record
+    // a misleading FieldChange in plan output even though apply
+    // does no body change.
     //
-    // In-place class: emit the FieldChange but DO NOT push a recreate
-    // reason. Apply reconciles the membership delta in-place via
-    // gpasswd ops; the runner identity is unchanged.
+    // In-place class: emit the FieldChange but DO NOT push a
+    // recreate reason. Apply rewrites the per-runner drop-in body
+    // in place; the runner identity is unchanged.
     if let Some(change) = sorted_set_field_diff(
         "caches",
         discovered.caches.as_deref(),
@@ -2183,9 +2196,10 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                         drop_in_changes: drop_in_changes_payload,
                         // Thread the discovered caches list through
                         // to apply.rs so it can compute the
-                        // group-membership diff. Source is the same
-                        // 00-ghars.conf body the rest of Stage 1 reads
-                        // from.
+                        // added / removed pool-name diff that drives
+                        // the per-action detail string. Source is
+                        // the same 00-ghars.conf body the rest of
+                        // Stage 1 reads from.
                         //
                         // Sort `before_caches` so operator-facing
                         // surfaces (--diff output, plan JSON, error
@@ -2195,10 +2209,10 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                         // annotation happened to be written in. Apply
                         // collects this Vec into a BTreeSet at
                         // apply.rs::execute_update_runner before
-                        // computing the gpasswd diff, so sorting at
-                        // this population site is correctness-neutral
-                        // for the membership reconciliation; it only
-                        // affects display order for downstream
+                        // computing the added / removed diff, so
+                        // sorting at this population site is
+                        // correctness-neutral for the diff itself;
+                        // it only affects display order for downstream
                         // consumers that iterate the Vec directly.
                         before_caches: annotations.caches.as_ref().map(|v| {
                             let mut sorted = v.clone();
@@ -2314,17 +2328,17 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                 let pool_in_sync = matches!(actual_pool.drift, Drift::InSync);
                 if plan.spec_hash != actual_pool.spec_hash || !pool_in_sync {
                     // Pool-kind change is a runner-membership no-op.
-                    // The per-pool group is `ghars-cache-NAME` —
-                    // parameterized by pool name only, NOT by kinds.
-                    // Group identity is unchanged across the update,
-                    // so runners enrolled at create-time retain valid
-                    // membership. The Delta therefore carries no
-                    // `referencing_users` field; apply just rewrites
-                    // the drop-in + restarts the unit. The
+                    // Pool name is parameterized into the unit
+                    // (`ghars-cache@NAME.service`), not into a
+                    // static system group, so a kind change has no
+                    // membership impact under DynamicUser. Apply
+                    // just rewrites the per-pool drop-in body +
+                    // restarts the cache unit. The
                     // runner-caches-list-change case (a runner's
                     // `caches = [...]` set in TOML changed) IS a
                     // separate apply path handled by
-                    // execute_update_runner via usermod.
+                    // execute_update_runner via per-runner drop-in
+                    // body rewrite.
                     actions.push(Action::UpdateCachePool(CachePoolDelta {
                         binding: plan.binding,
                         drop_in_body: plan.drop_in_body,
@@ -2509,13 +2523,15 @@ fn reconstruct_identity(
     discovered: &DiscoveredRunner,
     _paths: &Paths,
 ) -> RunnerIdentity {
-    // RunnerIdentity reconstruction now reads only the
-    // X-Ghars-Runner-Url and X-Ghars-Auth-Name annotations from
+    // RunnerIdentity reconstruction reads only the X-Ghars-Runner-Url,
+    // X-Ghars-Auth-Name, and X-Ghars-Trust-Zone annotations from
     // `00-ghars.conf`. The pre-DynamicUser model also reconstructed
-    // user + prefix to drive `useradd_if_missing` / `guard_home_dir_rmrf`,
-    // but DynamicUser handles the runner identity (no useradd) and the
-    // home directory is hardcoded under `/var/lib/ghars/<name>` so the
-    // prefix is no longer operator-configurable.
+    // user + prefix to drive `useradd_if_missing` /
+    // `guard_home_dir_rmrf`, but DynamicUser handles the runner
+    // identity (transient UID/GID allocated by systemd at unit
+    // start, recycled at unit stop), and the home directory is at
+    // `<state_dir>/<trust_zone>/ghars-<name>` per Paths::runner_home
+    // so the prefix is not operator-configurable.
     let annotations = DiscoveredAnnotations::from_discovered(discovered);
     RunnerIdentity {
         name: name.to_owned(),
@@ -4238,18 +4254,16 @@ mod tests {
         );
     }
 
-    /// `RunnerDelta.identity.user` reflects the OLD user from the
-    /// discovered runner's `X-Ghars-User` annotation in
-    /// `00-ghars.conf` (read by `reconstruct_identity` via
-    /// `DiscoveredAnnotations`). This matters because
-    /// `apply::Users::userdel_if_present` uses identity.user for
-    /// userdel — if it took the desired (new) user instead, the
-    /// actual on-disk user would never get cleaned up after a
-    /// user-rename recreate.
-    ///
-    /// The discovered fixture is built from old_spec via the
-    /// production renderer, so its `00-ghars.conf` carries
-    /// `X-Ghars-User=ghars-old`. We then change the desired spec to
+    /// When the desired and discovered runner sets disjoint on
+    /// name (e.g. desired = ["new"], discovered = ["old"]),
+    /// `plan_from` must emit BOTH a `CreateRunner("new")` and a
+    /// `RemoveRunner("old")` — the diff is a strict set
+    /// difference, not a rename. RemoveRunner carries the OLD
+    /// runner's `RunnerIdentity` (reconstructed from the discovered
+    /// `00-ghars.conf` annotations: url + auth_name + trust_zone)
+    /// so apply's `execute_remove_runner` can mint a removal token
+    /// against the right URL/auth + invalidate state under the
+    /// correct trust_zone home.
     #[test]
     fn plan_create_and_remove_when_names_diverge() {
         let cfg = config_with_runners(vec![minimal_runner("new")]);
@@ -6786,10 +6800,10 @@ labels  = ["alpha", "beta"]
     ///   - NOT trip the `uncovered` fallback (gated on
     ///     `field_changes.is_empty()` at the spec_hash mismatch
     ///     check in `plan_from`).
-    /// apply.rs's in-place execute_update_runner reconciles
-    /// supplementary-group membership via add_user_to_group /
-    /// remove_user_from_group diffs against `delta.before_caches`,
-    /// so no host-state migration requires the recreate path.
+    /// apply.rs's in-place execute_update_runner rewrites the
+    /// 30-cache-pool.conf drop-in body and cycles the unit so the
+    /// post-update BindPaths take effect; no host-state migration
+    /// requires the recreate path.
     #[test]
     fn plan_update_runner_caches_change_is_in_place_with_field_change() {
         // Two cache pools in the same trust_zone (so the runner
@@ -7802,11 +7816,11 @@ labels  = ["alpha", "beta"]
     //
     // Set-semantic contract: the plan classifier sorts both sides
     // before comparison so its FieldChange firing semantics match
-    // apply.rs's
-    // BTreeSet diff at execute_update_runner. A pure reorder
-    // (set-equal) is silent on both sides; any element add/remove
-    // surfaces a FieldChange in plan output AND triggers gpasswd ops
-    // at apply time.
+    // apply.rs's BTreeSet diff at execute_update_runner. A pure
+    // reorder (set-equal) is silent on both sides; any element
+    // add/remove surfaces a FieldChange in plan output AND
+    // triggers a per-runner drop-in body rewrite + unit cycle at
+    // apply time.
 
     /// Helper: build an `EffectiveRunnerSpec` whose `caches` is a list
     /// of bindings with the given names. All other fields use
@@ -8796,12 +8810,12 @@ labels  = ["alpha", "beta"]
     ///
     /// - `X-Ghars-Caches=` (empty) ⇒ `caches = Some(vec![])`
     ///   (operator registered the runner with NO cache pools — the
-    ///   apply.rs supplementary-group diff runs and removes any
-    ///   stale pool memberships).
+    ///   apply.rs cache-pool diff runs and the rendered drop-in
+    ///   carries an empty pool list).
     /// - `X-Ghars-Caches` line absent ⇒ `caches = None`
     ///   ("unknown" — the runner predates the unconditional-emit
-    ///   change in `render_identity`; apply.rs SKIPS the diff to
-    ///   avoid clobbering operator-managed groups).
+    ///   change in `render_identity`; apply.rs SKIPS the diff
+    ///   rendering to avoid spurious "removed: …" detail strings).
     /// - Symmetric for `X-Ghars-Labels`.
     ///
     /// The state.rs `extract_x_ghars_value` tests at
@@ -8861,8 +8875,9 @@ labels  = ["alpha", "beta"]
     /// Parse-time sort pin for `from_drop_in_body`. The
     /// `X-Ghars-Labels=` and `X-Ghars-Caches=` annotation values are
     /// CSV-joined at render time but set-semantic at the apply layer
-    /// (GitHub matches labels order-independently; supplementary-group
-    /// membership is unordered). Sorting at the parse boundary makes
+    /// (GitHub matches labels order-independently; cache-pool
+    /// bindings are unordered — the rendered drop-in body sorts pool
+    /// names alphabetically). Sorting at the parse boundary makes
     /// the classifier's sort and the renderer's sort defense-in-depth
     /// rather than load-bearing.
     ///
@@ -9440,8 +9455,9 @@ labels  = ["alpha", "beta"]
         // caches: in-place per design Part 3. Two pools in same
         // trust_zone; runner moves from caches=["pool-old"] →
         // ["pool-new"]. The classifier records a FieldChange but
-        // apply reconciles supplementary group membership in-place
-        // via gpasswd diffs.
+        // apply rewrites the per-runner 30-cache-pool.conf drop-in
+        // body and cycles the unit so the post-update BindPaths
+        // take effect — no recreate.
         assert_in_place_invariant("caches", build_caches_in_place_plan());
     }
 
