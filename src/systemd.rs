@@ -2782,7 +2782,7 @@ mod tests {
     /// Without an unconditional emit, a runner whose caches list
     /// shrinks from `["pool-a"]` → `[]` would have no on-disk record
     /// of the prior membership, so `apply.rs` could not compute a
-    /// supplementary-group set diff to drive `gpasswd -d`.
+    /// caches-list diff for the drop-in body rewrite.
     #[test]
     fn render_identity_emits_x_ghars_caches_with_empty_value_when_caches_empty() {
         let spec = minimal_spec();

@@ -807,11 +807,9 @@ fn validate_single_sccache_pool_per_runner(cfg: &Config) -> Result<()> {
 /// Reject `[cache_pools.NAME]` keys and `[[runner]] caches = [...]`
 /// entries whose length would push the derived group name
 /// `"ghars-cache-{name}"` past systemd's 31-char limit.
-/// `apply::cache_pool_group` produces the group, and `apply.rs`
-/// invokes `groupadd` / `usermod -aG` against it during
-/// `execute_create_runner`. Without this gate, an operator-chosen
-/// oversize pool key would fail at apply time with an opaque
-/// `groupadd: name too long` error and a half-applied state. Catching
+/// Without this gate, an operator-chosen oversize pool key would
+/// produce an overlong DynamicUser name or unit-file path at apply
+/// time. Catching
 /// at config load surfaces a scoped error (`cache_pool "NAME": ...`
 /// or `runner "NAME" caches[]: ...`) before any side effects.
 ///
@@ -855,15 +853,11 @@ fn validate_cache_pool_names(cfg: &Config) -> Result<()> {
 // ---------- runner-name length cap --------------------------------------
 
 /// Reject `[[runner]] name = "..."` keys whose length would push the
-/// derived system user `"ghars-{name}"` past systemd's strict-mode name
-/// limit. `plan::merge_defaults` produces the user as
-/// `"{RUNNER_USER_PREFIX}{name}"` when no explicit `user =` override is
-/// set, and `apply.rs` invokes `useradd` / `usermod` against it during
-/// `execute_create_runner`. Without this gate, an operator-chosen
-/// oversize runner name would fail at apply time with an opaque
-/// `useradd: name too long` error and a half-applied state. Catching at
-/// config load surfaces a scoped error (`runner "NAME": ...`) before
-/// any side effects.
+/// derived DynamicUser name `"ghars-tz-{trust_zone}"` or unit-file
+/// path past systemd's strict-mode name limit. Without this gate, an
+/// operator-chosen oversize runner name would produce an overlong
+/// identity or path at apply time. Catching at config load surfaces a
+/// scoped error (`runner "NAME": ...`) before any side effects.
 ///
 /// # Errors
 ///
@@ -3031,10 +3025,6 @@ fn cmd_apply(
 /// - `stopped UNIT`            → `systemctl start UNIT`
 /// - `enabled UNIT`            → `systemctl disable UNIT`
 /// - `disabled UNIT`           → `systemctl enable UNIT`
-/// - `created group NAME`      → `groupdel NAME`
-/// - `deleted group NAME`      → `groupadd --system NAME` (lossy)
-/// - `created user NAME`       → `userdel -r NAME`
-/// - `deleted user NAME`       → re-run `apply` to recreate
 /// - `registered runner NAME …` → `config.sh remove --token <fresh>`
 ///
 /// Entries with empty step lists (synthetic `daemon_reload` post-loop
