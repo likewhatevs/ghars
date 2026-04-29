@@ -331,6 +331,41 @@ impl ApplyOutcome {
         }
     }
 
+    /// One-token outcome summary written into the SEC-36 audit log
+    /// `outcome` field. Strictly terser than [`Self::detail`] —
+    /// downstream consumers (jq pipelines, ELK ingestion) filter
+    /// on these tokens. Vocabulary is closed:
+    ///
+    /// - `"success"` for any successful execution variant
+    ///   (Created, Removed, Recreated, PoolCreated, PoolUpdated,
+    ///   PoolRemoved, InPlaceRestarted)
+    /// - `"in-sync"` for byte-equality short-circuits
+    ///   (InPlaceSkipped, PoolSkipped)
+    /// - `"noop"` for [`Self::NoOp`] (planner emitted in-sync rows)
+    /// - `"dry-run"` for [`Self::DryRunSkipped`]
+    /// - The full sanitized error string for [`Self::Failed`]
+    ///   (already control-char-escaped at construction)
+    ///
+    /// `Failed` is intentionally NOT collapsed to `"failed"` because
+    /// the audit consumer needs the diagnostic to triage without
+    /// re-correlating against the runtime stderr.
+    #[must_use]
+    pub fn audit_summary(&self) -> String {
+        match self {
+            Self::Created
+            | Self::Removed
+            | Self::Recreated
+            | Self::PoolCreated
+            | Self::PoolUpdated
+            | Self::PoolRemoved
+            | Self::InPlaceRestarted { .. } => "success".into(),
+            Self::InPlaceSkipped | Self::PoolSkipped => "in-sync".into(),
+            Self::NoOp => "noop".into(),
+            Self::DryRunSkipped => "dry-run".into(),
+            Self::Failed { error_summary, .. } => error_summary.clone(),
+        }
+    }
+
     /// Worst-case [`crate::plan::Disruption`] this outcome inflicts.
     /// Mirrors the plan-time mapping at
     /// [`crate::plan::Action::disruption`] so cmd_apply can render
@@ -1158,6 +1193,19 @@ pub trait Tarball {
         runner_name: &str,
         version: &str,
     ) -> Result<Utf8PathBuf>;
+
+    /// Prune old `bin.X.Y.Z/` trees under `runner_home` after a
+    /// successful install, retaining the `keep_versions` most-recent
+    /// by mtime plus the directory the `bin` symlink resolves to
+    /// (Part 9f retention). Best-effort: returns `Ok(prune_count)`
+    /// even if individual removals fail (the operator's next apply
+    /// retries).
+    ///
+    /// # Errors
+    ///
+    /// `GharsError::Validation` if `keep_versions == 0`.
+    /// `GharsError::Io` if `read_dir(runner_home)` fails.
+    fn prune_old_versions(&self, runner_home: &Utf8Path, keep_versions: u32) -> Result<usize>;
 }
 
 /// Production tarball provider. Wraps the public functions in
@@ -1196,6 +1244,10 @@ impl Tarball for RealTarball {
         version: &str,
     ) -> Result<Utf8PathBuf> {
         install_runner_binary(tarball_path, state_dir, runner_home, runner_name, version)
+    }
+
+    fn prune_old_versions(&self, runner_home: &Utf8Path, keep_versions: u32) -> Result<usize> {
+        crate::extract::prune_old_bin_versions(runner_home, keep_versions)
     }
 }
 
@@ -1711,6 +1763,7 @@ fn parse_temp_file_suffix(name: &str) -> Option<(u32, u64)> {
 ///   `fail_fast` is true. With `fail_fast = false`, individual failures
 ///   accumulate in `result.failed` and `apply` returns `Ok(result)`
 ///   even though `result.ok()` is false.
+
 pub fn apply(
     plan: &Plan,
     deps: &Deps<'_>,
@@ -1774,8 +1827,19 @@ pub fn apply(
         // row can carry it through to cmd_apply rendering.
         // `Action::disruption` reads no state and is cheap.
         let plan_disruption = action.disruption();
-        match execute(&action, deps, paths, &mut log) {
+        match execute(&action, deps, paths, &mut log, plan.keep_versions) {
             Ok(outcome) => {
+                // SEC-36 audit log entry — emitted per-action AFTER
+                // the side effects have landed but BEFORE the
+                // per-action result row is recorded, so the audit
+                // trail is durable on disk even if the host crashes
+                // before the in-process Vec is observed by the
+                // caller. Audit writes are best-effort: a failure
+                // here MUST NOT propagate (would override a
+                // successful action with a logging failure). The
+                // outcome string is the variant's `audit_summary()`
+                // (terse, control-char-safe).
+                write_audit_log_entry(paths, &label, &outcome.audit_summary());
                 result.succeeded.push(label.clone());
                 // Real (non-skipped) outcomes carry their
                 // ApplyOutcome variant so cmd_apply can render the
@@ -1820,6 +1884,14 @@ pub fn apply(
                 // (enforced at every error-construction site, not by
                 // this helper).
                 let error_summary = escape_control_chars(&e.to_string()).into_owned();
+                // SEC-36 audit log entry — failure path. The
+                // `outcome` field carries the control-char-safe
+                // error display so downstream consumers (jq
+                // pipelines, ELK ingestion) see exactly the same
+                // diagnostic the operator saw on stderr. Best-
+                // effort: a logging failure must not change the
+                // failure-handling path below.
+                write_audit_log_entry(paths, &label, &error_summary);
                 let wrapped = GharsError::Apply {
                     action: label.clone(),
                     source: Box::new(e),
@@ -1926,6 +1998,119 @@ pub fn apply(
     Ok(result)
 }
 
+/// Append one JSON-line entry to `<logs_dir>/apply.log` (SEC-36 —
+/// structured audit log of every apply action).
+///
+/// Schema (one object per line):
+/// ```jsonc
+/// {
+///   "timestamp": "2026-04-29T12:34:56.789Z", // RFC3339 / ISO 8601 UTC
+///   "action":    "CreateRunner",              // Action variant name
+///   "target":    "buckos",                    // runner / pool name
+///   "outcome":   "success"                    // or one-line error summary
+/// }
+/// ```
+///
+/// File invariants:
+/// - **Mode 0600** at create time (`OpenOptions::mode(0o600)`); the
+///   bits only apply on creation, so an operator-tightened existing
+///   file keeps its tighter mode. Loosened mode is acceptable —
+///   apply.log lines never embed secrets (the action label + target
+///   name are operator-supplied identifiers; outcome strings are
+///   already control-char-escaped via `escape_control_chars`).
+/// - **Append-mode** (`O_APPEND`) — multiple `apply` invocations
+///   serialize via `flock` on `apply.lock`, so cross-process write
+///   ordering is determined by lock order; within an apply run the
+///   loop is single-threaded and writes are sequential.
+/// - **Best-effort**: any failure (parent dir missing, ENOSPC,
+///   EACCES) is logged via `tracing::warn!` and swallowed. Audit
+///   logging MUST NOT cause an apply to fail — that would invert
+///   the operator priority of "execute the action" vs "record what
+///   happened".
+///
+/// **Recommended logrotate config** (operators install separately —
+/// not bundled in v0.1):
+/// ```text
+/// /var/log/ghars/apply.log {
+///     weekly
+///     rotate 12
+///     compress
+///     missingok
+///     notifempty
+///     create 0600 root root
+///     postrotate
+///         # No service reload — apply.rs reopens via append-mode each time.
+///     endscript
+/// }
+/// ```
+///
+/// `target` is parsed out of the `Action::label()` format
+/// `"Variant(name)"` — the parens-bounded name is the runner/pool.
+/// `NoOp(reason)` is treated as `target = reason` so the log shape
+/// stays uniform; consumers filter on `action != "NoOp"` if they
+/// want to skip in-sync rows.
+fn write_audit_log_entry(paths: &Paths, label: &str, outcome: &str) {
+    let log_path = paths.apply_log();
+    let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let (action, target) = parse_audit_label(label);
+
+    let entry = serde_json::json!({
+        "timestamp": timestamp,
+        "action":    action,
+        "target":    target,
+        "outcome":   outcome,
+    });
+    let mut line = entry.to_string();
+    line.push('\n');
+
+    if let Some(parent) = log_path.parent() {
+        if let Err(e) = fs::create_dir_all(parent.as_std_path()) {
+            tracing::warn!(
+                path = %log_path,
+                error = %e,
+                "audit log: failed to create parent directory; skipping entry"
+            );
+            return;
+        }
+    }
+    let open_result = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(log_path.as_std_path());
+    let mut file = match open_result {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!(
+                path = %log_path,
+                error = %e,
+                "audit log: open(create+append) failed; skipping entry"
+            );
+            return;
+        }
+    };
+    if let Err(e) = file.write_all(line.as_bytes()) {
+        tracing::warn!(
+            path = %log_path,
+            error = %e,
+            "audit log: write failed; entry partially written"
+        );
+    }
+}
+
+/// Split `Action::label()` output (`"Variant(name)"`) into
+/// `(variant, name)`. Returns `(label, "")` if the label doesn't
+/// parse — defense in depth against future label format changes.
+fn parse_audit_label(label: &str) -> (&str, &str) {
+    if let Some(open) = label.find('(') {
+        if let Some(close_rel) = label[open..].rfind(')') {
+            let close = open + close_rel;
+            return (&label[..open], &label[open + 1..close]);
+        }
+    }
+    (label, "")
+}
+
 /// Stable sort key for action ordering within a phase.
 fn action_sort_key(a: &Action) -> String {
     match a {
@@ -2012,10 +2197,11 @@ pub fn execute(
     deps: &Deps<'_>,
     paths: &Paths,
     log: &mut UndoLog,
+    keep_versions: u32,
 ) -> Result<ApplyOutcome> {
     match action {
-        Action::CreateRunner(p) => execute_create_runner(p, deps, paths, log),
-        Action::UpdateRunner(d) => execute_update_runner(d, deps, paths, log),
+        Action::CreateRunner(p) => execute_create_runner(p, deps, paths, log, keep_versions),
+        Action::UpdateRunner(d) => execute_update_runner(d, deps, paths, log, keep_versions),
         Action::RemoveRunner(i) => execute_remove_runner(i, deps, paths, log),
         Action::CreateCachePool(p) => execute_create_cache_pool(p, deps, paths, log),
         Action::UpdateCachePool(d) => execute_update_cache_pool(d, deps, paths, log),
@@ -2038,6 +2224,7 @@ fn execute_create_runner(
     deps: &Deps<'_>,
     paths: &Paths,
     log: &mut UndoLog,
+    keep_versions: u32,
 ) -> Result<ApplyOutcome> {
     let spec = &plan.spec;
     let runner_home = paths.runner_home(&spec.trust_zone, &spec.name);
@@ -2088,6 +2275,21 @@ fn execute_create_runner(
         &spec.name,
         &version,
     )?;
+
+    // 2b) Retention prune (Part 9f). After the fresh
+    //     `bin.<version>/` tree has been laid down (and BEFORE
+    //     `swap_bin_symlink` would point `bin` at it on the
+    //     update-recreate path), prune older `bin.X.Y.Z/` trees in
+    //     the runner home so disk usage stays bounded. The pruner
+    //     keeps the `keep_versions` most-recent by mtime plus
+    //     whatever `runner_home/bin` resolves to (defense in depth
+    //     against mtime touches). Pruning is best-effort: per-entry
+    //     failures are logged and counted, never propagated, so a
+    //     failed cleanup doesn't sink the whole CreateRunner action.
+    //     Errors from the call itself (read_dir failure on
+    //     runner_home, or keep_versions = 0) DO propagate — those
+    //     indicate a structural problem the operator should see.
+    let _pruned = deps.tarball.prune_old_versions(&runner_home, keep_versions)?;
 
     // 3) Mint a registration token. SEC-05: the token is short-lived
     //    (1h GitHub TTL); we hand it to config.sh and never persist it.
@@ -2333,6 +2535,7 @@ fn execute_update_runner(
     deps: &Deps<'_>,
     paths: &Paths,
     log: &mut UndoLog,
+    keep_versions: u32,
 ) -> Result<ApplyOutcome> {
     if delta.requires_recreate {
         // Recreate path: stop + remove + create. The plan emits this
@@ -2353,7 +2556,7 @@ fn execute_update_runner(
         // implementation detail of the recreate path (coordinator
         // ruling (a)).
         execute_remove_runner(&delta.identity, deps, paths, log)?;
-        execute_create_runner(&delta.after, deps, paths, log)?;
+        execute_create_runner(&delta.after, deps, paths, log, keep_versions)?;
         return Ok(ApplyOutcome::Recreated);
     }
 
@@ -3713,6 +3916,7 @@ mod tests {
     struct MockTarball {
         fetched: Mutex<Vec<(String, String, String)>>,
         installed: Mutex<Vec<(String, String, String, String)>>,
+        pruned: Mutex<Vec<(String, u32)>>,
     }
 
     impl Tarball for MockTarball {
@@ -3755,6 +3959,13 @@ mod tests {
             let bin = runner_home.join(format!("bin.{version}"));
             fs::create_dir_all(bin.as_std_path())?;
             Ok(bin)
+        }
+        fn prune_old_versions(&self, runner_home: &Utf8Path, keep_versions: u32) -> Result<usize> {
+            self.pruned
+                .lock()
+                .unwrap()
+                .push((runner_home.to_string(), keep_versions));
+            Ok(0)
         }
     }
 
@@ -4883,6 +5094,7 @@ mod tests {
         let plan = Plan {
             actions: vec![Action::CreateRunner(plan_a), Action::CreateCachePool(pool)],
             warnings: vec![],
+            keep_versions: 2,
         };
         let systemd = MockSystemd::default();
         // Make MainPID resolve to this process — runner has no
@@ -4936,6 +5148,7 @@ mod tests {
         let plan = Plan {
             actions: vec![Action::NoOp("idempotent".into())],
             warnings: vec![],
+            keep_versions: 2,
         };
         let systemd = MockSystemd::default();
         let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -5067,6 +5280,7 @@ mod tests {
                 Action::CreateCachePool(pool_b),
             ],
             warnings: vec![],
+            keep_versions: 2,
         };
         let systemd = FlakySystemd {
             calls: Mutex::new(vec![]),
@@ -5339,7 +5553,7 @@ mod tests {
             tarball: &tarball,
             config_shell: &config_shell,
         };
-        execute_create_runner(&plan, &deps, &paths, &mut UndoLog::new()).unwrap();
+        execute_create_runner(&plan, &deps, &paths, &mut UndoLog::new(), 2).unwrap();
         // Unit + drop-in landed on disk.
         assert!(paths.unit_file("a").as_std_path().exists());
         let drop_in_path = paths.drop_in_dir("a").join("00-ghars.conf");
@@ -5424,7 +5638,7 @@ mod tests {
             tarball: &tarball,
             config_shell: &config_shell,
         };
-        execute_create_runner(&plan, &deps, &paths, &mut UndoLog::new()).unwrap();
+        execute_create_runner(&plan, &deps, &paths, &mut UndoLog::new(), 2).unwrap();
 
         // Recompute the digest the way runsvc-wrapper would: read the
         // raw bytes the MockConfigShell wrote, hash with sha2::Sha256,
@@ -5521,7 +5735,7 @@ mod tests {
             tarball: &tarball,
             config_shell: &config_shell,
         };
-        execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new()).unwrap();
+        execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2).unwrap();
 
         // The stale MANAGED file is gone (the new plan omits it).
         assert!(
@@ -5962,7 +6176,7 @@ mod tests {
         };
         // Best-effort call. The post-start verify_runner_netns fails in
         // CI; pre-start artifacts must already be on disk regardless.
-        let _ = execute_create_runner(&plan, &deps, &paths, &mut UndoLog::new());
+        let _ = execute_create_runner(&plan, &deps, &paths, &mut UndoLog::new(), 2);
 
         // 1) NetnsConfig TOML written to <config_dir>/netns.d/a.toml.
         let cfg_path = NetnsConfig::path_for(&paths, "a");
@@ -6034,7 +6248,7 @@ mod tests {
             tarball: &tarball,
             config_shell: &config_shell,
         };
-        execute_create_runner(&plan, &deps, &paths, &mut UndoLog::new()).unwrap();
+        execute_create_runner(&plan, &deps, &paths, &mut UndoLog::new(), 2).unwrap();
 
         // No NetnsConfig, no nft rules, no netns template, no ghars-net@
         // calls.
@@ -6905,6 +7119,7 @@ mod tests {
         let plan = Plan {
             actions: vec![Action::CreateRunner(plan_data)],
             warnings: vec![],
+            keep_versions: 2,
         };
         let systemd = MockSystemd::default();
         let config_shell = MockConfigShell::default();
@@ -6949,6 +7164,7 @@ mod tests {
         let plan = Plan {
             actions: vec![Action::CreateRunner(plan_data)],
             warnings: vec![],
+            keep_versions: 2,
         };
         let systemd = MockSystemd::default();
         let config_shell = MockConfigShell::default();
@@ -7006,6 +7222,7 @@ mod tests {
                 Action::CreateRunner(runner_data),
             ],
             warnings: vec![],
+            keep_versions: 2,
         };
         let systemd = MockSystemd::default();
         let config_shell = MockConfigShell::default();
@@ -7107,7 +7324,7 @@ mod tests {
             config_shell: &config_shell,
         };
         let mut log = UndoLog::new();
-        execute_create_runner(&plan, &deps, &paths, &mut log).unwrap();
+        execute_create_runner(&plan, &deps, &paths, &mut log, 2).unwrap();
         let has_start = log.steps().iter().any(
             |s| matches!(s, UndoStep::StartUnit { name } if name == "ghars-runner@rt.service"),
         );
@@ -7115,6 +7332,193 @@ mod tests {
             has_start,
             "execute_create_runner must push StartUnit; got {:?}",
             log.steps()
+        );
+    }
+
+    #[test]
+    fn execute_create_runner_invokes_prune_with_keep_versions() {
+        // Part 9f retention plumbing: after a successful tarball
+        // install, execute_create_runner MUST call prune_old_versions
+        // with the runner home + the keep_versions threaded from the
+        // Plan. Regression guard against accidentally dropping the
+        // prune step from the create flow.
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = make_paths(&tmp);
+        let plan = make_runner_plan("rt", &paths.state_dir);
+        let systemd = MockSystemd::default();
+        let config_shell = MockConfigShell::default();
+        let tarball = MockTarball::default();
+        let mut auth: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+        auth.insert(
+            "pat".into(),
+            Box::new(MockTokenSource {
+                name: "pat".into(),
+                ..Default::default()
+            }),
+        );
+        let deps = Deps {
+            systemd: &systemd,
+            auth: &auth,
+            tarball: &tarball,
+            config_shell: &config_shell,
+        };
+        execute_create_runner(&plan, &deps, &paths, &mut UndoLog::new(), 5).unwrap();
+        let pruned = tarball.pruned.lock().unwrap();
+        assert_eq!(
+            pruned.len(),
+            1,
+            "expected exactly one prune call after install; got {pruned:?}"
+        );
+        let (_runner_home, keep_versions) = &pruned[0];
+        assert_eq!(*keep_versions, 5, "keep_versions must thread through verbatim");
+    }
+
+    // ---- audit log (SEC-36) ----------------------------------------------
+
+    #[test]
+    fn write_audit_log_entry_creates_file_at_paths_apply_log() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = make_paths(&tmp);
+        write_audit_log_entry(&paths, "CreateRunner(buckos)", "success");
+        let body = std::fs::read_to_string(paths.apply_log().as_std_path()).unwrap();
+        assert!(
+            !body.is_empty(),
+            "audit log must contain the entry; got empty file"
+        );
+        // File must end with newline so each line is JSON-line shaped.
+        assert!(body.ends_with('\n'), "audit log line must end with \\n");
+    }
+
+    #[test]
+    fn write_audit_log_entry_emits_one_line_per_call_via_append() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = make_paths(&tmp);
+        write_audit_log_entry(&paths, "CreateRunner(buckos)", "success");
+        write_audit_log_entry(&paths, "RemoveRunner(spamtrap)", "success");
+        write_audit_log_entry(&paths, "UpdateCachePool(build)", "success");
+        let body = std::fs::read_to_string(paths.apply_log().as_std_path()).unwrap();
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(lines.len(), 3, "expected one line per call; got {body:?}");
+    }
+
+    #[test]
+    fn write_audit_log_entry_emits_canonical_json_line_shape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = make_paths(&tmp);
+        write_audit_log_entry(&paths, "CreateRunner(buckos)", "success");
+        let body = std::fs::read_to_string(paths.apply_log().as_std_path()).unwrap();
+        let line = body.lines().next().unwrap();
+        let entry: serde_json::Value = serde_json::from_str(line).expect("valid JSON line");
+        assert_eq!(entry["action"], "CreateRunner");
+        assert_eq!(entry["target"], "buckos");
+        assert_eq!(entry["outcome"], "success");
+        // Timestamp is RFC3339; we test that it parses as a chrono
+        // DateTime to ensure the format is compatible with downstream
+        // consumers (jq, ELK, journald JSON ingestion).
+        let ts = entry["timestamp"].as_str().expect("timestamp must be string");
+        chrono::DateTime::parse_from_rfc3339(ts).expect("timestamp must be RFC3339");
+    }
+
+    #[test]
+    fn write_audit_log_entry_creates_logs_dir_if_missing() {
+        // Best-effort directory creation: the audit logger must not
+        // require operators to have pre-created /var/log/ghars; it
+        // creates the parent on first write.
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = make_paths(&tmp);
+        // Logs dir does NOT pre-exist.
+        assert!(!paths.logs_dir.as_std_path().exists());
+        write_audit_log_entry(&paths, "RemoveRunner(buckos)", "success");
+        assert!(paths.logs_dir.as_std_path().exists());
+        assert!(paths.apply_log().as_std_path().exists());
+    }
+
+    #[test]
+    fn write_audit_log_entry_swallows_failure_on_unwritable_parent() {
+        // If parent dir creation fails (e.g. EACCES under /sys/), the
+        // helper must not panic or propagate. The function is fire-
+        // and-forget — operator priority is "execute the action",
+        // not "record the result".
+        let mut paths = make_paths(&tempfile::tempdir().unwrap());
+        // Point logs_dir at a path that cannot be created (under
+        // /proc/cmdline which is a regular file). create_dir_all
+        // returns EEXIST→ENOTDIR; helper must swallow.
+        paths.logs_dir = Utf8PathBuf::from("/proc/cmdline/audit-subdir-impossible");
+        // Must not panic — best-effort logging.
+        write_audit_log_entry(&paths, "CreateRunner(x)", "success");
+    }
+
+    #[test]
+    fn parse_audit_label_splits_variant_and_target() {
+        assert_eq!(
+            parse_audit_label("CreateRunner(buckos)"),
+            ("CreateRunner", "buckos")
+        );
+        assert_eq!(
+            parse_audit_label("UpdateCachePool(build-cache)"),
+            ("UpdateCachePool", "build-cache")
+        );
+        assert_eq!(
+            parse_audit_label("NoOp(in sync)"),
+            ("NoOp", "in sync")
+        );
+    }
+
+    #[test]
+    fn parse_audit_label_returns_full_label_when_unparseable() {
+        // Defense in depth: a future label format that omits parens
+        // must round-trip through the parser without losing data.
+        assert_eq!(parse_audit_label("BareLabel"), ("BareLabel", ""));
+        assert_eq!(parse_audit_label(""), ("", ""));
+    }
+
+    #[test]
+    fn apply_outcome_audit_summary_collapses_success_variants() {
+        // Every successful host-mutation variant collapses to
+        // "success" in the audit log. Operators filter on this token
+        // when extracting "what mutations happened" without caring
+        // about the specific variant.
+        for outcome in [
+            ApplyOutcome::Created,
+            ApplyOutcome::Removed,
+            ApplyOutcome::Recreated,
+            ApplyOutcome::PoolCreated,
+            ApplyOutcome::PoolUpdated,
+            ApplyOutcome::PoolRemoved,
+            ApplyOutcome::InPlaceRestarted {
+                files_changed: 0,
+                pools_added: vec![],
+                pools_removed: vec![],
+            },
+        ] {
+            assert_eq!(outcome.audit_summary(), "success");
+        }
+    }
+
+    #[test]
+    fn apply_outcome_audit_summary_distinguishes_short_circuits() {
+        // Short-circuit variants ("noop / in-sync / dry-run") are
+        // intentionally distinct so audit consumers can filter
+        // "actual mutations" from "this is what apply WOULD have
+        // done" / "nothing to do" rows.
+        assert_eq!(ApplyOutcome::InPlaceSkipped.audit_summary(), "in-sync");
+        assert_eq!(ApplyOutcome::PoolSkipped.audit_summary(), "in-sync");
+        assert_eq!(ApplyOutcome::NoOp.audit_summary(), "noop");
+        assert_eq!(ApplyOutcome::DryRunSkipped.audit_summary(), "dry-run");
+    }
+
+    #[test]
+    fn apply_outcome_audit_summary_carries_failure_diagnostic() {
+        // Failed variants forward the sanitized error string verbatim
+        // so the audit consumer sees the same diagnostic the operator
+        // saw on stderr.
+        let outcome = ApplyOutcome::Failed {
+            error_summary: "auth registry: pat not found".into(),
+            plan_disruption: crate::plan::Disruption::Recreate,
+        };
+        assert_eq!(
+            outcome.audit_summary(),
+            "auth registry: pat not found"
         );
     }
 
@@ -7838,7 +8242,7 @@ mod tests {
             };
             let delta = make_caches_delta(&paths, before, after);
             let mut log = UndoLog::new();
-            execute_update_runner(&delta, &deps, &paths, &mut log).unwrap()
+            execute_update_runner(&delta, &deps, &paths, &mut log, 2).unwrap()
         }
 
         // Pure grow.
@@ -7908,7 +8312,7 @@ mod tests {
         };
         let delta = make_caches_delta(&paths, Some(vec!["a", "z"]), vec!["m"]);
         let mut log = UndoLog::new();
-        let outcome = execute_update_runner(&delta, &deps, &paths, &mut log).unwrap();
+        let outcome = execute_update_runner(&delta, &deps, &paths, &mut log, 2).unwrap();
         let detail = outcome.detail();
         // 3 group ops total: one add (`m`) plus two removes (`a`,`z`);
         // the group-op count rendered in the detail string is
@@ -7944,6 +8348,7 @@ mod tests {
         let plan = Plan {
             actions: vec![Action::UpdateRunner(delta)],
             warnings: vec![],
+            keep_versions: 2,
         };
         let systemd = MockSystemd::default();
         let tarball = MockTarball::default();
@@ -8279,6 +8684,7 @@ mod tests {
         let plan = Plan {
             actions: vec![Action::NoOp("buckos: in sync".into())],
             warnings: vec![],
+            keep_versions: 2,
         };
         let systemd = MockSystemd::default();
         let tarball = MockTarball::default();
@@ -8383,7 +8789,7 @@ mod tests {
         let delta = delta_with_all_preserved_drop_ins(&paths);
         prepopulate_on_disk(&paths, &delta);
         let mut log = UndoLog::new();
-        let outcome = execute_update_runner(&delta, &deps, &paths, &mut log).unwrap();
+        let outcome = execute_update_runner(&delta, &deps, &paths, &mut log, 2).unwrap();
         // The byte-equality short-circuit must surface
         // as `InPlaceSkipped` so cmd_apply renders the per-action
         // detail line as `no-op (bytes match)`.
@@ -8428,7 +8834,7 @@ mod tests {
         let unit_file = paths.unit_file(&delta.identity.name);
         std::fs::write(unit_file.as_std_path(), b"[Unit]\nDescription=stale\n").unwrap();
         let mut log = UndoLog::new();
-        execute_update_runner(&delta, &deps, &paths, &mut log).unwrap();
+        execute_update_runner(&delta, &deps, &paths, &mut log, 2).unwrap();
 
         let calls = systemd.calls_snapshot();
         assert!(
@@ -8501,7 +8907,7 @@ mod tests {
         )
         .unwrap();
         let mut log = UndoLog::new();
-        execute_update_runner(&delta, &deps, &paths, &mut log).unwrap();
+        execute_update_runner(&delta, &deps, &paths, &mut log, 2).unwrap();
 
         let calls = systemd.calls_snapshot();
         assert!(
@@ -8744,7 +9150,7 @@ mod tests {
         )
         .unwrap();
         let mut log = UndoLog::new();
-        execute_update_runner(&delta, &deps, &paths, &mut log).unwrap();
+        execute_update_runner(&delta, &deps, &paths, &mut log, 2).unwrap();
 
         let calls = systemd.calls_snapshot();
         assert!(
@@ -8778,7 +9184,7 @@ mod tests {
         };
         let delta = make_caches_delta(&paths, None, vec!["pool"]);
         let mut log = UndoLog::new();
-        execute_update_runner(&delta, &deps, &paths, &mut log).unwrap();
+        execute_update_runner(&delta, &deps, &paths, &mut log, 2).unwrap();
         // before_caches=None ⇒ no caches-list diff is computed; the
         // pre-DynamicUser version also asserted no gpasswd ops fire,
         // but that machinery is gone — just exercising the no-panic
@@ -8883,7 +9289,7 @@ mod tests {
         delta.recreate_reasons = vec!["url"];
         delta.after.resolved_release = Some(make_release());
 
-        execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new()).unwrap();
+        execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2).unwrap();
 
         let calls = systemd.calls_snapshot();
         let unit = "ghars-runner@a.service";
@@ -8961,7 +9367,7 @@ mod tests {
         delta.recreate_reasons = vec!["url"];
         delta.after.resolved_release = Some(make_release());
 
-        let err = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new()).unwrap_err();
+        let err = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2).unwrap_err();
         // Sanity: the error originated from the auth path (mint_token
         // for the remove deregister step).
         let rendered = format!("{err}");
@@ -9045,7 +9451,7 @@ mod tests {
         assert!(delta.after.spec.runner_tarball.is_none());
         assert!(delta.after.resolved_release.is_none());
 
-        let err = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new()).unwrap_err();
+        let err = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2).unwrap_err();
         let rendered = format!("{err}");
         assert!(
             rendered.contains("no runner_tarball") && rendered.contains("no resolved release"),
@@ -9118,7 +9524,7 @@ mod tests {
         delta.identity.url = String::new();
         delta.after.resolved_release = Some(make_release());
 
-        let outcome = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new()).unwrap();
+        let outcome = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2).unwrap();
         assert!(
             matches!(outcome, ApplyOutcome::Recreated),
             "recreate path returns Recreated; got {outcome:?}"
@@ -9181,7 +9587,7 @@ mod tests {
         delta.recreate_reasons = vec!["url"];
         delta.after.resolved_release = Some(make_release());
 
-        let outcome = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new()).unwrap();
+        let outcome = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2).unwrap();
         match outcome {
             ApplyOutcome::Recreated => {}
             ApplyOutcome::Removed | ApplyOutcome::Created => panic!(
@@ -9237,7 +9643,7 @@ mod tests {
         delta.recreate_reasons = vec!["url"];
         delta.after.resolved_release = Some(make_release());
 
-        execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new()).unwrap();
+        execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2).unwrap();
 
         // MockConfigShell::run_register writes this exact body to
         // <runner_home>/runsvc.sh at register time. The expected
@@ -9315,7 +9721,7 @@ mod tests {
         delta.recreate_reasons = vec!["url"];
         delta.after.resolved_release = Some(make_release());
 
-        let err = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new()).unwrap_err();
+        let err = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2).unwrap_err();
         let rendered = format!("{err}");
         assert!(
             rendered.contains("stop_unit") && rendered.contains("injected failure"),
@@ -9387,7 +9793,7 @@ mod tests {
         assert!(delta.after.resolved_release.is_none());
 
         let mut log = UndoLog::new();
-        execute_update_runner(&delta, &deps, &paths, &mut log)
+        execute_update_runner(&delta, &deps, &paths, &mut log, 2)
             .expect_err("create-side Validation gate must error");
 
         let steps = log.steps();
@@ -9553,6 +9959,7 @@ mod tests {
         let plan = Plan {
             actions: vec![],
             warnings: vec![],
+            keep_versions: 2,
         };
         let opts = ApplyOptions::default();
 
@@ -9853,6 +10260,7 @@ mod tests {
         let plan = Plan {
             actions: vec![Action::UpdateRunner(delta)],
             warnings: vec![],
+            keep_versions: 2,
         };
         // Key delta from T3: opt into rollback_on_failure so apply()'s
         // `rollback_on_failure` gate fires and undo walks the

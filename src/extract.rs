@@ -627,6 +627,135 @@ fn require_root_for_install() -> Result<()> {
     Ok(())
 }
 
+/// Prune old `bin.X.Y.Z/` directories under `runner_home`, keeping
+/// the `keep_versions` most-recent by mtime plus the directory the
+/// `bin` symlink currently resolves to (always preserved regardless
+/// of mtime ordering).
+///
+/// Design Part 9f retention semantics:
+/// - Directory candidates: any entry matching `bin.<rest>` where
+///   `<rest>` is non-empty and `<rest>` is NOT `tmp` (the staging
+///   symlink target used by `swap_bin_symlink`). Plain `bin` (the
+///   active symlink) is excluded automatically because it doesn't
+///   match the prefix-then-non-empty-suffix shape after splitting
+///   on `bin.`.
+/// - Sort by mtime descending (newest first); keep the first
+///   `keep_versions` entries plus whatever the `bin` symlink points
+///   at (defense in depth: if a sysadmin `touch`'d an older tree,
+///   mtime ordering would otherwise prune the active one).
+/// - Remove the rest via `fs::remove_dir_all`. Failures on individual
+///   directories are aggregated and the function continues — pruning
+///   is best-effort cleanup, not an integrity gate. Returns
+///   `Ok(prune_count)` describing how many trees were removed.
+///
+/// `keep_versions` MUST be at least 1 (a value of 0 would prune the
+/// just-installed bin tree). The caller (`apply.rs::execute_create_runner`)
+/// enforces this by passing `Defaults.keep_versions.unwrap_or(DEFAULT_KEEP_VERSIONS).max(1)`.
+///
+/// # Errors
+///
+/// `GharsError::Io` only on `read_dir(runner_home)` failure (cannot
+/// proceed without an entry list). Per-entry failures are logged and
+/// counted but do not propagate.
+pub fn prune_old_bin_versions(runner_home: &Utf8Path, keep_versions: u32) -> Result<usize> {
+    if keep_versions == 0 {
+        return Err(GharsError::Validation(
+            "prune_old_bin_versions called with keep_versions=0".into(),
+            "keep_versions must be >= 1; 0 would prune the just-installed bin tree (set Defaults.keep_versions = 1 or higher, or omit for the default of 2)".into(),
+        ));
+    }
+    let active_target: Option<Utf8PathBuf> = match fs::read_link(runner_home.join("bin")) {
+        Ok(target) => {
+            // `swap_bin_symlink` writes a relative target (e.g.
+            // `bin.2.334.0`); join against runner_home for absolute
+            // comparison against `entry.path()`. Non-UTF-8 targets
+            // are dropped (we'd never have written one — apply
+            // controls both ends — so this only fires under
+            // operator tampering, in which case we conservatively
+            // refuse to skip-protect that path).
+            let abs = if target.is_absolute() {
+                target
+            } else {
+                runner_home.as_std_path().join(target)
+            };
+            Utf8PathBuf::from_path_buf(abs).ok()
+        }
+        Err(_) => None,
+    };
+
+    let entries = fs::read_dir(runner_home.as_std_path())?;
+    let mut versioned: Vec<(Utf8PathBuf, std::time::SystemTime)> = Vec::new();
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        // Match `bin.<non-empty-suffix>` where suffix != "tmp". Plain
+        // `bin` (no dot) is excluded by the strip_prefix check; `bin.tmp`
+        // is the active swap intermediate written by swap_bin_symlink.
+        let Some(suffix) = name.strip_prefix("bin.") else {
+            continue;
+        };
+        if suffix.is_empty() || suffix == "tmp" {
+            continue;
+        }
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if !meta.is_dir() {
+            continue;
+        }
+        let mtime = meta
+            .modified()
+            .unwrap_or_else(|_| std::time::SystemTime::UNIX_EPOCH);
+        let path = match Utf8PathBuf::from_path_buf(entry.path()) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        versioned.push((path, mtime));
+    }
+
+    // Sort newest-first.
+    versioned.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let keep_n = keep_versions as usize;
+    let mut pruned = 0usize;
+    for (path, _) in versioned.iter().skip(keep_n) {
+        if active_target
+            .as_deref()
+            .is_some_and(|t| paths_equal(t, path))
+        {
+            // Defense-in-depth: if a sysadmin touched an older bin
+            // tree so its mtime exceeds the current install's, the
+            // active symlink target would otherwise sort outside the
+            // top-N. Skip removal unconditionally for the active
+            // target.
+            continue;
+        }
+        if let Err(e) = fs::remove_dir_all(path.as_std_path()) {
+            // Best-effort cleanup; record but do not propagate. The
+            // operator's next apply will retry.
+            tracing::warn!(
+                path = %path,
+                error = %e,
+                "prune_old_bin_versions: failed to remove old bin tree"
+            );
+            continue;
+        }
+        pruned += 1;
+    }
+    Ok(pruned)
+}
+
+/// Compare two paths for equality after canonicalizing trailing
+/// slashes. We avoid `fs::canonicalize` (would resolve symlinks and
+/// fail for missing paths); for our purposes a byte-equal check
+/// after normalization is sufficient because both inputs come from
+/// trusted construction (read_link result + read_dir entry path).
+fn paths_equal(a: &Utf8Path, b: &Utf8Path) -> bool {
+    a.as_str().trim_end_matches('/') == b.as_str().trim_end_matches('/')
+}
+
 /// Atomically swap `<runner_home>/bin` to point at `bin.<version>/`.
 ///
 /// Implements design Part 9f: `ln -sfn bin.<version> bin.tmp && mv -T
@@ -2134,5 +2263,167 @@ mod tests {
             "dest file must be unlinked after cap-fire; still exists at {dest}"
         );
         m.assert();
+    }
+
+    // ---- prune_old_bin_versions tests ----
+
+    /// Helper: create N `bin.<idx>` directories under `runner_home`,
+    /// each with a distinct mtime spaced 1 second apart so the pruner's
+    /// mtime sort is deterministic. Returns the directory paths in
+    /// creation order (oldest first, newest last).
+    fn make_versioned_bin_dirs(runner_home: &Utf8Path, count: usize) -> Vec<Utf8PathBuf> {
+        use nix::sys::stat::utimes;
+        use nix::sys::time::TimeVal;
+        let mut paths = Vec::new();
+        // Anchor synthetic mtimes 1 hour in the past so they are
+        // strictly earlier than any wall-clock event in this test.
+        let base_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            - 3600;
+        for i in 0..count {
+            let p = runner_home.join(format!("bin.{i}.0.0"));
+            std::fs::create_dir_all(p.as_std_path()).unwrap();
+            let secs = base_secs + i as i64;
+            let tv = TimeVal::new(secs, 0);
+            utimes(p.as_std_path(), &tv, &tv).unwrap();
+            paths.push(p);
+        }
+        paths
+    }
+
+    #[test]
+    fn prune_keeps_n_most_recent_by_mtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = Utf8Path::from_path(tmp.path()).unwrap();
+        let dirs = make_versioned_bin_dirs(home, 5);
+        // Keep 2 newest → bin.4.0.0 + bin.3.0.0 survive; bin.0..2 pruned.
+        let pruned = prune_old_bin_versions(home, 2).unwrap();
+        assert_eq!(pruned, 3);
+        for old in &dirs[..3] {
+            assert!(
+                !old.as_std_path().exists(),
+                "stale dir {old} should have been pruned"
+            );
+        }
+        for kept in &dirs[3..] {
+            assert!(
+                kept.as_std_path().exists(),
+                "recent dir {kept} should have survived"
+            );
+        }
+    }
+
+    #[test]
+    fn prune_with_keep_versions_zero_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = Utf8Path::from_path(tmp.path()).unwrap();
+        let dirs = make_versioned_bin_dirs(home, 3);
+        let err = prune_old_bin_versions(home, 0).unwrap_err();
+        assert!(
+            matches!(err, GharsError::Validation(..)),
+            "keep_versions=0 must error structurally; got {err:?}"
+        );
+        // Defense in depth: NO directory was removed.
+        for d in &dirs {
+            assert!(d.as_std_path().exists(), "no dir should be pruned on error");
+        }
+    }
+
+    #[test]
+    fn prune_skips_bin_symlink_target_even_if_oldest_mtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = Utf8Path::from_path(tmp.path()).unwrap();
+        let dirs = make_versioned_bin_dirs(home, 4);
+        // Active = oldest (index 0). Without the active-symlink defense
+        // the pruner would remove it. With the defense it survives.
+        std::os::unix::fs::symlink("bin.0.0.0", home.join("bin").as_std_path()).unwrap();
+        // keep_versions = 1 → only the newest by mtime survives via the
+        // top-N path; bin.0.0.0 must additionally be preserved by the
+        // active-symlink check.
+        let _ = prune_old_bin_versions(home, 1).unwrap();
+        assert!(
+            dirs[0].as_std_path().exists(),
+            "active symlink target {} must be preserved", dirs[0]
+        );
+        assert!(
+            dirs[3].as_std_path().exists(),
+            "newest dir {} must be preserved", dirs[3]
+        );
+        // The two middle versions are pruned.
+        for old in &dirs[1..3] {
+            assert!(
+                !old.as_std_path().exists(),
+                "non-active middle dir {old} should have been pruned"
+            );
+        }
+    }
+
+    #[test]
+    fn prune_ignores_bin_tmp_and_plain_bin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = Utf8Path::from_path(tmp.path()).unwrap();
+        // Versioned dirs.
+        let dirs = make_versioned_bin_dirs(home, 3);
+        // Stage `bin.tmp` as a regular dir (non-symlink) — the function
+        // must skip it via the suffix == "tmp" gate.
+        let bin_tmp = home.join("bin.tmp");
+        std::fs::create_dir_all(bin_tmp.as_std_path()).unwrap();
+        // Plain `bin` directory (not a symlink in this test) — must be
+        // skipped because its name doesn't have a `.<suffix>` after
+        // stripping the `bin.` prefix.
+        let plain_bin = home.join("bin");
+        std::fs::create_dir_all(plain_bin.as_std_path()).unwrap();
+        let _ = prune_old_bin_versions(home, 1).unwrap();
+        // bin.tmp + bin survive regardless of mtime.
+        assert!(bin_tmp.as_std_path().exists());
+        assert!(plain_bin.as_std_path().exists());
+        // newest survives via top-N.
+        assert!(dirs[2].as_std_path().exists());
+        // older versioned dirs pruned.
+        assert!(!dirs[0].as_std_path().exists());
+        assert!(!dirs[1].as_std_path().exists());
+    }
+
+    #[test]
+    fn prune_returns_zero_when_already_within_budget() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = Utf8Path::from_path(tmp.path()).unwrap();
+        let dirs = make_versioned_bin_dirs(home, 2);
+        // 2 dirs + keep_versions = 2 → nothing to prune.
+        let pruned = prune_old_bin_versions(home, 2).unwrap();
+        assert_eq!(pruned, 0);
+        for d in &dirs {
+            assert!(d.as_std_path().exists());
+        }
+    }
+
+    #[test]
+    fn prune_handles_empty_runner_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = Utf8Path::from_path(tmp.path()).unwrap();
+        // No `bin.X.Y.Z` dirs present yet.
+        let pruned = prune_old_bin_versions(home, 2).unwrap();
+        assert_eq!(pruned, 0);
+    }
+
+    #[test]
+    fn prune_skips_files_only_processes_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = Utf8Path::from_path(tmp.path()).unwrap();
+        // Create a regular file with the bin.X.Y.Z naming. The pruner
+        // must skip it via the is_dir() gate (defense against operator
+        // tampering or test artifacts).
+        let stray_file = home.join("bin.intruder");
+        std::fs::write(stray_file.as_std_path(), b"not a directory").unwrap();
+        let dirs = make_versioned_bin_dirs(home, 2);
+        let _ = prune_old_bin_versions(home, 1).unwrap();
+        // The stray file is NOT pruned (not a directory).
+        assert!(stray_file.as_std_path().exists());
+        // newest dir survives.
+        assert!(dirs[1].as_std_path().exists());
+        // older dir pruned.
+        assert!(!dirs[0].as_std_path().exists());
     }
 }

@@ -272,7 +272,7 @@ impl Action {
 
 /// Result of `plan_from`: ordered actions + non-fatal warnings to surface
 /// at the CLI layer.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
     /// Actions in source-emit order. `apply` re-orders into Part 8's
     /// canonical execution order (`CreateCachePool` →
@@ -281,6 +281,22 @@ pub struct Plan {
     pub actions: Vec<Action>,
     /// Non-fatal warnings (e.g. "shared UID disables cross-runner isolation").
     pub warnings: Vec<String>,
+    /// `bin.X.Y.Z/` retention count resolved from
+    /// `Defaults.keep_versions` (or the
+    /// `crate::config::DEFAULT_KEEP_VERSIONS` fallback when unset).
+    /// `apply` threads this into `extract::prune_old_bin_versions` at
+    /// the tail of every successful tarball install. Always >= 1.
+    pub keep_versions: u32,
+}
+
+impl Default for Plan {
+    fn default() -> Self {
+        Self {
+            actions: Vec::new(),
+            warnings: Vec::new(),
+            keep_versions: crate::config::DEFAULT_KEEP_VERSIONS,
+        }
+    }
 }
 
 impl Plan {
@@ -2348,7 +2364,17 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
         }
     }
 
-    Ok(Plan { actions, warnings })
+    let keep_versions = config
+        .defaults
+        .keep_versions
+        .unwrap_or(crate::config::DEFAULT_KEEP_VERSIONS)
+        .max(1);
+
+    Ok(Plan {
+        actions,
+        warnings,
+        keep_versions,
+    })
 }
 
 fn with_hash(mut spec: EffectiveRunnerSpec) -> EffectiveRunnerSpec {
@@ -9559,5 +9585,43 @@ labels  = ["alpha", "beta"]
             .runners
             .insert("a".into(), discovered_for("a", &old_spec, Drift::InSync));
         plan_from(&cfg, &actual, &empty_paths()).unwrap()
+    }
+
+    #[test]
+    fn plan_from_resolves_default_keep_versions_when_unset() {
+        // Defaults.keep_versions = None → Plan.keep_versions = 2
+        // (DEFAULT_KEEP_VERSIONS). The pruner default is "current
+        // bin tree + 1 rollback target".
+        let cfg = config_with_runners(vec![]);
+        assert!(cfg.defaults.keep_versions.is_none());
+        let plan = plan_from(&cfg, &empty_actual(), &empty_paths()).unwrap();
+        assert_eq!(plan.keep_versions, crate::config::DEFAULT_KEEP_VERSIONS);
+    }
+
+    #[test]
+    fn plan_from_threads_explicit_keep_versions_through_to_plan() {
+        // Operator-set Defaults.keep_versions plumbs verbatim into
+        // Plan.keep_versions. apply.rs threads this from Plan into
+        // execute_create_runner → tarball.prune_old_versions.
+        let mut cfg = config_with_runners(vec![]);
+        cfg.defaults.keep_versions = Some(7);
+        let plan = plan_from(&cfg, &empty_actual(), &empty_paths()).unwrap();
+        assert_eq!(plan.keep_versions, 7);
+    }
+
+    #[test]
+    fn plan_from_clamps_keep_versions_zero_to_one_at_lower_bound() {
+        // Defense in depth: keep_versions=0 would prune the
+        // just-installed bin tree (extract.rs::prune_old_bin_versions
+        // explicitly errors on zero). Plan-side clamp via .max(1)
+        // surfaces a sensible value to the apply path even if a
+        // hostile config sneaks past the validator.
+        let mut cfg = config_with_runners(vec![]);
+        cfg.defaults.keep_versions = Some(0);
+        let plan = plan_from(&cfg, &empty_actual(), &empty_paths()).unwrap();
+        assert_eq!(
+            plan.keep_versions, 1,
+            "zero must clamp up to 1 to keep the just-installed bin tree"
+        );
     }
 }

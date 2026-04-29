@@ -198,6 +198,13 @@ impl Tarball for TestTarball {
         std::fs::create_dir_all(bin.as_std_path())?;
         Ok(bin)
     }
+    fn prune_old_versions(
+        &self,
+        _runner_home: &Utf8Path,
+        _keep_versions: u32,
+    ) -> ghars::Result<usize> {
+        Ok(0)
+    }
 }
 
 #[derive(Default)]
@@ -369,7 +376,7 @@ fn create_runner_errors_when_no_release_and_no_local_tarball() {
     let config_shell = TestConfigShell::default();
     let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let action = Action::CreateRunner(plan);
-    let err = execute(&action, &d, &paths, &mut UndoLog::new())
+    let err = execute(&action, &d, &paths, &mut UndoLog::new(), 2)
         .expect_err("must error on no release + no tarball");
     let msg = format!("{err}");
     assert!(
@@ -395,7 +402,7 @@ fn create_runner_errors_when_auth_registry_missing_key() {
     let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let action = Action::CreateRunner(plan);
     let err =
-        execute(&action, &d, &paths, &mut UndoLog::new()).expect_err("must error on missing auth");
+        execute(&action, &d, &paths, &mut UndoLog::new(), 2).expect_err("must error on missing auth");
     let msg = format!("{err}");
     assert!(msg.contains("auth") && msg.contains("pat"), "{msg}");
 }
@@ -422,7 +429,7 @@ fn create_runner_errors_when_token_mint_fails() {
     let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let action = Action::CreateRunner(plan);
     let err =
-        execute(&action, &d, &paths, &mut UndoLog::new()).expect_err("must error on mint failure");
+        execute(&action, &d, &paths, &mut UndoLog::new(), 2).expect_err("must error on mint failure");
     assert!(format!("{err}").contains("mint failed"));
 }
 
@@ -449,7 +456,7 @@ fn create_runner_errors_when_verify_local_fails() {
     let config_shell = TestConfigShell::default();
     let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let action = Action::CreateRunner(plan);
-    let err = execute(&action, &d, &paths, &mut UndoLog::new())
+    let err = execute(&action, &d, &paths, &mut UndoLog::new(), 2)
         .expect_err("must error on verify_local failure");
     assert!(format!("{err}").contains("verify_local failure"));
 }
@@ -475,7 +482,7 @@ fn create_runner_errors_when_install_binary_fails() {
     let config_shell = TestConfigShell::default();
     let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let action = Action::CreateRunner(plan);
-    let err = execute(&action, &d, &paths, &mut UndoLog::new())
+    let err = execute(&action, &d, &paths, &mut UndoLog::new(), 2)
         .expect_err("must error on install_binary failure");
     assert!(format!("{err}").contains("install failure"));
 }
@@ -501,7 +508,7 @@ fn create_runner_errors_when_config_shell_register_fails() {
     *config_shell.fail_register.lock().unwrap() = true;
     let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let action = Action::CreateRunner(plan);
-    let err = execute(&action, &d, &paths, &mut UndoLog::new())
+    let err = execute(&action, &d, &paths, &mut UndoLog::new(), 2)
         .expect_err("must error on register failure");
     assert!(format!("{err}").contains("register"));
 }
@@ -522,6 +529,7 @@ fn apply_fail_fast_false_accumulates_multiple_failures() {
             Action::CreateCachePool(make_pool_plan("b")),
         ],
         warnings: vec![],
+        keep_versions: 2,
     };
     let systemd = TestSystemd::default();
     *systemd.fail_enable.lock().unwrap() = true;
@@ -571,6 +579,7 @@ fn apply_fail_fast_true_short_circuits_on_first_failure() {
             Action::CreateCachePool(make_pool_plan("second")),
         ],
         warnings: vec![],
+        keep_versions: 2,
     };
     let systemd = TestSystemd::default();
     *systemd.fail_enable.lock().unwrap() = true;
@@ -616,6 +625,7 @@ fn apply_dry_run_skips_all_non_noop_actions() {
             Action::NoOp("nothing to do".into()),
         ],
         warnings: vec![],
+        keep_versions: 2,
     };
     let systemd = TestSystemd::default();
     let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -651,6 +661,7 @@ fn apply_daemon_reload_failure_appends_to_result_failed() {
     let plan = Plan {
         actions: vec![Action::NoOp("idempotent".into())],
         warnings: vec![],
+        keep_versions: 2,
     };
     let systemd = TestSystemd::default();
     *systemd.fail_daemon_reload.lock().unwrap() = true;
@@ -683,6 +694,7 @@ fn apply_dry_run_holds_lock_during_run() {
     let plan = Plan {
         actions: vec![Action::NoOp("dry".into())],
         warnings: vec![],
+        keep_versions: 2,
     };
     let systemd = TestSystemd::default();
     let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -710,6 +722,7 @@ fn apply_records_success_for_noop_actions_in_skipped_not_succeeded() {
             Action::NoOp("bar: in sync".into()),
         ],
         warnings: vec![],
+        keep_versions: 2,
     };
     let systemd = TestSystemd::default();
     let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -737,6 +750,7 @@ fn apply_empty_plan_still_runs_daemon_reload() {
     let plan = Plan {
         actions: vec![],
         warnings: vec![],
+        keep_versions: 2,
     };
     let systemd = TestSystemd::default();
     let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -762,6 +776,7 @@ fn apply_remove_cache_pool_records_action_label_on_success() {
     let plan = Plan {
         actions: vec![Action::RemoveCachePool("absent".into())],
         warnings: vec![],
+        keep_versions: 2,
     };
     let systemd = TestSystemd::default();
     let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -846,6 +861,7 @@ proptest::proptest! {
         let plan = Plan {
             actions,
             warnings: vec![],
+            keep_versions: 2,
         };
         let systemd = TestSystemd::default();
         *systemd.fail_enable.lock().unwrap() = true;
@@ -899,6 +915,7 @@ fn apply_fail_fast_pushes_failed_and_undo_logs_in_lockstep() {
             Action::CreateCachePool(make_pool_plan("third")),
         ],
         warnings: vec![],
+        keep_versions: 2,
     };
     let systemd = TestSystemd::default();
     *systemd.fail_enable.lock().unwrap() = true;
@@ -975,6 +992,7 @@ fn apply_daemon_reload_failure_pushes_lockstep_with_empty_undo_log() {
     let plan = Plan {
         actions: vec![Action::NoOp("idempotent".into())],
         warnings: vec![],
+        keep_versions: 2,
     };
     let systemd = TestSystemd::default();
     *systemd.fail_daemon_reload.lock().unwrap() = true;

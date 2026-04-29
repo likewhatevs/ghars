@@ -102,9 +102,24 @@ pub struct Defaults {
     /// the canonical Python-tool profile (#41).
     #[serde(default)]
     pub hardening: Hardening,
+    /// How many `bin.X.Y.Z/` directories to retain under each runner
+    /// home after a successful tarball install. The pruner keeps the
+    /// N most recent by mtime (current install + (N-1) rollback
+    /// targets) and removes the rest. None ≡ effective default of 2:
+    /// the freshly-installed bin tree plus one rollback target.
+    /// Operators with disk pressure can set this lower (e.g. 1 = no
+    /// rollback retention) or higher (e.g. 5 = keep more rollback
+    /// targets). Set to a non-zero value; zero would prune the
+    /// just-installed bin dir.
+    pub keep_versions: Option<u32>,
     // No `slice` field. All ghars-managed units use
     // `Slice=system.slice` unconditionally.
 }
+
+/// Effective `keep_versions` value when `Defaults.keep_versions` is
+/// `None`. Two retention slots = current bin tree + one rollback
+/// target (matches the typical upgrade-then-rollback flow).
+pub const DEFAULT_KEEP_VERSIONS: u32 = 2;
 
 /// One `[[runner]]` declaration. When `count` is None or 1 the
 /// `name` is the literal runner name; when `count > 1` it is the
