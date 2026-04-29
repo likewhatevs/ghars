@@ -449,9 +449,30 @@ fn is_safe_relative_path(bytes: &[u8]) -> bool {
 ///   if the post-extract path-containment check detects an escape.
 /// - `GharsError::Io` for IO failures (open, read, write, mkdir).
 pub fn extract_tarball(tarball: &Utf8Path, dest: &Utf8Path) -> Result<()> {
-    fs::create_dir_all(dest)?;
     let f = File::open(tarball)?;
-    let gz = flate2::read::GzDecoder::new(f);
+    extract_tarball_from_file(f, dest)
+}
+
+/// SEC-16: extract a tarball from an already-opened File handle.
+///
+/// Equivalent to [`extract_tarball`] but reads from a pre-opened
+/// `File` instead of re-opening the path. Used by
+/// [`install_runner_binary`] to close the lstat-then-extract TOCTOU
+/// window: the path is opened ONCE under `O_NOFOLLOW` (rejecting
+/// symlinks at open time + reading metadata via fstat on the same
+/// inode), and the resulting File is threaded through to extraction
+/// so the bytes the extractor reads are guaranteed to be from the
+/// inode that was lstat-validated. A path-based re-open between
+/// validation and extraction would let an attacker swap the file
+/// contents (or replace the path with a symlink) between the two
+/// syscalls.
+///
+/// # Errors
+///
+/// Same as [`extract_tarball`] — propagates Tarball / Io variants.
+pub fn extract_tarball_from_file(tarball: File, dest: &Utf8Path) -> Result<()> {
+    fs::create_dir_all(dest)?;
+    let gz = flate2::read::GzDecoder::new(tarball);
     let mut archive = tar::Archive::new(gz);
     archive.set_overwrite(true);
 
@@ -558,25 +579,55 @@ fn verify_extracted_inside_dest(
 /// `GharsError::Tarball` if the path is now a symlink, missing, or not a
 /// regular file.
 pub fn verify_local_tarball(path: &Utf8Path) -> Result<()> {
-    let meta = fs::symlink_metadata(path).map_err(|e| {
-        GharsError::Tarball(
-            format!("--runner-tarball cannot be stat'd: {path}: {e}"),
-            None,
-        )
+    // Drops the File handle immediately; preserves the
+    // `Result<()>`-returning surface for callers that only need a
+    // pre-flight gate (apply.rs::execute_create_runner uses this
+    // before the actual install). install_runner_binary calls
+    // `verify_local_tarball_open` instead so the validated fd
+    // threads through to the extractor.
+    verify_local_tarball_open(path).map(|_file| ())
+}
+
+/// TOCTOU-safe variant of [`verify_local_tarball`] that returns the
+/// opened File so the caller can pass it to
+/// [`extract_tarball_from_file`] without re-opening the path. The
+/// path is opened with `O_NOFOLLOW` (kernel rejects symlinks at
+/// open time) and the regular-file gate reads metadata via fstat on
+/// the same inode — so the File handle the caller receives
+/// describes the same inode that passed validation. A subsequent
+/// path-based re-open would let an attacker swap the file (or the
+/// path's resolution) between the two syscalls.
+///
+/// # Errors
+///
+/// `GharsError::Tarball` if the path is now a symlink, missing, or
+/// not a regular file.
+pub fn verify_local_tarball_open(path: &Utf8Path) -> Result<File> {
+    let (file, meta) = crate::validators::open_no_follow_with_meta(path.as_std_path()).map_err(|e| {
+        // ELOOP from O_NOFOLLOW is the symlink-rejection path —
+        // surface it specifically so the operator doesn't conflate
+        // it with a missing-file error.
+        if e.raw_os_error() == Some(libc::ELOOP) {
+            GharsError::Tarball(
+                format!(
+                    "--runner-tarball is now a symlink (was not at validation time): {path}"
+                ),
+                None,
+            )
+        } else {
+            GharsError::Tarball(
+                format!("--runner-tarball cannot be opened: {path}: {e}"),
+                None,
+            )
+        }
     })?;
-    if meta.file_type().is_symlink() {
-        return Err(GharsError::Tarball(
-            format!("--runner-tarball is now a symlink (was not at validation time): {path}"),
-            None,
-        ));
-    }
     if !meta.is_file() {
         return Err(GharsError::Tarball(
             format!("--runner-tarball is no longer a regular file: {path}"),
             None,
         ));
     }
-    Ok(())
+    Ok(file)
 }
 
 /// Install a runner tarball into `runner_home/bin.<version>/` via the
@@ -631,7 +682,13 @@ pub fn install_runner_binary(
     version: &str,
 ) -> Result<Utf8PathBuf> {
     require_root_for_install()?;
-    verify_local_tarball(tarball_path)?;
+    // SEC-16: open the tarball once (under O_NOFOLLOW + fstat) and
+    // thread the resulting File through to extraction. The pre-fix
+    // path called verify_local_tarball (lstat by path) and then
+    // re-opened the path inside extract_tarball — between those two
+    // syscalls an attacker could swap the file or replace the path
+    // with a symlink, defeating the lstat gate.
+    let tarball_file = verify_local_tarball_open(tarball_path)?;
 
     let staging_root = state_dir.join(".staging");
     fs::create_dir_all(&staging_root)?;
@@ -646,7 +703,7 @@ pub fn install_runner_binary(
     set_dir_mode(&staging, 0o700)?;
 
     let final_dir = runner_home.join(format!("bin.{version}"));
-    let outcome = extract_and_swap(tarball_path, &staging, runner_home, &final_dir);
+    let outcome = extract_and_swap_from_file(tarball_file, &staging, runner_home, &final_dir);
     if outcome.is_err() {
         let _ = fs::remove_dir_all(&staging);
     }
@@ -889,13 +946,19 @@ pub fn swap_bin_symlink(runner_home: &Utf8Path, version: &str) -> Result<()> {
 ///    A future audit tool that walks `runner_home/` mid-apply would see
 ///    `bin.<version>/` momentarily absent. v0.2 should switch to the
 ///    rustix wrapper to close the window unconditionally.
-fn extract_and_swap(
-    tarball_path: &Utf8Path,
+/// SEC-16 TOCTOU-safe extractor: takes an already-opened tarball
+/// `File` and threads it through to [`extract_tarball_from_file`]
+/// so the path is not re-resolved between the open-time
+/// validation in [`verify_local_tarball_open`] and the read. Then
+/// renames the staged tree onto `final_dir` (with the EXDEV
+/// cross-FS fallback documented above).
+fn extract_and_swap_from_file(
+    tarball_file: File,
     staging: &Utf8Path,
     runner_home: &Utf8Path,
     final_dir: &Utf8Path,
 ) -> Result<()> {
-    extract_tarball(tarball_path, staging)?;
+    extract_tarball_from_file(tarball_file, staging)?;
     fs::create_dir_all(runner_home)?;
     if final_dir.exists() {
         fs::remove_dir_all(final_dir)?;
@@ -1404,7 +1467,13 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = Utf8PathBuf::from_path_buf(tmp.path().join("nope")).unwrap();
         let err = verify_local_tarball(&path).unwrap_err();
-        assert!(err.to_string().contains("cannot be stat"));
+        // Post-SEC-16: open(O_NOFOLLOW) returns ENOENT; the message
+        // surfaces as "cannot be opened: <path>: No such file ...".
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cannot be opened") && msg.contains("nope"),
+            "expected open-failure message; got: {msg}"
+        );
     }
 
     #[test]
@@ -1413,6 +1482,121 @@ mod tests {
         let path = Utf8PathBuf::from_path_buf(tmp.path().join("ok.tar.gz")).unwrap();
         fs::write(&path, b"x").unwrap();
         verify_local_tarball(&path).unwrap();
+    }
+
+    #[test]
+    fn verify_local_tarball_open_returns_readable_file_on_regular_file() {
+        // SEC-16 TOCTOU-safe variant: the returned File must be
+        // (a) opened on the same inode the path resolves to and
+        // (b) readable, so the caller can stream-decompress without
+        // a path re-open.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(tmp.path().join("ok.tar.gz")).unwrap();
+        fs::write(&path, b"hello tarball").unwrap();
+        let mut file = verify_local_tarball_open(&path).unwrap();
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut file, &mut buf).unwrap();
+        assert_eq!(buf, b"hello tarball");
+    }
+
+    #[test]
+    fn verify_local_tarball_open_rejects_symlink_via_o_nofollow() {
+        // The kernel's O_NOFOLLOW returns ELOOP when the final path
+        // component is a symlink, regardless of what the symlink
+        // points at. This test plants a symlink-to-regular-file (which
+        // would PASS a permissive lstat-then-follow check) and
+        // asserts the open-side rejection fires.
+        let tmp = tempfile::tempdir().unwrap();
+        let target = Utf8PathBuf::from_path_buf(tmp.path().join("target.tar.gz")).unwrap();
+        fs::write(&target, b"x").unwrap();
+        let link = Utf8PathBuf::from_path_buf(tmp.path().join("link.tar.gz")).unwrap();
+        std::os::unix::fs::symlink(target.as_std_path(), link.as_std_path()).unwrap();
+        let err = verify_local_tarball_open(&link).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("symlink"),
+            "expected symlink-rejection wording; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn verify_local_tarball_open_rejects_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(tmp.path().join("dir.tar.gz")).unwrap();
+        fs::create_dir_all(path.as_std_path()).unwrap();
+        let err = verify_local_tarball_open(&path).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("no longer a regular file"),
+            "expected directory rejection; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn extract_tarball_from_file_unpacks_via_pre_opened_handle() {
+        // SEC-16 TOCTOU pin: the from_file extractor must read from
+        // the passed-in File handle, NOT re-open the path. We
+        // demonstrate this by:
+        // 1. Building a real .tar.gz at `path`.
+        // 2. Opening `path` via verify_local_tarball_open (returns
+        //    a File handle that holds the original inode).
+        // 3. UNLINKING the path and creating a NEW (corrupt) file at
+        //    the same path — different inode.
+        // 4. Calling extract_tarball_from_file with the original
+        //    File handle.
+        // 5. Asserting the extraction succeeds — the held fd still
+        //    references the original tarball's inode, so the
+        //    post-replace bytes never reach the extractor.
+        //
+        // (`fs::write` would TRUNCATE rather than unlink, modifying
+        // the same inode the fd points at; we explicitly unlink +
+        // create to swap inodes and prove the fd-based read is
+        // path-resolution-free.)
+        let tmp = tempfile::tempdir().unwrap();
+        let tarball = Utf8PathBuf::from_path_buf(tmp.path().join("good.tar.gz")).unwrap();
+        // Build a minimal valid tar.gz with one regular-file entry.
+        let mut header = tar::Header::new_gnu();
+        header.set_path("hello.txt").unwrap();
+        header.set_size(5);
+        header.set_mode(0o644);
+        header.set_cksum();
+        let mut tar_buf = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_buf);
+            builder
+                .append(&header, std::io::Cursor::new(b"hello"))
+                .unwrap();
+            builder.finish().unwrap();
+        }
+        let gz_path = tarball.as_std_path();
+        let f = std::fs::File::create(gz_path).unwrap();
+        let mut gz = flate2::write::GzEncoder::new(f, flate2::Compression::default());
+        std::io::Write::write_all(&mut gz, &tar_buf).unwrap();
+        gz.finish().unwrap();
+
+        // Open via the TOCTOU-safe path.
+        let file = verify_local_tarball_open(&tarball).unwrap();
+
+        // Unlink + recreate at the same path. The new file is a
+        // different inode; the held fd still references the
+        // original (which is "deleted" but kept alive by the open
+        // refcount).
+        fs::remove_file(gz_path).unwrap();
+        fs::write(gz_path, b"corrupt-not-gzip").unwrap();
+
+        let dest = Utf8PathBuf::from_path_buf(tmp.path().join("dest")).unwrap();
+        extract_tarball_from_file(file, &dest).unwrap();
+
+        // The legitimate file from the ORIGINAL tarball must be
+        // present — proving the extractor read from the fd, not
+        // the post-replace path.
+        let extracted = dest.join("hello.txt");
+        assert!(extracted.as_std_path().exists(), "extraction must succeed via fd");
+        assert_eq!(
+            fs::read(extracted.as_std_path()).unwrap(),
+            b"hello",
+            "extracted content must come from the ORIGINAL tarball, not the replaced path"
+        );
     }
 
     /// TOCTOU parity test between `validators::validate_runner_tarball`
@@ -1527,13 +1711,14 @@ mod tests {
         // Step 4: apply-time gate rejects.
         let err = verify_local_tarball(&path)
             .expect_err("verify_local_tarball must reject the post-unlink missing file");
-        // Step 5: rejection cause names a stat / existence failure
-        // ("cannot be stat" matches the verify_local_tarball wording
-        // for both ENOENT and other lstat errors).
+        // Step 5: rejection cause names an open / existence failure.
+        // Post-SEC-16, verify_local_tarball opens the file via
+        // O_NOFOLLOW; ENOENT surfaces in the "cannot be opened"
+        // wording.
         let msg = err.to_string();
         assert!(
-            msg.contains("cannot be stat") || msg.contains("does not exist"),
-            "verify_local_tarball error must name a stat / existence failure; got: {msg}"
+            msg.contains("cannot be opened") || msg.contains("does not exist"),
+            "verify_local_tarball error must name an open / existence failure; got: {msg}"
         );
     }
 

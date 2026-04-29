@@ -124,6 +124,36 @@ fn unit_syscall_filter_baseline_and_denylist() {
 }
 
 #[test]
+fn unit_syscall_filter_positive_line_precedes_inverse_line() {
+    // Per systemd.exec(5), `SystemCallFilter=~X` removes X from
+    // the running allowlist when emitted AFTER a positive
+    // (non-`~`) line, but is a no-op when emitted BEFORE one (no
+    // running set to subtract from). A subsequent positive line
+    // would then re-include the groups the operator wanted to
+    // deny. The runner template MUST emit the positive line first,
+    // then the `~`-prefixed denylist.
+    //
+    // This test pins the order at the template-text level so a
+    // refactor that re-orders the lines (e.g. alphabetizing
+    // directives, moving the comment block) cannot silently
+    // disable the denylist.
+    let t = runner_template_text();
+    let positive_idx = t
+        .find(
+            "SystemCallFilter=@system-service pkey_alloc pkey_mprotect pkey_free perf_event_open",
+        )
+        .expect("positive SystemCallFilter line must be present");
+    let inverse_idx = t
+        .find("SystemCallFilter=~@mount @clock @keyring")
+        .expect("inverse SystemCallFilter line must be present");
+    assert!(
+        positive_idx < inverse_idx,
+        "positive SystemCallFilter= line must precede the ~-prefixed denylist; \
+         positive@{positive_idx} inverse@{inverse_idx}"
+    );
+}
+
+#[test]
 fn unit_path_env_present_and_well_formed() {
     // Python parity: test_unit_path_env_present + test_unit_path_env_no_*.
     let t = runner_template_text();

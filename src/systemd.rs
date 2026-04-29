@@ -943,6 +943,26 @@ LockPersonality=yes
 # Syscall filtering. @system-service is the baseline allowlist; pkey_*
 # and perf_event_open are extras needed by Node, .NET, and KVM
 # workloads.
+#
+# Ordering invariant per systemd.exec(5):
+# - The first SystemCallFilter= line WITHOUT `~` prefix establishes
+#   the positive allowlist ((@system-service) ∪ extras). The unit
+#   enters allowlist mode; only listed syscalls execute, everything
+#   else returns EPERM (per SystemCallErrorNumber= below).
+# - The subsequent SystemCallFilter=~... line REMOVES those groups
+#   from the running allowlist (per systemd.exec.xml: when the
+#   filter is already in allowlist mode, ~-prefixed assignments
+#   subtract from the allowlist).
+# Net result: ((@system-service ∪ {pkey_alloc, pkey_mprotect,
+# pkey_free, perf_event_open}) − {@mount ∪ @clock ∪ @keyring ∪
+# @module ∪ @raw-io ∪ @reboot ∪ @swap ∪ @obsolete}) is allowed; all
+# other syscalls EPERM. The denylist line is belt-and-suspenders
+# (modern @system-service already excludes those groups), guarding
+# against systemd version drift in the @system-service composition.
+# DO NOT swap the two lines: a `~`-line emitted before the positive
+# allowlist line would attempt to remove from a not-yet-established
+# set (no-op), and the subsequent positive line would re-include
+# those groups, defeating the denylist.
 SystemCallArchitectures=native
 SystemCallFilter=@system-service pkey_alloc pkey_mprotect pkey_free perf_event_open
 SystemCallErrorNumber=EPERM
