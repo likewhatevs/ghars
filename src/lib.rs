@@ -19,6 +19,7 @@ pub mod plan;
 pub mod preflight;
 pub mod state;
 pub mod systemd;
+pub mod unit_verify;
 pub mod validators;
 
 pub use error::{GharsError, Result};

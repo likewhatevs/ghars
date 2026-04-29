@@ -1547,6 +1547,14 @@ fn compute_plan(cfg: &Config, paths: &Paths, only: &[String]) -> Result<Plan> {
     if !only.is_empty() {
         plan.actions.retain(|a| action_matches_filter(a, only));
     }
+    // Plan-time `systemd-analyze verify` gate (audit #18 / Part 13
+    // Tier 5). Run AFTER the `--only` filter so operators who scope
+    // a partial apply only pay the verification cost for the actions
+    // they're actually going to apply. Errors propagate as
+    // GharsError::Validation; cmd_plan / cmd_apply surface them
+    // verbatim alongside config-time validation failures.
+    let verifier = crate::unit_verify::RealVerifier;
+    crate::unit_verify::verify_plan(&plan, &paths.runtime_dir, &verifier)?;
     Ok(plan)
 }
 
