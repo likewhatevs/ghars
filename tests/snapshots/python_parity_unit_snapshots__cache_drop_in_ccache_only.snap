@@ -9,7 +9,7 @@ X-Ghars-Pool-Kinds=ccache
 X-Ghars-Config-Source=/etc/ghars/ghars.toml
 
 [Service]
-Group=ghars-cache-build
+User=ghars-tz-default
 Environment=CCACHE_DIR=%C/ghars/pools/build/ccache
 Environment=CCACHE_MAXSIZE=200G
 ExecStart=/usr/bin/sleep infinity

@@ -18,4 +18,5 @@ X-Ghars-Trust-Zone=default
 X-Ghars-Network-Mode=open
 
 [Service]
+User=ghars-tz-default
 X-Ghars-Runsvc-Sha256=sha256:1111111111111111111111111111111111111111111111111111111111111111

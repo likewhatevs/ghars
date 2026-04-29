@@ -345,15 +345,16 @@ fn unit_journal_rate_limit() {
 }
 
 #[test]
-fn unit_user_is_per_runner_not_root() {
-    // Python parity: test_unit_user_is_runner_user — diverged: ghars
-    // uses User=ghars-%i so each runner has its own UID (SEC-27 fix).
-    // The template carries the literal %i — the runner system user is
-    // resolved at unit-instantiation time.
+fn unit_uses_dynamic_user_not_root() {
+    // The template declares DynamicUser=yes and has no per-runner
+    // User= or Group= line — the User= name (ghars-tz-<TRUST_ZONE>)
+    // is set in the per-runner 00-ghars.conf drop-in so trust-zone-
+    // shared runners receive the same DynamicUser-allocated UID.
     let t = runner_template_text();
-    assert!(t.contains("User=ghars-%i"));
+    assert!(t.contains("\nDynamicUser=yes\n"));
+    assert!(!t.contains("User=ghars-%i"));
+    assert!(!t.contains("Group=ghars-%i"));
     assert!(!t.contains("User=root"), "runner must not run as root");
-    assert!(t.contains("Group=ghars-%i"));
 }
 
 #[test]

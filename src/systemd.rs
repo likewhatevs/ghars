@@ -28,7 +28,6 @@ use zbus::blocking::{Connection, Proxy};
 pub use zbus::zvariant::OwnedObjectPath;
 use zbus::zvariant::OwnedValue;
 
-use crate::apply::cache_pool_group;
 use crate::config::{
     CacheKind, EffectiveCacheBinding, EffectiveNetworkBinding, EffectiveRunnerSpec, EtcBindStyle,
     Hardening, NetworkMode, PortSpec, Proto,
@@ -809,31 +808,36 @@ X-Ghars-Schema-Version=1
 
 [Service]
 Type=simple
-# SEC-02: ExecStart=! runs the runsvc trampoline as root (User=/Group=
-# bypassed) WHILE the unit's full sandbox stays applied — including
-# TemporaryFileSystem=/:ro, BindReadOnlyPaths, PrivateDevices, the
-# SystemCallFilter allowlist, NetworkNamespacePath, etc. (Per
-# systemd.service(5) the `!` prefix alters only User=/Group=/
-# SupplementaryGroups=; in contrast `+` would also bypass
-# CapabilityBoundingSet AND every filesystem-namespacing directive,
-# which would silently leave the runner unsandboxed.)
+# DynamicUser=yes (man systemd.exec.5, since v232) allocates the
+# runner unit a transient UID/GID from systemd's reserved range on
+# unit start and recycles it on unit stop — nothing is written to
+# /etc/passwd or /etc/group. The User= name is set by the per-runner
+# 00-ghars.conf drop-in to `ghars-tz-<TRUST_ZONE>`, NOT to a per-
+# runner name: runners that share a `trust_zone` get the SAME
+# DynamicUser-allocated UID, and that UID-sharing is what makes the
+# shared HOME / ccache / sccache reach work without gpasswd or
+# SupplementaryGroups. Cross-trust-zone reach is denied at the
+# UID-DAC layer (different UIDs → EACCES on shared paths and on the
+# sccache UDS). No `Group=` line — DynamicUser allocates the matching
+# transient GID alongside the UID.
 #
-# The trampoline integrity-checks /var/lib/ghars/%i/runsvc.sh against
-# the recorded X-Ghars-Runsvc-Sha256 annotation in
-# /etc/systemd/system/ghars-runner@%i.service.d/00-ghars.conf, then
-# setgid()/setuid()s to ghars-%i and fexecve()s the verified file
-# descriptor (closing the open-then-rename TOCTOU window the runner
-# user could otherwise exploit on a runner-owned runsvc.sh).
+# ExecStart= has NO prefix. The runsvc-wrapper trampoline runs at the
+# DynamicUser-allocated identity (no setuid/setgid needed) WHILE the
+# unit's full sandbox stays applied — TemporaryFileSystem=/:ro,
+# BindReadOnlyPaths, PrivateDevices, the SystemCallFilter allowlist,
+# NetworkNamespacePath, etc. The trampoline opens
+# /var/lib/ghars/%i/runsvc.sh via O_NOFOLLOW, recomputes sha256,
+# compares against the X-Ghars-Runsvc-Sha256 annotation in the
+# 00-ghars.conf drop-in (file read with O_NOFOLLOW), and fexecve()s
+# the verified file descriptor on match — closing the open-then-
+# rename TOCTOU window. On mismatch: refuse with a diagnostic.
 #
 # The trampoline is a separately-packaged compiled binary at
 # /usr/lib/ghars/runsvc-wrapper (root:root mode 0755) — NOT a shell
-# script. CapabilityBoundingSet below is overridden to grant just the
-# CAP_SETUID/CAP_SETGID needed by the privilege drop; runsvc.sh has no
-# file capabilities, so per capabilities(7) its post-exec permitted
-# set is empty regardless of the bounding set.
-ExecStart=!/usr/lib/ghars/runsvc-wrapper %i
-User=ghars-%i
-Group=ghars-%i
+# script. With no setuid/setgid step, CapabilityBoundingSet below is
+# empty (no CAP_SETUID, no CAP_SETGID).
+DynamicUser=yes
+ExecStart=/usr/lib/ghars/runsvc-wrapper %i
 WorkingDirectory=/var/lib/ghars/%i
 # Slice=system.slice unconditional. No operator opt-in.
 Slice=system.slice
@@ -870,17 +874,14 @@ KillMode=control-group
 KillSignal=SIGTERM
 TimeoutStopSec=5min
 
-# Privilege isolation. CapabilityBoundingSet is the smallest set the
-# SEC-02 wrapper needs to drop privileges (CAP_SETUID + CAP_SETGID for
-# the setuid/setgid syscalls — kernel/sys.c:669 enforces CAP_SETUID).
-# After the wrapper fexecve()s into runsvc.sh the kernel computes the
-# new permitted set as `(P_inheritable & F_inheritable) | (F_permitted
-# & P_bounding)`. Inheritable is empty, runsvc.sh is a script with no
-# file capabilities, so the post-exec permitted set is empty regardless
-# of the bounding set. AmbientCapabilities stays empty so the kernel
+# Privilege isolation. CapabilityBoundingSet is empty: the trampoline
+# does not setuid/setgid (DynamicUser= handles the identity), so no
+# CAP_SETUID/CAP_SETGID are needed; runsvc.sh is a script with no file
+# capabilities, so per capabilities(7) its post-exec permitted set is
+# empty regardless. AmbientCapabilities stays empty so the kernel
 # does not raise any cap into permitted at exec time.
 NoNewPrivileges=yes
-CapabilityBoundingSet=CAP_SETUID CAP_SETGID
+CapabilityBoundingSet=
 AmbientCapabilities=
 
 # Filesystem allowlist. Optional paths use `-` prefix for merged-usr
@@ -1027,50 +1028,54 @@ StopWhenUnneeded=yes
 
 [Service]
 Type=simple
-# `Group=` is INTENTIONALLY omitted from the template — the per-pool
-# 00-ghars.conf drop-in sets `Group=ghars-cache-<pool>` so each pool's
-# UDS at `/run/ghars/cache-<pool>.sock` is owned by a per-pool group.
-# Runners join only the `ghars-cache-<pool>` groups they're allowed to
-# reach (apply.rs::execute_create_runner adds membership), so a
-# compromised runner cannot connect to ANOTHER pool's UDS even if it
-# can resolve the path. Hardcoding `Group=gha` here would defeat the
-# per-pool ACL because every cache server would run with the same
-# primary group, and the UDS would be world-reachable for every
-# `gha`-group runner. (SEC-04 mitigation step 1.)
-#
-# `User=gha` stays in the template — every cache service runs as the
-# same uid so the cache directory's contents have a single owner; the
-# DAC boundary between pools is the `Group=` membership set by the
-# drop-in plus the UDS file mode (0660) the cache server writes.
-User=gha
+# DynamicUser=yes allocates the cache server a transient UID/GID from
+# the systemd-allocated range (man systemd.exec.5, since v232) on unit
+# start and recycles it on stop — nothing is written to /etc/passwd or
+# /etc/group. The User= name is set by the per-pool 00-ghars.conf
+# drop-in to `ghars-tz-<TRUST_ZONE>`, NOT to a per-pool name: the
+# cache server must share its UID with the runners in the same
+# trust_zone so the UDS at `/run/ghars/cache-<pool>.sock` (mode 0600
+# owner=ghars-tz-<TRUST_ZONE>) is reachable from those runners by
+# owner-DAC. Runners reach the socket via `BindPaths=` in their own
+# drop-in; cross-trust-zone reach is denied at the AF_UNIX connect()
+# layer because the connecting UID does not match the socket inode
+# owner. No `Group=` line, no SupplementaryGroups, no gpasswd.
+DynamicUser=yes
 Slice=system.slice
 
-# UMask=0007 is the kernel-enforced sccache UDS permission gate.
+# UMask=0077 is the kernel-enforced sccache UDS permission gate.
 # AF_UNIX bind() masks the socket inode mode by current_umask() at
 # vfs_mknod time (Linux net/unix/af_unix.c:unix_bind_bsd:1349 —
 # `umode_t mode = S_IFSOCK | (SOCK_INODE(sk->sk_socket)->i_mode & ~current_umask())`).
 # sccache's UnixListener::bind (sccache server.rs:511 +
 # commands.rs:104) performs no chmod after bind, so the kernel-applied
-# mode is final. With UMask=0007, the resulting UDS inode mode is
-# 0660 — owner=User= rw, group=Group= rw, others denied. Combined
-# with the per-pool drop-in's `Group=ghars-cache-<pool>` (the cache
-# server's primary gid is inherited by mknod), this gives the
-# UDS owner=gha:ghars-cache-<pool> mode=0660. Runners that joined the
-# `ghars-cache-<pool>` supplementary group (via apply.rs::execute_create_runner)
-# can connect; non-members get EACCES. UMask= closes the mode at
-# bind() time atomically — unlike a chmod-after-bind shim, there is
-# no TOCTOU window between bind() returning and the chmod landing
-# during which a same-group attacker could connect. (SEC-04
-# step 2.)
-UMask=0007
+# mode is final. With UMask=0077 the resulting UDS inode mode is 0600
+# — owner rw, group/others denied. The cache server runs at the same
+# DynamicUser-allocated UID as the runners in its trust_zone (set via
+# the 00-ghars.conf drop-in's `User=ghars-tz-<TRUST_ZONE>`), so a
+# runner inside the same trust_zone connects by owner-DAC. Runners in
+# different trust_zones run at different UIDs and get EACCES at
+# connect() — no shared group is involved. UMask= closes the mode at
+# bind() time atomically (no TOCTOU window between bind() and a chmod
+# shim).
+UMask=0077
 
-# CacheDirectory creates /var/cache/ghars/pools/%i with mode 0755
-# (group-traversable; runners run as the same User=gha and connect
-# via UDS or share files within the pool dir).
+# CacheDirectory creates /var/cache/ghars/pools/%i with mode 0750.
+# Owner is the cache server's DynamicUser-allocated UID
+# (ghars-tz-<TRUST_ZONE>). Runners in the same trust_zone share that
+# UID, so they traverse via owner-DAC; runners in other trust_zones
+# run at a different UID and get EACCES — group bits are unused
+# because no shared group exists in this model.
 CacheDirectory=ghars/pools/%i
-CacheDirectoryMode=0755
+CacheDirectoryMode=0750
+# RuntimeDirectory=/run/ghars/ holds the per-pool sccache UDS
+# (`cache-<pool>.sock`). Mode 0700 owner=ghars-tz-<TRUST_ZONE>: only
+# the trust_zone's UID can resolve the directory at the host layer.
+# Runners reach the UDS through `BindPaths=` (systemd as root
+# performs the bind into the runner sandbox) — sandbox delivery does
+# not require runner-side traversal of the host /run/ghars/ entry.
 RuntimeDirectory=ghars
-RuntimeDirectoryMode=0755
+RuntimeDirectoryMode=0700
 
 # Per-kinds env + ExecStart land in the per-pool 00-ghars.conf drop-in
 # (sccache server launches there when kinds includes sccache;
@@ -1419,10 +1424,16 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
     if let Some(net) = &spec.network {
         let _ = writeln!(s, "X-Ghars-Netns-Subnet={}", net.subnet);
     }
-    // X-Ghars-Runsvc-Sha256 lives in [Service] per Part 17's
-    // authoritative annotation table. Emitted only when populated;
-    // before the install phase records the digest the field is empty
-    // and we omit the line so the wrapper's own
+    // [Service] is always emitted: User=ghars-tz-<TRUST_ZONE> binds
+    // the runner unit to the trust_zone's DynamicUser allocation
+    // (template body declares DynamicUser=yes; this drop-in pins the
+    // name so runners with the same trust_zone share the transient
+    // UID/GID systemd allocates per User= name).
+    //
+    // X-Ghars-Runsvc-Sha256 lives in the same [Service] section per
+    // Part 17's authoritative annotation table. Emitted only when
+    // populated; before the install phase records the digest the
+    // field is empty and we omit the line so the wrapper's own
     // "annotation missing" error path stays the single signal that
     // apply hasn't completed yet (rather than a confusing
     // "annotation present but empty" half-state). The wrapper reads
@@ -1430,9 +1441,10 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
     // .service.d/00-ghars.conf, since systemd's conf-parser silently
     // drops X-* keys (`shared/conf-parser.c:160`) and never exposes
     // them as D-Bus properties.
+    s.push('\n');
+    s.push_str("[Service]\n");
+    let _ = writeln!(s, "User=ghars-tz-{}", spec.trust_zone);
     if !spec.runsvc_sha256.is_empty() {
-        s.push('\n');
-        s.push_str("[Service]\n");
         let _ = writeln!(s, "X-Ghars-Runsvc-Sha256={}", spec.runsvc_sha256);
     }
     Ok(s)
@@ -1583,13 +1595,13 @@ fn render_hardening(
 
     if !h.extra_capabilities.is_empty() {
         // Same union semantics for CapabilityBoundingSet=. The runner
-        // template (`runner_template_text`) grants CAP_SETUID +
-        // CAP_SETGID (the runsvc.sh privilege-drop set); appending
-        // caps here UNIONS with that base — the operator's tokens are
-        // added, not substituted. Operators who want to revoke the base set must
-        // use a 99-*.conf operator drop-in with the empty-reset form
-        // (`CapabilityBoundingSet=` followed by the desired set), which
-        // the validator does NOT police.
+        // template (`runner_template_text`) sets the base bounding
+        // set to empty (no CAP_SETUID/CAP_SETGID — DynamicUser=
+        // handles privilege identity, no setuid syscall); appending
+        // caps here UNIONS with that empty base — the operator's
+        // tokens become the runner's full bounding set. Operators who
+        // want a strictly-empty bounding set leave `extra_capabilities`
+        // empty and the template's empty value stands.
         //
         // Canonicalization is upstream: this renderer emits whatever
         // is in `h.extra_capabilities` verbatim, including duplicates
@@ -2004,17 +2016,20 @@ pub fn render_cache_drop_in(
     s.push('\n');
 
     s.push_str("[Service]\n");
-    // SEC-04: per-pool group. The cache template intentionally
-    // does NOT set `Group=`; the drop-in stamps it here so each pool's
-    // sccache UDS belongs to the `ghars-cache-<pool>` primary group.
-    // Runners join only the groups they reference in `caches = [...]`
-    // (apply.rs::execute_create_runner adds membership), so a runner
-    // that doesn't list `pool` in its caches array cannot connect to
-    // `pool`'s UDS at all — even if it can name the path. Without this
-    // line the cache server would run with `Group=gha` (the user's
-    // default group via `User=gha`), and the UDS would be world-
-    // reachable for every gha-group runner.
-    let _ = writeln!(s, "Group={}", cache_pool_group(&binding.name));
+    // The cache template declares `DynamicUser=yes` without a User=
+    // line so the per-pool drop-in can pin the User= name to the
+    // pool's trust_zone. systemd allocates the same transient UID for
+    // every unit that names `ghars-tz-<TRUST_ZONE>` as User= and
+    // recycles it when the last such unit stops. The cache server
+    // sharing its UID with the runners in the same trust_zone is what
+    // makes owner-DAC reach work for the sccache UDS (mode 0600) and
+    // the CacheDirectory (mode 0750). Runners in OTHER trust_zones
+    // run at a different UID and are denied at AF_UNIX connect()
+    // / path traversal. Validators upstream guarantee every runner
+    // referencing `pool` has the same trust_zone as the pool, so this
+    // emission is consistent with the runner unit's own User= name
+    // (set in the per-runner 00-ghars.conf drop-in).
+    let _ = writeln!(s, "User=ghars-tz-{}", binding.trust_zone);
     if serves_sccache {
         let _ = writeln!(
             s,
@@ -2044,7 +2059,7 @@ pub fn render_cache_drop_in(
 
     if serves_sccache {
         s.push_str("ExecStart=/usr/bin/sccache --start-server\n");
-        // mode enforcement is in the cache template via UMask=0007,
+        // mode enforcement is in the cache template via UMask=0077,
         // not a per-pool ExecStartPost. Kernel-enforced at vfs_mknod
         // time (Linux net/unix/af_unix.c:unix_bind_bsd:1349) so there
         // is no TOCTOU window between bind() and a chmod shim. See the
@@ -2390,35 +2405,55 @@ mod tests {
         let t = runner_template_text();
         assert!(t.starts_with("[Unit]\n"));
         assert!(t.contains("ConditionPathExists=/var/lib/ghars/%i/runsvc.sh"));
-        // SEC-02: `!` prefix (NOT `+`) on the wrapper. `+` would
-        // bypass User/Group AND the entire sandbox; `!` keeps the
-        // sandbox applied while still letting the wrapper run as root
-        // so it can drop privileges itself.
-        assert!(t.contains("ExecStart=!/usr/lib/ghars/runsvc-wrapper %i"));
+        // ExecStart= has NO prefix. The trampoline runs at the
+        // DynamicUser-allocated identity (no setuid/setgid step), and
+        // the unit's full sandbox stays applied because no prefix is
+        // present. `!` would have bypassed User=/Group= (no longer
+        // needed under DynamicUser) and `+` would have bypassed the
+        // sandbox entirely.
+        assert!(t.contains("\nExecStart=/usr/lib/ghars/runsvc-wrapper %i\n"));
+        assert!(!t.contains("ExecStart=!/usr/lib/ghars/runsvc-wrapper"));
         assert!(!t.contains("ExecStart=+/usr/lib/ghars/runsvc-wrapper"));
-        // Capability bounding set must include exactly the caps the
-        // wrapper needs to drop privileges. Empty bounding set would
-        // make setuid(2) return EPERM (kernel/sys.c:669 requires
-        // CAP_SETUID).
-        assert!(t.contains("CapabilityBoundingSet=CAP_SETUID CAP_SETGID"));
+        // DynamicUser=yes replaces the static `User=ghars-%i` /
+        // `Group=ghars-%i` from the prior model; the User= name itself
+        // is set by the per-runner 00-ghars.conf drop-in to
+        // `ghars-tz-<TRUST_ZONE>` so trust-zone-shared runners receive
+        // the same transient UID.
+        assert!(t.contains("\nDynamicUser=yes\n"));
+        assert!(!t.contains("\nUser=ghars-%i\n"));
+        assert!(!t.contains("\nGroup=ghars-%i\n"));
+        // Capability bounding set is empty: the trampoline does not
+        // setuid/setgid (DynamicUser= handles the identity), so no
+        // CAP_SETUID/CAP_SETGID are required.
+        assert!(t.contains("\nCapabilityBoundingSet=\n"));
+        assert!(!t.contains("CapabilityBoundingSet=CAP_SETUID"));
         assert!(t.contains("Slice=system.slice"));
     }
 
     #[test]
     fn render_identity_emits_runsvc_sha_in_service_section_when_set() {
-        // SEC-02 trampoline reads the X-Ghars-Runsvc-Sha256 annotation
+        // The trampoline reads the X-Ghars-Runsvc-Sha256 annotation
         // from /etc/systemd/system/ghars-runner@INSTANCE.service.d/
         // 00-ghars.conf. The annotation table in Part 17 places it
         // under [Service]; the renderer must emit a [Service] section
         // header before the line so the trampoline's section-aware
-        // parser finds it.
+        // parser finds it. The [Service] section now also carries the
+        // User=ghars-tz-<TRUST_ZONE> directive that pins the runner
+        // unit's DynamicUser allocation to the trust_zone, so the
+        // X-Ghars-Runsvc-Sha256 line follows User= within the same
+        // section.
         let mut spec = minimal_spec();
         spec.runsvc_sha256 = "sha256:abcdef".into();
         let r = render_runner_unit(&spec).unwrap();
         let id = r.drop_ins.get("00-ghars.conf").unwrap();
-        assert!(id.contains("[Service]\nX-Ghars-Runsvc-Sha256=sha256:abcdef"));
-        // The [Unit] annotations still come first.
+        assert!(id.contains("[Service]\n"));
+        assert!(id.contains("X-Ghars-Runsvc-Sha256=sha256:abcdef"));
+        // The X-Ghars-Runsvc-Sha256 line lives inside the [Service]
+        // section (after User=), not bare at the top of the drop-in.
         let service_idx = id.find("[Service]").unwrap();
+        let runsvc_idx = id.find("X-Ghars-Runsvc-Sha256=").unwrap();
+        assert!(service_idx < runsvc_idx);
+        // The [Unit] annotations still come first.
         let unit_idx = id.find("[Unit]").unwrap();
         assert!(unit_idx < service_idx);
     }
@@ -3677,36 +3712,38 @@ mod tests {
     }
 
     #[test]
-    fn cache_template_sets_umask_0007_for_uds_mode() {
-        // SEC-04 step 2 (resolved via UMask=0007): the sccache UDS mode is
-        // kernel-enforced at vfs_mknod time (Linux
+    fn cache_template_sets_umask_0077_for_uds_mode() {
+        // sccache UDS mode is kernel-enforced at vfs_mknod time (Linux
         // net/unix/af_unix.c:unix_bind_bsd:1349 —
         // `umode_t mode = S_IFSOCK | (SOCK_INODE(...)->i_mode & ~current_umask())`).
         // sccache's UnixListener::bind (sccache server.rs:511,
         // commands.rs:104) performs no chmod after bind, so the
-        // kernel-applied mode is final. UMask=0007 in the template
-        // makes the resulting socket mode 0660 (owner+group rw, others
+        // kernel-applied mode is final. UMask=0077 in the template
+        // makes the resulting socket mode 0600 (owner rw, group/others
         // denied) atomically — no TOCTOU window between bind() and a
-        // chmod shim. This test pins the template directive so a
-        // future cleanup pass can't drop it without surfacing the
-        // SEC-04 regression.
+        // chmod shim. Reach is owner-DAC: the cache server and the
+        // runners in its trust_zone share the same DynamicUser-allocated
+        // UID (User=ghars-tz-<TRUST_ZONE> in both unit drop-ins);
+        // runners in other trust_zones get EACCES at connect(). This
+        // test pins the template directive so a future cleanup pass
+        // can't drop it without surfacing the regression.
         let body = cache_template_text();
         assert!(
-            body.contains("\nUMask=0007\n"),
-            "cache template must set UMask=0007 for sccache UDS mode 0660; got body:\n{body}"
+            body.contains("\nUMask=0077\n"),
+            "cache template must set UMask=0077 for sccache UDS mode 0600; got body:\n{body}"
         );
     }
 
     #[test]
     fn render_cache_drop_in_relies_on_template_umask_no_exec_start_post_shim() {
-        // SEC-04 step 2 mode enforcement lives in the cache template (UMask=0007),
-        // not the per-pool drop-in. The drop-in must NOT emit a chmod
-        // ExecStartPost — the chmod-after-bind shim is rejected by the
-        // design because of the TOCTOU window between bind() returning
-        // and chmod() landing during which a same-group attacker could
-        // connect. UMask= closes the window at vfs_mknod time. This
-        // test pins both pool kinds (sccache and ccache-only) to
-        // confirm neither emits ExecStartPost.
+        // sccache UDS mode enforcement lives in the cache template
+        // (UMask=0077), not the per-pool drop-in. The drop-in must
+        // NOT emit a chmod ExecStartPost — the chmod-after-bind shim
+        // is rejected because of the TOCTOU window between bind()
+        // returning and chmod() landing during which a non-owner
+        // could connect. UMask= closes the window at vfs_mknod time.
+        // This test pins both pool kinds (sccache and ccache-only)
+        // to confirm neither emits ExecStartPost.
         for kinds in [
             vec![CacheKind::Sccache],
             vec![CacheKind::Ccache],
@@ -3724,7 +3761,7 @@ mod tests {
             assert!(
                 !body.contains("ExecStartPost"),
                 "cache drop-in must NOT emit ExecStartPost — \
-                 SEC-04 step 2 is solved at the template level via UMask=0007. \
+                 mode enforcement is solved at the template level via UMask=0077. \
                  got body:\n{body}"
             );
         }

@@ -6072,7 +6072,8 @@ mod tests {
         // Unit text written to disk is the canonical template.
         let unit_text = fs::read_to_string(paths.unit_file("a").as_std_path()).unwrap();
         assert!(unit_text.contains("[Unit]"));
-        assert!(unit_text.contains("ExecStart=!/usr/lib/ghars/runsvc-wrapper %i"));
+        assert!(unit_text.contains("\nExecStart=/usr/lib/ghars/runsvc-wrapper %i\n"));
+        assert!(!unit_text.contains("ExecStart=!"));
         // Tarball was downloaded once.
         assert_eq!(tarball.fetched.lock().unwrap().len(), 1);
         // User was added.

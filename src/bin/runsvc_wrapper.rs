@@ -1,18 +1,20 @@
-//! SEC-02 root-owned runsvc trampoline.
+//! Verify-only runsvc trampoline.
 //!
 //! Invoked from the runner unit as:
 //!
 //! ```text
-//! ExecStart=!/usr/lib/ghars/runsvc-wrapper %i
+//! ExecStart=/usr/lib/ghars/runsvc-wrapper %i
 //! ```
 //!
-//! The `!` prefix bypasses the unit's `User=`/`Group=`/
-//! `SupplementaryGroups=` so this binary starts as root, while the
-//! unit's filesystem-namespacing, system-call filter, network
-//! namespace, capability bounding set, and other sandboxing directives
-//! stay applied (verified against systemd's
-//! `src/core/exec-invoke.c::needs_sandboxing`, which is gated on
-//! `EXEC_COMMAND_FULLY_PRIVILEGED` — set by `+`, NOT by `!`).
+//! No prefix. The trampoline runs at the unit's
+//! DynamicUser-allocated identity (`User=ghars-tz-<TRUST_ZONE>` set
+//! by the per-runner 00-ghars.conf drop-in). The unit's full sandbox
+//! stays applied — filesystem-namespacing, system-call filter,
+//! network namespace, capability bounding set, and other directives
+//! all remain in force because no `!` or `+` prefix is present
+//! (verified against systemd's `src/core/exec-invoke.c::needs_sandboxing`,
+//! which is gated on `EXEC_COMMAND_FULLY_PRIVILEGED` — set ONLY by
+//! `+`).
 //!
 //! What the binary does, in order:
 //! 1. Validate `argv[1]` (the systemd `%i` instance name) against the
@@ -29,27 +31,21 @@
 //!    O_RDONLY`. Verify `fstat()` reports a regular file with at
 //!    least owner-execute (`S_IXUSR`).
 //! 4. Compute SHA256 of the opened fd's full contents. Compare to the
-//!    annotation. On mismatch refuse to exec — the runner user could
-//!    have replaced runsvc.sh between apply runs, and exec'ing it
-//!    would persist arbitrary code across restarts (the SEC-02
-//!    attack).
-//! 5. Resolve the runner system user `ghars-<INSTANCE>` via
-//!    `nix::unistd::User::from_name` (a safe `getpwnam_r(3)`
-//!    wrapper). Refuse if missing.
-//! 6. Clear `FD_CLOEXEC` on the script fd. The kernel's
+//!    annotation. On mismatch refuse to exec — the on-disk
+//!    runsvc.sh has changed since `ghars apply` recorded its hash,
+//!    and exec'ing it would persist arbitrary code across restarts.
+//! 5. Clear `FD_CLOEXEC` on the script fd. The kernel's
 //!    `binfmt_script` handler (`fs/binfmt_script.c:93` checking
 //!    `BINPRM_FLAGS_PATH_INACCESSIBLE`) refuses to interpret a script
 //!    when the source fd is close-on-exec, because the interpreter
 //!    needs to re-open `/proc/self/fd/N` post-exec.
-//! 7. Drop privileges: `setgroups([])` to clear supplementary groups,
-//!    then `setgid(gid)`, then `setuid(uid)`. Order matters: once
-//!    `setuid` to non-zero takes effect we lose `CAP_SETGID` and
-//!    cannot change groups any more.
-//! 8. `fexecve(fd, argv, envp)` on the verified fd. The kernel
+//! 6. `fexecve(fd, argv, envp)` on the verified fd. The kernel
 //!    re-resolves the binary via `/proc/self/fd/N`, runs the
 //!    shebang's interpreter, and never refers back to the path we
-//!    opened — closing the open-then-rename TOCTOU window the runner
-//!    user could otherwise exploit.
+//!    opened — closing the open-then-rename TOCTOU window the
+//!    runner could otherwise exploit. NO setuid/setgid/setgroups —
+//!    DynamicUser= already established the runner identity before
+//!    this binary ever started.
 //!
 //! On any failure the binary writes a single actionable line to
 //! stderr (which systemd captures into the journal under the unit's
@@ -69,7 +65,6 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use nix::fcntl::{FcntlArg, FdFlag, fcntl};
-use nix::unistd::User;
 use sha2::{Digest, Sha256};
 
 /// Stable exit codes. Operators / journal queries rely on these to
@@ -82,10 +77,9 @@ mod exit_code {
     pub const SCRIPT_OPEN_FAILED: u8 = 4;
     pub const SCRIPT_NOT_REGULAR_OR_NOT_EXEC: u8 = 5;
     pub const SHA256_MISMATCH: u8 = 6;
-    pub const USER_LOOKUP_FAILED: u8 = 7;
-    pub const PRIVILEGE_DROP_FAILED: u8 = 8;
-    pub const FEXECVE_FAILED: u8 = 9;
-    pub const INTERNAL_ERROR: u8 = 10;
+    pub const FD_CLOEXEC_CLEAR_FAILED: u8 = 7;
+    pub const FEXECVE_FAILED: u8 = 8;
+    pub const INTERNAL_ERROR: u8 = 9;
 }
 
 /// Runner instance regex: matches the `IDENTIFIER_REGEX` from
@@ -186,10 +180,6 @@ fn drop_in_path(instance: &str) -> PathBuf {
 
 fn runsvc_path(instance: &str) -> PathBuf {
     PathBuf::from(format!("/var/lib/ghars/{instance}/runsvc.sh"))
-}
-
-fn user_name(instance: &str) -> String {
-    format!("ghars-{instance}")
 }
 
 /// Single failure-path helper. systemd's journal already prefixes
@@ -348,28 +338,7 @@ fn main() -> ExitCode {
         );
     }
 
-    // --- Step 3: resolve the runner user ----------------------------
-    let user_name = user_name(instance);
-    let runner_user = match User::from_name(&user_name) {
-        Ok(Some(u)) => u,
-        Ok(None) => {
-            return die(
-                exit_code::USER_LOOKUP_FAILED,
-                format!(
-                    "system user {user_name:?} does not exist — `ghars apply` \
-                     should have created it via useradd; re-run apply"
-                ),
-            );
-        }
-        Err(e) => {
-            return die(
-                exit_code::USER_LOOKUP_FAILED,
-                format!("getpwnam_r({user_name:?}) failed: {e}"),
-            );
-        }
-    };
-
-    // --- Step 4: clear FD_CLOEXEC on the script fd -------------------
+    // --- Step 3: clear FD_CLOEXEC on the script fd -------------------
     // binfmt_script.c:93 refuses to interpret a script when the source
     // fd is FD_CLOEXEC because the kernel constructs `/proc/self/fd/N`
     // as the effective path and the script interpreter needs that
@@ -378,43 +347,12 @@ fn main() -> ExitCode {
     let script_fd = script_file.as_raw_fd();
     if let Err(e) = fcntl(script_fd, FcntlArg::F_SETFD(FdFlag::empty())) {
         return die(
-            exit_code::PRIVILEGE_DROP_FAILED,
+            exit_code::FD_CLOEXEC_CLEAR_FAILED,
             format!("clear FD_CLOEXEC on runsvc.sh fd: {e}"),
         );
     }
 
-    // --- Step 5: drop privileges ------------------------------------
-    // setgroups → setgid → setuid (in this order so we still hold
-    // CAP_SETGID when we drop supplementary groups).
-    if let Err(e) = nix::unistd::setgroups(&[]) {
-        return die(
-            exit_code::PRIVILEGE_DROP_FAILED,
-            format!(
-                "setgroups([]) failed: {e} — wrapper needs CAP_SETGID; \
-                 verify the unit's CapabilityBoundingSet=CAP_SETUID CAP_SETGID"
-            ),
-        );
-    }
-    if let Err(e) = nix::unistd::setgid(runner_user.gid) {
-        return die(
-            exit_code::PRIVILEGE_DROP_FAILED,
-            format!(
-                "setgid({}) failed: {e} — wrapper needs CAP_SETGID",
-                runner_user.gid
-            ),
-        );
-    }
-    if let Err(e) = nix::unistd::setuid(runner_user.uid) {
-        return die(
-            exit_code::PRIVILEGE_DROP_FAILED,
-            format!(
-                "setuid({}) failed: {e} — wrapper needs CAP_SETUID",
-                runner_user.uid
-            ),
-        );
-    }
-
-    // --- Step 6: fexecve the verified fd ----------------------------
+    // --- Step 4: fexecve the verified fd ----------------------------
     let argv0 = match CString::new(script_path.as_os_str().as_encoded_bytes()) {
         Ok(c) => c,
         Err(_) => {
@@ -427,10 +365,10 @@ fn main() -> ExitCode {
             );
         }
     };
-    // Inherit the unit's full Environment= via std::env. systemd's
-    // `!`-prefix exec applies Environment= directives normally (only
-    // User=/Group= are bypassed), so each `KEY=VALUE` in std::env is
-    // already what the unit configured.
+    // Inherit the unit's full Environment= via std::env. With no
+    // ExecStart= prefix the unit's Environment= directives are applied
+    // verbatim before the trampoline starts, so each `KEY=VALUE` in
+    // std::env is already what the unit configured.
     let env_strs: Vec<OsString> = std::env::vars_os()
         .map(|(k, v)| {
             let mut combined = OsString::with_capacity(k.len() + 1 + v.len());
@@ -743,11 +681,6 @@ mod tests {
             runsvc_path("buckos"),
             std::path::PathBuf::from("/var/lib/ghars/buckos/runsvc.sh")
         );
-    }
-
-    #[test]
-    fn user_name_prefixes_ghars() {
-        assert_eq!(user_name("buckos"), "ghars-buckos");
     }
 
     #[test]

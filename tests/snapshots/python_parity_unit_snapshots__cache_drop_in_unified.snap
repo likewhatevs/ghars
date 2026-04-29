@@ -10,7 +10,7 @@ X-Ghars-Pool-Kinds=sccache,ccache
 X-Ghars-Config-Source=/etc/ghars/ghars.toml
 
 [Service]
-Group=ghars-cache-build
+User=ghars-tz-default
 Environment=SCCACHE_DIR=%C/ghars/pools/build/sccache
 Environment=SCCACHE_CACHE_SIZE=200G
 Environment=SCCACHE_SERVER_UDS=%t/ghars/cache-build.sock

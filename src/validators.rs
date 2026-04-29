@@ -44,11 +44,16 @@ pub const USER_MAX_LEN: usize = SYSTEMD_GROUP_NAME_MAX;
 /// from this single source.
 pub(crate) const SYSTEMD_GROUP_NAME_MAX: usize = 31;
 
-/// Prefix `apply::cache_pool_group` (and `systemd::render_cache_drop_in`)
-/// prepend to a pool name to form the per-pool group name. Centralized so
+/// Prefix `apply::cache_pool_group` prepends to a pool name to form
+/// the per-pool group name (consumed by the gpasswd / groupadd /
+/// groupdel call sites in apply.rs). Centralized so
 /// `CACHE_POOL_NAME_MAX_LEN` derives from `prefix.len()` instead of a
 /// hand-counted constant — a future rename of the prefix automatically
-/// adjusts the pool-name cap.
+/// adjusts the pool-name cap. systemd's per-pool drop-in does not use
+/// this prefix: the cache server's `User=` is set to
+/// `ghars-tz-<TRUST_ZONE>` (sibling DynamicUser of the runners in the
+/// same trust_zone), and the pool-group machinery survives only as a
+/// transitional surface that the DynamicUser pivot removes wholesale.
 pub(crate) const CACHE_GROUP_PREFIX: &str = "ghars-cache-";
 
 /// Prefix `plan::merge_defaults` prepends to runner.name to form the

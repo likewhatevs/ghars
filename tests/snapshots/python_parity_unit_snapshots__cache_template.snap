@@ -14,50 +14,54 @@ StopWhenUnneeded=yes
 
 [Service]
 Type=simple
-# `Group=` is INTENTIONALLY omitted from the template — the per-pool
-# 00-ghars.conf drop-in sets `Group=ghars-cache-<pool>` so each pool's
-# UDS at `/run/ghars/cache-<pool>.sock` is owned by a per-pool group.
-# Runners join only the `ghars-cache-<pool>` groups they're allowed to
-# reach (apply.rs::execute_create_runner adds membership), so a
-# compromised runner cannot connect to ANOTHER pool's UDS even if it
-# can resolve the path. Hardcoding `Group=gha` here would defeat the
-# per-pool ACL because every cache server would run with the same
-# primary group, and the UDS would be world-reachable for every
-# `gha`-group runner. (SEC-04 mitigation step 1.)
-#
-# `User=gha` stays in the template — every cache service runs as the
-# same uid so the cache directory's contents have a single owner; the
-# DAC boundary between pools is the `Group=` membership set by the
-# drop-in plus the UDS file mode (0660) the cache server writes.
-User=gha
+# DynamicUser=yes allocates the cache server a transient UID/GID from
+# the systemd-allocated range (man systemd.exec.5, since v232) on unit
+# start and recycles it on stop — nothing is written to /etc/passwd or
+# /etc/group. The User= name is set by the per-pool 00-ghars.conf
+# drop-in to `ghars-tz-<TRUST_ZONE>`, NOT to a per-pool name: the
+# cache server must share its UID with the runners in the same
+# trust_zone so the UDS at `/run/ghars/cache-<pool>.sock` (mode 0600
+# owner=ghars-tz-<TRUST_ZONE>) is reachable from those runners by
+# owner-DAC. Runners reach the socket via `BindPaths=` in their own
+# drop-in; cross-trust-zone reach is denied at the AF_UNIX connect()
+# layer because the connecting UID does not match the socket inode
+# owner. No `Group=` line, no SupplementaryGroups, no gpasswd.
+DynamicUser=yes
 Slice=system.slice
 
-# UMask=0007 is the kernel-enforced sccache UDS permission gate.
+# UMask=0077 is the kernel-enforced sccache UDS permission gate.
 # AF_UNIX bind() masks the socket inode mode by current_umask() at
 # vfs_mknod time (Linux net/unix/af_unix.c:unix_bind_bsd:1349 —
 # `umode_t mode = S_IFSOCK | (SOCK_INODE(sk->sk_socket)->i_mode & ~current_umask())`).
 # sccache's UnixListener::bind (sccache server.rs:511 +
 # commands.rs:104) performs no chmod after bind, so the kernel-applied
-# mode is final. With UMask=0007, the resulting UDS inode mode is
-# 0660 — owner=User= rw, group=Group= rw, others denied. Combined
-# with the per-pool drop-in's `Group=ghars-cache-<pool>` (the cache
-# server's primary gid is inherited by mknod), this gives the
-# UDS owner=gha:ghars-cache-<pool> mode=0660. Runners that joined the
-# `ghars-cache-<pool>` supplementary group (via apply.rs::execute_create_runner)
-# can connect; non-members get EACCES. UMask= closes the mode at
-# bind() time atomically — unlike a chmod-after-bind shim, there is
-# no TOCTOU window between bind() returning and the chmod landing
-# during which a same-group attacker could connect. (SEC-04
-# step 2.)
-UMask=0007
+# mode is final. With UMask=0077 the resulting UDS inode mode is 0600
+# — owner rw, group/others denied. The cache server runs at the same
+# DynamicUser-allocated UID as the runners in its trust_zone (set via
+# the 00-ghars.conf drop-in's `User=ghars-tz-<TRUST_ZONE>`), so a
+# runner inside the same trust_zone connects by owner-DAC. Runners in
+# different trust_zones run at different UIDs and get EACCES at
+# connect() — no shared group is involved. UMask= closes the mode at
+# bind() time atomically (no TOCTOU window between bind() and a chmod
+# shim).
+UMask=0077
 
-# CacheDirectory creates /var/cache/ghars/pools/%i with mode 0755
-# (group-traversable; runners run as the same User=gha and connect
-# via UDS or share files within the pool dir).
+# CacheDirectory creates /var/cache/ghars/pools/%i with mode 0750.
+# Owner is the cache server's DynamicUser-allocated UID
+# (ghars-tz-<TRUST_ZONE>). Runners in the same trust_zone share that
+# UID, so they traverse via owner-DAC; runners in other trust_zones
+# run at a different UID and get EACCES — group bits are unused
+# because no shared group exists in this model.
 CacheDirectory=ghars/pools/%i
-CacheDirectoryMode=0755
+CacheDirectoryMode=0750
+# RuntimeDirectory=/run/ghars/ holds the per-pool sccache UDS
+# (`cache-<pool>.sock`). Mode 0700 owner=ghars-tz-<TRUST_ZONE>: only
+# the trust_zone's UID can resolve the directory at the host layer.
+# Runners reach the UDS through `BindPaths=` (systemd as root
+# performs the bind into the runner sandbox) — sandbox delivery does
+# not require runner-side traversal of the host /run/ghars/ entry.
 RuntimeDirectory=ghars
-RuntimeDirectoryMode=0755
+RuntimeDirectoryMode=0700
 
 # Per-kinds env + ExecStart land in the per-pool 00-ghars.conf drop-in
 # (sccache server launches there when kinds includes sccache;

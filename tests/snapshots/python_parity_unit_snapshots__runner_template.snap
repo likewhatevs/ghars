@@ -14,31 +14,36 @@ X-Ghars-Schema-Version=1
 
 [Service]
 Type=simple
-# SEC-02: ExecStart=! runs the runsvc trampoline as root (User=/Group=
-# bypassed) WHILE the unit's full sandbox stays applied — including
-# TemporaryFileSystem=/:ro, BindReadOnlyPaths, PrivateDevices, the
-# SystemCallFilter allowlist, NetworkNamespacePath, etc. (Per
-# systemd.service(5) the `!` prefix alters only User=/Group=/
-# SupplementaryGroups=; in contrast `+` would also bypass
-# CapabilityBoundingSet AND every filesystem-namespacing directive,
-# which would silently leave the runner unsandboxed.)
+# DynamicUser=yes (man systemd.exec.5, since v232) allocates the
+# runner unit a transient UID/GID from systemd's reserved range on
+# unit start and recycles it on unit stop — nothing is written to
+# /etc/passwd or /etc/group. The User= name is set by the per-runner
+# 00-ghars.conf drop-in to `ghars-tz-<TRUST_ZONE>`, NOT to a per-
+# runner name: runners that share a `trust_zone` get the SAME
+# DynamicUser-allocated UID, and that UID-sharing is what makes the
+# shared HOME / ccache / sccache reach work without gpasswd or
+# SupplementaryGroups. Cross-trust-zone reach is denied at the
+# UID-DAC layer (different UIDs → EACCES on shared paths and on the
+# sccache UDS). No `Group=` line — DynamicUser allocates the matching
+# transient GID alongside the UID.
 #
-# The trampoline integrity-checks /var/lib/ghars/%i/runsvc.sh against
-# the recorded X-Ghars-Runsvc-Sha256 annotation in
-# /etc/systemd/system/ghars-runner@%i.service.d/00-ghars.conf, then
-# setgid()/setuid()s to ghars-%i and fexecve()s the verified file
-# descriptor (closing the open-then-rename TOCTOU window the runner
-# user could otherwise exploit on a runner-owned runsvc.sh).
+# ExecStart= has NO prefix. The runsvc-wrapper trampoline runs at the
+# DynamicUser-allocated identity (no setuid/setgid needed) WHILE the
+# unit's full sandbox stays applied — TemporaryFileSystem=/:ro,
+# BindReadOnlyPaths, PrivateDevices, the SystemCallFilter allowlist,
+# NetworkNamespacePath, etc. The trampoline opens
+# /var/lib/ghars/%i/runsvc.sh via O_NOFOLLOW, recomputes sha256,
+# compares against the X-Ghars-Runsvc-Sha256 annotation in the
+# 00-ghars.conf drop-in (file read with O_NOFOLLOW), and fexecve()s
+# the verified file descriptor on match — closing the open-then-
+# rename TOCTOU window. On mismatch: refuse with a diagnostic.
 #
 # The trampoline is a separately-packaged compiled binary at
 # /usr/lib/ghars/runsvc-wrapper (root:root mode 0755) — NOT a shell
-# script. CapabilityBoundingSet below is overridden to grant just the
-# CAP_SETUID/CAP_SETGID needed by the privilege drop; runsvc.sh has no
-# file capabilities, so per capabilities(7) its post-exec permitted
-# set is empty regardless of the bounding set.
-ExecStart=!/usr/lib/ghars/runsvc-wrapper %i
-User=ghars-%i
-Group=ghars-%i
+# script. With no setuid/setgid step, CapabilityBoundingSet below is
+# empty (no CAP_SETUID, no CAP_SETGID).
+DynamicUser=yes
+ExecStart=/usr/lib/ghars/runsvc-wrapper %i
 WorkingDirectory=/var/lib/ghars/%i
 # Slice=system.slice unconditional. No operator opt-in.
 Slice=system.slice
@@ -75,17 +80,14 @@ KillMode=control-group
 KillSignal=SIGTERM
 TimeoutStopSec=5min
 
-# Privilege isolation. CapabilityBoundingSet is the smallest set the
-# SEC-02 wrapper needs to drop privileges (CAP_SETUID + CAP_SETGID for
-# the setuid/setgid syscalls — kernel/sys.c:669 enforces CAP_SETUID).
-# After the wrapper fexecve()s into runsvc.sh the kernel computes the
-# new permitted set as `(P_inheritable & F_inheritable) | (F_permitted
-# & P_bounding)`. Inheritable is empty, runsvc.sh is a script with no
-# file capabilities, so the post-exec permitted set is empty regardless
-# of the bounding set. AmbientCapabilities stays empty so the kernel
+# Privilege isolation. CapabilityBoundingSet is empty: the trampoline
+# does not setuid/setgid (DynamicUser= handles the identity), so no
+# CAP_SETUID/CAP_SETGID are needed; runsvc.sh is a script with no file
+# capabilities, so per capabilities(7) its post-exec permitted set is
+# empty regardless. AmbientCapabilities stays empty so the kernel
 # does not raise any cap into permitted at exec time.
 NoNewPrivileges=yes
-CapabilityBoundingSet=CAP_SETUID CAP_SETGID
+CapabilityBoundingSet=
 AmbientCapabilities=
 
 # Filesystem allowlist. Optional paths use `-` prefix for merged-usr
