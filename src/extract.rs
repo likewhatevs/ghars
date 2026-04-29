@@ -888,16 +888,40 @@ fn copy_dir_recursive(src: &Utf8Path, dst: &Utf8Path) -> Result<()> {
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let name = entry.file_name();
-        let from = src.join(name.to_string_lossy().as_ref());
-        let to = dst.join(name.to_string_lossy().as_ref());
+        // Use OsString-based join via the std PathBuf surface so
+        // non-UTF-8 filenames round-trip byte-exactly. The previous
+        // `name.to_string_lossy()` substituted U+FFFD for invalid
+        // sequences, producing a destination filename that did NOT
+        // match the source — silently corrupting the copy. Tarball
+        // extracts under our `safe_member_filter` only emit ASCII
+        // names today, but the EXDEV cross-FS fallback path is
+        // generic and must not damage any name the kernel can
+        // represent.
+        let from = src.as_std_path().join(&name);
+        let to = dst.as_std_path().join(&name);
         let ftype = entry.file_type()?;
         if ftype.is_dir() {
-            copy_dir_recursive(&from, &to)?;
+            // Both subtrees must be representable as Utf8Path for
+            // the recursive call. Tarball outputs are ASCII, so
+            // this is a no-op in production; the lossy fallback is
+            // confined to the recurse boundary and emits a
+            // structured error rather than substituting U+FFFD.
+            let from_utf8 = Utf8PathBuf::from_path_buf(from)
+                .map_err(|p| GharsError::Tarball(
+                    format!("non-UTF-8 directory name in tarball: {}", p.display()),
+                    None,
+                ))?;
+            let to_utf8 = Utf8PathBuf::from_path_buf(to)
+                .map_err(|p| GharsError::Tarball(
+                    format!("non-UTF-8 directory name in tarball: {}", p.display()),
+                    None,
+                ))?;
+            copy_dir_recursive(&from_utf8, &to_utf8)?;
         } else if ftype.is_symlink() {
-            let target = fs::read_link(from.as_std_path())?;
-            std::os::unix::fs::symlink(&target, to.as_std_path())?;
+            let target = fs::read_link(&from)?;
+            std::os::unix::fs::symlink(&target, &to)?;
         } else {
-            fs::copy(from.as_std_path(), to.as_std_path())?;
+            fs::copy(&from, &to)?;
         }
     }
     Ok(())
@@ -1835,6 +1859,61 @@ mod tests {
         assert!(link_meta.file_type().is_symlink());
         let link_target = fs::read_link(dst.join("sub/link").as_std_path()).unwrap();
         assert_eq!(link_target.to_string_lossy(), "inner.txt");
+    }
+
+    #[test]
+    fn copy_dir_recursive_preserves_non_utf8_filenames_byte_exact() {
+        // Regression pin: the prior `name.to_string_lossy().as_ref()`
+        // path substituted U+FFFD into any name with invalid UTF-8
+        // sequences, producing a destination filename that did NOT
+        // round-trip from the source. The fix uses OsString-typed
+        // join so filenames containing arbitrary kernel-representable
+        // bytes survive unchanged.
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let src = Utf8PathBuf::from_path_buf(tmp.path().join("src")).unwrap();
+        let dst = Utf8PathBuf::from_path_buf(tmp.path().join("dst")).unwrap();
+        fs::create_dir_all(src.as_std_path()).unwrap();
+        // Filename = "valid_" + invalid-UTF-8 byte sequence (\x80 \xFF
+        // \x80 are continuation/standalone bytes that DON'T form a
+        // valid UTF-8 codepoint). The kernel happily stores it; we
+        // must copy it byte-exact.
+        let bad_bytes: Vec<u8> = b"valid_\x80\xff\x80".to_vec();
+        let bad_name = OsStr::from_bytes(&bad_bytes);
+        let src_path = src.as_std_path().join(bad_name);
+        fs::write(&src_path, b"sentinel").unwrap();
+
+        copy_dir_recursive(&src, &dst).unwrap();
+
+        // Destination must contain a file with the EXACT same byte
+        // sequence — not a U+FFFD-substituted variant.
+        let dst_path = dst.as_std_path().join(bad_name);
+        assert!(
+            dst_path.exists(),
+            "non-UTF-8 filename must round-trip byte-exact; missing at {dst_path:?}"
+        );
+        assert_eq!(
+            fs::read(&dst_path).unwrap(),
+            b"sentinel",
+            "copy must preserve content under the non-UTF-8 name"
+        );
+        // Defense in depth: assert the dst directory has exactly one
+        // entry (no U+FFFD-named ghost file from a partial fix).
+        let dst_entries: Vec<_> = fs::read_dir(dst.as_std_path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            dst_entries.len(),
+            1,
+            "dst must contain exactly the one copied file; got {dst_entries:?}"
+        );
+        assert_eq!(
+            dst_entries[0].as_bytes(),
+            bad_bytes.as_slice(),
+            "dst filename must be byte-exact"
+        );
     }
 
     #[test]

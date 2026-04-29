@@ -883,6 +883,24 @@ fn read_root_owned_0600(path: &Path, field_label: &str) -> Result<Vec<u8>> {
         ));
     }
     let mode = meta.mode() & 0o7777;
+    // Reject the setuid (0o4000), setgid (0o2000), and sticky
+    // (0o1000) bits on credential files. None are needed for
+    // credential storage — ghars reads the file as root via this
+    // helper; setuid/setgid/sticky on a regular credential file is
+    // either operator confusion or a hostile setup. setuid/setgid
+    // on a regular file does nothing without exec permission, but
+    // pinning them off keeps the filesystem state unambiguous.
+    if mode & 0o7000 != 0 {
+        return Err(GharsError::Auth(
+            format!(
+                "{field_label} {:?}: mode {:o} has setuid/setgid/sticky bits set; \
+                 credential files must be plain regular-file perms",
+                path.display(),
+                mode
+            ),
+            "chmod 600 the file (drop the special bits): `sudo chmod 0600 <path>`".into(),
+        ));
+    }
     if mode & 0o077 != 0 {
         return Err(GharsError::Auth(
             format!(
@@ -1097,6 +1115,58 @@ mod tests {
         assert!(
             msg.contains("symlink") || msg.contains("open failed"),
             "{msg}"
+        );
+    }
+
+    #[test]
+    fn read_root_owned_0600_rejects_setuid_bit() {
+        // Hardening: setuid on a credential file is unusual and
+        // unambiguous — credential files are read by root via this
+        // helper. The setuid bit doesn't change semantics (the file
+        // is not executable) but its presence indicates either
+        // operator confusion or a hostile setup. Pin rejection so
+        // the operator gets a clear remediation rather than
+        // silently passing.
+        let dir = tempfile::tempdir().unwrap();
+        // 0o4600: setuid + rw owner, no group/other.
+        let path = mk_file(&dir, "token", b"abc\n", 0o4600);
+        let err = read_root_owned_0600(path.as_std_path(), "token_file").unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("setuid/setgid/sticky")
+                || msg.contains("special bits")
+                || msg.contains("uid"),
+            "expected setuid/setgid/sticky rejection; got {msg}"
+        );
+    }
+
+    #[test]
+    fn read_root_owned_0600_rejects_setgid_bit() {
+        let dir = tempfile::tempdir().unwrap();
+        // 0o2600: setgid + rw owner.
+        let path = mk_file(&dir, "token", b"abc\n", 0o2600);
+        let err = read_root_owned_0600(path.as_std_path(), "token_file").unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("setuid/setgid/sticky")
+                || msg.contains("special bits")
+                || msg.contains("uid"),
+            "expected setgid rejection; got {msg}"
+        );
+    }
+
+    #[test]
+    fn read_root_owned_0600_rejects_sticky_bit() {
+        let dir = tempfile::tempdir().unwrap();
+        // 0o1600: sticky + rw owner.
+        let path = mk_file(&dir, "token", b"abc\n", 0o1600);
+        let err = read_root_owned_0600(path.as_std_path(), "token_file").unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("setuid/setgid/sticky")
+                || msg.contains("special bits")
+                || msg.contains("uid"),
+            "expected sticky-bit rejection; got {msg}"
         );
     }
 

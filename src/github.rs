@@ -260,50 +260,6 @@ where
 }
 
 // ---------------------------------------------------------------------
-// octocrab builder (auth-mode-agnostic, system trust only in v0.1)
-// ---------------------------------------------------------------------
-
-/// Construct a fresh `octocrab::OctocrabBuilder` configured with ghars's
-/// v0.1 transport policy. Auth attachment (`.personal_token(...)` /
-/// `.app(...)`) happens at the call site — `auth.rs` chains its
-/// auth-mode-specific configuration on top of what this returns.
-///
-/// ## Transport policy (v0.1)
-///
-/// octocrab's `rustls` + `rustls-ring` + `default-client` features
-/// (Cargo.toml) wire `hyper-rustls::HttpsConnectorBuilder::new().with_native_roots()`
-/// into the default client (octocrab 0.42.1 lib.rs:683-687). On Linux
-/// that reads:
-/// - `/etc/ssl/certs/ca-certificates.crt` (Ubuntu/Debian)
-/// - `/etc/pki/tls/certs/ca-bundle.crt` (Fedora/RHEL/CentOS)
-/// - any path indicated by `SSL_CERT_FILE` env
-///
-/// ## Per-deployment proxy CA caveat
-///
-/// The `proxy` argument is currently UNUSED. Operators with corporate
-/// CAs that aren't in the system trust must install them system-wide
-/// via `update-ca-trust enable && update-ca-trust extract` (RHEL/
-/// Fedora) or `update-ca-certificates` (Ubuntu/Debian). This is
-/// because octocrab 0.42 exposes no client-injection point that
-/// accepts a pre-built `reqwest::Client` and uses hyper directly,
-/// not reqwest. Custom hyper-connector injection via
-/// `OctocrabBuilder::with_service` is a v0.2 follow-up.
-///
-/// The argument is taken now so v0.2 can switch to `with_service`
-/// without changing the call sites in auth.rs.
-#[must_use]
-pub fn build_octocrab_builder(
-    _proxy: Option<&ProxySpec>,
-) -> octocrab::OctocrabBuilder<
-    octocrab::NoSvc,
-    octocrab::DefaultOctocrabBuilderConfig,
-    octocrab::NoAuth,
-    octocrab::NotLayerReady,
-> {
-    octocrab::Octocrab::builder()
-}
-
-// ---------------------------------------------------------------------
 // reqwest::Client construction (TLS trust store + proxy CA injection)
 // ---------------------------------------------------------------------
 

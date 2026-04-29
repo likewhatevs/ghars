@@ -344,7 +344,25 @@ fn list_runner_unit_files(unit_dir: &Utf8Path) -> std::io::Result<Vec<(String, U
     for entry in read {
         let entry = entry?;
         let file_type = entry.file_type()?;
-        if !file_type.is_file() && !file_type.is_symlink() {
+        // Reject symlinks. ghars apply only ever writes regular
+        // files into `unit_dir`; a symlink at `ghars-runner@X.service`
+        // is operator tampering or filesystem corruption. Treating
+        // it as a managed runner would (a) read state from a path
+        // ghars does not control and (b) provoke `apply` to remove
+        // the symlink target via `fs::remove_file`, possibly
+        // affecting state outside `unit_dir`. Skip + warn so
+        // discovery does not fail on neighbouring valid units, and
+        // the operator sees the offender in journald.
+        if file_type.is_symlink() {
+            tracing::warn!(
+                path = %entry.path().display(),
+                "state::list_runner_unit_files skipping symlink — \
+                 ghars-managed unit files are always regular files; \
+                 remove or replace the symlink"
+            );
+            continue;
+        }
+        if !file_type.is_file() {
             continue;
         }
         // Non-UTF8 unit filenames cannot be ghars-managed (we only
@@ -412,7 +430,21 @@ fn list_cache_pool_drop_in_dirs(
     for entry in read {
         let entry = entry?;
         let file_type = entry.file_type()?;
-        if !file_type.is_dir() && !file_type.is_symlink() {
+        // Reject symlinks. apply.rs writes a real directory at
+        // `ghars-cache@POOL.service.d/`; a symlink there is operator
+        // tampering and would let ghars apply remove or rewrite a
+        // path outside `unit_dir`. Skip + warn so discovery proceeds
+        // for neighbouring valid pools.
+        if file_type.is_symlink() {
+            tracing::warn!(
+                path = %entry.path().display(),
+                "state::list_cache_pool_drop_in_dirs skipping symlink — \
+                 ghars-managed drop-in directories are always real directories; \
+                 remove or replace the symlink"
+            );
+            continue;
+        }
+        if !file_type.is_dir() {
             continue;
         }
         let Ok(path) = Utf8PathBuf::try_from(entry.path()) else {
@@ -454,7 +486,20 @@ fn read_drop_ins(dir: &Utf8Path) -> std::io::Result<BTreeMap<String, String>> {
     for entry in read {
         let entry = entry?;
         let file_type = entry.file_type()?;
-        if !file_type.is_file() && !file_type.is_symlink() {
+        // Reject symlinks. ghars apply writes drop-in `*.conf`
+        // bodies as real files; a symlink there could redirect a
+        // read/rewrite outside the drop-in directory. Skip + warn
+        // so neighbouring valid drop-ins still surface.
+        if file_type.is_symlink() {
+            tracing::warn!(
+                path = %entry.path().display(),
+                "state::read_drop_ins skipping symlink — \
+                 ghars-managed drop-in *.conf files are always regular files; \
+                 remove or replace the symlink"
+            );
+            continue;
+        }
+        if !file_type.is_file() {
             continue;
         }
         let Ok(path) = Utf8PathBuf::try_from(entry.path()) else {
@@ -1954,14 +1999,18 @@ mod tests {
     /// that mid-iteration failure aborts discover entirely (no partial
     /// `runners` map is returned) instead of silently skipping.
     #[test]
-    fn discover_propagates_mid_iteration_read_failure() {
+    fn discover_skips_symlink_unit_and_continues_with_valid_neighbours() {
+        // Per `list_runner_unit_files_skips_symlinks_and_warns`,
+        // symlinks are filtered before any read. discover() must
+        // proceed with the alphabetically-earlier valid unit and
+        // skip the symlink — NOT propagate an I/O error.
+        // (The original reproduction `dangling symlink → ENOENT
+        // mid-iteration → propagate Io` is no longer valid because
+        // symlink rejection short-circuits before read_to_string
+        // ever fires; this test now pins the post-fix behavior.)
         let tmp = TempDir::new().unwrap();
         let paths = paths_under(&tmp);
-        // First runner alphabetically: valid file. If discover
-        // accidentally returned partial state, this would be present.
         write_unit(&paths, "alpha", &runner_template_text());
-        // Second runner alphabetically: dangling symlink. read_to_string
-        // dereferences and gets ENOENT.
         let dangling = paths
             .unit_dir
             .join("ghars-runner@bravo.service")
@@ -1969,10 +2018,12 @@ mod tests {
             .to_owned();
         std::os::unix::fs::symlink("/nonexistent/path/ghars-target", &dangling).unwrap();
         let mock = MockSystemd::default();
-        let err = discover(&mock, &paths).unwrap_err();
+        let actual = discover(&mock, &paths).unwrap();
+        // alpha surfaces; bravo (symlink) does not.
+        assert!(actual.runners.contains_key("alpha"));
         assert!(
-            matches!(err, GharsError::Io(_)),
-            "expected Io error on dangling symlink, got: {err}"
+            !actual.runners.contains_key("bravo"),
+            "symlink unit must NOT surface as managed runner"
         );
     }
 
@@ -2374,6 +2425,116 @@ mod tests {
             logs_contain(&oversize_pool),
             "expected the oversize pool name {oversize_pool:?} to appear \
              in the structured log line"
+        );
+    }
+
+    // ---- SEC: symlink rejection in state listing ---------------------
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn list_runner_unit_files_skips_symlinks_and_warns() {
+        // Hardening: a symlink at `ghars-runner@<name>.service` is
+        // operator tampering — ghars apply only writes regular
+        // files. Treating it as managed could (a) read state from
+        // a path ghars does not control or (b) provoke `apply` to
+        // remove the symlink target via fs::remove_file. Skip +
+        // warn so neighbouring valid units still surface.
+        let tmp = TempDir::new().unwrap();
+        let unit_dir = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        // Plant a real unit file (must be discovered) plus a
+        // symlink unit (must be skipped).
+        fs::write(
+            unit_dir.join("ghars-runner@real.service").as_std_path(),
+            b"[Unit]\n",
+        )
+        .unwrap();
+        // Symlink target points elsewhere; we never follow it.
+        std::os::unix::fs::symlink(
+            "/etc/passwd",
+            unit_dir
+                .join("ghars-runner@bad.service")
+                .as_std_path(),
+        )
+        .unwrap();
+        let entries = list_runner_unit_files(&unit_dir).unwrap();
+        let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"real"), "real unit must surface; got {names:?}");
+        assert!(
+            !names.contains(&"bad"),
+            "symlink unit must NOT surface as managed runner; got {names:?}"
+        );
+        assert!(
+            logs_contain("skipping symlink"),
+            "expected tracing::warn on the skipped symlink"
+        );
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn list_cache_pool_drop_in_dirs_skips_symlinks_and_warns() {
+        let tmp = TempDir::new().unwrap();
+        let unit_dir = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        // Real per-pool drop-in dir.
+        fs::create_dir_all(
+            unit_dir
+                .join("ghars-cache@real.service.d")
+                .as_std_path(),
+        )
+        .unwrap();
+        // Symlink pointing at the real dir — even pointing at a
+        // ghars-managed location, the symlink itself is rejected.
+        std::os::unix::fs::symlink(
+            "ghars-cache@real.service.d",
+            unit_dir
+                .join("ghars-cache@bad.service.d")
+                .as_std_path(),
+        )
+        .unwrap();
+        let entries = list_cache_pool_drop_in_dirs(&unit_dir).unwrap();
+        let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"real"), "real pool dir must surface");
+        assert!(
+            !names.contains(&"bad"),
+            "symlink pool dir must NOT surface as managed pool"
+        );
+        assert!(
+            logs_contain("skipping symlink"),
+            "expected tracing::warn on the skipped symlink dir"
+        );
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn read_drop_ins_skips_symlinks_and_warns() {
+        let tmp = TempDir::new().unwrap();
+        let dir = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        // Real *.conf file (must be read).
+        fs::write(
+            dir.join("00-ghars.conf").as_std_path(),
+            b"[Unit]\nX-Ghars-Managed=true\n",
+        )
+        .unwrap();
+        // Symlink *.conf pointing at /etc/shadow — must be skipped
+        // unconditionally regardless of whether the target exists
+        // / is readable. This is the worst-case attack: a symlink
+        // that survives a write-this-managed-directory shortcut
+        // would let ghars apply read /etc/shadow's bytes into the
+        // ActualState's drop-in body, then re-render under a
+        // ghars-managed path, leaking the shadow content.
+        std::os::unix::fs::symlink(
+            "/etc/shadow",
+            dir.join("99-evil.conf").as_std_path(),
+        )
+        .unwrap();
+        let map = read_drop_ins(&dir).unwrap();
+        assert!(map.contains_key("00-ghars.conf"), "real *.conf must surface");
+        assert!(
+            !map.contains_key("99-evil.conf"),
+            "symlink *.conf must NOT be read into ActualState"
+        );
+        assert!(
+            logs_contain("skipping symlink"),
+            "expected tracing::warn on the skipped symlink *.conf"
         );
     }
 }
