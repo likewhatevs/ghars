@@ -506,6 +506,15 @@ pub fn extract_tarball_from_file(tarball: File, dest: &Utf8Path) -> Result<()> {
         }
         verify_extracted_inside_dest(&canon_dest, dest, &path_bytes)?;
     }
+    // Batch directory fsync: walk the staging tree and fsync each
+    // directory. This makes the directory entries (the child-name →
+    // inode mappings) durable across a crash so a recovery sees the
+    // same tree shape we just unpacked. Per-file fsync omitted — cost
+    // (~3000 fsyncs for a typical actions-runner tarball) exceeds
+    // benefit given that install_runner_binary re-extracts
+    // unconditionally on next apply, so a half-durable file inside
+    // staging is self-healed by the operator's next `ghars apply`.
+    fsync_dir_tree(dest);
     Ok(())
 }
 
@@ -650,7 +659,16 @@ pub fn verify_local_tarball_open(path: &Utf8Path) -> Result<File> {
 /// 2. Create a private staging directory under
 ///    `<state_dir>/.staging/<runner-name>-<version>-<pid>/` with mode 0700.
 /// 3. Verify and extract the tarball into staging via [`extract_tarball`].
-/// 4. Atomically rename staging into `<runner_home>/bin.<version>/`.
+/// 4. Publish staging at `<runner_home>/bin.<version>/` via
+///    [`extract_and_swap_from_file`]: atomic
+///    `renameat2(RENAME_EXCHANGE)` on upgrade (existing
+///    `bin.<version>/` is swapped with the staging tree, then the
+///    displaced old tree is removed), plain `rename(2)` on fresh
+///    install. On upgrade, EINVAL/ENOSYS (legacy kernel/FS without
+///    RENAME_EXCHANGE) falls back to remove-then-rename, and EXDEV
+///    (cross-filesystem) falls back to remove-then-copy-then-remove.
+///    Both fallbacks emit `tracing::warn` so operators see the
+///    degraded path.
 ///
 /// `state_dir` is the parent under which `.staging/` lives (the design
 /// pins this to `/var/lib/ghars/.staging/`; tests redirect both
@@ -662,11 +680,10 @@ pub fn verify_local_tarball_open(path: &Utf8Path) -> Result<File> {
 /// before propagating the error so an aborted apply does not leave
 /// orphan trees in `.staging/`.
 ///
-/// Note: the `bin` symlink under `runner_home` is NOT updated by this
-/// function. After install completes, call [`swap_bin_symlink`] to point
-/// `runner_home/bin` at the freshly-installed `bin.<version>/`. The two
-/// steps are split so apply.rs can sequence other work (e.g. running
-/// `config.sh` against the new tree) before the swap.
+/// On success the freshly-installed tree lives directly at
+/// `runner_home/bin.<version>/` — there is no `bin` symlink and no
+/// post-install swap step. Apply.rs sequences `config.sh` against
+/// `bin.<version>/` directly via the path returned from this function.
 ///
 /// # Errors
 ///
@@ -734,21 +751,23 @@ fn require_root_for_install() -> Result<()> {
 }
 
 /// Prune old `bin.X.Y.Z/` directories under `runner_home`, keeping
-/// the `keep_versions` most-recent by mtime plus the directory the
-/// `bin` symlink currently resolves to (always preserved regardless
-/// of mtime ordering).
+/// the `keep_versions` most-recent by mtime plus the directory any
+/// operator-created `bin` symlink currently resolves to (always
+/// preserved regardless of mtime ordering).
 ///
 /// Design Part 9f retention semantics:
 /// - Directory candidates: any entry matching `bin.<rest>` where
-///   `<rest>` is non-empty and `<rest>` is NOT `tmp` (the staging
-///   symlink target used by `swap_bin_symlink`). Plain `bin` (the
-///   active symlink) is excluded automatically because it doesn't
-///   match the prefix-then-non-empty-suffix shape after splitting
-///   on `bin.`.
+///   `<rest>` is non-empty and `<rest>` is NOT `tmp`. Plain `bin`
+///   (no suffix) and `bin.tmp` are excluded automatically by the
+///   prefix-then-non-empty-non-tmp shape: ghars no longer creates
+///   either name, but the pruner defensively skips both shapes in
+///   case an operator placed one there.
 /// - Sort by mtime descending (newest first); keep the first
-///   `keep_versions` entries plus whatever the `bin` symlink points
-///   at (defense in depth: if a sysadmin `touch`'d an older tree,
-///   mtime ordering would otherwise prune the active one).
+///   `keep_versions` entries plus whatever any operator-created `bin`
+///   symlink points at (defense in depth: if a sysadmin `touch`'d
+///   an older tree, mtime ordering would otherwise prune it; we
+///   conservatively skip-protect anything they explicitly pointed
+///   at).
 /// - Remove the rest via `fs::remove_dir_all`. Failures on individual
 ///   directories are aggregated and the function continues — pruning
 ///   is best-effort cleanup, not an integrity gate. Returns
@@ -772,13 +791,13 @@ pub fn prune_old_bin_versions(runner_home: &Utf8Path, keep_versions: u32) -> Res
     }
     let active_target: Option<Utf8PathBuf> = match fs::read_link(runner_home.join("bin")) {
         Ok(target) => {
-            // `swap_bin_symlink` writes a relative target (e.g.
-            // `bin.2.334.0`); join against runner_home for absolute
-            // comparison against `entry.path()`. Non-UTF-8 targets
-            // are dropped (we'd never have written one — apply
-            // controls both ends — so this only fires under
-            // operator tampering, in which case we conservatively
-            // refuse to skip-protect that path).
+            // ghars no longer creates a `bin` symlink, so this
+            // branch only fires when an operator placed one. A
+            // relative target (e.g. `bin.2.334.0`) is joined against
+            // runner_home for absolute comparison against
+            // `entry.path()`. Non-UTF-8 targets are dropped: we
+            // conservatively refuse to skip-protect a path we cannot
+            // round-trip through the comparison logic.
             let abs = if target.is_absolute() {
                 target
             } else {
@@ -797,7 +816,8 @@ pub fn prune_old_bin_versions(runner_home: &Utf8Path, keep_versions: u32) -> Res
         };
         // Match `bin.<non-empty-suffix>` where suffix != "tmp". Plain
         // `bin` (no dot) is excluded by the strip_prefix check; `bin.tmp`
-        // is the active swap intermediate written by swap_bin_symlink.
+        // is excluded because operators sometimes use that name for
+        // staging trees and ghars must not prune it.
         let Some(suffix) = name.strip_prefix("bin.") else {
             continue;
         };
@@ -862,96 +882,62 @@ fn paths_equal(a: &Utf8Path, b: &Utf8Path) -> bool {
     a.as_str().trim_end_matches('/') == b.as_str().trim_end_matches('/')
 }
 
-/// Atomically swap `<runner_home>/bin` to point at `bin.<version>/`.
+/// Extract `tarball_path` into `staging`, then publish the staged tree
+/// at `final_dir`. The publish step is the design's "atomic rename"
+/// from Part 17 SEC-09 and is implemented in three layers:
 ///
-/// Implements design Part 9f: `ln -sfn bin.<version> bin.tmp && mv -T
-/// bin.tmp bin`. The intermediate `bin.tmp` symlink is created first
-/// (relative target so the runner home is relocatable), then renamed
-/// over `bin` via `rename(2)` — which is atomic on Unix even when both
-/// source and dest are symlinks.
+/// 1. **Fresh install (`final_dir` absent).** Plain `rename(2)` of
+///    staging onto `final_dir`. `rename(2)` is atomic for a directory
+///    move when source and destination are on the same filesystem;
+///    the directory entry under `runner_home/` flips from absent to
+///    present in a single step.
 ///
-/// If `bin.tmp` already exists when this function is called (e.g. from
-/// a crashed prior apply), it is removed first; this is safe because
-/// `bin.tmp` is owned exclusively by ghars apply and never points at
-/// load-bearing state. The `bin` target (a directory under
-/// `runner_home`) must already exist — the caller installs it via
-/// [`install_runner_binary`] before swapping.
+/// 2. **Upgrade-in-place (`final_dir` already exists).** Use
+///    `renameat2(RENAME_EXCHANGE)` (via `nix::fcntl::renameat2` with
+///    `RenameFlags::RENAME_EXCHANGE`) to atomically swap the staging
+///    directory and the existing `bin.<version>/` directory. After
+///    the swap the OLD bin tree lives at `staging` and the new tree
+///    lives at `final_dir`; we then `remove_dir_all(staging)` to
+///    discard the old tree. There is no window where `final_dir` is
+///    absent — readers see either the old tree or the new tree at
+///    every instant, never a missing entry. This closes the
+///    upgrade-in-place atomicity gap from design Part 17 SEC-09.
 ///
-/// # Errors
+/// 3. **Fallbacks.** Two fallbacks preserve correctness on
+///    less-capable filesystems and across-filesystem moves:
+///    - `EINVAL` / `ENOSYS` from `renameat2`: kernel < 3.15 or a
+///      filesystem that does not implement `RENAME_EXCHANGE`. Fall
+///      back to the historical remove-then-rename pattern
+///      (`remove_dir_all(final_dir)` then `rename(staging,
+///      final_dir)`). This pattern has the brief
+///      `final_dir`-is-absent window described in concern 2 above —
+///      acceptable because apply.rs holds the global `apply.lock`
+///      and stops the runner unit before this function runs, so no
+///      reader observes the gap. `tracing::warn` fires so operators
+///      on legacy systems see the degraded path.
+///    - `EXDEV`: `<state_dir>/.staging/` and `<runner_home>/` are
+///      on different filesystems. Fall back to `copy_dir_recursive`
+///      + `remove_dir_all(staging)`. NOT atomic — a crash mid-copy
+///      leaves a partial `bin.<version>/`. apply's self-healing
+///      re-extract on the next run covers this; forbidding cross-FS
+///      layouts at preflight would be operator-hostile and the
+///      design does not require it.
 ///
-/// - `GharsError::Tarball` if the target `bin.<version>/` directory
-///   does not exist (would create a dangling symlink).
-/// - `GharsError::Io` for symlink/rename failures.
-pub fn swap_bin_symlink(runner_home: &Utf8Path, version: &str) -> Result<()> {
-    let target_name = format!("bin.{version}");
-    let target_dir = runner_home.join(&target_name);
-    if !target_dir.exists() {
-        return Err(GharsError::Tarball(
-            format!(
-                "swap_bin_symlink: target {target_dir} does not exist; install bin.{version}/ first"
-            ),
-            None,
-        ));
-    }
-    let bin = runner_home.join("bin");
-    let tmp = runner_home.join("bin.tmp");
-    if let Ok(meta) = fs::symlink_metadata(&tmp) {
-        if meta.file_type().is_symlink() || meta.file_type().is_file() {
-            fs::remove_file(&tmp)?;
-        } else {
-            fs::remove_dir_all(&tmp)?;
-        }
-    }
-    // Relative target so the runner home is relocatable.
-    std::os::unix::fs::symlink(&target_name, &tmp)?;
-    fs::rename(&tmp, &bin)?;
-    Ok(())
-}
-
-/// Extract `tarball_path` into `staging`, then move staging to `final_dir`.
+/// After the publish step completes (any of the three layers), both
+/// `runner_home/` and `staging.parent()` are fsynced via
+/// [`fsync_directory`]. Both parent directories' entries change as
+/// part of the swap (the new entry under `runner_home/`, the
+/// changed-or-removed entry under `staging.parent()`); fsyncing both
+/// makes both visible across a crash. Failures of the staging-parent
+/// fsync are logged but do NOT propagate — staging is transient and
+/// any orphan there is cleaned up by the next install_runner_binary
+/// (which removes a pre-existing staging directory before reusing
+/// it).
 ///
-/// The move is the design's "atomic rename" step from Part 17 SEC-09. Two
-/// concerns this function handles:
-///
-/// 1. **EXDEV on cross-filesystem rename.** When
-///    `<state_dir>/.staging/` and `<runner_home>/bin.<version>/` are on
-///    different filesystems (operator mounts per-runner home on a separate
-///    disk), `rename(2)` returns `EXDEV`. We detect that and fall back to
-///    a recursive copy + remove-staging path. The fallback is NOT atomic —
-///    a crash mid-copy leaves a partial `bin.<version>/` — but the only
-///    available alternative is to forbid cross-FS layouts at preflight,
-///    which the design does not require.
-///
-/// 2. **Atomicity gap on upgrade-in-place (design Part 17 SEC-09).**
-///    When `final_dir` already exists, we `remove_dir_all` it and then
-///    `rename` staging onto it. Between those two calls there is a window
-///    where `final_dir` does not exist. The fully-atomic alternative is
-///    `renameat2(RENAME_EXCHANGE)`, which would atomically swap the two
-///    directories so neither side ever vanishes. Cargo.toml has
-///    `unsafe_code = "forbid"`, blocking direct `libc::renameat2`; the
-///    safe wrapper `rustix::fs::renameat_with(RenameFlags::EXCHANGE)`
-///    exists (rustix is already a transitive dep) and is the right
-///    solution for v0.2.
-///
-///    For v0.1, the gap is unobservable in apply.rs's pipeline because:
-///    - apply.rs holds the global `apply.lock` (Part 8) — only one apply
-///      can run at a time.
-///    - The runner unit is stopped BEFORE apply rewrites `bin.<version>/`
-///      (apply ordering: `Stop → install_runner_binary → swap_bin_symlink
-///      → Start`).
-///    - The `bin` symlink still resolves to the OLD `bin.<version>/`
-///      throughout the install step; nothing reads the new directory until
-///      `swap_bin_symlink` runs after this function returns.
-///
-///    A future audit tool that walks `runner_home/` mid-apply would see
-///    `bin.<version>/` momentarily absent. v0.2 should switch to the
-///    rustix wrapper to close the window unconditionally.
 /// SEC-16 TOCTOU-safe extractor: takes an already-opened tarball
 /// `File` and threads it through to [`extract_tarball_from_file`]
-/// so the path is not re-resolved between the open-time
-/// validation in [`verify_local_tarball_open`] and the read. Then
-/// renames the staged tree onto `final_dir` (with the EXDEV
-/// cross-FS fallback documented above).
+/// so the path is not re-resolved between the open-time validation
+/// in [`verify_local_tarball_open`] and the read.
 fn extract_and_swap_from_file(
     tarball_file: File,
     staging: &Utf8Path,
@@ -960,17 +946,185 @@ fn extract_and_swap_from_file(
 ) -> Result<()> {
     extract_tarball_from_file(tarball_file, staging)?;
     fs::create_dir_all(runner_home)?;
+
     if final_dir.exists() {
-        fs::remove_dir_all(final_dir)?;
-    }
-    match fs::rename(staging, final_dir) {
-        Ok(()) => Ok(()),
-        Err(e) if is_cross_device_link(&e) => {
-            copy_dir_recursive(staging, final_dir)?;
-            fs::remove_dir_all(staging)?;
-            Ok(())
+        // Upgrade-in-place: atomically swap staging ↔ final_dir.
+        // After RENAME_EXCHANGE, the OLD tree is at staging and the
+        // new tree is at final_dir; we remove the displaced old tree.
+        match nix::fcntl::renameat2(
+            None,
+            staging.as_std_path(),
+            None,
+            final_dir.as_std_path(),
+            nix::fcntl::RenameFlags::RENAME_EXCHANGE,
+        ) {
+            Ok(()) => {
+                fs::remove_dir_all(staging)?;
+            }
+            Err(nix::errno::Errno::EINVAL) | Err(nix::errno::Errno::ENOSYS) => {
+                // Kernel < 3.15 or the filesystem doesn't implement
+                // RENAME_EXCHANGE. Degrade to remove-then-rename:
+                // there is a brief window where final_dir is absent,
+                // but apply.rs's apply.lock + stopped runner unit
+                // prevent any reader from observing it.
+                tracing::warn!(
+                    final_dir = %final_dir,
+                    "renameat2(RENAME_EXCHANGE) unsupported on this kernel/FS; falling back to remove-then-rename (brief absent-final window covered by apply.lock)"
+                );
+                fs::remove_dir_all(final_dir)?;
+                if let Err(e) = fs::rename(staging, final_dir) {
+                    if is_cross_device_link(&e) {
+                        copy_dir_recursive(staging, final_dir)?;
+                        fs::remove_dir_all(staging)?;
+                    } else {
+                        return Err(GharsError::Io(e));
+                    }
+                }
+            }
+            Err(nix::errno::Errno::EXDEV) => {
+                // staging and final_dir are on different
+                // filesystems. RENAME_EXCHANGE cannot move data
+                // across filesystems any more than rename can. Same
+                // copy+remove fallback as for plain rename. Like
+                // the EINVAL/ENOSYS arm above, this path has a
+                // brief absent-final window between the
+                // remove_dir_all and the copy completing — apply.rs
+                // holds the global apply.lock and stops the runner
+                // unit before this function runs, so no reader
+                // observes the gap.
+                tracing::warn!(
+                    staging = %staging,
+                    final_dir = %final_dir,
+                    "cross-filesystem upgrade: falling back to copy-then-rename (brief absent-final window covered by apply.lock)"
+                );
+                fs::remove_dir_all(final_dir)?;
+                copy_dir_recursive(staging, final_dir)?;
+                fs::remove_dir_all(staging)?;
+            }
+            Err(e) => {
+                return Err(GharsError::Io(e.into()));
+            }
         }
-        Err(e) => Err(GharsError::Io(e)),
+    } else {
+        // Fresh install: plain rename, with EXDEV fallback.
+        match fs::rename(staging, final_dir) {
+            Ok(()) => {}
+            Err(e) if is_cross_device_link(&e) => {
+                copy_dir_recursive(staging, final_dir)?;
+                fs::remove_dir_all(staging)?;
+            }
+            Err(e) => return Err(GharsError::Io(e)),
+        }
+    }
+
+    // Fsync both parent directories: runner_home (where the new
+    // bin.<version>/ entry now lives) and staging.parent() (where
+    // the staging entry was created and then either removed or, in
+    // the RENAME_EXCHANGE path, repointed at the displaced old
+    // tree before being rmdir'd). Both entries must survive a
+    // crash for recovery to see consistent state.
+    //
+    // runner_home's fsync failure propagates: bin.<version>/ IS on
+    // disk, but recovery may not see it without the metadata
+    // journal flush, so the operator should see the error. The
+    // staging-parent fsync failure is logged but not propagated:
+    // staging is transient and orphan cleanup is handled by the
+    // next install_runner_binary's pre-existing-staging removal
+    // (extract.rs::install_runner_binary).
+    fsync_directory(runner_home).map_err(|e| {
+        tracing::warn!(
+            runner_home = %runner_home,
+            error = %e,
+            "runner_home fsync failed after publishing bin.<version>/ — tree is on disk, retry safe"
+        );
+        e
+    })?;
+    if let Some(staging_parent) = staging.parent() {
+        if let Err(e) = fsync_directory(staging_parent) {
+            tracing::warn!(
+                staging_parent = %staging_parent,
+                error = %e,
+                "staging-parent fsync failed; staging cleanup is best-effort and the next apply removes any orphan"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Open `path` as a directory under `O_NOFOLLOW | O_DIRECTORY` and
+/// `sync_all` it. Used to make a directory's entry-list durable
+/// after rename/remove modifies it. Errors propagate as
+/// `GharsError::Io`. The flag pair pins intent: callers always pass
+/// a directory they just wrote into and never want a symlink
+/// resolved at this step.
+fn fsync_directory(path: &Utf8Path) -> Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
+        .open(path.as_std_path())
+        .and_then(|f| f.sync_all())
+        .map_err(GharsError::Io)
+}
+
+/// Recursively fsync every directory under `root` (inclusive).
+///
+/// Used after [`extract_tarball_from_file`] writes the staging tree
+/// to make directory entries durable across a crash: each directory
+/// inode's child-list is flushed via [`fsync_directory`]. Per-file
+/// fsync is intentionally omitted — see the call site for the cost/
+/// benefit reasoning. Failures on individual directories are logged
+/// at `warn` level and the walk continues; the worst case is a
+/// non-durable child entry, which apply.rs's self-healing
+/// re-extract covers on the next run.
+///
+/// Uses path-based `fs::read_dir` rather than fd-relative
+/// operations: identical safety posture to [`copy_dir_recursive`]
+/// — the staging tree is root-owned under `apply.lock` and
+/// cannot be attacker-rewritten between the type-check and the
+/// fsync.
+fn fsync_dir_tree(root: &Utf8Path) {
+    if let Err(e) = fsync_directory(root) {
+        tracing::warn!(
+            path = %root,
+            error = %e,
+            "fsync_dir_tree: root directory fsync failed; staging tree durability degraded but next apply re-extracts"
+        );
+    }
+    let entries = match fs::read_dir(root.as_std_path()) {
+        Ok(it) => it,
+        Err(e) => {
+            tracing::warn!(
+                path = %root,
+                error = %e,
+                "fsync_dir_tree: read_dir failed; subtree fsync skipped (next apply re-extracts)"
+            );
+            return;
+        }
+    };
+    for entry in entries.flatten() {
+        let Ok(ftype) = entry.file_type() else {
+            continue;
+        };
+        // Only recurse into real directories — skip symlinks (lstat-
+        // style), regular files, and special inodes. Symlinks under
+        // the staging tree exist (tar archives carry them) but we
+        // do not follow them: their target is either inside the
+        // tree (already covered by the recursion) or outside (the
+        // safe_member_filter already rejected absolute / `..`
+        // targets, but a symlink whose target points sideways
+        // across the tree would still exist; following it could
+        // double-fsync or hit a dangling link).
+        if !ftype.is_dir() {
+            continue;
+        }
+        let Ok(child_utf8) = Utf8PathBuf::from_path_buf(entry.path()) else {
+            // Non-UTF-8 child name — should not occur for the
+            // tar-crate-filtered inputs ghars accepts, but skipping
+            // is the conservative choice.
+            continue;
+        };
+        fsync_dir_tree(&child_utf8);
     }
 }
 
@@ -984,7 +1138,23 @@ fn is_cross_device_link(e: &std::io::Error) -> bool {
 /// Recursively copy `src` directory tree to `dst`. Preserves files,
 /// directories, and symlinks (using `lchown`-style copy: read symlink
 /// target with `read_link`, recreate at dest). Used as the EXDEV fallback
-/// in [`extract_and_swap`] when source/dest are on different filesystems.
+/// in [`extract_and_swap_from_file`] when source/dest are on different
+/// filesystems.
+///
+/// # Safety precondition
+///
+/// `src` MUST be a root-owned directory under `apply.lock`; do NOT call
+/// from contexts where `src` can be attacker-controlled. The walk uses
+/// path-based stat (`fs::symlink_metadata` + `fs::read_dir`) rather than
+/// fd-relative operations, so an attacker who can rewrite `src` between
+/// the type check and the read could redirect the copy. The current call
+/// site (`extract_and_swap_from_file`) feeds a freshly-extracted staging
+/// tree owned by root under `<state_dir>/.staging/<runner-name>-…/`,
+/// guarded by the global `apply.lock`, which satisfies the precondition.
+///
+/// Both `src` and `dst` must be root-owned paths under `apply.lock`. The
+/// current call site passes staging (src) and `runner_home/bin.<version>/`
+/// (dst); both are root-owned and gated by the global `apply.lock`.
 ///
 /// Mode is preserved for regular files via `fs::copy` (which calls
 /// `copy_file_range`/`sendfile` and copies metadata on Linux). Setuid/
@@ -1960,97 +2130,6 @@ mod tests {
         assert!(!is_safe_relative_path(b".."));
         assert!(!is_safe_relative_path(b"a/../b"));
         assert!(!is_safe_relative_path(b"../etc"));
-    }
-
-    /// Helper: read a symlink's target as a string, asserting the path
-    /// IS a symlink (not a regular file/dir).
-    fn read_symlink(p: &Utf8Path) -> String {
-        let meta = fs::symlink_metadata(p).expect("symlink_metadata");
-        assert!(meta.file_type().is_symlink(), "{p} is not a symlink");
-        let target = fs::read_link(p).expect("read_link");
-        target
-            .to_str()
-            .expect("symlink target valid utf-8")
-            .to_string()
-    }
-
-    #[test]
-    fn swap_bin_symlink_fresh_install_creates_link() {
-        let tmp = tempfile::tempdir().unwrap();
-        let runner_home = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
-        let target_dir = runner_home.join("bin.2.334.0");
-        fs::create_dir_all(&target_dir).unwrap();
-        fs::write(target_dir.join("runsvc.sh"), b"new").unwrap();
-
-        swap_bin_symlink(&runner_home, "2.334.0").unwrap();
-        assert_eq!(read_symlink(&runner_home.join("bin")), "bin.2.334.0");
-        // Reachable through the symlink.
-        assert!(runner_home.join("bin/runsvc.sh").exists());
-        // No leftover bin.tmp.
-        assert!(!runner_home.join("bin.tmp").exists());
-    }
-
-    #[test]
-    fn swap_bin_symlink_upgrade_replaces_existing_link() {
-        let tmp = tempfile::tempdir().unwrap();
-        let runner_home = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
-
-        let old = runner_home.join("bin.2.333.0");
-        fs::create_dir_all(&old).unwrap();
-        fs::write(old.join("OLD"), b"").unwrap();
-        std::os::unix::fs::symlink("bin.2.333.0", runner_home.join("bin")).unwrap();
-
-        let new = runner_home.join("bin.2.334.0");
-        fs::create_dir_all(&new).unwrap();
-        fs::write(new.join("NEW"), b"").unwrap();
-
-        swap_bin_symlink(&runner_home, "2.334.0").unwrap();
-        assert_eq!(read_symlink(&runner_home.join("bin")), "bin.2.334.0");
-        assert!(runner_home.join("bin/NEW").exists());
-        // Old version dir is untouched (rollback retention).
-        assert!(runner_home.join("bin.2.333.0/OLD").exists());
-    }
-
-    #[test]
-    fn swap_bin_symlink_recovers_from_leftover_bin_tmp() {
-        let tmp = tempfile::tempdir().unwrap();
-        let runner_home = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
-
-        let target = runner_home.join("bin.2.334.0");
-        fs::create_dir_all(&target).unwrap();
-
-        // Simulate a crashed prior apply that left bin.tmp pointing at a
-        // bogus target.
-        std::os::unix::fs::symlink("bin.NOPE", runner_home.join("bin.tmp")).unwrap();
-
-        swap_bin_symlink(&runner_home, "2.334.0").unwrap();
-        assert_eq!(read_symlink(&runner_home.join("bin")), "bin.2.334.0");
-        assert!(!runner_home.join("bin.tmp").exists());
-    }
-
-    #[test]
-    fn swap_bin_symlink_rejects_nonexistent_target() {
-        let tmp = tempfile::tempdir().unwrap();
-        let runner_home = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
-        // No bin.2.334.0 directory.
-        let err = swap_bin_symlink(&runner_home, "2.334.0").unwrap_err();
-        assert!(err.to_string().contains("does not exist"), "err={err}");
-        // Pre-existing `bin` (if any) untouched.
-        assert!(!runner_home.join("bin").exists());
-    }
-
-    #[test]
-    fn swap_bin_symlink_target_is_relative() {
-        let tmp = tempfile::tempdir().unwrap();
-        let runner_home = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
-        fs::create_dir_all(runner_home.join("bin.2.334.0")).unwrap();
-
-        swap_bin_symlink(&runner_home, "2.334.0").unwrap();
-        let target = read_symlink(&runner_home.join("bin"));
-        assert!(
-            !target.starts_with('/'),
-            "symlink target must be relative; got {target}"
-        );
     }
 
     // -- Post-extract canonical-path defense ----------------------------

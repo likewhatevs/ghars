@@ -320,8 +320,33 @@ pub fn validate_url(u: &str) -> Result<()> {
 /// Validate a prefix path (`--prefix`).
 ///
 /// Rejects empty input, non-allowed characters, `..` segments, top-level
-/// reserved directories (`/`, `/etc`, `/var`, ...), and symlinks. The
-/// symlink check is `lstat`-based — symlink-to-regular does not pass.
+/// reserved directories (`/`, `/etc`, `/var`, ...), symlinks, any
+/// existing inode at the prefix path that is not a directory (regular
+/// files, FIFOs, sockets, character/block devices), and prefix paths
+/// whose walk traverses a non-directory at an intermediate path
+/// component (`ENOTDIR` from open(2)). The symlink check opens the
+/// path with `O_NOFOLLOW`; the kernel rejects a final-path-component
+/// symlink at open(2) time with `ELOOP`. The final-component file-
+/// type check inspects fstat metadata of the opened inode (TOCTOU-
+/// safe against the open). When the path does not yet exist, the
+/// open returns `ENOENT` and the validator accepts silently — apply
+/// creates the prefix on first install.
+///
+/// Pattern-aligns with [`validate_hook_script`]. The two existence-
+/// time gates serve different purposes:
+///
+/// * **`O_NOFOLLOW` symlink rejection**: codebase consistency. This
+///   validator has no production caller chain that would expose a
+///   TOCTOU, so the lstat→`O_NOFOLLOW` migration was not driven by
+///   a closeable security gap.
+/// * **`is_dir()` file-type gate**: operationally load-bearing.
+///   Apply mkdir-and-chowns under the prefix, so a non-directory
+///   inode (regular file, FIFO, socket, char/block device) at the
+///   prefix path would either silently corrupt unrelated state or
+///   hang on a FIFO open without this gate. Reject at config-load
+///   time so the operator sees an actionable error attached to the
+///   prefix field rather than an opaque mkdir/chown failure deep
+///   inside apply.
 ///
 /// # Errors
 ///
@@ -355,15 +380,53 @@ pub fn validate_prefix(p: &str) -> Result<()> {
             "use a dedicated path under /opt, /srv, or /var/lib",
         ));
     }
-    // `symlink_metadata` is lstat — it does NOT follow the link, so a
-    // symlink-to-regular-dir is detected here rather than silently passing.
-    if let Ok(stat) = std::fs::symlink_metadata(p) {
-        if stat.file_type().is_symlink() {
+    // Open via the shared O_NOFOLLOW helper. ELOOP rejects a final-
+    // component symlink; ENOTDIR rejects an intermediate non-directory
+    // blocking the walk; ENOENT and other errors pass silently
+    // because the prefix may legitimately not exist at validate time
+    // (apply creates it). When the open succeeds the prefix already
+    // exists, and we assert it is a directory — apply will mkdir-
+    // and-chown under it, which would silently corrupt a regular
+    // file or hang forever on a FIFO without this gate. The fstat-
+    // based file_type check reads metadata of the opened inode, not
+    // a re-walked path, so the type assertion is TOCTOU-safe against
+    // the open.
+    match open_no_follow_with_meta(Path::new(p)) {
+        Ok((_file, meta)) => {
+            if !meta.file_type().is_dir() {
+                return Err(validation(
+                    format!(
+                        "prefix is not a directory: {p} (file type: {:?})",
+                        meta.file_type()
+                    ),
+                    "use a path that is either an existing directory or \
+                     a path that does not yet exist",
+                ));
+            }
+        }
+        Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
             return Err(validation(
                 format!("prefix is a symlink; resolve and pass the real path: {p}"),
                 "run `readlink -f` and pass the resolved path",
             ));
         }
+        Err(e) if e.raw_os_error() == Some(libc::ENOTDIR) => {
+            // `ENOTDIR` from open(2) means an intermediate path
+            // component is not a directory (a regular file, FIFO,
+            // socket, or device blocks the walk). The is_dir() check
+            // above only fires when the open SUCCEEDS — so a
+            // FIFO/regular-file at, say, `/opt/blocker/gha` would
+            // otherwise fall through the catch-all and apply would
+            // fail later with the same opaque error this gate is
+            // meant to surface earlier.
+            return Err(validation(
+                format!("prefix path traverses a non-directory: {p}"),
+                "an intermediate path component is not a directory; \
+                 check for obstructions (a regular file, FIFO, or \
+                 device blocking the parent walk)",
+            ));
+        }
+        Err(_) => {}
     }
     Ok(())
 }
@@ -520,23 +583,29 @@ pub fn validate_version(v: &str) -> Result<()> {
 
 /// Validate a pre-existing runner tarball path.
 ///
-/// The lstat check runs before `is_file` so symlink-to-regular does NOT
-/// silently pass — the security review wants pinned local paths only.
-///
 /// Gates applied (in order):
 /// 1. Path is absolute. Relative paths resolve against `process CWD`,
 ///    which varies between `ghars validate` (operator's shell), `ghars
 ///    apply` (root via sudo), and a future systemd-driven invocation
 ///    (no CWD guarantee). Pinning to absolute eliminates that footgun.
-/// 2. Path exists.
-/// 3. Path is not a symlink (lstat-style check before `is_file`).
-/// 4. Path is a regular file.
-/// 5. File begins with the gzip magic bytes `1f 8b`. Operators
-///    occasionally point `--runner-tarball` at a freshly-downloaded
-///    HTML error page, a JPEG, or a partial download. Catching it
-///    here surfaces an actionable "not a gzip archive" error at
-///    config-load time instead of an opaque `extract_tarball` failure
-///    deep inside `apply` (after partial state mutations).
+/// 2. Path opens with `O_NOFOLLOW` — kernel returns `ELOOP` for a
+///    symlink in the final component, `ENOENT` for missing, surfaced as
+///    distinct validation messages.
+/// 3. fstat on the open fd shows a regular file. fstat-on-fd
+///    (`File::metadata`) reads the metadata of the inode we hold open,
+///    not whatever lives at the path now — closes the lstat-then-open
+///    TOCTOU window the previous `symlink_metadata` + `File::open(p)`
+///    sequence left open.
+/// 4. File begins with the gzip magic bytes `1f 8b`. Operators
+///    occasionally point `[[runner]].runner_tarball` at a freshly-
+///    downloaded HTML error page, a JPEG, or a partial download. The read happens
+///    on the same fd we opened with `O_NOFOLLOW` so the magic bytes are
+///    sourced from the same inode whose type we just verified — no
+///    re-walk of the path between the type check and the magic-byte
+///    read. Catching the format mismatch here surfaces an actionable
+///    "not a gzip archive" error at config-load time instead of an
+///    opaque `extract_tarball` failure deep inside `apply` (after
+///    partial state mutations).
 ///
 /// # Errors
 ///
@@ -553,26 +622,31 @@ pub fn validate_runner_tarball(path: &str) -> Result<()> {
              invocations (operator shell vs. root apply); use an absolute path",
         ));
     }
-    if !p.exists() {
-        return Err(validation(
-            format!("runner-tarball file does not exist: {path}"),
-            "download the tarball locally and pass the resolved path",
-        ));
-    }
-    // lstat first: catch symlink-to-regular before is_file() sees through it.
-    let lstat = std::fs::symlink_metadata(p).map_err(|e| {
-        validation(
-            format!("runner-tarball stat failed for {path}: {e}"),
-            "verify file permissions and existence",
-        )
-    })?;
-    if lstat.file_type().is_symlink() {
-        return Err(validation(
+    // Open with O_NOFOLLOW first: a symlink in the final component
+    // returns ELOOP at open(2) time, and the resulting fd is the
+    // single source of truth for both the fstat-based regular-file
+    // check and the magic-byte read below. Without this, a
+    // symlink_metadata→File::open sequence leaves a TOCTOU window
+    // where an attacker swaps a regular file for a symlink between
+    // the lstat and the open. The shared helper [`open_no_follow_with_meta`]
+    // produces (file, fstat-on-fd metadata); we map its bare
+    // io::Error to per-class validation messages so operators see
+    // ELOOP, ENOENT, and other failures as distinct errors.
+    let (mut f, meta) = open_no_follow_with_meta(p).map_err(|e| match e.raw_os_error() {
+        Some(code) if code == libc::ELOOP => validation(
             format!("runner-tarball must be a regular file, not a symlink: {path}"),
             "resolve the link and pass the real path",
-        ));
-    }
-    if !p.is_file() {
+        ),
+        Some(code) if code == libc::ENOENT => validation(
+            format!("runner-tarball file does not exist: {path}"),
+            "download the tarball locally and pass the resolved path",
+        ),
+        _ => validation(
+            format!("runner-tarball cannot be opened: {path}: {e}"),
+            "verify the file is readable by the user invoking ghars",
+        ),
+    })?;
+    if !meta.file_type().is_file() {
         return Err(validation(
             format!("runner-tarball is not a regular file: {path}"),
             "point [[runner]].runner_tarball at a regular .tar.gz file",
@@ -586,12 +660,6 @@ pub fn validate_runner_tarball(path: &str) -> Result<()> {
     // single class of "config can't be loaded" rather than mixed error
     // kinds.
     let mut magic = [0u8; 2];
-    let mut f = std::fs::File::open(p).map_err(|e| {
-        validation(
-            format!("runner-tarball cannot be opened for magic-byte check: {path}: {e}"),
-            "verify the file is readable by the user invoking ghars",
-        )
-    })?;
     use std::io::Read;
     let n = f.read(&mut magic).map_err(|e| {
         validation(
@@ -1033,6 +1101,18 @@ pub fn validate_extra_bind_paths(paths: &[camino::Utf8PathBuf]) -> Result<()> {
 /// `std::io::Error` so each caller wraps them with the variant
 /// matching their subsystem.
 ///
+/// `O_NONBLOCK` is set alongside `O_NOFOLLOW` so that opening a fifo
+/// returns immediately rather than blocking on a writer. Every caller
+/// inspects `file_type()` on the returned metadata to reject
+/// unexpected inode types before consuming the fd:
+/// `validate_runner_tarball`, `validate_hook_script`,
+/// `verify_local_tarball_open`, and `read_root_owned_0600` require
+/// regular files; `validate_prefix` requires a directory. A fifo at
+/// the final path component would hang the open syscall until a
+/// writer arrived if `O_NONBLOCK` were absent — only the final inode
+/// is opened, so FIFOs at intermediate path components would yield
+/// `ENOTDIR` regardless of `O_NONBLOCK`.
+///
 /// # Errors
 ///
 /// `std::io::Error` from `OpenOptions::open` (notably `ELOOP` when
@@ -1042,7 +1122,7 @@ pub fn validate_extra_bind_paths(paths: &[camino::Utf8PathBuf]) -> Result<()> {
 pub(crate) fn open_no_follow_with_meta(path: &Path) -> std::io::Result<(File, Metadata)> {
     let file = OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)?;
     let meta = file.metadata()?;
     Ok((file, meta))
@@ -1480,13 +1560,26 @@ mod tests {
 
     // ---- prefix -------------------------------------------------------
 
-    #[rstest]
-    #[case("/opt/gha")]
-    #[case("/opt/my_runner")]
-    #[case("/var/lib/gha")]
-    #[case("/srv/runners")]
-    fn prefix_accepts(#[case] p: &str) {
-        validate_prefix(p).expect("must accept");
+    /// Plant real directories under a `TempDir` so each case opens
+    /// a real inode and traverses the `Ok((_file, meta))` arm —
+    /// proving that validate_prefix accepts existing directories,
+    /// not merely missing paths. The varied child names (`gha`,
+    /// `my_runner`, `runners-1`, `nested/leaf`) cover the
+    /// underscore-bearing, hyphen-bearing, and deep-nested shapes
+    /// that all match `PREFIX_RE`. Using static literal paths
+    /// (`/opt/gha` etc.) would fall through the `ENOENT` catch-all
+    /// on a typical CI host and never exercise the `is_dir()` gate.
+    #[test]
+    fn prefix_accepts_existing_directories() {
+        let dir = TempDir::new().unwrap();
+        let cases = ["gha", "my_runner", "runners-1", "nested/leaf"];
+        for name in cases {
+            let p = dir.path().join(name);
+            std::fs::create_dir_all(&p).unwrap();
+            assert!(p.is_dir(), "fixture invariant: {p:?} must exist as a dir");
+            validate_prefix(p.to_str().unwrap())
+                .unwrap_or_else(|e| panic!("validate_prefix({p:?}) must accept; got {e}"));
+        }
     }
 
     #[rstest]
@@ -1540,6 +1633,118 @@ mod tests {
             msg.contains("symlink"),
             "expected symlink error, got: {msg}"
         );
+    }
+
+    /// FIFO at the prefix path. The shared `open_no_follow_with_meta`
+    /// helper sets `O_NONBLOCK`, so opening the FIFO returns an fd
+    /// without blocking on a writer; the fstat-based file_type gate
+    /// then rejects it as a non-directory. Without the directory
+    /// gate, apply would proceed to mkdir-and-chown under the FIFO
+    /// path and either silently corrupt unrelated state or fail with
+    /// a deep, unactionable error far from the config-load site.
+    #[test]
+    fn prefix_rejects_fifo() {
+        use nix::sys::stat::Mode;
+        use nix::unistd::mkfifo;
+        let dir = TempDir::new().unwrap();
+        let fifo_path = dir.path().join("fifo-prefix");
+        mkfifo(&fifo_path, Mode::S_IRUSR | Mode::S_IWUSR).unwrap();
+        let err = validate_prefix(fifo_path.to_str().unwrap())
+            .expect_err("FIFO must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("is not a directory"),
+            "FIFO rejection must surface via the not-a-directory branch \
+             so the operator knows the file type is wrong; got: {msg}"
+        );
+        // Pin against the ELOOP arm wording specifically. Plain
+        // `symlink` appears in the std Debug-formatted FileType field
+        // names (`is_symlink: false`), so we match the unique
+        // ELOOP-branch phrase rather than the bare token.
+        assert!(
+            !msg.contains("is a symlink"),
+            "FIFO rejection must NOT collapse into the ELOOP branch — \
+             the operator would otherwise resolve a non-existent link; \
+             got: {msg}"
+        );
+    }
+
+    /// Regular file at the prefix path. Catches the same class of
+    /// operator error that `prefix_rejects_fifo` does (config names
+    /// an inode of the wrong type) but exercises the most common
+    /// non-directory case — a stale config pointing at a leftover
+    /// regular file at the intended prefix path. Pins the error
+    /// message wording so a future format change doesn't silently
+    /// degrade the operator-facing diagnostic.
+    #[test]
+    fn prefix_rejects_regular_file() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("regular-prefix");
+        std::fs::write(&file_path, b"").unwrap();
+        let err = validate_prefix(file_path.to_str().unwrap())
+            .expect_err("regular file must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("is not a directory"),
+            "regular-file rejection must surface via the not-a-directory \
+             branch; got: {msg}"
+        );
+    }
+
+    /// `ENOTDIR` arm: a prefix path whose walk traverses a regular
+    /// file (or any non-directory) at an intermediate component
+    /// must be rejected with "traverses a non-directory" — not
+    /// silently accepted via the catch-all (which is reserved for
+    /// `ENOENT` first-install). Without this gate, apply would
+    /// proceed to `mkdir(prefix)` and fail with the same `ENOTDIR`
+    /// far from the config-load site, leaving the operator to
+    /// chase the obstruction from the apply-side error rather than
+    /// the validate-side one. The fixture plants a regular file at
+    /// `<tempdir>/blocker` and asserts that
+    /// `<tempdir>/blocker/leaf` rejects via the new arm.
+    #[test]
+    fn prefix_rejects_intermediate_non_directory() {
+        let dir = TempDir::new().unwrap();
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, b"").unwrap();
+        let through = blocker.join("leaf");
+        let err = validate_prefix(through.to_str().unwrap())
+            .expect_err("path traversing a regular file must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("traverses"),
+            "intermediate-non-directory rejection must surface via the \
+             ENOTDIR branch (`traverses a non-directory`); got: {msg}"
+        );
+        // Pin against the ENOENT catch-all silent acceptance: if the
+        // ENOTDIR arm is dropped, the open's ENOTDIR would fall
+        // through `Err(_) => {}` and the validator would return Ok.
+        // The expect_err above already guards against that, but the
+        // additional negative assertion documents intent.
+        assert!(
+            !msg.contains("symlink"),
+            "ENOTDIR rejection must NOT collapse into the ELOOP arm; \
+             got: {msg}"
+        );
+    }
+
+    /// First-time-install workflow: operator runs `ghars validate` on a
+    /// brand-new prefix path that does not exist yet (apply will create
+    /// it). The O_NOFOLLOW open returns ENOENT, which validate_prefix
+    /// must tolerate silently and return Ok. Without this pin, a future
+    /// regression that surfaced ENOENT as a validation error would
+    /// break the very-first-apply flow without breaking any other test.
+    #[test]
+    fn prefix_accepts_nonexistent_path() {
+        let dir = TempDir::new().unwrap();
+        // Tempdir itself exists; child path does not.
+        let nonexistent = dir.path().join("does-not-exist-yet");
+        assert!(
+            !nonexistent.exists(),
+            "fixture invariant: path must not exist"
+        );
+        validate_prefix(nonexistent.to_str().unwrap())
+            .expect("missing path must pass — apply creates the prefix");
     }
 
     #[test]
@@ -1759,6 +1964,94 @@ mod tests {
         assert!(format!("{err}").contains("symlink"));
     }
 
+    /// Dangling symlink — link exists, target does not. With
+    /// `O_NOFOLLOW` the kernel returns `ELOOP` (not `ENOENT`) at
+    /// open(2) time on the link itself, before resolving the missing
+    /// target. The validator MUST classify this as the "symlink"
+    /// rejection branch, not "does not exist". Without this pin, a
+    /// future regression that swapped the ELOOP and ENOENT arms would
+    /// silently mislabel dangling symlinks as missing files,
+    /// confusing operators who would fix the wrong problem.
+    #[test]
+    fn runner_tarball_rejects_dangling_symlink() {
+        let dir = TempDir::new().unwrap();
+        let missing_target = dir.path().join("nope.tar.gz");
+        let link = dir.path().join("dangling.tar.gz");
+        std::os::unix::fs::symlink(&missing_target, &link).unwrap();
+        assert!(
+            !missing_target.exists(),
+            "fixture invariant: target must not exist"
+        );
+        let err = validate_runner_tarball(link.to_str().unwrap())
+            .expect_err("dangling symlink must error");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("symlink"),
+            "ELOOP-from-O_NOFOLLOW on dangling link must surface as the \
+             symlink rejection, NOT 'does not exist'; got: {msg}"
+        );
+        assert!(
+            !msg.contains("does not exist"),
+            "dangling-symlink rejection must NOT contain 'does not exist' — \
+             that wording belongs to the ENOENT arm; got: {msg}"
+        );
+    }
+
+    /// Catch-all arm pin: a regular file with mode 0o000 fails
+    /// `open(O_RDONLY|O_NOFOLLOW)` with `EACCES` (not ELOOP, not
+    /// ENOENT). The validator must classify this through the catch-
+    /// all arm at validators.rs (the third match branch in the
+    /// `open_no_follow_with_meta` map_err) rather than misreporting
+    /// it as missing or as a symlink. Without this pin, a future
+    /// regression that collapsed the catch-all into the ENOENT arm
+    /// would tell an operator their readable-but-mode-zero file is
+    /// "missing" — leading them to recreate the file instead of
+    /// fixing permissions.
+    ///
+    /// Skipped when the caller has root DAC bypass: under EUID 0,
+    /// `open(0o000)` succeeds, the file is empty, and the gate falls
+    /// through to the magic-byte check. The test body detects the
+    /// bypass empirically (a successful read of the 0o000 file) and
+    /// returns early; the production code path is the same in both
+    /// regimes, only the privilege check differs.
+    #[test]
+    fn runner_tarball_rejects_unreadable_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let p = dir.path().join("unreadable.tar.gz");
+        std::fs::write(&p, GZIP_MAGIC_PREFIX).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Detect root DAC bypass empirically. If we (the test) can
+        // still read the 0o000 file, the production validator can
+        // too, and the EACCES branch we want to exercise is
+        // unreachable. Restore mode and skip silently.
+        if std::fs::read(&p).is_ok() {
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+            return;
+        }
+        let err = validate_runner_tarball(p.to_str().unwrap())
+            .expect_err("unreadable file must error");
+        let msg = format!("{err}");
+        // Restore readable permissions BEFORE assertions so a panic
+        // still allows TempDir's Drop to clean up the tree.
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            !msg.contains("does not exist"),
+            "EACCES rejection must NOT collapse into the ENOENT branch \
+             — operator would otherwise fix the wrong problem; got: {msg}"
+        );
+        assert!(
+            !msg.contains("not a symlink"),
+            "EACCES rejection must NOT collapse into the ELOOP branch; \
+             got: {msg}"
+        );
+        assert!(
+            msg.contains("cannot be opened"),
+            "EACCES must surface via the catch-all arm wording \
+             ('cannot be opened'); got: {msg}"
+        );
+    }
+
     #[test]
     fn runner_tarball_rejects_directory() {
         let dir = TempDir::new().unwrap();
@@ -1885,6 +2178,41 @@ mod tests {
             "fixture invariant: tempfile path must be absolute"
         );
         validate_runner_tarball(p.to_str().unwrap()).unwrap();
+    }
+
+    /// FIFO regression pin. `open_no_follow_with_meta` sets
+    /// `O_NONBLOCK` alongside `O_NOFOLLOW` so that opening a FIFO
+    /// returns immediately rather than blocking until a writer
+    /// arrives. The validator's fstat-based regular-file gate then
+    /// rejects the FIFO. Without `O_NONBLOCK` the open(2) call
+    /// would hang and the test would deadlock; with it, the validator
+    /// surfaces the rejection through the regular-file branch.
+    #[test]
+    fn runner_tarball_rejects_fifo() {
+        use nix::sys::stat::Mode;
+        use nix::unistd::mkfifo;
+        let dir = TempDir::new().unwrap();
+        let fifo_path = dir.path().join("pipe.tar.gz");
+        mkfifo(&fifo_path, Mode::S_IRUSR | Mode::S_IWUSR).unwrap();
+        let err = validate_runner_tarball(fifo_path.to_str().unwrap())
+            .expect_err("FIFO must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("regular file"),
+            "FIFO rejection must surface via the regular-file branch \
+             so the operator knows the file type is wrong; got: {msg}"
+        );
+        assert!(
+            !msg.contains("symlink"),
+            "FIFO rejection must NOT surface as the symlink branch \
+             — operator would otherwise resolve a non-existent link; \
+             got: {msg}"
+        );
+        assert!(
+            !msg.contains("does not exist"),
+            "FIFO rejection must NOT surface as the ENOENT branch \
+             — the FIFO exists, only its file type is wrong; got: {msg}"
+        );
     }
 
     // ---- identifier ---------------------------------------------------
@@ -2453,6 +2781,34 @@ mod tests {
         // can be fstat'd, getdents'd, etc.). open() succeeds; the
         // "not a regular file" check fires on the metadata.
         assert!(format!("{err}").contains("regular file"));
+    }
+
+    /// FIFO at the hook-script path. Sister test to
+    /// `runner_tarball_rejects_fifo` and `prefix_rejects_fifo`. The
+    /// shared `open_no_follow_with_meta` helper sets `O_NONBLOCK`,
+    /// so opening the FIFO returns an fd without blocking on a
+    /// writer; the `is_file()` gate in `validate_hook_script` then
+    /// rejects it. The FIFO is rejected before the
+    /// owner-execute / uid checks fire, so this test does not need
+    /// a root-DAC bypass — exactly the same pattern as
+    /// `hook_script_rejects_directory` above (which also exercises
+    /// the file-type gate without root).
+    #[test]
+    fn hook_script_rejects_fifo() {
+        use nix::sys::stat::Mode;
+        use nix::unistd::mkfifo;
+        let dir = TempDir::new().unwrap();
+        let fifo_path = dir.path().join("hook.fifo");
+        mkfifo(&fifo_path, Mode::S_IRUSR | Mode::S_IWUSR).unwrap();
+        let p = camino::Utf8PathBuf::from_path_buf(fifo_path).unwrap();
+        let err = validate_hook_script(&p).expect_err("FIFO must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("regular file"),
+            "FIFO rejection must surface via the not-a-regular-file \
+             branch so the operator knows the file type is wrong; \
+             got: {msg}"
+        );
     }
 
     #[test]

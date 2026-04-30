@@ -2275,18 +2275,19 @@ fn execute_create_runner(
     )?;
 
     // 2b) Retention prune (Part 9f). After the fresh
-    //     `bin.<version>/` tree has been laid down (and BEFORE
-    //     `swap_bin_symlink` would point `bin` at it on the
-    //     update-recreate path), prune older `bin.X.Y.Z/` trees in
-    //     the runner home so disk usage stays bounded. The pruner
-    //     keeps the `keep_versions` most-recent by mtime plus
-    //     whatever `runner_home/bin` resolves to (defense in depth
-    //     against mtime touches). Pruning is best-effort: per-entry
-    //     failures are logged and counted, never propagated, so a
-    //     failed cleanup doesn't sink the whole CreateRunner action.
-    //     Errors from the call itself (read_dir failure on
-    //     runner_home, or keep_versions = 0) DO propagate — those
-    //     indicate a structural problem the operator should see.
+    //     `bin.<version>/` tree has been laid down, prune older
+    //     `bin.X.Y.Z/` trees in the runner home so disk usage stays
+    //     bounded. The pruner keeps the `keep_versions` most-recent
+    //     by mtime plus whatever any operator-created
+    //     `runner_home/bin` symlink resolves to (defense in depth
+    //     against mtime touches and against operator-managed
+    //     symlinks ghars itself no longer creates). Pruning is
+    //     best-effort: per-entry failures are logged and counted,
+    //     never propagated, so a failed cleanup doesn't sink the
+    //     whole CreateRunner action. Errors from the call itself
+    //     (read_dir failure on runner_home, or keep_versions = 0)
+    //     DO propagate — those indicate a structural problem the
+    //     operator should see.
     let _pruned = deps.tarball.prune_old_versions(&runner_home, keep_versions)?;
 
     // 3) Mint a registration token. SEC-05: the token is short-lived
@@ -3322,11 +3323,14 @@ fn write_root_owned(path: &Utf8Path, bytes: &[u8]) -> Result<()> {
 
     f.write_all(bytes)?;
     f.flush()?;
-    // sync_all(2) (fsync) ensures the contents hit storage before the
-    // rename publishes the inode at the final path. Without fsync, a
-    // post-rename crash could leave the final path pointing at an
-    // inode whose contents the kernel has not yet written through —
-    // recovery would see the new name with old/zero data.
+    // sync_all(2) on the open fd makes the FILE CONTENTS durable
+    // before rename publishes the inode at the final path. Pairs with
+    // the parent-dir fsync after rename: the data fsync flushes
+    // contents through to storage, the parent-dir fsync flushes the
+    // rename itself. Without the data fsync, a post-rename crash
+    // could leave the final path pointing at an inode whose contents
+    // the kernel has not yet written through — recovery would see
+    // the new name with old/zero data.
     f.sync_all()?;
     // Chown the freshly-written fd to root:root. OpenOptions::mode
     // sets the file mode, but ownership is inherited from the calling
@@ -3358,6 +3362,28 @@ fn write_root_owned(path: &Utf8Path, bytes: &[u8]) -> Result<()> {
     // the new one in full, never a torn write.
     fs::rename(temp_path.as_std_path(), path.as_std_path())?;
     guard.disarm();
+    // fsync parent dir for durable publish: rename(2) updates the
+    // in-memory directory entry but the change may not survive a
+    // crash until the parent inode's metadata journal flushes. This
+    // fsync forces that flush so recovery sees the new dirent.
+    // O_NOFOLLOW | O_DIRECTORY pin intent: parent is always a
+    // directory we just wrote into, never a symlink. The warn fires
+    // only after rename succeeds — file IS published, retry safe —
+    // so operators on degraded storage can distinguish the
+    // post-publish fsync failure from a pre-rename failure.
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
+        .open(parent.as_std_path())
+        .and_then(|f| f.sync_all())
+        .map_err(|e| {
+            tracing::warn!(
+                %path,
+                error = %e,
+                "parent-dir fsync failed after publishing — file is on disk, retry safe"
+            );
+            e
+        })?;
     Ok(())
 }
 
