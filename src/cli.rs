@@ -602,12 +602,13 @@ fn load_config(path: &Utf8Path) -> Result<Config> {
     // / symlink) at apply.
     //
     // --- validate_runner_tarballs ---
-    // lstat / regular-file gate on operator-supplied runner_tarball
-    // paths. Filesystem-touching (alongside
+    // O_NOFOLLOW open + fstat regular-file gate on operator-supplied
+    // runner_tarball paths. Filesystem-touching (alongside
     // validate_security_overrides when hooks are configured).
     // Placed after the pure-shape / length-cap gates so an operator
-    // hitting a typo in [defaults.user] sees that error before a
-    // separate "tarball missing" error from a per-runner override.
+    // hitting a typo in another [defaults.*] key sees that error
+    // before a separate "tarball missing" error from a per-runner
+    // override.
     //
     // --- validate_netns_runner_name_lengths ---
     // IFNAMSIZ (kernel veth name) cap (= NETNS_RUNNER_NAME_MAX_LEN,

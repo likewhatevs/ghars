@@ -12,9 +12,11 @@
 //!   objects (`&dyn Systemd`, `&dyn TokenSource`) and the [`Tarball`]
 //!   trait so tests can inject in-memory mocks.
 //! - [`guard_home_dir_rmrf`] refuses to delete anything outside
-//!   `<state_dir>/<runner-name>` — defends against a bad
-//!   `RunnerIdentity.prefix` causing apply to recursively remove
-//!   `/`, the prefix itself, or a path outside the prefix.
+//!   `<state_dir>/<trust_zone>/ghars-<runner-name>` — defends against
+//!   a corrupted trust_zone root (the `prefix` parameter is sourced
+//!   from `paths.trust_zone_home(&identity.trust_zone)` at the call
+//!   site) causing apply to recursively remove `/`, the prefix
+//!   itself, or a path outside the prefix.
 //! - [`verify_runner_netns`] post-start check — `readlink
 //!   /proc/PID/ns/net` must differ from `readlink /proc/1/ns/net` when
 //!   `spec.network.is_some()`. If they match the runner has fallen back
@@ -588,7 +590,8 @@ pub enum UndoStep {
         url: String,
         /// Auth registry key.
         auth_name: String,
-        /// Per-runner home directory (`/var/lib/ghars/NAME`).
+        /// Per-runner home directory
+        /// (`/var/lib/ghars/<TRUST_ZONE>/ghars-<NAME>`).
         runner_home: Utf8PathBuf,
     },
 }
@@ -1292,11 +1295,12 @@ pub trait ConfigShell {
 }
 
 /// Inputs for one `config.sh` invocation. Holding the runner home /
-/// user / token / labels in one struct keeps the trait method clean and
+/// token / labels in one struct keeps the trait method clean and
 /// future-proofs against new fields.
 #[derive(Debug)]
 pub struct ConfigShellCtx<'a> {
-    /// Per-runner home (`/var/lib/ghars/NAME`).
+    /// Per-runner home
+    /// (`/var/lib/ghars/<TRUST_ZONE>/ghars-<NAME>`).
     pub runner_home: &'a Utf8Path,
     /// Runner instance name (the `%i` value).
     pub name: &'a str,
@@ -2538,8 +2542,8 @@ fn execute_update_runner(
 ) -> Result<ApplyOutcome> {
     if delta.requires_recreate {
         // Recreate path: stop + remove + create. The plan emits this
-        // when an identity-bound field changed (runner_version,
-        // labels, url, user, prefix, runner_tarball).
+        // when an identity-bound field changed (url, runner_version,
+        // labels, arch, runner_sha256, runner_tarball, network).
         //
         // The undo log threading here propagates BOTH inner calls'
         // pushes. If create fails partway, undo walks: create's pushes
@@ -5394,9 +5398,9 @@ mod tests {
         // `result.failed_undo_logs` on the Err path. The label/order
         // invariant is `failed[i].0 == failed_undo_logs[i].0` for
         // every i — same labels, same insertion order.
-        // `execute_create_cache_pool` records CreateDir → WriteFile →
-        // GroupAdd before the failed enable_unit; steps land in the
-        // Vec in that order. The advisory in cmd_apply walks this Vec
+        // `execute_create_cache_pool` records CreateDir → WriteFile
+        // before the failed enable_unit; steps land in the Vec in
+        // that order. The advisory in cmd_apply walks this Vec
         // to render the operator-facing manual-cleanup hint.
         assert_eq!(
             result.failed_undo_logs.len(),
@@ -10047,15 +10051,11 @@ mod tests {
         //   teardown_netns_artifacts step push    — Stop+Disable for
         //                                            ghars-net@a.service
         //   RemoveDir(home_dir)
-        //   UserDel(spec.user)
         //
         // We pin the load-bearing primary remove-side mutations:
-        //   StopUnit + DisableUnit on the runner unit + UserDel.
-        // The create-side ALSO recorded UserAdd (step 1 succeeded
-        // before the Validation gate at install_binary stage); we
-        // pin that explicitly so the test doesn't false-positive on
-        // a refactor that reorders create's step 1 BEFORE its
-        // Validation gate.
+        //   StopUnit + DisableUnit on the runner unit. DynamicUser=
+        //   handles runner identity, so there is no UserDel/UserAdd
+        //   step in either the remove-side or the create-side log.
         let unit = "ghars-runner@a.service";
         let stop_runner = steps
             .iter()

@@ -1275,8 +1275,6 @@ struct DiscoveredAnnotations {
     runner_version: Option<String>,
     labels: Option<Vec<String>>,
     arch: Option<String>,
-    user: Option<String>,
-    prefix: Option<String>,
     runner_sha256: Option<String>,
     runner_tarball_hash: Option<String>,
     trust_zone: Option<String>,
@@ -1361,8 +1359,6 @@ impl DiscoveredAnnotations {
                     out.labels = Some(parsed);
                 }
                 "X-Ghars-Arch" => out.arch = Some(v),
-                "X-Ghars-User" => out.user = Some(v),
-                "X-Ghars-Prefix" => out.prefix = Some(v),
                 "X-Ghars-Runner-Sha256" => out.runner_sha256 = Some(v),
                 // Persist HASH of tarball path, not the path
                 // itself. The on-disk operator path can leak
@@ -8633,8 +8629,7 @@ labels  = ["alpha", "beta"]
         let drop_in_body = format!(
             "[Unit]\nX-Ghars-Runner-Url={url}\n\
              X-Ghars-Auth-Name=pat\nX-Ghars-Labels=a\n\
-             X-Ghars-Arch={arch_str}\nX-Ghars-User=ghars-a\n\
-             X-Ghars-Prefix=/var/lib/ghars\n\
+             X-Ghars-Arch={arch_str}\n\
              X-Ghars-Effective-Version=\n\
              X-Ghars-Trust-Zone=default\nX-Ghars-Network-Mode=open\n",
             url = desired_spec.url,
