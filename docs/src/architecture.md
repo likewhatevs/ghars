@@ -141,10 +141,10 @@ exit-code 8 path.
    with `GharsError::ApplyLocked` carrying the lock-holder's PID.
 2. (skipped under `--dry-run`) GC stale
    `.NAME.tmp.PID.COUNTER` temp files under `unit_dir`,
-   per-runner drop-in dirs, `config_dir/nft.d/`, and
-   `config_dir/netns.d/` — leftovers from `write_root_owned`
-   calls that crashed between `create_new` and the final rename.
-   Best-effort, never fails apply.
+   per-runner drop-in dirs, per-pool drop-in dirs,
+   `config_dir/nft.d/`, and `config_dir/netns.d/` — leftovers from
+   `write_root_owned` calls that crashed between `create_new` and
+   the final rename. Best-effort, never fails apply.
 3. (skipped under `--dry-run`) GC stale
    `<state_dir>/.staging/<name>-<version>-<pid>/` directories —
    leftovers from `extract::install_runner_binary` calls that

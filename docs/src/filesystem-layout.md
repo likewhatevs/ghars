@@ -59,7 +59,7 @@ order, each behind a "is the operator using this feature?" gate:
 | `30-cache-pool.conf`    | when `caches` non-empty                  | ccache / sccache pool bindings, `BindPaths=` for shared dirs, env vars |
 | `40-network.conf`       | Netns mode only                          | `NetworkNamespacePath=/var/run/netns/ghars-<name>` + `Requires=ghars-net@%i.service` |
 | `50-numa.conf`          | when `allowed_cpus` or `allowed_memory_nodes` set | `AllowedCPUs=` / `AllowedMemoryNodes=`                       |
-| `60-proxy.conf`         | when `[proxy]` resolved                  | `Environment=HTTP_PROXY=...` / `HTTPS_PROXY=...` / `NO_PROXY=...` + CA-trust env vars |
+| `60-proxy.conf`         | when `[proxy]` resolved                  | dual-case `Environment=HTTP_PROXY=...`/`http_proxy=...`, `HTTPS_PROXY=...`/`https_proxy=...`, `NO_PROXY=...`/`no_proxy=...` + CA-trust env vars |
 | `70-hooks.conf`         | when `[hooks]` resolved                  | `Environment=ACTIONS_RUNNER_HOOK_JOB_STARTED=...` + `BindReadOnlyPaths` for hook script |
 | `80-lognamespace.conf`  | yes                                      | `LogNamespace=ghars-<name>` (per-runner journal isolation)           |
 

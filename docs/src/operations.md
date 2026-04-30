@@ -116,8 +116,12 @@ The `ok:` rows go to stdout; `fail:` rows go to stderr (so
 `ghars apply | grep ok` gives a clean success roll-up). `noop:`
 rows go to stdout — note the `NoOp(...)` wrapper is label-stripped,
 so the bare reason text appears between `noop:` and the
-`[none]` bracket. `[recreate]` / `[restart]` / `[none]` are the
-plan-time worst-case `Disruption` bracket tag.
+`[none]` bracket. `[recreate]` / `[restart]` / `[none]` is the
+apply-time actual `Disruption` for success/skip outcomes (e.g. an
+in-place `UpdateRunner` that short-circuits to byte-equality NoOp
+reports `[none]`); for `Failed` rows it falls back to the
+plan-time worst-case (apply-time disruption is unknown when the
+handler returns Err mid-execution).
 
 Flags:
 
@@ -222,7 +226,7 @@ The SYSTEM HEALTH section runs the preflight checks defined in
 | `OS`           | parse `/etc/os-release`; accept Ubuntu 24+, Fedora 40+, RHEL/CentOS/Rocky/AlmaLinux 10+ |
 | `systemd`      | `Manager.Version` over D-Bus; reject below `MIN_SYSTEMD_VERSION = 254` (`LogNamespace=` requires it) |
 | `kvm`          | `/dev/kvm` exists + `kvm` group provisioned on host                      |
-| `tools`        | `nft`, `ip`, `sysctl`, `systemd-analyze`, plus the runner's own deps     |
+| `tools`        | `install`, `chmod`, `chown`, `getent`, `runuser`, `nft`, `ip`, `sysctl`, `systemd-analyze`, `unshare` |
 | `kernel`       | cgroup v2 + Seccomp + `CONFIG_NET_NS` (`unshare -n` empirical) + `CAP_NET_ADMIN` (`CapEff` parse) |
 | `root`         | apply mode requires uid 0                                                |
 | `ptrace_scope` | Yama LSM `kernel.yama.ptrace_scope`; warn at < 2 (SEC-28; advisory)      |
@@ -409,11 +413,13 @@ maintenance window).
 
 Both `ghars plan --diff` and `ghars apply --diff` render full
 drop-in body content. The `60-proxy.conf` drop-in carries
-`Environment=HTTP_PROXY=...` / `HTTPS_PROXY=...` lines, and an
-authenticated proxy URL embeds credentials in the userinfo
-component (`https://USER:PASS@host`). With `--diff` set, those
-credentials appear in stdout (and any captured CI artifact, build
-log upload, terminal scrollback, or shared paste) in cleartext.
+dual-case `Environment=HTTP_PROXY=...` / `http_proxy=...` and
+`Environment=HTTPS_PROXY=...` / `https_proxy=...` lines (apps that
+read either spelling find a value), and an authenticated proxy
+URL embeds credentials in the userinfo component
+(`https://USER:PASS@host`). With `--diff` set, those credentials
+appear in stdout (and any captured CI artifact, build log upload,
+terminal scrollback, or shared paste) in cleartext on every line.
 
 Operators piping `--diff` output to artifacts that survive past
 the invoking shell session must treat the output as a

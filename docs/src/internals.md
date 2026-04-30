@@ -138,8 +138,9 @@ before the per-action loop, both skipped under `--dry-run`:
 ### `gc_stale_temp_files`
 
 Targets `.NAME.tmp.PID.COUNTER`-shaped files under `unit_dir`,
-per-runner drop-in dirs (`ghars-runner@*.service.d/`),
-`config_dir/nft.d/`, and `config_dir/netns.d/`. These are
+per-runner drop-in dirs (`ghars-runner@*.service.d/`), per-pool
+drop-in dirs (`ghars-cache@*.service.d/`), `config_dir/nft.d/`,
+and `config_dir/netns.d/`. These are
 leftovers from `write_root_owned` calls that crashed between
 `create_new` (which uses `O_CREAT | O_EXCL` to claim the temp
 name atomically) and the final rename.

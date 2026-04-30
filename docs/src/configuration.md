@@ -231,8 +231,10 @@ ca_certs = [
 
 Fields:
 
-- `http` / `https` (`Option<String>`) — `HTTP_PROXY` / `HTTPS_PROXY`
-  values. Often the same URL.
+- `http` / `https` (`Option<String>`) — proxy URLs. Each is emitted
+  as both upper- and lower-case env entries (`HTTP_PROXY` +
+  `http_proxy`; `HTTPS_PROXY` + `https_proxy`) so apps that read
+  either find a value. Often the same URL.
 - `no_proxy` (`Vec<String>`) — emitted as both `NO_PROXY` and
   `no_proxy` env entries.
 - `ca_certs` (`Vec<CaCertBinding>`) — each entry maps an env-var
