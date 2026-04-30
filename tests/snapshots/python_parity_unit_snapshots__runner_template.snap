@@ -35,11 +35,12 @@ Type=simple
 # unit's full sandbox stays applied — TemporaryFileSystem=/:ro,
 # BindReadOnlyPaths, PrivateDevices, the SystemCallFilter allowlist,
 # NetworkNamespacePath, etc. The trampoline opens
-# /var/lib/ghars/%i/runsvc.sh via O_NOFOLLOW, recomputes sha256,
-# compares against the X-Ghars-Runsvc-Sha256 annotation in the
-# 00-ghars.conf drop-in (file read with O_NOFOLLOW), and fexecve()s
-# the verified file descriptor on match — closing the open-then-
-# rename TOCTOU window. On mismatch: refuse with a diagnostic.
+# /var/lib/ghars/<TRUST_ZONE>/ghars-%i/runsvc.sh via O_NOFOLLOW,
+# recomputes sha256, compares against the X-Ghars-Runsvc-Sha256
+# annotation in the 00-ghars.conf drop-in (file read with
+# O_NOFOLLOW), and fexecve()s the verified file descriptor on match
+# — closing the open-then-rename TOCTOU window. On mismatch:
+# refuse with a diagnostic.
 #
 # The trampoline is a separately-packaged compiled binary at
 # /usr/lib/ghars/runsvc-wrapper (root:root mode 0755) — NOT a shell

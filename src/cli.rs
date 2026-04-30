@@ -125,8 +125,9 @@ pub enum Command {
     Apply(ApplyArgs),
     /// Tabular state of managed runners + system health.
     Status(StatusArgs),
-    /// Scaffold ghars.toml. Per-runner system users are created at
-    /// apply time (SEC-27); init does not provision a shared user.
+    /// Scaffold ghars.toml. Runner identity comes from
+    /// `DynamicUser=yes` at unit start (transient UID/GID per
+    /// trust_zone); init does not provision any system user.
     Init(InitArgs),
     /// Add one runner interactively (prompts then runs apply).
     Add(AddArgs),
@@ -1272,17 +1273,18 @@ fn validate_auth_keys(cfg: &Config) -> Result<()> {
 
 /// Walk every `[[runner]] runner_tarball = "..."` and gate the
 /// path through `validators::validate_runner_tarball`. The validator
-/// lstats the path, rejects symlinks, and rejects non-regular files —
-/// the same shape `extract::install_runner_binary` requires before
+/// opens the path with `O_NOFOLLOW` (the kernel ELOOPs symlinks at
+/// open(2) time, closing the lstat-then-open TOCTOU window) and
+/// rejects non-regular files via fstat on the open fd — the same
+/// shape `extract::install_runner_binary` requires before
 /// extraction. Wiring it into `load_config` means cmd_validate /
 /// cmd_plan / cmd_apply / cmd_status / cmd_add all see the same gate;
 /// without this wiring the validator would be orphaned (defined
 /// but with no callsite).
 ///
 /// `defaults.runner_tarball` does NOT exist in the schema — see
-/// `config::Defaults` (only auth / prefix / user / labels / arch /
-/// hardening / proxy / hooks live at defaults level). Per-runner is
-/// the only surface walked here.
+/// `config::Defaults` for the actual default-level fields. Per-runner
+/// is the only surface walked here.
 ///
 /// `runner_tarball` on RunnerSpec is `Option<Utf8PathBuf>`. We forward
 /// the infallible `as_str()` view to the validator — Utf8PathBuf is
@@ -1680,8 +1682,8 @@ fn recreate_removed_basenames(d: &plan::RunnerDelta) -> Option<impl Iterator<Ite
 /// `runsvc_integrity` — both of which look meaningless in the
 /// `! runner NAME (… recreate (uncovered)) [recreate]` plan line
 /// without context. Self-explanatory tokens (`url`, `runner_version`,
-/// `labels`, `arch`, `user`, `prefix`, `runner_sha256`,
-/// `runner_tarball`, `network`) are field names — no gloss needed.
+/// `labels`, `arch`, `runner_sha256`, `runner_tarball`, `network`)
+/// are field names — no gloss needed.
 ///
 /// Token strings are static `&'static str` constants pushed by
 /// [`plan::classify_recreate_reasons_from_annotations`] (the
@@ -3611,7 +3613,6 @@ const INIT_EXAMPLE_CONFIG: &str = "\
 # must match `^[a-z]([a-z0-9-]*[a-z0-9])?$` and be ≤ 64 chars.
 
 [defaults]
-# user: leave unset so each runner gets `ghars-RUNNERNAME` (SEC-27).
 runner_version = \"2.334.0\"
 auth = \"pat\"
 arch = \"x86_64\"
@@ -4959,15 +4960,14 @@ mod tests {
 
     #[test]
     fn cmd_init_writes_config_only_no_user_provisioning() {
-        // SEC-27: init scaffolds ghars.toml and nothing else.
-        // Per-runner system users live in apply::execute_create_runner;
-        // a vestigial shared `ghars` user contradicts the per-runner
-        // UID model. This test confirms cmd_init does NOT shell out
-        // to useradd by inspecting NSS afterwards: even if the test
-        // host happens to have a `ghars` user pre-existing, our test
-        // is concerned only that cmd_init succeeds without root + the
-        // file lands. The negative claim (no useradd) is now structural
-        // — `apply::Users` is not even imported in cli.rs anymore.
+        // init scaffolds ghars.toml and nothing else. Runner identity
+        // comes from `DynamicUser=yes` on the unit (per-trust_zone
+        // transient UID/GID allocated at unit start), so init has no
+        // user-provisioning step to perform — neither at scaffold time
+        // nor lazily at apply time. This test confirms cmd_init
+        // succeeds without root + the file lands; the negative claim
+        // (no useradd) is now structural — `apply::Users` is not even
+        // imported in cli.rs anymore.
         let tmp = tempfile::tempdir().unwrap();
         let config_path = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
             .unwrap()
@@ -10263,20 +10263,14 @@ auth = \"pat\"
     /// Discovered-only runner with POPULATED annotations: extends
     /// the count=0 sibling above by feeding `plan_from`'s
     /// discovered-only diff arm a `DiscoveredRunner` whose
-    /// `00-ghars.conf` drop-in carries a full annotation set —
-    /// including the X-Ghars-User / X-Ghars-Prefix annotations
-    /// emitted by `render_identity` from the operator's `spec.user`
-    /// / `spec.prefix`. `reconstruct_identity` reads
+    /// `00-ghars.conf` drop-in carries a full annotation set.
+    /// `reconstruct_identity` reads
     /// `discovered.drop_ins["00-ghars.conf"]` via
-    /// `DiscoveredAnnotations::from_discovered` for url, auth_name,
-    /// user, and prefix; the on-disk unit body's `User=` /
-    /// `WorkingDirectory=` lines are template fallbacks consulted
-    /// only when the annotations are absent. A populated fixture
-    /// therefore produces a `RunnerIdentity` with non-empty
-    /// url + auth_name + meaningful prefix/user — matching what
-    /// `apply.rs::execute_remove_runner` needs to mint a
-    /// deregistration token and to `userdel` the right account on
-    /// recreate.
+    /// `DiscoveredAnnotations::from_discovered` for url and
+    /// auth_name. A populated fixture therefore produces a
+    /// `RunnerIdentity` with non-empty url + auth_name — matching
+    /// what `apply.rs::execute_remove_runner` needs to mint a
+    /// deregistration token on recreate.
     ///
     /// The count=0 sibling
     /// (`plan_from_count_zero_with_discovered_runner_emits_remove_in_summary_recreates`)
@@ -10285,30 +10279,12 @@ auth = \"pat\"
     /// fallbacks. This test takes the populated path, distinct from
     /// that fallback.
     ///
-    /// To make the user/prefix assertions load-bearing, the
-    /// discovered spec sets `user = "alice"` and
-    /// `prefix = "/srv/runners-old"` — non-default values that
-    /// `render_identity` writes to `00-ghars.conf` as `X-Ghars-User=alice`
-    /// and `X-Ghars-Prefix=/srv/runners-old`. `reconstruct_identity`
-    /// reads the annotations from the drop-in (annotation-first
-    /// contract); the on-disk unit body's `User=` /
-    /// `WorkingDirectory=` lines are template fallbacks consulted
-    /// only when the annotations are absent. The fallback paths
-    /// would produce `ghars-old-web` (from
-    /// `format!("{RUNNER_USER_PREFIX}{name}")`) and `/var/lib/ghars`
-    /// (from `paths.state_dir`), so an `assert_eq!` against the
-    /// non-default annotation values fails the moment the annotation
-    /// path stops firing — pinning that the X-Ghars-User /
-    /// X-Ghars-Prefix annotations, not the fallback, produced the
-    /// identity.
-    ///
     /// Distinct config shape: no count block; one explicit runner
     /// "web" desired, one different-named "old-web" discovered. The
     /// desired-only arm fires for "web" (CreateRunner), the
     /// discovered-only arm fires for "old-web" (RemoveRunner). The
     /// assertion focuses on the RemoveRunner — its identity must
-    /// carry the annotation values, not the fallback empty strings
-    /// or derived defaults.
+    /// carry the annotation values, not the fallback empty strings.
     #[test]
     fn plan_from_discovered_only_runner_populates_remove_runner_identity() {
         // Desired: explicit runner "web" (no count block).
@@ -10347,15 +10323,12 @@ auth = \"pat\"
         let rendered = crate::systemd::render_runner_unit(&discovered_spec)
             .expect("render_runner_unit must succeed for valid spec");
         // Use the production-shape unit body (the runner template
-        // verbatim — `User=ghars-%i`,
-        // `WorkingDirectory=/var/lib/ghars/%i`). After `%i` →
-        // `"old-web"` substitution, the parse path would produce
-        // `ghars-old-web` and `/var/lib/ghars` — identical to
-        // `reconstruct_identity`'s fallback output, so the
-        // assertions below cannot pass via the parse path. They
-        // pass only when the annotation path fires and reads
-        // X-Ghars-User=alice / X-Ghars-Prefix=/srv/runners-old from
-        // `rendered.drop_ins["00-ghars.conf"]`.
+        // verbatim). The url + auth_name assertions below pass only
+        // when `reconstruct_identity` reads the
+        // `X-Ghars-Runner-Url` / `X-Ghars-Auth-Name` annotations
+        // emitted by `render_runner_unit` into
+        // `rendered.drop_ins["00-ghars.conf"]`, not from the
+        // template body.
         let on_disk_unit_text = crate::systemd::runner_template_text();
         let mut actual = state::ActualState::default();
         actual.runners.insert(
@@ -11289,8 +11262,6 @@ auth = \"pat\"
         assert!(body.contains("# ghars config"));
         // OWNER/REPO placeholder.
         assert!(body.contains("OWNER/REPO"));
-        // Per-runner SEC-27 hint.
-        assert!(body.contains("SEC-27"));
     }
 
     #[test]
@@ -15911,8 +15882,6 @@ auth = \"bad key\"
             "runner_version",
             "labels",
             "arch",
-            "user",
-            "prefix",
             "runner_sha256",
             "runner_tarball",
             "network",

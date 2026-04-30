@@ -27,9 +27,9 @@
 //!    Reading the file directly is required because systemd's
 //!    `conf-parser.c:160` silently drops `X-*` keys on parse — they
 //!    are never exposed via D-Bus properties.
-//! 3. Open `/var/lib/ghars/<INSTANCE>/runsvc.sh` with `O_NOFOLLOW |
-//!    O_RDONLY`. Verify `fstat()` reports a regular file with at
-//!    least owner-execute (`S_IXUSR`).
+//! 3. Open `/var/lib/ghars/<TRUST_ZONE>/ghars-<INSTANCE>/runsvc.sh`
+//!    with `O_NOFOLLOW | O_RDONLY`. Verify `fstat()` reports a regular
+//!    file with at least owner-execute (`S_IXUSR`).
 //! 4. Compute SHA256 of the opened fd's full contents. Compare to the
 //!    annotation. On mismatch refuse to exec — the on-disk
 //!    runsvc.sh has changed since `ghars apply` recorded its hash,
@@ -463,7 +463,7 @@ mod tests {
         // Uppercase.
         assert!(!instance_name_is_valid("Buckos"));
         // Path separator — would let an attacker traverse out of
-        // /var/lib/ghars/<INSTANCE>/.
+        // /var/lib/ghars/<TRUST_ZONE>/ghars-<INSTANCE>/.
         assert!(!instance_name_is_valid("ci/foo"));
         // Shell metacharacter — defense in depth even though we never
         // pass INSTANCE to a shell.
@@ -472,9 +472,14 @@ mod tests {
         assert!(!instance_name_is_valid("ci\0x"));
         // Whitespace.
         assert!(!instance_name_is_valid("ci x"));
-        // `.` — could let an attacker construct a path-traversal
-        // hop through a sibling runner directory (e.g. INSTANCE=
-        // `..` → `/var/lib/ghars/../runsvc.sh`).
+        // `..` — fails the runner-name regex
+        // `^[a-z]([a-z0-9-]*[a-z0-9])?$`. Defense-in-depth against
+        // hypothetical path-traversal even though the
+        // format!("ghars-{instance}") interpolation would produce
+        // a literal `ghars-..` directory component (not a
+        // parent-reference) under the
+        // `/var/lib/ghars/<TRUST_ZONE>/ghars-<INSTANCE>/` path
+        // shape.
         assert!(!instance_name_is_valid(".."));
     }
 

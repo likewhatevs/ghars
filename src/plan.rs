@@ -162,8 +162,8 @@ pub enum Disruption {
     /// re-registration when the action is runner-class. Strictly
     /// more disruptive than [`Disruption::Restart`] because it
     /// consumes a registration token mint (runners) or destroys
-    /// host-state (cache pools: storage dir + user group). Reached
-    /// by `CreateRunner`, recreate-class `UpdateRunner`,
+    /// host-state (cache pools: storage dir + cache-server unit).
+    /// Reached by `CreateRunner`, recreate-class `UpdateRunner`,
     /// `RemoveRunner`, `CreateCachePool`, and `RemoveCachePool`.
     Recreate,
 }
@@ -426,8 +426,8 @@ impl DriftCause {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldValue {
     /// Scalar string. Used for: `url`, `runner_version`, `arch`,
-    /// `user`, `prefix`, `runner_sha256`, `runner_tarball`,
-    /// `network`, `auth_name`, `trust_zone`.
+    /// `runner_sha256`, `runner_tarball`, `network`, `auth_name`,
+    /// `trust_zone`.
     String(String),
     /// Ordered list of strings. Used for: `labels` (sorted
     /// alphabetically per canonicalization — `merge_defaults`,
@@ -578,8 +578,8 @@ pub struct RunnerDelta {
     /// in-place rewrite branch and the recreate branch alike.
     pub after: RunnerPlan,
     /// True when the change touches an identity-bound field
-    /// (`name`/`url`/`labels`/`runner_version`/`runner_sha256`/
-    /// `runner_tarball`/`user`/`prefix`); apply must do
+    /// (`url`/`labels`/`runner_version`/`runner_sha256`/
+    /// `runner_tarball`/`arch`/`network`); apply must do
     /// remove → create. False ⇒ in-place rewrite + daemon-reload.
     pub requires_recreate: bool,
     /// Human-readable reasons to surface on the CLI (only meaningful when
@@ -600,8 +600,6 @@ pub struct RunnerDelta {
     /// - `"runner_version"` — release version changed.
     /// - `"labels"` — registration label set changed.
     /// - `"arch"` — binary architecture changed.
-    /// - `"user"` — process credential identity changed.
-    /// - `"prefix"` — state-dir / home-dir prefix changed.
     /// - `"runner_sha256"` — operator-pinned tarball digest changed.
     /// - `"runner_tarball"` — operator-supplied tarball path changed
     ///   (detected via SHA256 of the path string).
@@ -892,13 +890,11 @@ fn validate_generated_identifier(name: &str, parent_prefix: &str) -> Result<()> 
 /// - `name`, `url` — from runner only (identity, no merge).
 /// - `arch` — runner overrides defaults; both unset ⇒ host arch
 ///   (resolved by the caller and threaded in via `host_arch`).
-/// - `user` — runner overrides defaults; both unset ⇒
-///   `{RUNNER_USER_PREFIX}{name}` (SEC-27 per-runner-user secure default).
-/// - `prefix` — runner overrides defaults; both unset ⇒
-///   `/var/lib/ghars`.
-/// - `labels` — `concat(defaults.labels, runner.labels)` then dedup
-///   preserving first-seen order; empty after merge ⇒ defaults to
-///   `[name]` (Python parity).
+/// - `labels` — `concat(defaults.labels, runner.labels)`, HashSet-dedup
+///   (drop entries already inserted), sort alphabetically (byte-wise
+///   `Ord`) for `spec_hash` reorder-invariance, then `Vec::dedup` as
+///   defense-in-depth. Empty after merge ⇒ defaults to `[name]` (Python
+///   parity), then sorted (no-op for one element).
 /// - `memory_max`, `runner_version`, `runner_sha256` — scalar
 ///   override (runner > defaults).
 /// - `runner_tarball` — runner only (no defaults form).
@@ -1248,10 +1244,9 @@ pub fn spec_hash(spec: &EffectiveRunnerSpec) -> String {
 ///
 /// Annotations covered: `X-Ghars-Runner-Url`,
 /// `X-Ghars-Auth-Name`, `X-Ghars-Effective-Version`,
-/// `X-Ghars-Labels`, `X-Ghars-Arch`, `X-Ghars-User`,
-/// `X-Ghars-Prefix`, `X-Ghars-Runner-Sha256` (when set),
-/// `X-Ghars-Runner-Tarball-Hash` (when set; sha256 of operator
-/// path string, NOT the path), `X-Ghars-Trust-Zone`,
+/// `X-Ghars-Labels`, `X-Ghars-Arch`, `X-Ghars-Runner-Sha256`
+/// (when set), `X-Ghars-Runner-Tarball-Hash` (when set; sha256 of
+/// operator path string, NOT the path), `X-Ghars-Trust-Zone`,
 /// `X-Ghars-Network-Mode`, `X-Ghars-Caches` (comma-joined cache
 /// pool names, sorted by `lower_to_effective`; empty value parses
 /// as `Some(vec![])` to distinguish from missing annotation).
@@ -1428,8 +1423,6 @@ impl DiscoveredAnnotations {
 /// - `runner_version` — recreate (re-extract tarball).
 /// - `labels` — recreate (registration is labels-bound).
 /// - `arch` — recreate (binary architecture differs).
-/// - `user` — recreate (process credential identity bound).
-/// - `prefix` — recreate (state-dir / home-dir paths bound).
 /// - `runner_sha256` — recreate (re-extract tarball under new digest).
 /// - `runner_tarball` — recreate (operator-supplied binary swap;
 ///   detected via SHA256 of the path string, not the path itself,
@@ -1786,8 +1779,7 @@ fn classify_recreate_reasons_from_annotations(
 ///    (matches Part 7 — managed unit, no matching desired). External
 ///    units are never touched. Identity reconstructed from
 ///    annotations + unit body when possible (apply needs `url` /
-///    `auth_name` to mint a remove token; `prefix` / `user` to clean
-///    home directories).
+///    `auth_name` to mint a remove token).
 ///
 /// `paths` threads through to record `config_source` on each
 /// effective spec.
@@ -3733,7 +3725,7 @@ mod tests {
     //
     // Per design Part 3 "requires_recreate field policy" table:
     //   recreate fields:  url, labels, runner_version, runner_sha256,
-    //                     runner_tarball, user, prefix, arch, network
+    //                     runner_tarball, arch, network
     //   in-place fields:  auth (auth_name), memory_max, caches,
     //                     trust_zone, hardening.*, allowed_cpus,
     //                     allowed_memory_nodes, proxy, hooks
@@ -3743,9 +3735,9 @@ mod tests {
     // recreate-class field from its X-Ghars-* annotation directly:
     // url (X-Ghars-Runner-Url), runner_version
     // (X-Ghars-Effective-Version), labels (X-Ghars-Labels), arch
-    // (X-Ghars-Arch), user (X-Ghars-User), prefix (X-Ghars-Prefix),
-    // runner_sha256 (X-Ghars-Runner-Sha256), runner_tarball
-    // (X-Ghars-Runner-Tarball-Hash), network (X-Ghars-Network-Mode).
+    // (X-Ghars-Arch), runner_sha256 (X-Ghars-Runner-Sha256),
+    // runner_tarball (X-Ghars-Runner-Tarball-Hash), network
+    // (X-Ghars-Network-Mode).
     // The same classifier records FieldChange entries (without
     // pushing a recreate reason) for the in-place fields that have
     // their own annotation and need operator-visible diffing:
@@ -5192,17 +5184,17 @@ mod tests {
         // it through `DiscoveredAnnotations::from_drop_in_body`.
         // The parsed annotations must reflect the input spec's
         // identity-bound fields (url, auth_name, labels,
-        // arch, user, prefix, trust_zone, caches, runner_sha256).
+        // arch, trust_zone, caches, runner_sha256).
         // A regression in either direction — renderer drops a line,
         // parser misroutes a key, parser splits a comma-list wrong —
         // breaks this test.
         //
         // Why fuzz the inputs: the existing render-side tests pin
         // single-shape outputs, but a mutation that flips
-        // `X-Ghars-User=` to `X-Ghars-Owner=` in the renderer would
-        // pass the snapshot tests as long as the snapshot was also
-        // updated. The round-trip catches that class because the
-        // parser side stayed on `X-Ghars-User`.
+        // `X-Ghars-Runner-Url=` to `X-Ghars-Url=` in the renderer
+        // would pass the snapshot tests as long as the snapshot was
+        // also updated. The round-trip catches that class because the
+        // parser side stayed on `X-Ghars-Runner-Url`.
         #[test]
         fn prop_render_parse_round_trip_preserves_identity_fields(
             url_path in "[a-z]{2,8}/[a-z]{2,8}",
@@ -8675,14 +8667,14 @@ labels  = ["alpha", "beta"]
     // ---- round-trip annotation symmetry -------------------------------
 
     /// `render_identity` ↔ `DiscoveredAnnotations::from_drop_in_body`
-    /// round-trip for ALL 12 annotation fields the parser tracks.
+    /// round-trip for the production-emitted annotation fields.
     /// We render a spec via `render_runner_unit`, parse the resulting
     /// 00-ghars.conf body, and assert each annotation flows back
     /// into the right field. Catches mutants on either side that
     /// spell the key wrong or encode the value differently.
     ///
-    /// Coverage: url, auth_name, runner_version, labels, arch, user,
-    /// prefix, runner_sha256, runner_tarball_hash, trust_zone,
+    /// Coverage: url, auth_name, runner_version, labels, arch,
+    /// runner_sha256, runner_tarball_hash, trust_zone,
     /// network_mode, caches. The spec is built with non-default values
     /// for every field so a single mismatch surfaces as a per-field
     /// assertion failure rather than a spec_hash-derived
@@ -9085,7 +9077,7 @@ labels  = ["alpha", "beta"]
 
     /// Drive every annotation-detected recreate-class path (url,
     /// runner_version, labels, runner_sha256, runner_tarball, arch,
-    /// user, prefix, network) plus the runsvc_integrity guard through
+    /// network) plus the runsvc_integrity guard through
     /// `plan_from` end-to-end. For each scenario, assert that the
     /// resulting `RunnerDelta` satisfies the invariant
     /// `requires_recreate=true ⇒ !recreate_reasons.is_empty()` AND
