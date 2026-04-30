@@ -1,0 +1,12 @@
+[book]
+title = "ghars"
+description = "Declaratively manage self-hosted GitHub Actions runners on systemd-based Linux hosts."
+authors = ["Pat Somaru"]
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "rust"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/likewhatevs/ghars"
+edit-url-template = "https://github.com/likewhatevs/ghars/edit/main/docs/{path}"

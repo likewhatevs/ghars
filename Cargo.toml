@@ -18,18 +18,22 @@ path = "src/lib.rs"
 name = "ghars"
 path = "src/main.rs"
 
-# SEC-02 root-owned runsvc trampoline. Compiled binary, NOT shell.
+# SEC-02 runsvc trampoline. Compiled binary, NOT shell.
 # Installed at /usr/lib/ghars/runsvc-wrapper (root:root mode 0755).
-# Invoked from the runner unit via `ExecStart=!/usr/lib/ghars/runsvc-wrapper %i`
-# (the `!` prefix bypasses User=/Group= but keeps the unit's full
-# sandboxing — TemporaryFileSystem=/:ro, BindReadOnlyPaths,
-# PrivateDevices, NetworkNamespacePath, SystemCallFilter, etc. — applied
-# to the wrapper and to the runsvc.sh process it execs into.
-# CapabilityBoundingSet=CAP_SETUID CAP_SETGID grants the wrapper just
-# enough to drop privileges. The wrapper integrity-checks
-# /var/lib/ghars/RUNNER/runsvc.sh against the X-Ghars-Runsvc-Sha256
-# annotation, then setgid/setuid to ghars-RUNNER and fexecve's the
-# verified file descriptor (closing the open-then-rename TOCTOU window).
+# Invoked from the runner unit via `ExecStart=/usr/lib/ghars/runsvc-wrapper
+# %i` with NO prefix. DynamicUser=yes plus
+# `User=ghars-tz-<TRUST_ZONE>` (set by the per-runner 00-ghars.conf
+# drop-in) establish the runner identity before the wrapper starts,
+# and the unit's full sandbox stays applied — TemporaryFileSystem=/:ro,
+# BindReadOnlyPaths, PrivateDevices, NetworkNamespacePath,
+# SystemCallFilter, etc. — to the wrapper and to the runsvc.sh process
+# it execs into. CapabilityBoundingSet is empty: with no setuid/setgid
+# step, neither CAP_SETUID nor CAP_SETGID is required. The wrapper
+# opens /var/lib/ghars/<TRUST_ZONE>/ghars-<INSTANCE>/runsvc.sh with
+# O_NOFOLLOW, recomputes SHA-256, compares against the
+# X-Ghars-Runsvc-Sha256 annotation in the 00-ghars.conf drop-in (also
+# read with O_NOFOLLOW), and fexecve's the verified file descriptor on
+# match — closing the open-then-rename TOCTOU window.
 [[bin]]
 name = "runsvc-wrapper"
 path = "src/bin/runsvc_wrapper.rs"
@@ -96,13 +100,31 @@ jsonwebtoken = { version = "9", default-features = false }
 # the kernel rejects symlinks at open(2) time, closing the lstat-then-open
 # TOCTOU window the design calls out).
 libc = "0.2"
-# nix wraps fexecve(2) and getpwnam_r(3) in safe APIs so the SEC-02
-# trampoline (`runsvc-wrapper` binary) can drop privileges and exec the
-# verified-by-fd runsvc.sh without violating the workspace's
-# `unsafe_code = "forbid"` lint.
-# - `user`    → `unistd::User::from_name`  (getpwnam_r wrapper).
-# - `process` → `unistd::{fexecve, setuid, setgid, setgroups}`.
-# - `fs`      → reserved for renameat2/openat wrapping in adjacent tasks.
+# nix wraps libc syscalls in safe APIs so callers stay within the
+# workspace's `unsafe_code = "forbid"` lint.
+# - `user`    → `unistd::{Uid, Gid}` types and `unistd::geteuid`
+#               (apply.rs ownership ops, root-effective-uid checks in
+#               extract.rs / netns.rs). DynamicUser= handles runner
+#               identity, so no getpwnam_r / Users-trait lookup is
+#               needed.
+# - `process` → `unistd::fexecve`. The runsvc-wrapper binary execs
+#               the verified runsvc.sh by file descriptor, never by
+#               path — closing the open-then-rename TOCTOU window. No
+#               setuid/setgid/setgroups: DynamicUser= already
+#               established the runner identity before the wrapper
+#               starts.
+# - `fs`      → `fcntl::{renameat2, RenameFlags::RENAME_EXCHANGE}` for
+#               extract.rs's atomic upgrade-in-place directory swap;
+#               `fcntl::{FcntlArg, FdFlag, fcntl}` so the
+#               runsvc-wrapper can clear FD_CLOEXEC on the verified
+#               script fd before fexecve (binfmt_script requires
+#               post-exec read access via /proc/self/fd/N);
+#               `unistd::fchown` (apply.rs ownership ops; gated on
+#               `all(user, fs)`); `sys::stat::{utimensat,
+#               UtimensatFlags::NoFollowSymlink}` (apply.rs symlink-
+#               safe mtime back-dating in stale-temp gc tests);
+#               `unistd::mkfifo` + `sys::stat::Mode` (validators.rs
+#               FIFO-rejection regression tests).
 nix = { version = "0.29", features = ["fs", "user", "process"] }
 # chrono is used for RegistrationToken.expires_at (DateTime<Utc>),
 # matching octocrab's SelfHostedRunnerToken.expires_at type so the
