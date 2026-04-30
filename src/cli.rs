@@ -5930,9 +5930,17 @@ auth = \"pat\"
                     "msg must scope to the offending runner by name; got: {msg}"
                 );
                 assert!(
-                    msg.contains(crate::validators::RUNNER_USER_PREFIX),
-                    "msg must come from the runner-name-cap layer (mentions \
-                     derived user prefix); got: {msg}"
+                    msg.contains("too long")
+                        && msg.contains(
+                            &crate::validators::RUNNER_NAME_MAX_LEN.to_string(),
+                        )
+                        && msg.contains("[[runner]] name component")
+                        && msg.contains("pre-DynamicUser era"),
+                    "msg must come from the runner-name-cap layer \
+                     (mentions `too long`, RUNNER_NAME_MAX_LEN, the \
+                     `[[runner]] name component` policy phrasing, and \
+                     the `pre-DynamicUser era` holdover rationale); \
+                     got: {msg}"
                 );
             }
             other => panic!("expected GharsError::Validation, got: {other:?}"),

@@ -424,9 +424,15 @@ circuits:
    pool per runner.
 6. `validate_cache_pool_names` — length cap on pool keys + runner
    `caches` refs.
-7. `validate_runner_names` — length cap (the derived `User=` name
-   has to fit systemd's strict name-length cap; DynamicUser=
-   allocates the transient UID without consulting getpwnam).
+7. `validate_runner_names` — length cap retained as a holdover
+   from the pre-DynamicUser era (when `User=ghars-<name>` was
+   bounded by systemd's 31-char `valid_user_group_name` check).
+   Under DynamicUser the User= is `ghars-tz-<TRUST_ZONE>` and
+   does not bound the runner name; the synthesized
+   `LogNamespace=ghars-<name>` and path-segment uses face much
+   looser limits (LOG_NAMESPACE_MAX = 222, NAME_MAX = 255). The
+   31-char cap is kept for path-component conservation and
+   backward compatibility with pre-DynamicUser configs.
 8. `validate_auth_keys` — every runner's `auth` resolves.
 9. `validate_pat_xor` — `AuthSpec::Pat` shape-only XOR check on
    `token_env` / `token_file`.

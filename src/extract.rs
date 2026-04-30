@@ -938,6 +938,42 @@ fn paths_equal(a: &Utf8Path, b: &Utf8Path) -> bool {
 /// `File` and threads it through to [`extract_tarball_from_file`]
 /// so the path is not re-resolved between the open-time validation
 /// in [`verify_local_tarball_open`] and the read.
+///
+/// `cfg(test)`-only test seam over `nix::fcntl::renameat2`. When the
+/// thread-local [`tests::FORCED_RENAMEAT2_ERRNO`] cell is set,
+/// returns the configured synthetic `Errno` (drives the EINVAL,
+/// ENOSYS, EXDEV, or unhandled-errno branches of
+/// [`extract_and_swap_from_file`] without requiring a kernel that
+/// actually rejects the call). Per-thread state means parallel
+/// tests cannot interfere — each test sets its own forcing on its
+/// own thread, and no global lock is needed. Production builds
+/// compile a no-op shim that delegates to the real syscall.
+#[cfg(test)]
+fn renameat2_with_test_seam(
+    old_dirfd: Option<std::os::fd::RawFd>,
+    old_path: &std::path::Path,
+    new_dirfd: Option<std::os::fd::RawFd>,
+    new_path: &std::path::Path,
+    flags: nix::fcntl::RenameFlags,
+) -> nix::Result<()> {
+    if let Some(forced) = tests::FORCED_RENAMEAT2_ERRNO.with(|c| c.get()) {
+        return Err(forced);
+    }
+    nix::fcntl::renameat2(old_dirfd, old_path, new_dirfd, new_path, flags)
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn renameat2_with_test_seam(
+    old_dirfd: Option<std::os::fd::RawFd>,
+    old_path: &std::path::Path,
+    new_dirfd: Option<std::os::fd::RawFd>,
+    new_path: &std::path::Path,
+    flags: nix::fcntl::RenameFlags,
+) -> nix::Result<()> {
+    nix::fcntl::renameat2(old_dirfd, old_path, new_dirfd, new_path, flags)
+}
+
 fn extract_and_swap_from_file(
     tarball_file: File,
     staging: &Utf8Path,
@@ -951,7 +987,7 @@ fn extract_and_swap_from_file(
         // Upgrade-in-place: atomically swap staging ↔ final_dir.
         // After RENAME_EXCHANGE, the OLD tree is at staging and the
         // new tree is at final_dir; we remove the displaced old tree.
-        match nix::fcntl::renameat2(
+        match renameat2_with_test_seam(
             None,
             staging.as_std_path(),
             None,
@@ -1225,7 +1261,41 @@ fn set_dir_mode(_path: &Utf8Path, _mode: u32) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use std::io::Cursor;
+
+    thread_local! {
+        /// `cfg(test)` test seam: when `Some(errno)`, the seam
+        /// helper [`renameat2_with_test_seam`] returns that errno
+        /// synthetically instead of invoking the real syscall.
+        /// Per-thread storage means parallel test threads each have
+        /// their own forcing — no Mutex needed. Tests opt in via the
+        /// [`ForcedRenameAt2Errno`] RAII guard, which sets and
+        /// clears the cell scoped to the test body.
+        pub(super) static FORCED_RENAMEAT2_ERRNO:
+            Cell<Option<nix::errno::Errno>> = const { Cell::new(None) };
+    }
+
+    /// RAII guard: sets [`FORCED_RENAMEAT2_ERRNO`] on the current
+    /// thread on construction and clears it on Drop. Tests use
+    /// `let _g = ForcedRenameAt2Errno::new(Errno::EINVAL);` to
+    /// scope the forcing to a single test body. Drop runs even on
+    /// panic, so a failing test does not leak the forcing into
+    /// later tests on the same thread.
+    struct ForcedRenameAt2Errno;
+
+    impl ForcedRenameAt2Errno {
+        fn new(e: nix::errno::Errno) -> Self {
+            FORCED_RENAMEAT2_ERRNO.with(|c| c.set(Some(e)));
+            Self
+        }
+    }
+
+    impl Drop for ForcedRenameAt2Errno {
+        fn drop(&mut self) {
+            FORCED_RENAMEAT2_ERRNO.with(|c| c.set(None));
+        }
+    }
 
     /// Build an in-memory `.tar.gz` from a list of synthetic entries.
     /// Each entry is `(name_bytes, EntryType, link_target_bytes_or_empty,
@@ -2797,5 +2867,280 @@ mod tests {
         assert!(dirs[1].as_std_path().exists());
         // older dir pruned.
         assert!(!dirs[0].as_std_path().exists());
+    }
+
+    // ---- renameat2 atomicity contract tests ---------------------------
+    //
+    // `extract_and_swap_from_file` has three publish layers per the
+    // module-level doc-comment: RENAME_EXCHANGE happy path, EINVAL/
+    // ENOSYS fallback (remove-then-rename), and EXDEV fallback (copy-
+    // then-remove). These tests pin the success post-conditions of
+    // each branch plus the unhandled-errno propagation. The
+    // [`ForcedRenameAt2Errno`] cfg(test) seam forces a configured
+    // errno without requiring a kernel that genuinely rejects
+    // RENAME_EXCHANGE.
+
+    /// Build a tiny `.tar.gz` containing a single regular file
+    /// named `marker.txt` whose body is the supplied bytes. Used as
+    /// the staging-tree input for the renameat2 atomicity tests.
+    fn tar_gz_with_marker(marker_body: &[u8]) -> Vec<u8> {
+        build_tar_gz(&[(
+            b"marker.txt",
+            tar::EntryType::Regular,
+            b"",
+            0o644,
+            marker_body,
+        )])
+    }
+
+    /// Drop a tar.gz at `tarball_path` and return an open handle to
+    /// it suitable for passing to `extract_and_swap_from_file`. The
+    /// open mirrors `verify_local_tarball_open`'s contract — caller
+    /// owns the resulting File.
+    fn write_and_open_tarball(tarball_path: &Utf8Path, body: &[u8]) -> File {
+        std::fs::write(tarball_path.as_std_path(), body).unwrap();
+        std::fs::OpenOptions::new()
+            .read(true)
+            .open(tarball_path.as_std_path())
+            .unwrap()
+    }
+
+    /// Layout helper: produces (runner_home, final_dir, staging,
+    /// tarball_path) anchored at a fresh tempdir. `final_dir_name`
+    /// and `staging_name` distinguish per-test paths so a panicking
+    /// test cannot leak state into a sibling.
+    fn renameat2_test_layout(
+        tmp: &tempfile::TempDir,
+        final_dir_name: &str,
+        staging_name: &str,
+    ) -> (Utf8PathBuf, Utf8PathBuf, Utf8PathBuf, Utf8PathBuf) {
+        let runner_home =
+            Utf8Path::from_path(tmp.path()).unwrap().to_path_buf();
+        let final_dir = runner_home.join(final_dir_name);
+        let staging = runner_home.join(staging_name);
+        let tarball_path = runner_home.join("input.tar.gz");
+        (runner_home, final_dir, staging, tarball_path)
+    }
+
+    /// Pre-populate `final_dir` with `body` under `marker.txt`.
+    fn populate_final_dir(final_dir: &Utf8Path, body: &[u8]) {
+        fs::create_dir_all(final_dir.as_std_path()).unwrap();
+        fs::write(final_dir.join("marker.txt").as_std_path(), body)
+            .unwrap();
+    }
+
+    #[test]
+    fn extract_and_swap_renameat2_happy_path_replaces_final_dir() {
+        // Pre-condition: final_dir exists with a known sentinel file
+        // whose body is the OLD payload. After
+        // extract_and_swap_from_file (RENAME_EXCHANGE branch),
+        // final_dir/marker.txt must hold the NEW payload and the
+        // staging path must be gone (the displaced old tree is
+        // removed at the end of the Ok arm).
+        let tmp = tempfile::tempdir().unwrap();
+        let (runner_home, final_dir, staging, tarball_path) =
+            renameat2_test_layout(&tmp, "bin.happy", ".staging-happy");
+        populate_final_dir(&final_dir, b"old-payload");
+        let file = write_and_open_tarball(
+            &tarball_path,
+            &tar_gz_with_marker(b"new-payload"),
+        );
+
+        extract_and_swap_from_file(file, &staging, &runner_home, &final_dir)
+            .expect("happy path must succeed");
+
+        let body =
+            fs::read(final_dir.join("marker.txt").as_std_path()).unwrap();
+        assert_eq!(body, b"new-payload", "RENAME_EXCHANGE must publish the new tree");
+        assert!(
+            !staging.as_std_path().exists(),
+            "staging path must be removed after RENAME_EXCHANGE",
+        );
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn extract_and_swap_einval_fallback_replaces_final_dir() {
+        // Force EINVAL — exercises the remove-then-rename fallback.
+        // Post-conditions identical to happy-path: final_dir holds
+        // the NEW payload, staging is gone. Also asserts the warn-
+        // level tracing message documents the fallback so
+        // operators can spot it in journalctl.
+        let _guard = ForcedRenameAt2Errno::new(nix::errno::Errno::EINVAL);
+        let tmp = tempfile::tempdir().unwrap();
+        let (runner_home, final_dir, staging, tarball_path) =
+            renameat2_test_layout(&tmp, "bin.einval", ".staging-einval");
+        populate_final_dir(&final_dir, b"old-payload");
+        let file = write_and_open_tarball(
+            &tarball_path,
+            &tar_gz_with_marker(b"new-payload"),
+        );
+
+        extract_and_swap_from_file(file, &staging, &runner_home, &final_dir)
+            .expect("EINVAL fallback must succeed via remove-then-rename");
+
+        let body =
+            fs::read(final_dir.join("marker.txt").as_std_path()).unwrap();
+        assert_eq!(body, b"new-payload", "EINVAL fallback must publish the new tree");
+        // Post-success invariant: final_dir is a directory (not a
+        // dangling symlink, not absent).
+        let meta =
+            fs::symlink_metadata(final_dir.as_std_path()).unwrap();
+        assert!(meta.file_type().is_dir(), "final_dir must be a directory");
+        assert!(
+            !staging.as_std_path().exists(),
+            "staging path must be removed after EINVAL fallback",
+        );
+        // Operator-facing trace: production warns when this branch
+        // fires so `journalctl -p warning` surfaces the fallback
+        // even when the apply succeeds. Pin the message substring
+        // so a future tracing refactor can't silently drop it.
+        assert!(
+            logs_contain("falling back to remove-then-rename"),
+            "EINVAL fallback must emit a tracing::warn",
+        );
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn extract_and_swap_enosys_fallback_replaces_final_dir() {
+        // Force ENOSYS — same fallback arm as EINVAL
+        // (`Err(EINVAL) | Err(ENOSYS)` in the match), exercises the
+        // older-kernel branch where renameat2 is not implemented at
+        // all. Post-conditions identical, and the same warn message
+        // fires.
+        let _guard = ForcedRenameAt2Errno::new(nix::errno::Errno::ENOSYS);
+        let tmp = tempfile::tempdir().unwrap();
+        let (runner_home, final_dir, staging, tarball_path) =
+            renameat2_test_layout(&tmp, "bin.enosys", ".staging-enosys");
+        populate_final_dir(&final_dir, b"old-payload");
+        let file = write_and_open_tarball(
+            &tarball_path,
+            &tar_gz_with_marker(b"new-payload"),
+        );
+
+        extract_and_swap_from_file(file, &staging, &runner_home, &final_dir)
+            .expect("ENOSYS fallback must succeed via remove-then-rename");
+
+        let body =
+            fs::read(final_dir.join("marker.txt").as_std_path()).unwrap();
+        assert_eq!(body, b"new-payload", "ENOSYS fallback must publish the new tree");
+        assert!(
+            !staging.as_std_path().exists(),
+            "staging path must be removed after ENOSYS fallback",
+        );
+        assert!(
+            logs_contain("falling back to remove-then-rename"),
+            "ENOSYS fallback must emit a tracing::warn",
+        );
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn extract_and_swap_exdev_fallback_uses_copy_then_remove() {
+        // Force EXDEV — exercises the cross-filesystem branch, which
+        // calls `fs::remove_dir_all(final_dir)` then
+        // `copy_dir_recursive(staging, final_dir)` then
+        // `fs::remove_dir_all(staging)`. Same post-conditions: new
+        // payload at final_dir, staging gone. (The actual underlying
+        // filesystem is single-FS in this test; the seam fakes EXDEV
+        // so the copy branch is exercised regardless.) The warn-
+        // level tracing message MUST distinguish this branch from
+        // the EINVAL/ENOSYS branch so journalctl readers know whether
+        // a copy or a rename happened.
+        let _guard = ForcedRenameAt2Errno::new(nix::errno::Errno::EXDEV);
+        let tmp = tempfile::tempdir().unwrap();
+        let (runner_home, final_dir, staging, tarball_path) =
+            renameat2_test_layout(&tmp, "bin.exdev", ".staging-exdev");
+        populate_final_dir(&final_dir, b"old-payload");
+        let file = write_and_open_tarball(
+            &tarball_path,
+            &tar_gz_with_marker(b"new-payload"),
+        );
+
+        extract_and_swap_from_file(file, &staging, &runner_home, &final_dir)
+            .expect("EXDEV fallback must succeed via copy-then-remove");
+
+        let body =
+            fs::read(final_dir.join("marker.txt").as_std_path()).unwrap();
+        assert_eq!(body, b"new-payload", "EXDEV fallback must publish the new tree");
+        assert!(
+            !staging.as_std_path().exists(),
+            "staging path must be removed after EXDEV fallback",
+        );
+        assert!(
+            logs_contain("cross-filesystem upgrade"),
+            "EXDEV fallback must emit a distinguishable tracing::warn",
+        );
+    }
+
+    #[test]
+    fn extract_and_swap_fresh_install_skips_renameat2() {
+        // final_dir does NOT exist — fresh-install branch takes
+        // `fs::rename` directly without ever calling renameat2.
+        // Forcing EINVAL through the seam must NOT affect this path:
+        // the test asserts success even though the seam would have
+        // returned EINVAL if it had been reached.
+        let _guard = ForcedRenameAt2Errno::new(nix::errno::Errno::EINVAL);
+        let tmp = tempfile::tempdir().unwrap();
+        let (runner_home, final_dir, staging, tarball_path) =
+            renameat2_test_layout(&tmp, "bin.fresh", ".staging-fresh");
+        // final_dir intentionally NOT pre-populated.
+        let file = write_and_open_tarball(
+            &tarball_path,
+            &tar_gz_with_marker(b"fresh-payload"),
+        );
+
+        extract_and_swap_from_file(file, &staging, &runner_home, &final_dir)
+            .expect("fresh-install path must not touch renameat2");
+
+        let body =
+            fs::read(final_dir.join("marker.txt").as_std_path()).unwrap();
+        assert_eq!(body, b"fresh-payload");
+        assert!(
+            !staging.as_std_path().exists(),
+            "staging path must be gone (renamed to final_dir)",
+        );
+    }
+
+    #[test]
+    fn extract_and_swap_propagates_unhandled_renameat2_errno() {
+        // Force EACCES — not in the match's
+        // `EINVAL | ENOSYS | EXDEV` set. The catch-all `Err(e)` arm
+        // returns `GharsError::Io(e.into())` and aborts the publish.
+        // Post-condition: final_dir still holds the OLD payload
+        // (no overwrite occurred) and the function returns Err.
+        let _guard = ForcedRenameAt2Errno::new(nix::errno::Errno::EACCES);
+        let tmp = tempfile::tempdir().unwrap();
+        let (runner_home, final_dir, staging, tarball_path) =
+            renameat2_test_layout(&tmp, "bin.eacces", ".staging-eacces");
+        populate_final_dir(&final_dir, b"old-payload");
+        let file = write_and_open_tarball(
+            &tarball_path,
+            &tar_gz_with_marker(b"new-payload"),
+        );
+
+        let outcome = extract_and_swap_from_file(
+            file,
+            &staging,
+            &runner_home,
+            &final_dir,
+        );
+        assert!(
+            outcome.is_err(),
+            "unhandled errno (EACCES) must propagate as Err",
+        );
+        // OLD payload survives the failed swap. Either the
+        // RENAME_EXCHANGE branch did not commit (we never reached
+        // remove_dir_all) or the function aborted before any
+        // mutation. The catch-all `Err(e) => return Err(...)` arm
+        // happens BEFORE any mutation in the RENAME_EXCHANGE branch,
+        // so final_dir's contents must be untouched.
+        let body =
+            fs::read(final_dir.join("marker.txt").as_std_path()).unwrap();
+        assert_eq!(
+            body, b"old-payload",
+            "unhandled-errno path must NOT mutate final_dir",
+        );
     }
 }
