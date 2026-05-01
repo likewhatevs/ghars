@@ -230,28 +230,45 @@ pub fn validate_cache_pool_name(name: &str) -> Result<()> {
     validate_identifier(name)
 }
 
-/// Validate a `trust_zone` value's length against
-/// [`TRUST_ZONE_MAX_LEN`].
+/// Validate a `trust_zone` value's shape and length.
 ///
 /// The rendered DynamicUser identity for every ghars runner /
 /// cache-server unit is `User=ghars-tz-<TRUST_ZONE>`. systemd's
 /// strict-mode `valid_user_group_name` rejects any User= name longer
-/// than [`SYSTEMD_USER_GROUP_NAME_MAX`] (31 chars), so the
-/// operator-controlled `<TRUST_ZONE>` segment cannot exceed
-/// `31 - len("ghars-tz-")` = [`TRUST_ZONE_MAX_LEN`] (= 22).
+/// than [`SYSTEMD_USER_GROUP_NAME_MAX`] (31 chars) AND any name
+/// outside the `[A-Za-z0-9_.-]` charset (no whitespace, no
+/// punctuation, no control chars). ghars's identifier shape
+/// `^[a-z]([a-z0-9-]*[a-z0-9])?$` is a strict subset of what systemd
+/// accepts, so passing the identifier gate guarantees the rendered
+/// `ghars-tz-<TRUST_ZONE>` will satisfy `valid_user_group_name`.
+///
+/// Two-layer gate:
+///   1. [`validate_identifier`] — charset + identifier-shape +
+///      [`IDENTIFIER_MAX_LEN`] (= 64) length cap. Rejects uppercase,
+///      underscores, dots, spaces, hyphens-at-edges, etc.
+///   2. [`TRUST_ZONE_MAX_LEN`] (= 22) length cap on top of the
+///      64-char identifier cap, derived from the
+///      [`SYSTEMD_USER_GROUP_NAME_MAX`] (31) ceiling minus the
+///      `ghars-tz-` prefix.
 ///
 /// Catching at config-load surfaces a structured error before any
 /// unit starts, instead of an opaque systemd
 /// `valid_user_group_name` failure during apply. Control-char
-/// rejection is a separate concern (`check_identity_field` /
-/// `validate_identity_fields`); this validator covers length only.
+/// rejection in the trust_zone string proper is also covered here
+/// (via the identifier shape gate); `check_identity_field` /
+/// `validate_identity_fields` still runs as defense-in-depth at
+/// render time so any future operator-controlled field that flows
+/// into `render_identity` without passing through this gate stays
+/// covered.
 ///
 /// # Errors
 ///
-/// Returns `GharsError::Validation` when `tz.len() > TRUST_ZONE_MAX_LEN`.
-/// Message echoes the offending value, names the cap, and cites the
-/// systemd ceiling so the operator understands the constraint.
+/// Returns `GharsError::Validation` when `tz` fails the identifier
+/// shape OR `tz.len() > TRUST_ZONE_MAX_LEN`. The "too long" message
+/// echoes the offending value, names the cap, and cites the systemd
+/// ceiling so the operator understands the constraint.
 pub fn validate_trust_zone(tz: &str) -> Result<()> {
+    validate_identifier(tz)?;
     if tz.len() > TRUST_ZONE_MAX_LEN {
         return Err(validation(
             format!(
@@ -1391,6 +1408,85 @@ mod tests {
                 assert!(
                     hint.contains(&TRUST_ZONE_MAX_LEN.to_string()),
                     "hint must restate the cap; got: {hint}"
+                );
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    /// Uppercase chars MUST reject through the identifier-shape gate
+    /// BEFORE the trust_zone length check. The rejection message
+    /// must come from `validate_identifier` ("identifier invalid")
+    /// rather than the length-cap "too long" arm.
+    #[test]
+    fn trust_zone_rejects_uppercase() {
+        let err = validate_trust_zone("Audited")
+            .expect_err("uppercase trust_zone must reject");
+        match err {
+            GharsError::Validation(msg, _) => {
+                assert!(
+                    msg.contains("identifier invalid"),
+                    "msg must come from the identifier-shape gate, \
+                     not the length cap; got: {msg}"
+                );
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    /// Underscores MUST reject — the identifier shape allows only
+    /// `[a-z0-9-]`. systemd's `valid_user_group_name` would accept
+    /// underscores, but ghars's identifier subset is strictly
+    /// narrower.
+    #[test]
+    fn trust_zone_rejects_underscore() {
+        let err = validate_trust_zone("audited_zone")
+            .expect_err("underscore trust_zone must reject");
+        match err {
+            GharsError::Validation(msg, _) => {
+                assert!(
+                    msg.contains("identifier invalid"),
+                    "msg must come from the identifier-shape gate; \
+                     got: {msg}"
+                );
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    /// Whitespace MUST reject. Spaces are not in the identifier
+    /// charset and would also break systemd's user-name parser.
+    #[test]
+    fn trust_zone_rejects_space() {
+        let err = validate_trust_zone("audited zone")
+            .expect_err("space-bearing trust_zone must reject");
+        match err {
+            GharsError::Validation(msg, _) => {
+                assert!(
+                    msg.contains("identifier invalid"),
+                    "msg must come from the identifier-shape gate; \
+                     got: {msg}"
+                );
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    /// Dots MUST reject. systemd's `valid_user_group_name` accepts
+    /// dots, but ghars's identifier subset uses kebab-case only.
+    /// Catching here gives operators a single canonical shape across
+    /// every identifier surface (auth keys, runner names, cache
+    /// pool names, trust zones).
+    #[test]
+    fn trust_zone_rejects_dot() {
+        let err = validate_trust_zone("audited.zone")
+            .expect_err("dot-bearing trust_zone must reject");
+        match err {
+            GharsError::Validation(msg, _) => {
+                assert!(
+                    msg.contains("identifier invalid"),
+                    "msg must come from the identifier-shape gate; \
+                     got: {msg}"
                 );
             }
             other => panic!("expected Validation, got {other:?}"),

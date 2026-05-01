@@ -1472,13 +1472,19 @@ fn validate_identity_fields(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-// ---------- trust_zone length cap ---------------------------------------
+// ---------- trust_zone shape + length cap -------------------------------
 
 /// Walk every runner and cache_pool `trust_zone` and gate the value
 /// through `validators::validate_trust_zone`. Same loop-and-scope
 /// pattern as `validate_runner_names` / `validate_cache_pool_names`
-/// — the per-value validator owns the cap and error wording; this
+/// — the per-value validator owns the gates and error wording; this
 /// function owns iteration and scope-prefixing.
+///
+/// `validate_trust_zone` enforces two layers: (1) the shared
+/// IDENTIFIER_REGEX shape (lowercase letters, digits, dashes;
+/// kebab-case only), then (2) the 22-char TRUST_ZONE_MAX_LEN cap so
+/// the rendered DynamicUser identity `User=ghars-tz-<TRUST_ZONE>`
+/// fits systemd's strict 31-char `valid_user_group_name` ceiling.
 ///
 /// # Errors
 ///

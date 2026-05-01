@@ -156,9 +156,11 @@ Fields:
   single-sccache-pool-per-runner rule below applies anyway).
 - `trust_zone` (`String`) — default `"default"`. Validator: every
   runner referencing the pool must have the same `trust_zone`.
-  Length cap `TRUST_ZONE_MAX_LEN = 22` chars: the rendered
-  DynamicUser identity `User=ghars-tz-<TRUST_ZONE>` must fit
-  systemd's strict 31-char `valid_user_group_name` ceiling.
+  Must match `IDENTIFIER_REGEX` (lowercase letters, digits, dashes;
+  start with a letter; end with a letter or digit) and ≤
+  `TRUST_ZONE_MAX_LEN = 22` chars: the rendered DynamicUser identity
+  `User=ghars-tz-<TRUST_ZONE>` must fit systemd's strict 31-char
+  `valid_user_group_name` ceiling.
 
 A runner that references >1 cache pool with `kinds` containing
 `sccache` is rejected at config load (`SCCACHE_SERVER_UDS` is
@@ -338,10 +340,10 @@ Selected fields:
   Ordered, dedup-on-validate. A runner can reference at most one
   pool with `kinds` containing `sccache`.
 - `trust_zone` (`String`) — default `"default"`. Pool references
-  must match (validator enforces). Same `TRUST_ZONE_MAX_LEN = 22`
-  cap as `[cache_pools.NAME]` — the rendered DynamicUser identity
-  `User=ghars-tz-<TRUST_ZONE>` must fit systemd's strict 31-char
-  `valid_user_group_name` ceiling.
+  must match (validator enforces). Same `IDENTIFIER_REGEX` shape +
+  `TRUST_ZONE_MAX_LEN = 22` cap as `[cache_pools.NAME]` — the
+  rendered DynamicUser identity `User=ghars-tz-<TRUST_ZONE>` must
+  fit systemd's strict 31-char `valid_user_group_name` ceiling.
 - `runner_tarball` (`Option<Utf8PathBuf>`) — pre-downloaded local
   tarball, bypasses release-API lookup. The path is opened with
   `O_NOFOLLOW` at apply time; symlinks and non-regular files are
@@ -422,10 +424,11 @@ circuits:
    `validate_hook_script` (`O_NOFOLLOW` open with the seven SEC-12
    checks listed under [`[hooks]`](#hooks-singleton)).
 3. `validate_identity_fields` — trust_zone control-char rejection.
-4. `validate_trust_zone_lengths` — trust_zone length cap
-   (`TRUST_ZONE_MAX_LEN = 22`) so the rendered DynamicUser identity
-   `User=ghars-tz-<TRUST_ZONE>` fits systemd's strict 31-char
-   `valid_user_group_name` ceiling.
+4. `validate_trust_zone_lengths` — trust_zone identifier-shape
+   gate (lowercase letters, digits, dashes; kebab-case only) +
+   length cap (`TRUST_ZONE_MAX_LEN = 22`) so the rendered
+   DynamicUser identity `User=ghars-tz-<TRUST_ZONE>` fits systemd's
+   strict 31-char `valid_user_group_name` ceiling.
 5. `validate_no_duplicate_caches` — no `caches = ["a", "a"]`
    inside a single `[[runner]]`.
 6. `validate_single_sccache_pool_per_runner` — at most one sccache
