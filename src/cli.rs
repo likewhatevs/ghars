@@ -807,13 +807,29 @@ fn validate_single_sccache_pool_per_runner(cfg: &Config) -> Result<()> {
 // ---------- cache-pool-name length cap ----------------------------------
 
 /// Reject `[cache_pools.NAME]` keys and `[[runner]] caches = [...]`
-/// entries whose length would push the derived group name
-/// `"ghars-cache-{name}"` past systemd's 31-char limit.
-/// Without this gate, an operator-chosen oversize pool key would
-/// produce an overlong DynamicUser name or unit-file path at apply
-/// time. Catching
-/// at config load surfaces a scoped error (`cache_pool "NAME": ...`
-/// or `runner "NAME" caches[]: ...`) before any side effects.
+/// entries whose length exceeds [`validators::CACHE_POOL_NAME_MAX_LEN`].
+///
+/// Historical-holdover cap retained from the pre-DynamicUser era,
+/// when each pool produced a per-pool group `ghars-cache-<name>`
+/// passed through systemd's strict `valid_user_group_name` check
+/// (capped at `SYSTEMD_GROUP_NAME_MAX = 31` chars). Under the
+/// current DynamicUser model the cache server's `User=` is
+/// `ghars-tz-<TRUST_ZONE>` (sibling DynamicUser of the runners in
+/// the same trust_zone, bounded by trust_zone length not pool
+/// name), no `groupadd ghars-cache-<name>` runs (see
+/// `apply.rs::execute_create_cache_pool` "No groupadd" comment),
+/// and the pool name surfaces only in:
+///   - the systemd unit instance `ghars-cache@<pool>.service`,
+///   - the UDS path `/run/ghars/cache-<pool>.sock`,
+///   - the drop-in directory `ghars-cache@<pool>.service.d/`.
+/// None of those force the 31-char cap. The historical limit is
+/// kept for path-component conservation and backward compatibility —
+/// operator-authored configs from the pre-DynamicUser era continue
+/// to validate at the same shape, and shorter names keep the
+/// synthesized paths well clear of `NAME_MAX` (255). Catching at
+/// config load surfaces a scoped error (`cache_pool "NAME": ...` or
+/// `runner "NAME" caches[]: ...`) instead of letting an overlong
+/// pool name reach apply.
 ///
 /// Defense-in-depth: runner.caches Vec entries are also validated
 /// here. The plan-time cross-reference in `plan::lower_to_effective`
@@ -821,10 +837,10 @@ fn validate_single_sccache_pool_per_runner(cfg: &Config) -> Result<()> {
 /// `> CACHE_POOL_NAME_MAX_LEN`-char string normally fails at "unknown
 /// cache pool" before the length cap matters. But a future code path
 /// that synthesizes an EffectiveCacheBinding without round-tripping
-/// through that lookup would let an oversize string slip past —
-/// the DynamicUser name would exceed systemd's limit mid-apply.
-/// Validating both surfaces here closes that gap
-/// pre-emptively.
+/// through that lookup would let an oversize string slip past — the
+/// historical-holdover cap would no longer be enforced uniformly
+/// across both config surfaces. Validating both surfaces here closes
+/// that gap pre-emptively.
 ///
 /// # Errors
 ///
@@ -854,11 +870,19 @@ fn validate_cache_pool_names(cfg: &Config) -> Result<()> {
 
 // ---------- runner-name length cap --------------------------------------
 
-/// Reject `[[runner]] name = "..."` keys whose length would push the
-/// derived DynamicUser name `"ghars-tz-{trust_zone}"` or unit-file
-/// path past systemd's strict-mode name limit. Without this gate, an
-/// operator-chosen oversize runner name would produce an overlong
-/// identity or path at apply time. Catching at config load surfaces a
+/// Reject `[[runner]] name = "..."` keys whose length exceeds
+/// [`validators::RUNNER_NAME_MAX_LEN`].
+///
+/// Historical-holdover cap retained from the pre-DynamicUser era;
+/// see [`validators::RUNNER_NAME_MAX_LEN`] for the full rationale.
+/// Under the current DynamicUser model, `User=ghars-tz-<TRUST_ZONE>`
+/// is bounded by trust_zone length, NOT runner name. The synthesized
+/// identifiers that DO embed the runner name (`LogNamespace=ghars-<name>`
+/// at LOG_NAMESPACE_MAX = 222 chars; `StateDirectory` /
+/// `WorkingDirectory` path segments at NAME_MAX = 255) all permit
+/// longer names than this 25-char cap. The cap is kept for
+/// path-component conservation and backward compatibility with
+/// operator-authored configs. Catching at config load surfaces a
 /// scoped error (`runner "NAME": ...`) before any side effects.
 ///
 /// # Errors
@@ -2998,10 +3022,10 @@ fn cmd_apply(
 /// ```text
 /// Rollback advisory: N action(s) failed. Manual cleanup may be required:
 ///   LABEL_A:
-///     - started gh-runner@foo.service
-///     - wrote /etc/ghars/runners/foo/00-ghars.conf
+///     - started ghars-runner@foo.service
+///     - wrote /etc/systemd/system/ghars-runner@foo.service.d/00-ghars.conf
 ///   LABEL_B:
-///     - created group ghars-cache-build
+///     - created directory /etc/systemd/system/ghars-cache@build.service.d
 /// ```
 ///
 /// Per-step descriptions come from [`apply::UndoStep::describe`] —
@@ -5863,8 +5887,12 @@ size = \"200G\"
                     "msg must scope to the offending pool by name; got: {msg}"
                 );
                 assert!(
-                    msg.contains("ghars-cache-"),
-                    "msg must come from the cache-pool-cap layer; got: {msg}"
+                    msg.contains("cache pool name component")
+                        && msg.contains("pre-DynamicUser era"),
+                    "msg must come from the cache-pool-cap layer (mentions \
+                     the `cache pool name component` policy phrasing and \
+                     the `pre-DynamicUser era` holdover rationale), not \
+                     the identifier-cap layer; got: {msg}"
                 );
             }
             other => panic!("expected GharsError::Validation, got: {other:?}"),
@@ -14346,12 +14374,12 @@ auth = \"bad key\"
 
     /// Pins (a) `validate_cache_pool_names` returns a Validation error
     /// scoped to the offending pool, (b) the error preserves the
-    /// cache-pool-cap layer signature (`ghars-cache-` in the message),
-    /// and (c) Validation maps to exit code 6 via `err_to_exit_code`.
-    /// Wire-up at cmd_validate / cmd_plan / cmd_apply is structurally
-    /// verified by code review; end-to-end integration coverage is
-    /// pending in the cmd_validate / cmd_plan / cmd_apply integration
-    /// suite.
+    /// cache-pool-cap layer signature (`cache pool name component` +
+    /// `pre-DynamicUser era` in the message), and (c) Validation maps
+    /// to exit code 6 via `err_to_exit_code`. Wire-up at cmd_validate /
+    /// cmd_plan / cmd_apply is structurally verified by code review;
+    /// end-to-end integration coverage is pending in the cmd_validate /
+    /// cmd_plan / cmd_apply integration suite.
     #[test]
     fn validate_cache_pool_names_rejects_oversize_pool_with_exit_code_six() {
         let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
@@ -14373,10 +14401,12 @@ auth = \"bad key\"
                     "msg must scope to the offending pool by name; got: {msg}"
                 );
                 assert!(
-                    msg.contains("ghars-cache-"),
+                    msg.contains("cache pool name component")
+                        && msg.contains("pre-DynamicUser era"),
                     "msg must come from the cache-pool-cap layer (mentions \
-                     derived group prefix), not the identifier-cap layer; \
-                     got: {msg}"
+                     the `cache pool name component` policy phrasing and \
+                     the `pre-DynamicUser era` holdover rationale), not \
+                     the identifier-cap layer; got: {msg}"
                 );
                 // Hint covers BOTH callsite contexts —
                 // the [cache_pools.NAME] TOML key AND the [[runner]].caches
@@ -14457,9 +14487,12 @@ auth = \"bad key\"
                     "msg must echo the offending value; got: {msg}"
                 );
                 assert!(
-                    msg.contains("ghars-cache-"),
+                    msg.contains("cache pool name component")
+                        && msg.contains("pre-DynamicUser era"),
                     "msg must come from the cache-pool-cap layer (mentions \
-                     derived group prefix); got: {msg}"
+                     the `cache pool name component` policy phrasing and \
+                     the `pre-DynamicUser era` holdover rationale); \
+                     got: {msg}"
                 );
                 // Same generic-hint pin as the
                 // pool-key sibling test. Pinned BOTH callsite contexts

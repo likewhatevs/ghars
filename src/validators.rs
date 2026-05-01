@@ -44,15 +44,16 @@ pub const USER_MAX_LEN: usize = SYSTEMD_GROUP_NAME_MAX;
 /// from this single source.
 pub(crate) const SYSTEMD_GROUP_NAME_MAX: usize = 31;
 
-/// Prefix for the per-pool DynamicUser name (e.g. `ghars-cache-build`).
-/// Centralized so
-/// `CACHE_POOL_NAME_MAX_LEN` derives from `prefix.len()` instead of a
-/// hand-counted constant — a future rename of the prefix automatically
-/// adjusts the pool-name cap. systemd's per-pool drop-in does not use
-/// this prefix: the cache server's `User=` is set to
-/// `ghars-tz-<TRUST_ZONE>` (sibling DynamicUser of the runners in the
-/// same trust_zone), and the pool-group machinery survives only as a
-/// transitional surface that the DynamicUser pivot removes wholesale.
+/// Length-budget anchor for [`CACHE_POOL_NAME_MAX_LEN`]'s
+/// pre-DynamicUser-era cap derivation. No system identifier with this
+/// prefix is materialized at runtime: under the current DynamicUser
+/// model the cache server's `User=` is `ghars-tz-<TRUST_ZONE>` (sibling
+/// DynamicUser of the runners in the same trust_zone, see
+/// `apply.rs::execute_create_cache_pool` "No groupadd" comment), and
+/// the per-pool group machinery (`groupadd ghars-cache-<name>`) was
+/// removed wholesale by the DynamicUser pivot. The value is centralized
+/// so `CACHE_POOL_NAME_MAX_LEN` derives from `prefix.len()` instead of
+/// a hand-counted constant.
 pub(crate) const CACHE_GROUP_PREFIX: &str = "ghars-cache-";
 
 /// Prefix `plan::merge_defaults` prepends to runner.name to form the
@@ -62,16 +63,24 @@ pub(crate) const RUNNER_USER_PREFIX: &str = "ghars-";
 
 /// Maximum length of a `[cache_pools.NAME]` key.
 ///
-/// `apply::cache_pool_group` produces the per-pool group as
-/// `"{CACHE_GROUP_PREFIX}{name}"`. systemd's strict-mode
-/// `valid_user_group_name` rejects group names longer than
-/// [`SYSTEMD_GROUP_NAME_MAX`] chars, so the largest pool name that
-/// yields a valid group is `SYSTEMD_GROUP_NAME_MAX -
-/// CACHE_GROUP_PREFIX.len()`. The fuzz invariant in
-/// `apply::cache_pool_group_props` already pins the 31-char ceiling on
-/// the OUTPUT; this cap pushes the gate UPSTREAM to config-load so the
-/// operator gets a scoped error (`cache_pool "NAME": ...`) instead of an
-/// opaque `groupadd: name too long` failure during `apply`.
+/// Historical-holdover cap retained from the pre-DynamicUser era,
+/// when each pool produced a per-pool group `ghars-cache-<name>`
+/// passed through systemd's strict `valid_user_group_name` check
+/// (capped at `SYSTEMD_GROUP_NAME_MAX = 31` chars). Under the
+/// current DynamicUser model the cache server's `User=` is
+/// `ghars-tz-<TRUST_ZONE>` (sibling DynamicUser of the runners in
+/// the same trust_zone, bounded by trust_zone length not pool
+/// name), no `groupadd ghars-cache-<name>` runs (see
+/// `apply.rs::execute_create_cache_pool` "No groupadd" comment),
+/// and the pool name surfaces only in:
+///   - the systemd unit instance `ghars-cache@<pool>.service`,
+///   - the UDS path `/run/ghars/cache-<pool>.sock`,
+///   - the drop-in directory `ghars-cache@<pool>.service.d/`.
+/// None of those force the 31-char cap. The historical limit is
+/// kept for path-component conservation and backward compatibility —
+/// operator-authored configs from the pre-DynamicUser era continue
+/// to validate at the same shape, and shorter names keep the
+/// synthesized paths well clear of `NAME_MAX` (255).
 pub const CACHE_POOL_NAME_MAX_LEN: usize = SYSTEMD_GROUP_NAME_MAX - CACHE_GROUP_PREFIX.len();
 
 /// Maximum length of a `[[runner]] name`.
@@ -279,10 +288,8 @@ pub fn validate_runner_name(name: &str) -> Result<()> {
 ///
 /// Runs `validate_identifier` first (charset + identifier-shape +
 /// `IDENTIFIER_MAX_LEN` cap), then enforces the tighter
-/// `CACHE_POOL_NAME_MAX_LEN` cap so the derived group name
-/// `"{CACHE_GROUP_PREFIX}{name}"` fits inside systemd's
-/// `SYSTEMD_GROUP_NAME_MAX`-char group-name limit
-/// (`apply::cache_pool_group`).
+/// `CACHE_POOL_NAME_MAX_LEN` historical-holdover cap (see
+/// [`CACHE_POOL_NAME_MAX_LEN`] for rationale).
 ///
 /// # Errors
 ///
@@ -293,9 +300,11 @@ pub fn validate_cache_pool_name(name: &str) -> Result<()> {
     if name.len() > CACHE_POOL_NAME_MAX_LEN {
         return Err(validation(
             format!(
-                "cache pool name too long: {} > {CACHE_POOL_NAME_MAX_LEN} \
-                 (derived group \"{CACHE_GROUP_PREFIX}{name}\" would exceed \
-                 systemd's {SYSTEMD_GROUP_NAME_MAX}-char group-name limit)",
+                "cache pool name '{}' too long: {} > {CACHE_POOL_NAME_MAX_LEN} \
+                 (project-wide cap on the cache pool name component, \
+                 retained from the pre-DynamicUser era for \
+                 path-component conservation)",
+                name,
                 name.len(),
             ),
             format!(
@@ -1414,9 +1423,9 @@ mod tests {
 
     /// `validate_cache_pool_name` must accept a pool name at the cap.
     /// `CACHE_POOL_NAME_MAX_LEN` chars + "ghars-cache-" 12-char prefix =
-    /// `SYSTEMD_GROUP_NAME_MAX` (31), the systemd strict-mode group-name
-    /// limit. This pin catches off-by-one shrinks of
-    /// `CACHE_POOL_NAME_MAX_LEN`.
+    /// `SYSTEMD_GROUP_NAME_MAX` (31). The 31-char arithmetic is a
+    /// pre-DynamicUser holdover (see [`CACHE_POOL_NAME_MAX_LEN`]). This
+    /// pin catches off-by-one shrinks of `CACHE_POOL_NAME_MAX_LEN`.
     #[test]
     fn cache_pool_name_accepts_max_len() {
         let s = "a".repeat(CACHE_POOL_NAME_MAX_LEN);
@@ -1424,10 +1433,10 @@ mod tests {
     }
 
     /// `validate_cache_pool_name` must reject one char past the cap.
-    /// `CACHE_POOL_NAME_MAX_LEN + 1` chars → group name >
-    /// `SYSTEMD_GROUP_NAME_MAX` → systemd rejects. The error message
-    /// must mention the limit and the derived group name so the
-    /// operator can act without guessing.
+    /// The error message must name the cap and surface the
+    /// holdover-rationale phrasing (`cache pool name component`,
+    /// `pre-DynamicUser era`) so the operator gets an actionable,
+    /// scope-tagged diagnostic without guessing.
     #[test]
     fn cache_pool_name_rejects_one_past_max_len() {
         let s = "a".repeat(CACHE_POOL_NAME_MAX_LEN + 1);
@@ -1439,8 +1448,11 @@ mod tests {
                     "msg must name the cap; got: {msg}"
                 );
                 assert!(
-                    msg.contains("ghars-cache-") && msg.contains("31"),
-                    "msg must explain the derived-group rationale; got: {msg}"
+                    msg.contains("cache pool name component")
+                        && msg.contains("pre-DynamicUser era"),
+                    "msg must surface the cache-pool-cap holdover rationale \
+                     (`cache pool name component` policy phrasing + \
+                     `pre-DynamicUser era` rationale); got: {msg}"
                 );
                 assert!(
                     hint.contains(&CACHE_POOL_NAME_MAX_LEN.to_string()),
@@ -1463,9 +1475,10 @@ mod tests {
 
     /// For every length from `CACHE_POOL_NAME_MAX_LEN + 1` through
     /// `IDENTIFIER_MAX_LEN`, rejection must come from the cache-pool
-    /// length layer (msg names "ghars-cache-"), NOT the identifier
-    /// length layer. Without this pin, a future refactor that flipped
-    /// the order — `validate_identifier` first with a tighter cap, or
+    /// length layer (msg names `"cache pool name component"` from the
+    /// holdover-rationale phrasing), NOT the identifier length layer.
+    /// Without this pin, a future refactor that flipped the order —
+    /// `validate_identifier` first with a tighter cap, or
     /// `validate_cache_pool_name` shrinking below the identifier cap —
     /// would silently regress the operator-facing diagnostic so the
     /// `≤{CACHE_POOL_NAME_MAX_LEN}` hint never lands.
@@ -1477,7 +1490,7 @@ mod tests {
             match &err {
                 GharsError::Validation(msg, _) => {
                     assert!(
-                        msg.contains("ghars-cache-"),
+                        msg.contains("cache pool name component"),
                         "len={len}: rejection must come from cache-pool layer, got: {msg}"
                     );
                 }
@@ -1492,10 +1505,10 @@ mod tests {
     /// `above_max_len` test — together they pin the layered-validator
     /// contract: ≤`CACHE_POOL_NAME_MAX_LEN` accept,
     /// `(CACHE_POOL_NAME_MAX_LEN+1)..=IDENTIFIER_MAX_LEN` fail at
-    /// cache-pool layer (msg contains "ghars-cache-"),
-    /// `>IDENTIFIER_MAX_LEN` fail at identifier layer (msg does NOT
-    /// contain "ghars-cache-"). A regression that re-ordered the
-    /// validators would surface here.
+    /// cache-pool layer (msg contains `"cache pool name component"`
+    /// from the holdover-rationale phrasing), `>IDENTIFIER_MAX_LEN`
+    /// fail at identifier layer (msg does NOT contain that phrasing).
+    /// A regression that re-ordered the validators would surface here.
     #[test]
     fn cache_pool_name_above_identifier_cap_rejects_via_identifier_cap_not_pool_cap() {
         let s = "a".repeat(IDENTIFIER_MAX_LEN + 1);
@@ -1503,7 +1516,7 @@ mod tests {
         match &err {
             GharsError::Validation(msg, _) => {
                 assert!(
-                    !msg.contains("ghars-cache-"),
+                    !msg.contains("cache pool name component"),
                     "len=IDENTIFIER_MAX_LEN+1: rejection must come from identifier layer, got: {msg}"
                 );
             }

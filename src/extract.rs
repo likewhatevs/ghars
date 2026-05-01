@@ -2937,6 +2937,10 @@ mod tests {
         // final_dir/marker.txt must hold the NEW payload and the
         // staging path must be gone (the displaced old tree is
         // removed at the end of the Ok arm).
+        // Regression sentinel: if future refactors introduce a
+        // fallible setter or remove the RAII guard, this assert
+        // catches leaked forcing.
+        FORCED_RENAMEAT2_ERRNO.with(|c| assert!(c.get().is_none(), "happy-path requires no errno forcing (RAII guard from a sibling test must have unwound)"));
         let tmp = tempfile::tempdir().unwrap();
         let (runner_home, final_dir, staging, tarball_path) =
             renameat2_test_layout(&tmp, "bin.happy", ".staging-happy");
