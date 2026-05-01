@@ -17,9 +17,10 @@
 //! - `install_runner_binary` (Part 9f + SEC-09/SEC-33) extracts into a
 //!   root-owned staging dir under `<state_dir>/.staging/`, then atomically
 //!   renames into `bin.<version>/` under runner home. Root-owned end to end.
-//! - `verify_local_tarball` (SEC-16 residual) re-stats `--runner-tarball`
-//!   at use time, refusing if it has become a symlink or non-regular file
-//!   between validation and use.
+//! - `verify_local_tarball` (SEC-16 residual) re-stats the
+//!   operator-supplied `runner_tarball` config field at use time,
+//!   refusing if it has become a symlink or non-regular file between
+//!   validation and use.
 
 use crate::error::{format_error_chain, human_bytes};
 use crate::{GharsError, Result, USER_AGENT};
@@ -318,9 +319,9 @@ pub enum FilterDecision {
     ///
     /// Mode masking: the tar crate's `unpack_in` honors the
     /// header's mode minus setuid/setgid/sticky by default — see
-    /// `tar-rs/src/entry.rs:unpack_unprivileged` (the `set_preserve_mtime`
-    /// pathway), which is what ghars uses (`set_preserve_ownerships`
-    /// stays unset).
+    /// tar-rs's permissions masking logic in `entry.rs::_set_perms`,
+    /// which is what ghars uses (`set_preserve_ownerships` stays
+    /// unset).
     Allow,
     /// Member must be skipped (PAX/GNU extension headers). Not an error;
     /// the tar crate handles these internally on the next iteration but
@@ -579,9 +580,10 @@ fn verify_extracted_inside_dest(
     Ok(())
 }
 
-/// Verify a `--runner-tarball` path is still a regular file (not a symlink)
-/// at use time, closing the SEC-16 residual TOCTOU window. Validators
-/// check this at parse time; this function re-checks just before extraction.
+/// Verify the operator-supplied `runner_tarball` path is still a
+/// regular file (not a symlink) at use time, closing the SEC-16
+/// residual TOCTOU window. Validators check this at parse time;
+/// this function re-checks just before extraction.
 ///
 /// # Errors
 ///
@@ -619,20 +621,20 @@ pub fn verify_local_tarball_open(path: &Utf8Path) -> Result<File> {
         if e.raw_os_error() == Some(libc::ELOOP) {
             GharsError::Tarball(
                 format!(
-                    "--runner-tarball is now a symlink (was not at validation time): {path}"
+                    "runner_tarball is now a symlink (was not at validation time): {path}"
                 ),
                 None,
             )
         } else {
             GharsError::Tarball(
-                format!("--runner-tarball cannot be opened: {path}: {e}"),
+                format!("runner_tarball cannot be opened: {path}: {e}"),
                 None,
             )
         }
     })?;
     if !meta.is_file() {
         return Err(GharsError::Tarball(
-            format!("--runner-tarball is no longer a regular file: {path}"),
+            format!("runner_tarball is no longer a regular file: {path}"),
             None,
         ));
     }
@@ -682,8 +684,12 @@ pub fn verify_local_tarball_open(path: &Utf8Path) -> Result<File> {
 ///
 /// On success the freshly-installed tree lives directly at
 /// `runner_home/bin.<version>/` — there is no `bin` symlink and no
-/// post-install swap step. Apply.rs sequences `config.sh` against
-/// `bin.<version>/` directly via the path returned from this function.
+/// post-install swap step. Apply.rs runs `config.sh` from
+/// `runner_home/config.sh` (the runner-shipped script the tar
+/// contains at the home root); `apply::build_register_cmd` sets
+/// `Command::current_dir` to `runner_home` so `config.sh` resolves
+/// relative paths (including its default `_work` directory) against
+/// the runner home.
 ///
 /// # Errors
 ///
@@ -774,8 +780,10 @@ fn require_root_for_install() -> Result<()> {
 ///   `Ok(prune_count)` describing how many trees were removed.
 ///
 /// `keep_versions` MUST be at least 1 (a value of 0 would prune the
-/// just-installed bin tree). The caller (`apply.rs::execute_create_runner`)
-/// enforces this by passing `Defaults.keep_versions.unwrap_or(DEFAULT_KEEP_VERSIONS).max(1)`.
+/// just-installed bin tree). The plan layer (`plan.rs::merge_defaults`)
+/// enforces this by clamping `Defaults.keep_versions` via
+/// `unwrap_or(DEFAULT_KEEP_VERSIONS).max(1)` before the value reaches
+/// apply.
 ///
 /// # Errors
 ///
@@ -1357,9 +1365,9 @@ mod tests {
     fn filter_accepts_setuid_setgid_sticky_modes() {
         // 0o7777 = setuid + setgid + sticky + rwxrwxrwx. The tar crate's
         // unprivileged unpack strips setuid/setgid via
-        // `set_preserve_permissions(false)`-style defaults — verified
-        // against tar-rs/src/entry.rs `unpack_unprivileged`. The filter
-        // is authoritative for path/typeflag rejection only.
+        // `set_preserve_permissions(false)`-style defaults — see
+        // tar-rs's permissions masking logic in `entry.rs::_set_perms`.
+        // The filter is authoritative for path/typeflag rejection only.
         let gz = build_tar_gz(&[(b"runsvc.sh", tar::EntryType::Regular, b"", 0o7777, b"")]);
         let decision = first_entry_filter(&gz).unwrap();
         assert_eq!(decision, FilterDecision::Allow);
@@ -1847,10 +1855,11 @@ mod tests {
     /// check.
     ///
     /// Without this parity test, a regression that loosened
-    /// `verify_local_tarball` (e.g. swapped `symlink_metadata` for
-    /// `metadata`, which follows symlinks) would silently land — both
-    /// functions individually still reject their unit-test inputs, but
-    /// the cross-time invariant would break: an attacker who wins the
+    /// `verify_local_tarball` (e.g. dropped the `O_NOFOLLOW` flag in
+    /// `open_no_follow_with_meta`, or swapped to a path-based stat
+    /// that follows symlinks) would silently land — both functions
+    /// individually still reject their unit-test inputs, but the
+    /// cross-time invariant would break: an attacker who wins the
     /// window between `validate_runner_tarballs` (config load, in
     /// `cli::load_config`) and `extract::install_runner_binary`
     /// (apply, called inside `apply.lock`) by replacing the regular
