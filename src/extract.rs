@@ -780,7 +780,7 @@ fn require_root_for_install() -> Result<()> {
 ///   `Ok(prune_count)` describing how many trees were removed.
 ///
 /// `keep_versions` MUST be at least 1 (a value of 0 would prune the
-/// just-installed bin tree). The plan layer (`plan.rs::merge_defaults`)
+/// just-installed bin tree). The plan layer (`plan.rs::plan_from`)
 /// enforces this by clamping `Defaults.keep_versions` via
 /// `unwrap_or(DEFAULT_KEEP_VERSIONS).max(1)` before the value reaches
 /// apply.
