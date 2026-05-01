@@ -1,161 +1,222 @@
-name: ci
-# Runs on every push to main and on every PR. Pipeline:
+# ghars CI: per-PR merge-gate workflow.
 #
-#   fmt      cargo fmt --check
-#   clippy   cargo clippy with -D clippy::correctness/suspicious/perf
-#   check    cargo check --all-targets --all-features
-#   test     cargo nextest run --no-fail-fast
-#   coverage cargo-llvm-cov + codecov upload + ratcheted line floor
-#   mutants  cargo-mutants --in-diff (PRs only; main pushes use the
-#            scheduled mutants-nightly workflow for full runs)
+# Every job contributes a coverage, audit, or build artefact to the
+# merge gate. Inline shell stays in the YAML rather than living in
+# separate scripts so the gate is auditable in one place.
 #
-# Required repo secrets (operator must add before badges work):
-#   CODECOV_TOKEN — uploaded via codecov-action; without it the upload
-#                   step is a no-op and the codecov badge won't update.
+# Job matrix:
+#   test       — fmt + clippy -D warnings + nextest run + llvm-cov 70% gate
+#   musl       — release build to x86_64-unknown-linux-musl, both
+#                ghars and runsvc-wrapper asserted statically linked
+#                via `file`
+#   audit      — cargo deny check (advisories, bans, sources, licenses)
+#   docs       — mdbook build + test + linkcheck against docs/
+#   mutants-pr — cargo mutants per-PR (--in-diff origin/main); badge
+#                JSON is published manually via `just scripts::publish-mutants`
+#
+# `cargo nextest run` is the canonical test runner; coverage is
+# collected via `cargo llvm-cov nextest` so the same nextest
+# invocation drives both gates.
 #
 # fail-under-lines floor is currently 70 because actual coverage is
-# 73% (Apr 2026) and the I/O-heavy modules (cli.rs 11%, preflight.rs
-# 23%, netns.rs 33%) drag the total below the design's 90 target.
-# Ratchet upward as tester tasks #137/#138/#174/#182/#189 land —
+# below the design's 90 target. Ratchet upward as tester tasks land —
 # bump to 75 → 80 → 85 → 90 in lockstep with real coverage growth.
 
-"on":
+name: ci
+
+on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
-  # RUSTFLAGS=-D warnings is intentionally NOT set: Cargo.toml enables
-  # `[lints.clippy] pedantic = warn`, so combining `-D warnings` with
-  # the build steps would promote every pedantic suggestion into a
-  # CI-blocking error. Pedantic stays a local-IDE hint; CI gates on
-  # unwrap_used / expect_used / correctness via the dedicated clippy
-  # step below.
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
 
 jobs:
-  fmt:
-    name: cargo fmt
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - run: cargo fmt --all -- --check
-
-  clippy:
-    name: cargo clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-      # CI gate denies only the high-signal lint categories (correctness
-      # = bugs, suspicious = likely bugs, perf = performance footguns).
-      # Cargo.toml's `[lints.clippy] pedantic = warn` + `unwrap_used =
-      # warn` + `expect_used = warn` stay as advisory warnings that
-      # show up in IDE + clippy output but don't fail CI; many of those
-      # are correctly suppressed in test modules via `#[allow]` and
-      # would be noise here. If a specific style/pedantic lint is
-      # important enough to gate, escalate it in Cargo.toml.
-      - run: |
-          cargo clippy --all-targets --all-features -- \
-            -D clippy::correctness \
-            -D clippy::suspicious \
-            -D clippy::perf
-
-  check:
-    name: cargo check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo check --all-targets --all-features
-
   test:
-    name: cargo nextest
+    name: fmt + clippy + nextest + coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@nextest
-      # SEC-09 install_runner_binary tests skip themselves when not root
-      # (tests/security_scenarios.rs `running_as_root` guard). We run
-      # the suite as the unprivileged GHA user so non-root code paths
-      # exercise the production gate; local-root invocations exercise
-      # the privileged path manually before merging.
-      - run: cargo nextest run --all-features --no-fail-fast
-
-  coverage:
-    name: coverage (llvm-cov)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.91
         with:
-          components: llvm-tools-preview
+          components: rustfmt, clippy, llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@nextest
-      - uses: taiki-e/install-action@cargo-llvm-cov
-      # Generate codecov-format report + lcov for codecov-action.
-      # `--fail-under-lines 70` is the regression floor; raise it as
-      # coverage grows. Target is 90 per design Part 13.
-      - name: cargo llvm-cov
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # 70% line-coverage gate. The nextest profile-default is
+      # `default`; runner timeouts are bounded by the runner's own 6h
+      # cap so a flaky network test cannot stall CI indefinitely.
+      - name: cargo llvm-cov nextest (70% line coverage gate)
         run: |
           cargo llvm-cov nextest \
-            --all-features \
-            --no-fail-fast \
+            --workspace \
             --lcov \
             --output-path lcov.info \
             --fail-under-lines 70
-      - name: upload to codecov
+
+      - name: Upload coverage to codecov
         uses: codecov/codecov-action@v4
         with:
           files: lcov.info
-          fail_ci_if_error: false
+          fail_ci_if_error: true
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
-  mutants-pr:
-    name: cargo-mutants (incremental, PRs only)
-    if: github.event_name == 'pull_request'
+  musl:
+    # Static-binary build via musl. `file` asserts each ELF is
+    # statically linked; a dynamic dependency creep would surface here
+    # as a "dynamically linked" string. ghars produces two binaries
+    # (ghars + runsvc-wrapper); both are checked.
+    name: release build (x86_64-unknown-linux-musl)
     runs-on: ubuntu-latest
-    # Mutants on the diff are bounded to ~10-30 min per design Part 13;
-    # full runs go to the scheduled mutants-nightly workflow.
-    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.91
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - name: Install musl-tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+      - name: cargo build --release --target x86_64-unknown-linux-musl
+        run: cargo build --release --target x86_64-unknown-linux-musl
+      - name: Assert statically linked
+        run: |
+          set -euo pipefail
+          for BIN in ghars runsvc-wrapper; do
+            P="target/x86_64-unknown-linux-musl/release/$BIN"
+            file "$P"
+            file "$P" | grep -q "statically linked"
+          done
+
+  audit:
+    # cargo deny check on every PR. The deny.toml file
+    # (advisories, bans, sources, licenses) lives at the repo root; a
+    # missing config surfaces as a hard error from cargo-deny, which
+    # is intentional — supply-chain rules are part of the merge gate,
+    # not optional metadata.
+    #
+    # cargo-audit is intentionally NOT run: cargo-deny's `advisories`
+    # check is a strict superset (same RustSec database, plus banned
+    # crates / source restrictions / license rules in one tool).
+    name: cargo deny check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.91
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@cargo-deny
+
+      - name: cargo deny check
+        run: cargo deny check advisories bans sources licenses
+
+  docs:
+    # mdbook build + test + linkcheck. The mdbook source tree at
+    # `docs/` is the public documentation; broken code blocks or dead
+    # links break the build.
+    name: mdbook build + test + linkcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.91
+      - uses: Swatinem/rust-cache@v2
+      - name: Install mdbook
+        uses: taiki-e/install-action@mdbook
+      - name: Install mdbook-linkcheck
+        run: cargo install mdbook-linkcheck --locked
+      - name: mdbook build
+        run: mdbook build docs
+      - name: mdbook test
+        run: mdbook test docs
+      - name: Deploy mdbook to gh-pages
+        if: github.ref == 'refs/heads/main' && hashFiles('docs/src/SUMMARY.md') != ''
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: ./docs/book/html
+          destination_dir: book
+          keep_files: true
+          commit_message: "ci: refresh mdbook"
+
+  mutants-pr:
+    # Per-PR cargo-mutants in --in-diff mode. Fails the gate if any
+    # mutant is missed. The shields.io
+    # badge JSON is published manually via `just scripts::publish-mutants`.
+    name: cargo mutants (--in-diff origin/main)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
         with:
-          # cargo-mutants --in-diff needs the merge base; fetch full
-          # history so origin/$BASE_REF is locally resolvable.
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.91
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@nextest
-      # cargo-mutants is not in taiki-e/install-action's prebuilt list
-      # (verified Apr 2026 against the upstream TOOLS.md). cargo-binstall
-      # would download a prebuilt binary if one exists; falling back to
-      # `cargo install --locked` keeps the install reproducible without
-      # adding another action dep.
-      - run: cargo install --locked cargo-mutants
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@cargo-mutants
       - name: cargo mutants --in-diff
         run: |
-          # Compare against the PR base (origin/main typically). The
-          # `--in-diff` mode only mutates lines changed in the PR, so
-          # untouched code doesn't reblock CI on existing gaps.
-          BASE_REF="${GITHUB_BASE_REF:-main}"
-          git fetch origin "$BASE_REF" --depth=1
-          # Generate the diff once and feed it to mutants. Empty diff =
-          # no-op (mutants exits 0 with "nothing to mutate").
-          git diff "origin/$BASE_REF"...HEAD > pr.diff
-          cargo mutants \
-            --in-diff pr.diff \
-            --no-shuffle \
-            --timeout-multiplier 2.0 \
-            -- --profile mutants
+          set -euo pipefail
+          git diff origin/main -- . > pr.diff
+          cargo mutants --test-tool nextest --in-diff pr.diff --json --output mutants.out
+
+      # Always upload the cargo-mutants output directory as a PR
+      # artifact. cargo-mutants writes the JSON outcomes plus a
+      # human-readable `mutants.out/missed.txt`, the per-mutant diff
+      # tree, and (when --html is enabled in a future iteration) the
+      # HTML report. Uploading on `if: always()` so reviewers can
+      # inspect the artifact even when the score gate fails the job.
+      # `retention-days: 14` matches the GitHub default for branches;
+      # the artifact is per-PR and rotates out naturally.
+      - name: Upload cargo-mutants output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-mutants-output
+          path: mutants.out
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Compute score + gate on missed mutants
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ ! -f mutants.out/outcomes.json ]; then
+            echo "no outcomes; skipping score computation"
+            exit 0
+          fi
+          caught=$(jq -r '.caught'  mutants.out/outcomes.json)
+          missed=$(jq -r '.missed'  mutants.out/outcomes.json)
+          timeout=$(jq -r '.timeout' mutants.out/outcomes.json)
+          denom=$((caught + missed + timeout))
+          if [ "$denom" -eq 0 ]; then
+            score=100
+          else
+            score=$((caught * 100 / denom))
+          fi
+          echo "Mutants: caught=$caught missed=$missed timeout=$timeout score=${score}%"
+          # PR-mode: fail if any missed mutants.
+          if [ "$missed" -gt 0 ]; then
+            echo "::error::cargo-mutants: $missed missed mutant(s) — PR gate fails"
+            exit 1
+          fi

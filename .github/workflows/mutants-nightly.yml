@@ -31,17 +31,21 @@ jobs:
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.91
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
-      # cargo-mutants is not in taiki-e/install-action's prebuilt list;
-      # see ci.yml for rationale. `cargo install --locked` is the
-      # canonical install path.
+      # cargo-mutants installed via `cargo install --locked` rather
+      # than taiki-e/install-action because the prebuilt binary path
+      # historically lagged upstream releases for this tool — the
+      # locked source install gives us a known-good build at the
+      # cost of a few extra minutes per nightly.
       - run: cargo install --locked cargo-mutants
       # Run mutants. `--no-shuffle` makes the run order deterministic so
       # a regression in one file doesn't shift mutant indices for
       # downstream files between nights — easier diffing of nightly
-      # reports.
+      # reports. `--test-tool nextest` matches ci.yml + the local
+      # `just mutants` recipe so per-mutant test runs use the same
+      # runner everywhere (nextest, not the slower default cargo test).
       - name: cargo mutants
         id: mutants
         # Allow non-zero exit so we still compute a score and update the
@@ -49,7 +53,7 @@ jobs:
         # which is exactly when the badge needs to drop.
         continue-on-error: true
         run: |
-          cargo mutants --no-shuffle -- --profile mutants
+          cargo mutants --test-tool nextest --no-shuffle -- --profile mutants
       # Score = caught / total. mutants outputs a summary file in
       # mutants.out/ that lists each mutant's outcome. Caught means
       # the test suite killed the mutation; missed means it survived.

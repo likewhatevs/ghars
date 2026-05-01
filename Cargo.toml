@@ -2,7 +2,7 @@
 name = "ghars"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.91"
 license = "GPL-2.0-only"
 repository = "https://github.com/likewhatevs/ghars"
 description = "Declaratively manage self-hosted GitHub Actions runners (systemd + Linux)."

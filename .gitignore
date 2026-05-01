@@ -1,3 +1,6 @@
 /target
 proptest-regressions/
 docs/book/
+mutants.out/
+mutants.out.old/
+lcov.info
