@@ -53,25 +53,27 @@ jobs:
         # which is exactly when the badge needs to drop.
         continue-on-error: true
         run: |
-          cargo mutants --test-tool nextest --no-shuffle -- --profile mutants
-      # Score = caught / total. mutants outputs a summary file in
-      # mutants.out/ that lists each mutant's outcome. Caught means
-      # the test suite killed the mutation; missed means it survived.
+          cargo mutants --test-tool nextest --no-shuffle
+      # Score = caught / (caught + missed + timeout). cargo-mutants
+      # writes top-level aggregate counts (`caught`, `missed`,
+      # `timeout`, `unviable`, ...) at the root of mutants.out/outcomes.json.
+      # Use jq on those root counts — same shape ci.yml's compute-score
+      # step uses. jq is preinstalled on every GitHub-hosted ubuntu
+      # runner; no install step needed.
       - name: compute score
         id: score
         run: |
           set -euo pipefail
-          # outcomes.json schema: per-mutant entry with an `outcome` field.
-          # Counts come from the summary file — see cargo-mutants docs.
-          # Using grep + wc (no jq dep on the runner image guaranteed).
           REPORT="mutants.out/outcomes.json"
           if [ ! -f "$REPORT" ]; then
             echo "score=unknown" >> "$GITHUB_OUTPUT"
             echo "color=lightgrey" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          TOTAL=$({ grep -c '"outcome":' "$REPORT" || true; })
-          CAUGHT=$({ grep -c '"outcome":"Caught"' "$REPORT" || true; })
+          CAUGHT=$(jq -r '.caught'  "$REPORT")
+          MISSED=$(jq -r '.missed'  "$REPORT")
+          TIMEOUT=$(jq -r '.timeout' "$REPORT")
+          TOTAL=$((CAUGHT + MISSED + TIMEOUT))
           if [ "$TOTAL" -eq 0 ]; then
             PCT="0"
           else
