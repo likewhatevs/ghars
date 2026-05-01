@@ -277,14 +277,11 @@ config loader and read per-instance state from
 
 ## Async surface
 
-`fn main()` is sync. The crate uses `tokio` with `default-features
-= false, features = ["rt"]` only — no `macros`, no `time`. A
-single `OnceLock<Runtime>` provides `block_on(...)` for the
-`octocrab` calls that need an async executor; octocrab manages its
-own timeouts via `reqwest`. zbus runs its own executor in blocking
-mode (`zbus::blocking`). There is no `#[tokio::main]`, no async
-sandwich, and no surprise tokio dependency for code paths that
-don't need one.
+`fn main()` is sync. `OnceLock<Runtime>` provides `block_on(...)`
+for the small `octocrab`-driven async surface; zbus runs its own
+executor in blocking mode. See
+[Internals](./internals.md#async-runtime-surface) for the full
+runtime selection rationale and feature-flag detail.
 
 ## Where to read next
 

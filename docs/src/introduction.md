@@ -53,13 +53,11 @@ rules generated from `[network.NAME].allowed_egress` enforce the
 operator's egress policy at both the host veth and inside the
 namespace.
 
-**No surprise async runtime.** `fn main()` is sync. `ghars` uses
-`OnceLock<Runtime>` + `block_on(...)` for the small async surface
-that octocrab requires (`tokio` is enabled with `default-features =
-false, features = ["rt"]` only — no `macros`, no `time`). zbus runs
-its own executor in blocking mode. There is no `#[tokio::main]`,
-no async sandwich, and no tokio dependency for code that does not
-need one.
+**No surprise async runtime.** `fn main()` is sync; `tokio` is
+present only in `rt` mode for `octocrab`'s async surface (no
+`macros`, no `time`). zbus runs its own executor in blocking mode.
+See [Internals](./internals.md#async-runtime-surface) for the full
+rationale.
 
 ## What ghars is not
 

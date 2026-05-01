@@ -257,26 +257,15 @@ that participates in that gate.
 
 ## Audit log
 
-Every action taken by `apply` (succeeded, failed, skipped, dry-run)
-is appended to `<logs_dir>/apply.log` (`/var/log/ghars/apply.log`
-by default). One JSON object per line:
-
-```json
-{
-  "timestamp": "2026-04-29T12:34:56.789Z",
-  "action":    "CreateRunner",
-  "target":    "build-1",
-  "outcome":   "success"
-}
-```
-
-The file is opened with `O_APPEND` and created at mode 0600. Audit
-writes are best-effort: a logging failure does NOT propagate (it
-must not invert a successful action into a logged failure). The
-`outcome` field is `escape_control_chars`-scrubbed before write,
-so terminal-manipulation bytes from arbitrary
-`GharsError::to_string()` output never reach the audit consumer
-raw.
+Every action taken by `apply` is appended to
+`<logs_dir>/apply.log` as one JSON object per line. The file is
+mode 0600 / `O_APPEND`; logging failures are best-effort and never
+invert a successful action's outcome. The `outcome` field passes
+through `escape_control_chars` before write to keep terminal-
+manipulation bytes from `GharsError::to_string()` output out of the
+audit consumer's input. Full schema and the recommended logrotate
+config are documented in
+[Operations](./operations.md#audit-log).
 
 ## What ghars does NOT defend against
 

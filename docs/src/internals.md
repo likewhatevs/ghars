@@ -69,16 +69,12 @@ forbids `unsafe_code`).
 
 ### `fexecve` instead of `execve`
 
-The runsvc-wrapper opens `runsvc.sh` with `O_NOFOLLOW`, recomputes
-the SHA-256 from the open fd, compares against the
-`X-Ghars-Runsvc-Sha256` annotation, and then `fexecve()`s the fd.
-`fexecve` execs the file the fd points at, not the path resolved
-at exec time — closing the open-then-rename TOCTOU window where
-an attacker could swap the file between digest computation and
-exec.
-
-The `nix` crate provides `fexecve` in `nix::unistd` (gated by
-the `process` feature in `Cargo.toml`).
+The runsvc-wrapper execs the integrity-checked fd (not the path),
+closing the open-then-rename TOCTOU window. The `nix` crate
+provides `fexecve` in `nix::unistd` (gated by the `process`
+feature in `Cargo.toml`). Full integrity protocol (open, SHA-256,
+annotation compare, fexecve, refusal on mismatch) is documented in
+[Security](./security.md#runtime-integrity-runsvc-wrapper).
 
 ## fsync durability
 

@@ -155,25 +155,11 @@ the `zeroize` crate's `derive` feature).
 ## Audit log
 
 `apply.log` (`/var/log/ghars/apply.log`) is the SEC-36 structured
-audit log. One JSON object per line:
-
-```json
-{
-  "timestamp": "2026-04-29T12:34:56.789Z",
-  "action":    "CreateRunner",
-  "target":    "build-1",
-  "outcome":   "success"
-}
-```
-
-Created at mode 0600. Append-mode (`O_APPEND`); cross-process
-write ordering is determined by lock order (apply.lock serializes
-apply runs). Within a run the loop is single-threaded and writes
-are sequential. Best-effort: a logging failure is swallowed and
-logged via `tracing::warn!`; audit logging MUST NOT cause apply
-to fail.
-
-Recommended logrotate config in
+audit log: one JSON object per line, mode 0600, append-mode. Lock-
+order ensures cross-run write ordering (apply.lock serializes
+apply runs). Logging failures are best-effort and never fail the
+apply. Full schema, the JSON example, and the recommended
+logrotate config are documented in
 [Operations](./operations.md#audit-log).
 
 ## nft rules and netns
