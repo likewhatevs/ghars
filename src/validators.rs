@@ -24,9 +24,6 @@ use regex::Regex;
 use crate::config::{IDENTIFIER_MAX_LEN, IDENTIFIER_REGEX};
 use crate::{GharsError, Result};
 
-/// Maximum length of the shared identifier (re-exported for symmetry).
-pub const NAME_MAX_LEN: usize = IDENTIFIER_MAX_LEN;
-
 /// systemd strict-mode `valid_user_group_name` caps user and group
 /// names at `sizeof_field(struct utmpx, ut_user) - 1 = 31` chars.
 /// Verified at systemd src/basic/user-util.c:824 and glibc
@@ -50,9 +47,17 @@ pub(crate) const SYSTEMD_GROUP_NAME_MAX: usize = 31;
 /// a hand-counted constant.
 pub(crate) const CACHE_GROUP_PREFIX: &str = "ghars-cache-";
 
-/// Prefix `plan::merge_defaults` prepends to runner.name to form the
-/// per-runner system user. Centralized so `RUNNER_NAME_MAX_LEN` derives
-/// from `prefix.len()` instead of a hand-counted constant.
+/// Length-budget anchor for [`RUNNER_NAME_MAX_LEN`]'s
+/// pre-DynamicUser-era cap derivation. No system user with this
+/// prefix is materialized at runtime: under the current DynamicUser
+/// model the per-runner User= is `ghars-tz-<TRUST_ZONE>` (bounded by
+/// trust_zone length, not runner name; see [`RUNNER_NAME_MAX_LEN`]
+/// for the full rationale). The prefix surfaces today only as a
+/// path-component anchor: `<state_dir>/<trust_zone>/ghars-<name>/`,
+/// `LogNamespace=ghars-<name>`, and (in netns mode) the host-side
+/// veth name `ghars-<name>-h`. The value is centralized so
+/// `RUNNER_NAME_MAX_LEN` derives from `prefix.len()` instead of a
+/// hand-counted constant.
 pub(crate) const RUNNER_USER_PREFIX: &str = "ghars-";
 
 /// Maximum length of a `[cache_pools.NAME]` key.
@@ -262,10 +267,11 @@ pub fn validate_runner_name(name: &str) -> Result<()> {
     if name.len() > RUNNER_NAME_MAX_LEN {
         return Err(validation(
             format!(
-                "runner name too long: {} > {RUNNER_NAME_MAX_LEN} \
+                "runner name '{}' too long: {} > {RUNNER_NAME_MAX_LEN} \
                  (project-wide cap on the [[runner]] name component, \
                  retained from the pre-DynamicUser era for \
                  path-component conservation)",
+                name,
                 name.len(),
             ),
             format!("shorten the [[runner]] name to ≤{RUNNER_NAME_MAX_LEN} characters"),
@@ -1288,8 +1294,10 @@ mod tests {
     }
 
     /// `validate_runner_name` must reject one char past the cap. The
-    /// error message must name the cap and identify the rejected
-    /// length so the operator can act without guessing.
+    /// error message must name the cap, echo the offending runner
+    /// name (so the operator can correlate the error to the offending
+    /// `[[runner]] name` key without guessing), and identify the
+    /// rejected length.
     #[test]
     fn runner_name_rejects_one_past_max_len() {
         let s = "a".repeat(RUNNER_NAME_MAX_LEN + 1);
@@ -1299,6 +1307,10 @@ mod tests {
                 assert!(
                     msg.contains("too long") && msg.contains(&RUNNER_NAME_MAX_LEN.to_string()),
                     "msg must name the cap; got: {msg}"
+                );
+                assert!(
+                    msg.contains(&s),
+                    "msg must echo the offending runner name; got: {msg}"
                 );
                 assert!(
                     msg.contains(&(RUNNER_NAME_MAX_LEN + 1).to_string()),

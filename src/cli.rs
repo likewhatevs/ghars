@@ -1343,9 +1343,13 @@ fn validate_runner_tarballs(cfg: &Config) -> Result<()> {
 ///
 /// Only runners whose effective network mode resolves to `Netns`
 /// face this cap. Open-mode runners do not allocate a veth pair, so
-/// they inherit only the global `RUNNER_NAME_MAX_LEN` cap derived
-/// from systemd's strict-mode user-name limit. Effective network
-/// mode is computed via the documented inheritance chain (Part 3 /
+/// they inherit only the global `RUNNER_NAME_MAX_LEN` cap — a
+/// historical-holdover ceiling retained from the pre-DynamicUser era
+/// for path-component conservation and config-shape backward
+/// compatibility (see [`validators::RUNNER_NAME_MAX_LEN`] for the
+/// full rationale; under the current DynamicUser model no User= is
+/// bounded by the runner-name component). Effective network mode is
+/// computed via the documented inheritance chain (Part 3 /
 /// `plan::merge_defaults`):
 ///   1. `runner.network` (Some) → use that network key.
 ///   2. else `defaults.network` (Some) → use that network key.
