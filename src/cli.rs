@@ -607,10 +607,9 @@ fn load_config(path: &Utf8Path) -> Result<Config> {
     // O_NOFOLLOW open + fstat regular-file gate on operator-supplied
     // runner_tarball paths. Filesystem-touching (alongside
     // validate_security_overrides when hooks are configured).
-    // Placed after the pure-shape / length-cap gates so an operator
-    // hitting a typo in another [defaults.*] key sees that error
-    // before a separate "tarball missing" error from a per-runner
-    // override.
+    // Placed after the identifier-shape gates so an operator hitting
+    // a typo in another [defaults.*] key sees that error before a
+    // separate "tarball missing" error from a per-runner override.
     //
     // --- validate_netns_runner_name_lengths ---
     // IFNAMSIZ (kernel veth name) cap (= NETNS_RUNNER_NAME_MAX_LEN,
@@ -3864,9 +3863,9 @@ fn cmd_logs(paths: &Paths, args: &LogsArgs) -> Result<i32> {
                 GharsError::Validation(msg, _) => GharsError::Validation(
                     format!("invalid runner name {name:?}: {msg}"),
                     format!(
-                        "names must match IDENTIFIER_REGEX (lowercase letters, digits, \
-                         dashes; start with a letter, end with a letter or digit) and \
-                         be ≤{} characters",
+                        "runner names must use lowercase letters, digits, and dashes; \
+                         start with a letter; end with a letter or digit; \
+                         and be ≤{} characters",
                         crate::config::IDENTIFIER_MAX_LEN,
                     ),
                 ),
@@ -3941,9 +3940,9 @@ fn cmd_metrics(paths: &Paths, args: &MetricsArgs) -> Result<i32> {
                 GharsError::Validation(msg, _) => GharsError::Validation(
                     format!("invalid runner name {name:?}: {msg}"),
                     format!(
-                        "names must match IDENTIFIER_REGEX (lowercase letters, digits, \
-                         dashes; start with a letter, end with a letter or digit) and \
-                         be ≤{} characters",
+                        "runner names must use lowercase letters, digits, and dashes; \
+                         start with a letter; end with a letter or digit; \
+                         and be ≤{} characters",
                         crate::config::IDENTIFIER_MAX_LEN,
                     ),
                 ),
@@ -6597,9 +6596,11 @@ auth = \"pat\"
         let config_path = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
             .unwrap()
             .join("ghars.toml");
-        // 25 chars: comfortably above NETNS_RUNNER_NAME_MAX_LEN = 7,
-        // well below IDENTIFIER_MAX_LEN = 64.
-        let max_name = "a".repeat(25);
+        // One char above NETNS_RUNNER_NAME_MAX_LEN — the smallest
+        // shape that would trip the netns gate. Open mode (no
+        // [network.NAME] reference) means that gate is skipped, so
+        // the name MUST pass the load_config sweep.
+        let max_name = "a".repeat(crate::validators::NETNS_RUNNER_NAME_MAX_LEN + 1);
         let body = format!(
             "\
 [defaults]
@@ -14326,7 +14327,7 @@ auth = \"bad key\"
         }
     }
 
-    // -------- cache pool name length cap --------------------------------
+    // -------- cache pool name validation --------------------------------
 
     /// Pins (a) `validate_cache_pool_names` returns a Validation error
     /// scoped to the offending pool, (b) the rejection reaches the

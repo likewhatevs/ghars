@@ -92,7 +92,9 @@ proptest! {
     #[test]
     fn runner_name_rejects_any_uppercase_letter(
         // 1..=64 char string with at least one uppercase letter.
-        prefix in "[a-z]{0,32}",
+        // Max length = 33 + 1 + 30 = 64 = IDENTIFIER_MAX_LEN, so the
+        // at-cap boundary is exercised.
+        prefix in "[a-z]{0,33}",
         upper in "[A-Z]",
         suffix in "[a-z0-9-]{0,30}",
     ) {

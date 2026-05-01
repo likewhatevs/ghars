@@ -30,7 +30,7 @@
 //! 9. **Count block with short prefix expands at `MAX_COUNT` to 1024
 //!    distinct names** — full enumeration property check.
 
-use ghars::config::{AuthSpec, Config, Defaults, Hardening, RunnerSpec};
+use ghars::config::{AuthSpec, Config, Defaults, Hardening, IDENTIFIER_MAX_LEN, RunnerSpec};
 use ghars::plan::{MAX_COUNT, expand_counts};
 use indexmap::IndexMap;
 use std::collections::HashSet;
@@ -230,18 +230,22 @@ fn count_block_with_zero_count_skipped_alongside_others() {
 
 #[test]
 fn count_block_prefix_length_at_boundary_for_max_count_suffix() {
-    // IDENTIFIER_MAX_LEN = 64 is the binding cap on generated names.
+    // IDENTIFIER_MAX_LEN is the binding cap on generated names.
     // Longest suffix from MAX_COUNT = 1024 is `-1024` (5 chars).
-    // Largest accepted prefix is 64 - 5 = 59 chars.
-    // 60-char prefix + `-1024` = 65 chars → rejects via
+    // Largest accepted prefix is IDENTIFIER_MAX_LEN - 5 chars.
+    // One char past the cap (suffix overflows by 1) → rejects via
     // validate_identifier inside `validate_generated_identifier`.
-    let max_safe_prefix = "a".repeat(59);
-    expand_counts(&cfg(vec![count_runner(&max_safe_prefix, MAX_COUNT)]))
-        .expect("59-char prefix + -1024 fits within IDENTIFIER_MAX_LEN");
+    const MAX_COUNT_SUFFIX_LEN: usize = 5; // "-1024"
+    let max_safe_len = IDENTIFIER_MAX_LEN - MAX_COUNT_SUFFIX_LEN;
+    let max_safe_prefix = "a".repeat(max_safe_len);
+    expand_counts(&cfg(vec![count_runner(&max_safe_prefix, MAX_COUNT)])).expect(
+        "max_safe_len-char prefix + -1024 fits within IDENTIFIER_MAX_LEN",
+    );
 
-    let too_long_prefix = "a".repeat(60);
-    let err = expand_counts(&cfg(vec![count_runner(&too_long_prefix, MAX_COUNT)]))
-        .expect_err("60-char prefix + -1024 exceeds IDENTIFIER_MAX_LEN");
+    let too_long_prefix = "a".repeat(max_safe_len + 1);
+    let err = expand_counts(&cfg(vec![count_runner(&too_long_prefix, MAX_COUNT)])).expect_err(
+        "(max_safe_len + 1)-char prefix + -1024 exceeds IDENTIFIER_MAX_LEN",
+    );
     let msg = format!("{err}");
     assert!(
         msg.contains("count expansion"),
