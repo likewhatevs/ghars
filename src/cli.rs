@@ -585,6 +585,11 @@ fn load_config(path: &Utf8Path) -> Result<Config> {
     // --- validate_identity_fields ---
     // trust_zone control-char rejection.
     //
+    // --- validate_trust_zone_lengths ---
+    // trust_zone length cap (≤ TRUST_ZONE_MAX_LEN = 22) so the
+    // rendered DynamicUser identity ghars-tz-<TRUST_ZONE> fits
+    // systemd's strict 31-char valid_user_group_name ceiling.
+    //
     // --- validate_no_duplicate_caches ---
     // Dedup-loop trap.
     //
@@ -623,6 +628,7 @@ fn load_config(path: &Utf8Path) -> Result<Config> {
     crate::config::validate_networks(&cfg)?;
     validate_security_overrides(&cfg)?;
     validate_identity_fields(&cfg)?;
+    validate_trust_zone_lengths(&cfg)?;
     validate_no_duplicate_caches(&cfg)?;
     validate_single_sccache_pool_per_runner(&cfg)?;
     validate_cache_pool_names(&cfg)?;
@@ -1461,6 +1467,32 @@ fn validate_identity_fields(cfg: &Config) -> Result<()> {
     for (name, pool) in &cfg.cache_pools {
         let scope = format!("cache_pool {name:?}");
         crate::systemd::check_identity_field("trust_zone", &pool.trust_zone)
+            .map_err(|e| crate::error::prepend_validation_scope(&scope, e))?;
+    }
+    Ok(())
+}
+
+// ---------- trust_zone length cap ---------------------------------------
+
+/// Walk every runner and cache_pool `trust_zone` and gate the value
+/// through `validators::validate_trust_zone`. Same loop-and-scope
+/// pattern as `validate_runner_names` / `validate_cache_pool_names`
+/// — the per-value validator owns the cap and error wording; this
+/// function owns iteration and scope-prefixing.
+///
+/// # Errors
+///
+/// `GharsError::Validation` wrapping the underlying validator error
+/// with the `runner "NAME":` / `cache_pool "NAME":` scope prefix.
+fn validate_trust_zone_lengths(cfg: &Config) -> Result<()> {
+    for runner in &cfg.runners {
+        let scope = format!("runner {:?}", runner.name);
+        validators::validate_trust_zone(&runner.trust_zone)
+            .map_err(|e| crate::error::prepend_validation_scope(&scope, e))?;
+    }
+    for (name, pool) in &cfg.cache_pools {
+        let scope = format!("cache_pool {name:?}");
+        validators::validate_trust_zone(&pool.trust_zone)
             .map_err(|e| crate::error::prepend_validation_scope(&scope, e))?;
     }
     Ok(())
@@ -6142,6 +6174,130 @@ trust_zone = \"audited\"
             result.is_ok(),
             "clean trust_zone must pass load_config; got: {result:?}"
         );
+    }
+
+    /// End-to-end: a `[[runner]] trust_zone` longer than
+    /// TRUST_ZONE_MAX_LEN must reject through `cmd_status` because
+    /// `validate_trust_zone_lengths` is wired into `load_config`.
+    /// Pins that the lift covers the trust_zone length surface
+    /// end-to-end via the public CLI.
+    #[test]
+    fn cmd_status_rejects_oversize_runner_trust_zone_via_load_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
+            .unwrap()
+            .join("ghars.toml");
+        let oversize_tz = "a".repeat(crate::validators::TRUST_ZONE_MAX_LEN + 1);
+        let body = format!(
+            "\
+[defaults]
+
+[auth.pat]
+kind = \"pat\"
+token_env = \"GHARS_PAT\"
+
+[[runner]]
+name = \"buckos\"
+url = \"https://github.com/example/repo\"
+auth = \"pat\"
+trust_zone = \"{oversize_tz}\"
+"
+        );
+        fs::write(config_path.as_std_path(), body).unwrap();
+
+        let paths = Paths::default();
+        let args = StatusArgs {
+            json: false,
+            metrics: false,
+            health_only: false,
+            runners_only: true,
+            names: vec![],
+        };
+        let err = cmd_status(
+            &config_path,
+            &paths,
+            &args,
+            ColorMode { enabled: false },
+            true,
+        )
+        .expect_err("oversize runner trust_zone must propagate via load_config");
+        match &err {
+            GharsError::Validation(msg, _) => {
+                assert!(
+                    msg.contains("runner") && msg.contains("buckos"),
+                    "msg must scope to the offending runner; got: {msg}"
+                );
+                assert!(
+                    msg.contains("trust_zone") && msg.contains("too long"),
+                    "msg must come from the trust_zone length cap; got: {msg}"
+                );
+            }
+            other => panic!("expected GharsError::Validation, got: {other:?}"),
+        }
+        assert_eq!(
+            err_to_exit_code(&err),
+            6,
+            "Validation must map to exit code 6 (Part 5)"
+        );
+    }
+
+    /// End-to-end: a `[cache_pools.NAME] trust_zone` longer than
+    /// TRUST_ZONE_MAX_LEN must reject through `cmd_status`. Sister
+    /// to the runner-side e2e test — the validator walks both
+    /// surfaces and the cap applies symmetrically.
+    #[test]
+    fn cmd_status_rejects_oversize_cache_pool_trust_zone_via_load_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
+            .unwrap()
+            .join("ghars.toml");
+        let oversize_tz = "a".repeat(crate::validators::TRUST_ZONE_MAX_LEN + 1);
+        let body = format!(
+            "\
+[defaults]
+
+[auth.pat]
+kind = \"pat\"
+token_env = \"GHARS_PAT\"
+
+[cache_pools.build]
+kinds = [\"sccache\"]
+size = \"200G\"
+trust_zone = \"{oversize_tz}\"
+"
+        );
+        fs::write(config_path.as_std_path(), body).unwrap();
+
+        let paths = Paths::default();
+        let args = StatusArgs {
+            json: false,
+            metrics: false,
+            health_only: false,
+            runners_only: true,
+            names: vec![],
+        };
+        let err = cmd_status(
+            &config_path,
+            &paths,
+            &args,
+            ColorMode { enabled: false },
+            true,
+        )
+        .expect_err("oversize cache_pool trust_zone must propagate via load_config");
+        match &err {
+            GharsError::Validation(msg, _) => {
+                assert!(
+                    msg.contains("cache_pool") && msg.contains("build"),
+                    "msg must scope to the offending cache_pool; got: {msg}"
+                );
+                assert!(
+                    msg.contains("trust_zone") && msg.contains("too long"),
+                    "msg must come from the trust_zone length cap; got: {msg}"
+                );
+            }
+            other => panic!("expected GharsError::Validation, got: {other:?}"),
+        }
+        assert_eq!(err_to_exit_code(&err), 6);
     }
 
     /// End-to-end: a `[[runner]] runner_tarball = "/nonexistent..."`
@@ -12214,6 +12370,132 @@ token_env = \"GHARS_PAT\"";
                     msg.contains("cache_pool \"build\": field"),
                     "msg must contain `cache_pool \"build\": field` as adjacent \
                      substring (no infix between scope and field); got: {msg}"
+                );
+            }
+            other => panic!("expected GharsError::Validation, got {other:?}"),
+        }
+    }
+
+    // -------- trust_zone length cap ----------------------------------
+
+    /// A runner trust_zone of exactly TRUST_ZONE_MAX_LEN chars MUST
+    /// pass — the cap is inclusive (the longest accepted, not
+    /// exclusive). Pins that the comparison is `>` not `>=`.
+    #[test]
+    fn validate_trust_zone_lengths_accepts_runner_at_max_len() {
+        let at_max = "a".repeat(crate::validators::TRUST_ZONE_MAX_LEN);
+        let cfg = cfg_with_runner_trust_zone("buckos", at_max.clone());
+        validate_trust_zone_lengths(&cfg).unwrap_or_else(|e| {
+            panic!(
+                "{}-char (== TRUST_ZONE_MAX_LEN) runner trust_zone must accept; \
+                 got: {e}",
+                crate::validators::TRUST_ZONE_MAX_LEN
+            )
+        });
+    }
+
+    /// A runner trust_zone one char past TRUST_ZONE_MAX_LEN MUST
+    /// reject. Error message must (a) scope to the offending runner,
+    /// (b) echo the offending value, (c) name the cap, and (d) cite
+    /// the systemd 31-char ceiling so the operator understands why.
+    #[test]
+    fn validate_trust_zone_lengths_rejects_runner_one_past_max_len() {
+        let oversize = "a".repeat(crate::validators::TRUST_ZONE_MAX_LEN + 1);
+        let cfg = cfg_with_runner_trust_zone("buckos", oversize.clone());
+        let err = validate_trust_zone_lengths(&cfg).expect_err("must reject");
+        match err {
+            GharsError::Validation(msg, hint) => {
+                assert!(
+                    msg.contains("runner \"buckos\"") && msg.contains(&oversize),
+                    "msg must scope to the offending runner by name and echo \
+                     the trust_zone value; got: {msg}"
+                );
+                assert!(
+                    msg.contains("trust_zone") && msg.contains("too long"),
+                    "msg must name the field and the cap class; got: {msg}"
+                );
+                assert!(
+                    msg.contains(&crate::validators::TRUST_ZONE_MAX_LEN.to_string()),
+                    "msg must echo the cap value; got: {msg}"
+                );
+                assert!(
+                    msg.contains("31-char") || msg.contains("ghars-tz-"),
+                    "msg must cite the systemd ceiling or the User= prefix \
+                     so the operator understands the constraint; got: {msg}"
+                );
+                assert!(
+                    hint.contains(&crate::validators::TRUST_ZONE_MAX_LEN.to_string()),
+                    "hint must restate the cap; got: {hint}"
+                );
+            }
+            other => panic!("expected GharsError::Validation, got {other:?}"),
+        }
+    }
+
+    /// A cache_pool trust_zone of exactly TRUST_ZONE_MAX_LEN chars
+    /// MUST pass — symmetric to the runner-side acceptance test.
+    #[test]
+    fn validate_trust_zone_lengths_accepts_cache_pool_at_max_len() {
+        let at_max = "a".repeat(crate::validators::TRUST_ZONE_MAX_LEN);
+        let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+        cfg.cache_pools.insert(
+            "build".into(),
+            crate::config::CachePoolSpec {
+                kinds: vec![crate::config::CacheKind::Sccache],
+                size: "200G".into(),
+                mode: crate::config::CacheMode::default(),
+                trust_zone: at_max,
+            },
+        );
+        validate_trust_zone_lengths(&cfg).unwrap_or_else(|e| {
+            panic!(
+                "{}-char (== TRUST_ZONE_MAX_LEN) cache_pool trust_zone must \
+                 accept; got: {e}",
+                crate::validators::TRUST_ZONE_MAX_LEN
+            )
+        });
+    }
+
+    /// A cache_pool trust_zone one char past TRUST_ZONE_MAX_LEN MUST
+    /// reject — symmetric to the runner-side rejection test, scoped
+    /// to the cache_pool surface.
+    #[test]
+    fn validate_trust_zone_lengths_rejects_cache_pool_one_past_max_len() {
+        let oversize = "a".repeat(crate::validators::TRUST_ZONE_MAX_LEN + 1);
+        let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+        cfg.cache_pools.insert(
+            "build".into(),
+            crate::config::CachePoolSpec {
+                kinds: vec![crate::config::CacheKind::Sccache],
+                size: "200G".into(),
+                mode: crate::config::CacheMode::default(),
+                trust_zone: oversize.clone(),
+            },
+        );
+        let err = validate_trust_zone_lengths(&cfg).expect_err("must reject");
+        match err {
+            GharsError::Validation(msg, hint) => {
+                assert!(
+                    msg.contains("cache_pool \"build\"") && msg.contains(&oversize),
+                    "msg must scope to the offending cache_pool by name and \
+                     echo the trust_zone value; got: {msg}"
+                );
+                assert!(
+                    msg.contains("trust_zone") && msg.contains("too long"),
+                    "msg must name the field and the cap class; got: {msg}"
+                );
+                assert!(
+                    msg.contains(&crate::validators::TRUST_ZONE_MAX_LEN.to_string()),
+                    "msg must echo the cap value; got: {msg}"
+                );
+                assert!(
+                    msg.contains("31-char") || msg.contains("ghars-tz-"),
+                    "msg must cite the systemd ceiling or the User= prefix \
+                     so the operator understands the constraint; got: {msg}"
+                );
+                assert!(
+                    hint.contains(&crate::validators::TRUST_ZONE_MAX_LEN.to_string()),
+                    "hint must restate the cap; got: {hint}"
                 );
             }
             other => panic!("expected GharsError::Validation, got {other:?}"),

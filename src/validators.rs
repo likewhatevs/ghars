@@ -30,6 +30,40 @@ use crate::{GharsError, Result};
 /// from `prefix.len()` rather than a hand-counted constant.
 pub(crate) const RUNNER_USER_PREFIX: &str = "ghars-";
 
+/// systemd's strict-mode `valid_user_group_name` ceiling: the
+/// largest user / group name systemd will accept on `User=` /
+/// `Group=` directives. Verified at systemd
+/// `src/basic/user-util.c::valid_user_group_name`, which caps every
+/// User=/Group= name at `sizeof_field(struct utmpx, ut_user) - 1 = 31`
+/// (per `glibc bits/utmpx.h`: `__UT_NAMESIZE = 32` includes the NUL
+/// terminator).
+pub(crate) const SYSTEMD_USER_GROUP_NAME_MAX: usize = 31;
+
+/// Prefix that systemd's `User=` directive carries for every ghars
+/// runner / cache-server unit under the DynamicUser model:
+/// `User=ghars-tz-<TRUST_ZONE>`. Centralized so [`TRUST_ZONE_MAX_LEN`]
+/// derives from `prefix.len()` rather than a hand-counted constant.
+pub(crate) const TRUST_ZONE_USER_PREFIX: &str = "ghars-tz-";
+
+/// Largest `trust_zone` whose rendered DynamicUser identity
+/// `ghars-tz-<TRUST_ZONE>` still fits
+/// [`SYSTEMD_USER_GROUP_NAME_MAX`].
+///
+/// Concretely: `31 - 9 = 22` chars. Catching this at config-load
+/// surfaces a scoped error (`runner "NAME":` / `cache_pool "NAME":`)
+/// before any unit starts, instead of an opaque systemd
+/// `valid_user_group_name` failure during apply.
+pub const TRUST_ZONE_MAX_LEN: usize =
+    SYSTEMD_USER_GROUP_NAME_MAX - TRUST_ZONE_USER_PREFIX.len();
+
+// Compile-time underflow guard: if a future edit ever made
+// `TRUST_ZONE_USER_PREFIX.len() >= SYSTEMD_USER_GROUP_NAME_MAX`, the
+// const subtraction above would underflow at compile time; the
+// explicit assert names the invariant ("the rendered DynamicUser name
+// shape requires at least one operator-controlled char to remain
+// after the prefix").
+const _: () = assert!(SYSTEMD_USER_GROUP_NAME_MAX > TRUST_ZONE_USER_PREFIX.len());
+
 /// Linux interface-name buffer size from `<linux/if.h>`. The kernel
 /// stores network device names in a fixed-width array of this size,
 /// where the last byte is reserved for the trailing NUL — so a NAME's
@@ -194,6 +228,44 @@ pub fn validate_runner_name(name: &str) -> Result<()> {
 /// `GharsError::Validation` for any identifier-shape failure.
 pub fn validate_cache_pool_name(name: &str) -> Result<()> {
     validate_identifier(name)
+}
+
+/// Validate a `trust_zone` value's length against
+/// [`TRUST_ZONE_MAX_LEN`].
+///
+/// The rendered DynamicUser identity for every ghars runner /
+/// cache-server unit is `User=ghars-tz-<TRUST_ZONE>`. systemd's
+/// strict-mode `valid_user_group_name` rejects any User= name longer
+/// than [`SYSTEMD_USER_GROUP_NAME_MAX`] (31 chars), so the
+/// operator-controlled `<TRUST_ZONE>` segment cannot exceed
+/// `31 - len("ghars-tz-")` = [`TRUST_ZONE_MAX_LEN`] (= 22).
+///
+/// Catching at config-load surfaces a structured error before any
+/// unit starts, instead of an opaque systemd
+/// `valid_user_group_name` failure during apply. Charset / control-
+/// char rejection is a separate concern (`check_identity_field` /
+/// `validate_identity_fields`); this validator covers length only.
+///
+/// # Errors
+///
+/// Returns `GharsError::Validation` when `tz.len() > TRUST_ZONE_MAX_LEN`.
+/// Message echoes the offending value, names the cap, and cites the
+/// systemd ceiling so the operator understands the constraint.
+pub fn validate_trust_zone(tz: &str) -> Result<()> {
+    if tz.len() > TRUST_ZONE_MAX_LEN {
+        return Err(validation(
+            format!(
+                "trust_zone {tz:?} too long: {} > {TRUST_ZONE_MAX_LEN} \
+                 (User=ghars-tz-<TRUST_ZONE> must fit systemd's \
+                 {SYSTEMD_USER_GROUP_NAME_MAX}-char user-name ceiling)",
+                tz.len(),
+            ),
+            format!(
+                "shorten the trust_zone to ≤{TRUST_ZONE_MAX_LEN} characters",
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// Validate a GitHub repo or org URL.

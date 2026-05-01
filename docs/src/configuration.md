@@ -156,6 +156,9 @@ Fields:
   single-sccache-pool-per-runner rule below applies anyway).
 - `trust_zone` (`String`) — default `"default"`. Validator: every
   runner referencing the pool must have the same `trust_zone`.
+  Length cap `TRUST_ZONE_MAX_LEN = 22` chars: the rendered
+  DynamicUser identity `User=ghars-tz-<TRUST_ZONE>` must fit
+  systemd's strict 31-char `valid_user_group_name` ceiling.
 
 A runner that references >1 cache pool with `kinds` containing
 `sccache` is rejected at config load (`SCCACHE_SERVER_UDS` is
@@ -335,7 +338,10 @@ Selected fields:
   Ordered, dedup-on-validate. A runner can reference at most one
   pool with `kinds` containing `sccache`.
 - `trust_zone` (`String`) — default `"default"`. Pool references
-  must match (validator enforces).
+  must match (validator enforces). Same `TRUST_ZONE_MAX_LEN = 22`
+  cap as `[cache_pools.NAME]` — the rendered DynamicUser identity
+  `User=ghars-tz-<TRUST_ZONE>` must fit systemd's strict 31-char
+  `valid_user_group_name` ceiling.
 - `runner_tarball` (`Option<Utf8PathBuf>`) — pre-downloaded local
   tarball, bypasses release-API lookup. The path is opened with
   `O_NOFOLLOW` at apply time; symlinks and non-regular files are
@@ -416,22 +422,26 @@ circuits:
    `validate_hook_script` (`O_NOFOLLOW` open with the seven SEC-12
    checks listed under [`[hooks]`](#hooks-singleton)).
 3. `validate_identity_fields` — trust_zone control-char rejection.
-4. `validate_no_duplicate_caches` — no `caches = ["a", "a"]`
+4. `validate_trust_zone_lengths` — trust_zone length cap
+   (`TRUST_ZONE_MAX_LEN = 22`) so the rendered DynamicUser identity
+   `User=ghars-tz-<TRUST_ZONE>` fits systemd's strict 31-char
+   `valid_user_group_name` ceiling.
+5. `validate_no_duplicate_caches` — no `caches = ["a", "a"]`
    inside a single `[[runner]]`.
-5. `validate_single_sccache_pool_per_runner` — at most one sccache
+6. `validate_single_sccache_pool_per_runner` — at most one sccache
    pool per runner.
-6. `validate_cache_pool_names` — identifier-shape gate on pool keys
+7. `validate_cache_pool_names` — identifier-shape gate on pool keys
    and runner `caches` refs.
-7. `validate_runner_names` — identifier-shape gate on every
+8. `validate_runner_names` — identifier-shape gate on every
    `[[runner]] name`. Netns-mode runners face an additional
    tighter cap enforced by `validate_netns_runner_name_lengths`
    below.
-8. `validate_auth_keys` — every runner's `auth` resolves.
-9. `validate_pat_xor` — `AuthSpec::Pat` shape-only XOR check on
-   `token_env` / `token_file`.
-10. `validate_runner_tarballs` — `O_NOFOLLOW` regular-file gate on
+9. `validate_auth_keys` — every runner's `auth` resolves.
+10. `validate_pat_xor` — `AuthSpec::Pat` shape-only XOR check on
+    `token_env` / `token_file`.
+11. `validate_runner_tarballs` — `O_NOFOLLOW` regular-file gate on
     operator-supplied `runner_tarball` paths.
-11. `validate_netns_runner_name_lengths` — IFNAMSIZ (kernel veth
+12. `validate_netns_runner_name_lengths` — IFNAMSIZ (kernel veth
     name) cap on runners whose effective network mode is Netns.
 
 `validate --deep` round-trips auth tokens against GitHub via

@@ -309,8 +309,8 @@ fn validate_instance_name(instance: &str, label: &str) -> Result<()> {
     validators::validate_runner_name(instance).map_err(|e| match e {
         GharsError::Validation(msg, _) => GharsError::Validation(
             format!("{label}: invalid instance name {instance:?}: {msg}"),
-            "instance names must satisfy IDENTIFIER_REGEX (lowercase letters, digits, dashes; \
-             start with a letter, end with a letter or digit)"
+            "instance names must use lowercase letters, digits, and dashes; \
+             start with a letter; end with a letter or digit"
                 .into(),
         ),
         other => other,
