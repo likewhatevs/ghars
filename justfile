@@ -28,3 +28,12 @@ book:
 # Serve mdbook locally
 book-serve:
     mdbook serve docs --open
+
+# Install development tools
+setup:
+    cargo install cargo-nextest --locked
+    cargo install cargo-llvm-cov --locked
+    cargo install cargo-mutants --locked
+    cargo install mdbook --locked
+    cargo install mdbook-linkcheck --locked
+    cargo install rust-script --locked
