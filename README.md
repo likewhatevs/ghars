@@ -49,7 +49,7 @@ root-owned, mode `0755` — the unit template's `ExecStart=` points
 at that exact path, and unit start fails if the binary is
 missing.
 
-Build requires Rust 1.85+ and edition 2024. Runtime requires systemd
+Build requires Rust 1.91+ and edition 2024. Runtime requires systemd
 and a Linux kernel with cgroup v2.
 
 ## Quick start
