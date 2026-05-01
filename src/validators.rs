@@ -27,21 +27,15 @@ use crate::{GharsError, Result};
 /// Maximum length of the shared identifier (re-exported for symmetry).
 pub const NAME_MAX_LEN: usize = IDENTIFIER_MAX_LEN;
 
-/// Maximum length of a Linux user name accepted by `validate_user`.
-///
-/// systemd's strict-mode `valid_user_group_name` (src/basic/user-util.c:824)
-/// caps user names at `SYSTEMD_GROUP_NAME_MAX` chars (= utmpx ut_user
-/// length minus the NUL terminator). The unit-template runner uses
-/// User=, which goes through that strict check, so the cap here
-/// matches the same limit applied to group names.
-pub const USER_MAX_LEN: usize = SYSTEMD_GROUP_NAME_MAX;
-
 /// systemd strict-mode `valid_user_group_name` caps user and group
 /// names at `sizeof_field(struct utmpx, ut_user) - 1 = 31` chars.
 /// Verified at systemd src/basic/user-util.c:824 and glibc
 /// bits/utmpx.h:36 (`__UT_NAMESIZE = 32`, includes NUL terminator).
-/// Both [`USER_MAX_LEN`] and the cache-pool / runner-name caps derive
-/// from this single source.
+/// The cache-pool ([`CACHE_POOL_NAME_MAX_LEN`]) and runner-name
+/// ([`RUNNER_NAME_MAX_LEN`]) caps derive from this single source as
+/// historical-holdover ceilings; under the current DynamicUser model
+/// no User=/Group= name is bounded by the operator-supplied identifier
+/// (see those constants' doc comments for the full rationale).
 pub(crate) const SYSTEMD_GROUP_NAME_MAX: usize = 31;
 
 /// Length-budget anchor for [`CACHE_POOL_NAME_MAX_LEN`]'s
@@ -179,10 +173,6 @@ const TOP_LEVEL_RESERVED: &[&str] = &[
 
 static IDENTIFIER_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(IDENTIFIER_REGEX).expect("IDENTIFIER_REGEX is a compile-time constant")
-});
-
-static USER_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^[a-z_][a-z0-9_-]{0,30}$").expect("USER_REGEX is a compile-time constant")
 });
 
 static PREFIX_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -452,53 +442,6 @@ pub fn validate_prefix(p: &str) -> Result<()> {
             ));
         }
         Err(_) => {}
-    }
-    Ok(())
-}
-
-/// Validate a Linux user name (`--user`).
-///
-/// `^[a-z_][a-z0-9_-]{0,30}$` — first char must be lowercase letter or
-/// underscore; trailing chars may include digits or dashes; max
-/// [`USER_MAX_LEN`] (= [`SYSTEMD_GROUP_NAME_MAX`] = 31) chars.
-///
-/// systemd's strict-mode `valid_user_group_name`
-/// (src/basic/user-util.c:824) rejects user names longer than
-/// [`SYSTEMD_GROUP_NAME_MAX`] chars; the runner template uses `User=`,
-/// so a 32-char name accepted by the regex would be refused by systemd
-/// at unit-load time with an opaque error. The explicit length gate
-/// below mirrors the layered pattern in [`validate_runner_name`] /
-/// [`validate_cache_pool_name`] so the operator sees a length-scoped
-/// error before the regex check fires.
-///
-/// # Errors
-///
-/// Returns `GharsError::Validation` for empty input, length above
-/// [`USER_MAX_LEN`], or pattern mismatch.
-/// Matches the legacy Python install tool's user validator.
-pub fn validate_user(u: &str) -> Result<()> {
-    if u.is_empty() {
-        return Err(validation(
-            "user is empty",
-            "set the user field to a lowercase identifier like \"gha\" in your ghars.toml",
-        ));
-    }
-    if u.len() > USER_MAX_LEN {
-        return Err(validation(
-            format!(
-                "user too long: {} > {USER_MAX_LEN} \
-                 (systemd strict-mode `valid_user_group_name` caps user/group \
-                 names at {SYSTEMD_GROUP_NAME_MAX} chars)",
-                u.len(),
-            ),
-            format!("shorten the user name to ≤{USER_MAX_LEN} characters"),
-        ));
-    }
-    if !USER_RE.is_match(u) {
-        return Err(validation(
-            format!("user invalid: {u:?} must match {}", USER_RE.as_str()),
-            "Linux user names: lowercase or '_' first char, then 0-30 of [a-z0-9_-]",
-        ));
     }
     Ok(())
 }
@@ -1433,10 +1376,12 @@ mod tests {
     }
 
     /// `validate_cache_pool_name` must reject one char past the cap.
-    /// The error message must name the cap and surface the
+    /// The error message must name the cap, echo the offending pool
+    /// name (so the operator can correlate the error to the offending
+    /// `[cache_pools.NAME]` key without guessing), and surface the
     /// holdover-rationale phrasing (`cache pool name component`,
     /// `pre-DynamicUser era`) so the operator gets an actionable,
-    /// scope-tagged diagnostic without guessing.
+    /// scope-tagged diagnostic.
     #[test]
     fn cache_pool_name_rejects_one_past_max_len() {
         let s = "a".repeat(CACHE_POOL_NAME_MAX_LEN + 1);
@@ -1446,6 +1391,10 @@ mod tests {
                 assert!(
                     msg.contains("too long") && msg.contains(&CACHE_POOL_NAME_MAX_LEN.to_string()),
                     "msg must name the cap; got: {msg}"
+                );
+                assert!(
+                    msg.contains(&s),
+                    "msg must echo the offending pool name; got: {msg}"
                 );
                 assert!(
                     msg.contains("cache pool name component")
@@ -1781,82 +1730,6 @@ mod tests {
         assert_eq!(normalize_prefix("/opt/gha/"), "/opt/gha");
         assert_eq!(normalize_prefix("/opt/gha"), "/opt/gha");
         assert_eq!(normalize_prefix("/"), "/");
-    }
-
-    // ---- user ---------------------------------------------------------
-
-    #[rstest]
-    #[case("gha")]
-    #[case("gha-runner")]
-    #[case("_sys")]
-    #[case("x")]
-    fn user_accepts(#[case] u: &str) {
-        validate_user(u).expect("must accept");
-    }
-
-    #[rstest]
-    #[case("")]
-    #[case("GHA")]
-    #[case("1gha")]
-    #[case("gha!")]
-    #[case("gha x")]
-    #[case("gha\n")]
-    fn user_rejects(#[case] u: &str) {
-        assert!(validate_user(u).is_err(), "must reject {u:?}");
-    }
-
-    /// Coarse rejection of clearly-oversize input. The authoritative
-    /// boundary is pinned by `user_accepts_at_max_len` /
-    /// `user_rejects_one_past_max_len` (USER_MAX_LEN = 31 vs 32). This
-    /// test stays as a cheap regression smoke: a far-above-cap length
-    /// must still reject. `33` is not the authoritative boundary — it
-    /// is just a value comfortably past either cap if the constants
-    /// ever drift, catching a bulk regression that disabled the length
-    /// gate entirely without depending on the precise threshold.
-    #[test]
-    fn user_rejects_well_above_max() {
-        let s = "a".repeat(33);
-        assert!(validate_user(&s).is_err());
-    }
-
-    /// Boundary pair: at `USER_MAX_LEN` (= 31) `validate_user` accepts;
-    /// at `USER_MAX_LEN + 1` (= 32) it rejects via the explicit length
-    /// gate. The 32-char rejection is required because the regex alone
-    /// (formerly `{0,31}`) accepted 32-char names but systemd's
-    /// strict-mode `valid_user_group_name` would refuse them at
-    /// unit-load time. Pinning both endpoints catches an off-by-one
-    /// drift in either USER_RE or USER_MAX_LEN.
-    #[test]
-    fn user_accepts_at_max_len() {
-        let s = "a".repeat(USER_MAX_LEN);
-        validate_user(&s).expect("must accept exactly USER_MAX_LEN chars");
-    }
-
-    /// Companion to `user_accepts_at_max_len`: one char past the cap
-    /// must reject with a length-scoped error (not the regex-shape
-    /// error). The error must mention USER_MAX_LEN and the systemd
-    /// strict-mode source so an operator can act without guessing.
-    #[test]
-    fn user_rejects_one_past_max_len() {
-        let s = "a".repeat(USER_MAX_LEN + 1);
-        let err = validate_user(&s).expect_err("must reject one past USER_MAX_LEN");
-        match err {
-            GharsError::Validation(msg, hint) => {
-                assert!(
-                    msg.contains("too long") && msg.contains(&USER_MAX_LEN.to_string()),
-                    "msg must name the cap; got: {msg}"
-                );
-                assert!(
-                    msg.contains(&SYSTEMD_GROUP_NAME_MAX.to_string()),
-                    "msg must explain systemd cap; got: {msg}"
-                );
-                assert!(
-                    hint.contains(&USER_MAX_LEN.to_string()),
-                    "hint must restate the cap; got: {hint}"
-                );
-            }
-            other => panic!("expected Validation, got {other:?}"),
-        }
     }
 
     // ---- memory_max ---------------------------------------------------

@@ -2088,8 +2088,8 @@ pub fn render_cache_drop_in(
     //     gate is cheap defense-in-depth in case a future hash format
     //     adds free-form metadata) → `X-Ghars-Spec-Hash=`
     // `binding.name` is gated upstream by `validate_cache_pool_name`
-    // (USER_RE charset only) at config load. `binding.kinds` is a
-    // typed enum so it cannot carry control chars.
+    // (IDENTIFIER_RE charset + identifier-shape) at config load.
+    // `binding.kinds` is a typed enum so it cannot carry control chars.
     check_identity_field("caches[].size", &binding.size)?;
     check_identity_field("config_source", config_source)?;
     check_identity_field("spec_hash", spec_hash)?;

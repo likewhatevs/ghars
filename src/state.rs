@@ -277,12 +277,15 @@ pub fn discover(systemd: &dyn Systemd, paths: &Paths) -> Result<ActualState> {
         // but a manually-created `ghars-cache@LONG.service.d/` directory
         // (operator-installed, partial-apply crash, or a downgrade from
         // a future ghars where the cap was relaxed) carries a name
-        // whose derived group `ghars-cache-LONG` exceeds systemd's
-        // `SYSTEMD_GROUP_NAME_MAX`-char group-name limit. We INCLUDE
-        // the pool in `actual.cache_pools` rather than skipping it —
-        // the planner diff against `cfg.cache_pools` (which CANNOT
-        // contain the oversize key thanks to `validate_cache_pool_name`)
-        // will surface the discovered-but-not-desired pool as a
+        // longer than `CACHE_POOL_NAME_MAX_LEN` — the historical-holdover
+        // cap retained from the pre-DynamicUser era for path-component
+        // conservation (see `validators::CACHE_POOL_NAME_MAX_LEN` for
+        // the full rationale; no per-pool group is created under the
+        // current DynamicUser model). We INCLUDE the pool in
+        // `actual.cache_pools` rather than skipping it — the planner
+        // diff against `cfg.cache_pools` (which CANNOT contain the
+        // oversize key thanks to `validate_cache_pool_name`) will
+        // surface the discovered-but-not-desired pool as a
         // RemoveCachePool action. The warning here surfaces the
         // offender to operator output before the next plan/apply
         // cycle reconciles state.
