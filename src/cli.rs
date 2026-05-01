@@ -6600,7 +6600,7 @@ auth = \"pat\"
         // shape that would trip the netns gate. Open mode (no
         // [network.NAME] reference) means that gate is skipped, so
         // the name MUST pass the load_config sweep.
-        let max_name = "a".repeat(crate::validators::NETNS_RUNNER_NAME_MAX_LEN + 1);
+        let above_netns_cap_name = "a".repeat(crate::validators::NETNS_RUNNER_NAME_MAX_LEN + 1);
         let body = format!(
             "\
 [defaults]
@@ -6610,7 +6610,7 @@ kind = \"pat\"
 token_env = \"GHARS_PAT\"
 
 [[runner]]
-name = \"{max_name}\"
+name = \"{above_netns_cap_name}\"
 url = \"https://github.com/example/repo\"
 auth = \"pat\"
 "

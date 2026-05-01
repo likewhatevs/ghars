@@ -316,7 +316,8 @@ Selected fields:
 
 - `name` (`String`) — runner name (or prefix when `count > 1`).
   Matches `IDENTIFIER_REGEX` (≤ `IDENTIFIER_MAX_LEN = 64` chars).
-  Netns-mode runners face an additional cap
+  When `count > 1`, the base name must leave room for the `-N`
+  suffix within this cap. Netns-mode runners face an additional cap
   `NETNS_RUNNER_NAME_MAX_LEN = 7` so the derived veth
   `ghars-NAME-h` fits `IFNAMSIZ - 1 = 15`. See
   [Identifiers](#identifiers).

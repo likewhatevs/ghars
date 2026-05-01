@@ -231,12 +231,12 @@ fn count_block_with_zero_count_skipped_alongside_others() {
 #[test]
 fn count_block_prefix_length_at_boundary_for_max_count_suffix() {
     // IDENTIFIER_MAX_LEN is the binding cap on generated names.
-    // Longest suffix from MAX_COUNT = 1024 is `-1024` (5 chars).
-    // Largest accepted prefix is IDENTIFIER_MAX_LEN - 5 chars.
-    // One char past the cap (suffix overflows by 1) → rejects via
-    // validate_identifier inside `validate_generated_identifier`.
-    const MAX_COUNT_SUFFIX_LEN: usize = 5; // "-1024"
-    let max_safe_len = IDENTIFIER_MAX_LEN - MAX_COUNT_SUFFIX_LEN;
+    // Longest suffix from MAX_COUNT is `-{MAX_COUNT}` — derive its
+    // length at runtime so a future change to MAX_COUNT (or to the
+    // suffix shape itself in plan::expand_counts) keeps this test
+    // pinned without a manual edit.
+    let max_count_suffix_len = format!("-{MAX_COUNT}").len();
+    let max_safe_len = IDENTIFIER_MAX_LEN - max_count_suffix_len;
     let max_safe_prefix = "a".repeat(max_safe_len);
     expand_counts(&cfg(vec![count_runner(&max_safe_prefix, MAX_COUNT)])).expect(
         "max_safe_len-char prefix + -1024 fits within IDENTIFIER_MAX_LEN",

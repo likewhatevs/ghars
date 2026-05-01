@@ -153,7 +153,7 @@ pub fn validate_identifier(s: &str) -> Result<()> {
     if !IDENTIFIER_RE.is_match(s) {
         return Err(validation(
             format!("identifier invalid: {s:?} must match {IDENTIFIER_REGEX}"),
-            "use lowercase letters, digits, and dashes; start with a letter, end with a letter or digit",
+            "use lowercase letters, digits, and dashes; start with a letter; end with a letter or digit",
         ));
     }
     Ok(())

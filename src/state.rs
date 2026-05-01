@@ -2427,6 +2427,41 @@ mod tests {
         );
     }
 
+    /// Boundary pin: the warning at state.rs::discover fires on
+    /// `pool_name.len() > IDENTIFIER_MAX_LEN`. A pool name of exactly
+    /// IDENTIFIER_MAX_LEN chars MUST NOT trigger the warning. A
+    /// regression that off-by-one'd the comparison (e.g. `>=` instead
+    /// of `>`) would falsely warn on every operator-authored
+    /// max-length pool name. Sister to
+    /// `discover_warns_on_oversize_cache_pool_name`.
+    #[test]
+    #[tracing_test::traced_test]
+    fn discover_does_not_warn_on_at_max_cache_pool_name() {
+        let tmp = TempDir::new().unwrap();
+        let paths = paths_under(&tmp);
+        let at_max_pool = "a".repeat(crate::config::IDENTIFIER_MAX_LEN);
+        let dir = paths
+            .unit_dir
+            .join(format!("ghars-cache@{at_max_pool}.service.d"));
+        fs::create_dir_all(dir.as_std_path()).unwrap();
+        fs::write(
+            dir.join("00-ghars.conf").as_std_path(),
+            b"[Unit]\nX-Ghars-Spec-Hash=sha256:ok\n",
+        )
+        .unwrap();
+        let mock = MockSystemd::default();
+        let _actual = discover(&mock, &paths).unwrap();
+        // The static warning message at state.rs::discover MUST NOT
+        // appear when the pool name length is exactly at the cap. A
+        // present log would prove the gate is `>=` rather than `>`.
+        assert!(
+            !logs_contain("exceeds name length limit"),
+            "expected discover() to NOT warn on at-max-len pool name \
+             ({}-char), but the warning fired",
+            crate::config::IDENTIFIER_MAX_LEN,
+        );
+    }
+
     // ---- SEC: symlink rejection in state listing ---------------------
 
     #[test]
