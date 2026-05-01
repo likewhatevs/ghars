@@ -666,16 +666,16 @@ fn plan_mixed_create_remove_noop_resolves_correctly() {
 }
 
 /// End-to-end: a cache pool drop-in directory with an
-/// instance name longer than `CACHE_POOL_NAME_MAX_LEN` exists on
+/// instance name longer than `IDENTIFIER_MAX_LEN` exists on
 /// disk (operator-installed, partial-apply crash, or downgrade
-/// from a future ghars). state::discover() now INCLUDES the
-/// oversize entry in `actual.cache_pools` rather than skipping it.
-/// Because `validate_cache_pool_name` rejects oversize keys at
-/// config load, `cfg.cache_pools` cannot contain a matching entry,
-/// so the planner's `actual ∧ ¬desired` branch must emit
-/// `RemoveCachePool` for the discovered name. This test pins that
-/// the discovered-state contract feeds into the planner contract
-/// without an intervening filter dropping the entry.
+/// from a future ghars). state::discover() INCLUDES the oversize
+/// entry in `actual.cache_pools` rather than skipping it. Because
+/// `validate_cache_pool_name` rejects oversize keys at config load,
+/// `cfg.cache_pools` cannot contain a matching entry, so the
+/// planner's `actual ∧ ¬desired` branch must emit `RemoveCachePool`
+/// for the discovered name. This test pins that the discovered-state
+/// contract feeds into the planner contract without an intervening
+/// filter dropping the entry.
 #[test]
 fn plan_emits_remove_cache_pool_for_oversize_discovered_name() {
     // Construct a config that DOES NOT reference the oversize name —
@@ -683,7 +683,7 @@ fn plan_emits_remove_cache_pool_for_oversize_discovered_name() {
     // would reject it at config load. Empty cache_pools is the
     // simplest desired state for this test.
     let cfg = make_config();
-    let oversize_name = "a".repeat(ghars::validators::CACHE_POOL_NAME_MAX_LEN + 1);
+    let oversize_name = "a".repeat(ghars::config::IDENTIFIER_MAX_LEN + 1);
 
     let mut actual = ActualState::default();
     actual.cache_pools.insert(

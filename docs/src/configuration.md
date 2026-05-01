@@ -33,18 +33,16 @@ All identifier keys (`auth.NAME`, `cache_pools.NAME`,
 = 64` characters. The constant `IDENTIFIER_REGEX` lives in
 `config.rs`.
 
-Tighter caps apply to keys whose value flows into a derived
-systemd-strict identifier. `validators.rs` defines:
+Netns-mode runners face an additional tighter cap so the rendered
+veth interface name fits the kernel's IFNAMSIZ limit:
 
 | key | hard cap | derived from |
 |---|---|---|
-| `[[runner]].name` (Open mode) | `RUNNER_NAME_MAX_LEN = 25` | `SYSTEMD_GROUP_NAME_MAX (31) - len("ghars-")` |
 | `[[runner]].name` (Netns mode) | `NETNS_RUNNER_NAME_MAX_LEN = 7` | `IFNAMSIZ (16) - 1 - len("ghars-") - len("-h")` (veth shape) |
-| `[cache_pools.NAME]` | `CACHE_POOL_NAME_MAX_LEN = 19` | `SYSTEMD_GROUP_NAME_MAX (31) - len("ghars-cache-")` |
 
 For runner names with `count > 1`, the suffix `-N` is appended
 during expansion, so the BASE name has to leave room for the
-largest suffix.
+largest suffix within `IDENTIFIER_MAX_LEN`.
 
 ## `[defaults]`
 
@@ -317,12 +315,11 @@ arch           = "x86_64"
 Selected fields:
 
 - `name` (`String`) — runner name (or prefix when `count > 1`).
-  Matches `IDENTIFIER_REGEX`. Effective cap is `RUNNER_NAME_MAX_LEN
-  = 25` for Open-mode runners (so the derived
-  `ghars-NAME` system identifier fits systemd's 31-char strict
-  cap) and `NETNS_RUNNER_NAME_MAX_LEN = 7` for Netns-mode runners
-  (so the derived veth `ghars-NAME-h` fits `IFNAMSIZ - 1 = 15`).
-  See [Identifiers](#identifiers).
+  Matches `IDENTIFIER_REGEX` (≤ `IDENTIFIER_MAX_LEN = 64` chars).
+  Netns-mode runners face an additional cap
+  `NETNS_RUNNER_NAME_MAX_LEN = 7` so the derived veth
+  `ghars-NAME-h` fits `IFNAMSIZ - 1 = 15`. See
+  [Identifiers](#identifiers).
 - `count` (`Option<u32>`) — default None ≡ 1 runner with `name`
   as-is. `Some(n)`: `name` is the prefix and ghars generates
   `name-1` through `name-n`. Range `1..=1024`. The count block
@@ -422,17 +419,12 @@ circuits:
    inside a single `[[runner]]`.
 5. `validate_single_sccache_pool_per_runner` — at most one sccache
    pool per runner.
-6. `validate_cache_pool_names` — length cap on pool keys + runner
-   `caches` refs.
-7. `validate_runner_names` — length cap retained as a holdover
-   from the pre-DynamicUser era (when `User=ghars-<name>` was
-   bounded by systemd's 31-char `valid_user_group_name` check).
-   Under DynamicUser the User= is `ghars-tz-<TRUST_ZONE>` and
-   does not bound the runner name; the synthesized
-   `LogNamespace=ghars-<name>` and path-segment uses face much
-   looser limits (LOG_NAMESPACE_MAX = 222, NAME_MAX = 255). The
-   31-char cap is kept for path-component conservation and
-   backward compatibility with pre-DynamicUser configs.
+6. `validate_cache_pool_names` — identifier-shape gate on pool keys
+   and runner `caches` refs.
+7. `validate_runner_names` — identifier-shape gate on every
+   `[[runner]] name`. Netns-mode runners face an additional
+   tighter cap enforced by `validate_netns_runner_name_lengths`
+   below.
 8. `validate_auth_keys` — every runner's `auth` resolves.
 9. `validate_pat_xor` — `AuthSpec::Pat` shape-only XOR check on
    `token_env` / `token_file`.

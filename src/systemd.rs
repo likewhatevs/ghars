@@ -4317,11 +4317,11 @@ mod tests {
         // while staying within `NETNS_RUNNER_NAME_MAX_LEN` (the
         // generator enforces the IFNAMSIZ-derived cap as
         // defense-in-depth, so this test feeds a name that fits the
-        // tighter netns cap rather than the looser
-        // `RUNNER_NAME_MAX_LEN`). 7 chars covers `[a-z]` + `[0-9]` +
-        // `-` and exercises all three character classes the regex
-        // permits. Mirrors SEC-35's "verify the full regex charset
-        // produces valid nft syntax".
+        // tighter netns cap rather than the looser identifier-shape
+        // cap). 7 chars covers `[a-z]` + `[0-9]` + `-` and exercises
+        // all three character classes the regex permits. Mirrors
+        // SEC-35's "verify the full regex charset produces valid nft
+        // syntax".
         let name = "a1-b2-c";
         let binding = netns_binding(
             "10.200.0.0/30",

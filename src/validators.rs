@@ -24,102 +24,11 @@ use regex::Regex;
 use crate::config::{IDENTIFIER_MAX_LEN, IDENTIFIER_REGEX};
 use crate::{GharsError, Result};
 
-/// systemd strict-mode `valid_user_group_name` caps user and group
-/// names at `sizeof_field(struct utmpx, ut_user) - 1 = 31` chars.
-/// Verified at systemd src/basic/user-util.c:824 and glibc
-/// bits/utmpx.h:36 (`__UT_NAMESIZE = 32`, includes NUL terminator).
-/// The cache-pool ([`CACHE_POOL_NAME_MAX_LEN`]) and runner-name
-/// ([`RUNNER_NAME_MAX_LEN`]) caps derive from this single source as
-/// historical-holdover ceilings; under the current DynamicUser model
-/// no User=/Group= name is bounded by the operator-supplied identifier
-/// (see those constants' doc comments for the full rationale).
-pub(crate) const SYSTEMD_GROUP_NAME_MAX: usize = 31;
-
-/// Length-budget anchor for [`CACHE_POOL_NAME_MAX_LEN`]'s
-/// pre-DynamicUser-era cap derivation. No system identifier with this
-/// prefix is materialized at runtime: under the current DynamicUser
-/// model the cache server's `User=` is `ghars-tz-<TRUST_ZONE>` (sibling
-/// DynamicUser of the runners in the same trust_zone, see
-/// `apply.rs::execute_create_cache_pool` "No groupadd" comment), and
-/// the per-pool group machinery (`groupadd ghars-cache-<name>`) was
-/// removed wholesale by the DynamicUser pivot. The value is centralized
-/// so `CACHE_POOL_NAME_MAX_LEN` derives from `prefix.len()` instead of
-/// a hand-counted constant.
-pub(crate) const CACHE_GROUP_PREFIX: &str = "ghars-cache-";
-
-/// Length-budget anchor for [`RUNNER_NAME_MAX_LEN`]'s
-/// pre-DynamicUser-era cap derivation. No system user with this
-/// prefix is materialized at runtime: under the current DynamicUser
-/// model the per-runner User= is `ghars-tz-<TRUST_ZONE>` (bounded by
-/// trust_zone length, not runner name; see [`RUNNER_NAME_MAX_LEN`]
-/// for the full rationale). The prefix surfaces today only as a
-/// path-component anchor: `<state_dir>/<trust_zone>/ghars-<name>/`,
-/// `LogNamespace=ghars-<name>`, and (in netns mode) the host-side
-/// veth name `ghars-<name>-h`. The value is centralized so
-/// `RUNNER_NAME_MAX_LEN` derives from `prefix.len()` instead of a
-/// hand-counted constant.
+/// Path-component prefix used in `<state_dir>/<trust_zone>/ghars-<name>/`,
+/// `LogNamespace=ghars-<name>`, and (in netns mode) the host-side veth
+/// name `ghars-<name>-h`. Centralized so [`VETH_NAME_OVERHEAD`] derives
+/// from `prefix.len()` rather than a hand-counted constant.
 pub(crate) const RUNNER_USER_PREFIX: &str = "ghars-";
-
-/// Maximum length of a `[cache_pools.NAME]` key.
-///
-/// Historical-holdover cap retained from the pre-DynamicUser era,
-/// when each pool produced a per-pool group `ghars-cache-<name>`
-/// passed through systemd's strict `valid_user_group_name` check
-/// (capped at `SYSTEMD_GROUP_NAME_MAX = 31` chars). Under the
-/// current DynamicUser model the cache server's `User=` is
-/// `ghars-tz-<TRUST_ZONE>` (sibling DynamicUser of the runners in
-/// the same trust_zone, bounded by trust_zone length not pool
-/// name), no `groupadd ghars-cache-<name>` runs (see
-/// `apply.rs::execute_create_cache_pool` "No groupadd" comment),
-/// and the pool name surfaces only in:
-///   - the systemd unit instance `ghars-cache@<pool>.service`,
-///   - the UDS path `/run/ghars/cache-<pool>.sock`,
-///   - the drop-in directory `ghars-cache@<pool>.service.d/`.
-/// None of those force the 31-char cap. The historical limit is
-/// kept for path-component conservation and backward compatibility —
-/// operator-authored configs from the pre-DynamicUser era continue
-/// to validate at the same shape, and shorter names keep the
-/// synthesized paths well clear of `NAME_MAX` (255).
-pub const CACHE_POOL_NAME_MAX_LEN: usize = SYSTEMD_GROUP_NAME_MAX - CACHE_GROUP_PREFIX.len();
-
-/// Maximum length of a `[[runner]] name`.
-///
-/// Historical-holdover cap retained from the pre-DynamicUser era,
-/// when `User=ghars-<name>` was passed through systemd's strict
-/// `valid_user_group_name` check (capped at
-/// `SYSTEMD_GROUP_NAME_MAX = 31` chars). Under the current
-/// DynamicUser model the per-runner User= is
-/// `ghars-tz-<TRUST_ZONE>` (bounded by trust_zone length, not
-/// runner name), and the synthesized identifiers that DO embed
-/// `<name>` are bounded by much looser limits:
-///   - `LogNamespace=ghars-<name>` (emitted by
-///     `systemd.rs::render_lognamespace`) is checked by systemd's
-///     `log_namespace_name_valid` at LOG_NAMESPACE_MAX = 222 chars.
-///   - `StateDirectory=ghars/<trust_zone>/ghars-<name>` and
-///     `WorkingDirectory=/var/lib/ghars/<trust_zone>/ghars-<name>`
-///     are filesystem path segments capped at `NAME_MAX` (255).
-/// So no current systemd directive forces the 31-char cap. The
-/// historical limit is kept for path-component conservation and
-/// backward compatibility — operator-authored configs from the
-/// pre-DynamicUser era continue to validate at the same shape, and
-/// shorter names keep the synthesized paths well clear of `NAME_MAX`
-/// even when combined with future suffixes (e.g. `bin.X.Y.Z/`,
-/// timestamped staging directories). Netns-mode runners face a
-/// tighter cap [`NETNS_RUNNER_NAME_MAX_LEN`] enforced by
-/// `cli::validate_netns_runner_name_lengths`.
-pub const RUNNER_NAME_MAX_LEN: usize = SYSTEMD_GROUP_NAME_MAX - RUNNER_USER_PREFIX.len();
-
-// Compile-time underflow guard: if a future edit ever made
-// `CACHE_GROUP_PREFIX.len() >= SYSTEMD_GROUP_NAME_MAX`, the const
-// subtraction above would panic at compile time on usize underflow,
-// but the panic message would be opaque ("attempt to subtract with
-// overflow"). This explicit `assert!` surfaces the invariant by name so
-// the compile error names the offending invariant directly.
-const _: () = assert!(SYSTEMD_GROUP_NAME_MAX > CACHE_GROUP_PREFIX.len());
-
-// Compile-time underflow guard for the runner-user derivation,
-// symmetric to the cache-pool guard above.
-const _: () = assert!(SYSTEMD_GROUP_NAME_MAX > RUNNER_USER_PREFIX.len());
 
 /// Linux interface-name buffer size from `<linux/if.h>`. The kernel
 /// stores network device names in a fixed-width array of this size,
@@ -152,17 +61,15 @@ pub const VETH_NAME_OVERHEAD: usize = RUNNER_USER_PREFIX.len() + VETH_SIDE_SUFFI
 /// Concretely: `15 - 8 = 7` chars. ghars only enforces this cap on
 /// runners whose effective network mode resolves to `Netns` —
 /// see `cli::validate_netns_runner_name_lengths`. Open-mode runners
-/// inherit only the global `RUNNER_NAME_MAX_LEN` cap (see
-/// [`RUNNER_NAME_MAX_LEN`] for rationale).
+/// inherit only the identifier-shape cap [`IDENTIFIER_MAX_LEN`].
 pub const NETNS_RUNNER_NAME_MAX_LEN: usize = IFNAMSIZ - 1 - VETH_NAME_OVERHEAD;
 
-// Compile-time underflow guard for the netns runner-name derivation,
-// symmetric to the cache-pool / runner-user guards above. If a future
-// edit ever made `VETH_NAME_OVERHEAD + 1 >= IFNAMSIZ`, the const
-// subtraction above would underflow at compile time; the explicit
-// assert names the invariant ("the rendered veth name shape requires
-// at least one operator-controlled char to remain after the prefix +
-// suffix").
+// Compile-time underflow guard for the netns runner-name derivation.
+// If a future edit ever made `VETH_NAME_OVERHEAD + 1 >= IFNAMSIZ`,
+// the const subtraction above would underflow at compile time; the
+// explicit assert names the invariant ("the rendered veth name shape
+// requires at least one operator-controlled char to remain after the
+// prefix + suffix").
 const _: () = assert!(IFNAMSIZ > VETH_NAME_OVERHEAD + 1);
 
 /// Reserved top-level filesystem paths that `--prefix` MUST NOT equal.
@@ -236,7 +143,10 @@ pub fn validate_identifier(s: &str) -> Result<()> {
     }
     if s.len() > IDENTIFIER_MAX_LEN {
         return Err(validation(
-            format!("identifier too long: {} > {IDENTIFIER_MAX_LEN}", s.len()),
+            format!(
+                "identifier {s:?} too long: {} > {IDENTIFIER_MAX_LEN}",
+                s.len()
+            ),
             format!("shorten the identifier to ≤{IDENTIFIER_MAX_LEN} characters"),
         ));
     }
@@ -249,67 +159,41 @@ pub fn validate_identifier(s: &str) -> Result<()> {
     Ok(())
 }
 
-/// Validate a runner name.
+/// Validate a runner name (`[[runner]] name`).
 ///
-/// Runs `validate_identifier` first (charset + identifier-shape +
-/// `IDENTIFIER_MAX_LEN` cap), then enforces the tighter
-/// `RUNNER_NAME_MAX_LEN` cap. See [`RUNNER_NAME_MAX_LEN`] for the
-/// rationale (historical holdover from the pre-DynamicUser era;
-/// retained for path-component conservation + config-shape
-/// backward compatibility).
+/// Wrapper over [`validate_identifier`]. The pre-DynamicUser-era
+/// tighter cap that used to layer on top of the identifier check has
+/// been retired: under the current DynamicUser model the per-runner
+/// User= is `ghars-tz-<TRUST_ZONE>` (bounded by trust_zone length, not
+/// runner name) and the synthesized identifiers that DO embed the
+/// runner name (LogNamespace, StateDirectory, WorkingDirectory) are
+/// each bounded well above `IDENTIFIER_MAX_LEN`. Netns-mode runners
+/// face a tighter cap [`NETNS_RUNNER_NAME_MAX_LEN`] enforced separately
+/// by `cli::validate_netns_runner_name_lengths`.
 ///
 /// # Errors
 ///
-/// `GharsError::Validation` for any identifier-shape failure, or when
-/// `name.len() > RUNNER_NAME_MAX_LEN`.
+/// `GharsError::Validation` for any identifier-shape failure.
 pub fn validate_runner_name(name: &str) -> Result<()> {
-    validate_identifier(name)?;
-    if name.len() > RUNNER_NAME_MAX_LEN {
-        return Err(validation(
-            format!(
-                "runner name '{}' too long: {} > {RUNNER_NAME_MAX_LEN} \
-                 (project-wide cap on the [[runner]] name component, \
-                 retained from the pre-DynamicUser era for \
-                 path-component conservation)",
-                name,
-                name.len(),
-            ),
-            format!("shorten the [[runner]] name to ≤{RUNNER_NAME_MAX_LEN} characters"),
-        ));
-    }
-    Ok(())
+    validate_identifier(name)
 }
 
 /// Validate a `[cache_pools.NAME]` key.
 ///
-/// Runs `validate_identifier` first (charset + identifier-shape +
-/// `IDENTIFIER_MAX_LEN` cap), then enforces the tighter
-/// `CACHE_POOL_NAME_MAX_LEN` historical-holdover cap (see
-/// [`CACHE_POOL_NAME_MAX_LEN`] for rationale).
+/// Wrapper over [`validate_identifier`]. The pre-DynamicUser-era
+/// tighter cap that used to layer on top of the identifier check has
+/// been retired: no per-pool group is created under DynamicUser (see
+/// `apply.rs::execute_create_cache_pool` "No groupadd" comment), and
+/// the surfaces where the pool name appears (the systemd unit instance
+/// `ghars-cache@<pool>.service`, the UDS path
+/// `/run/ghars/cache-<pool>.sock`, and the drop-in directory) are each
+/// bounded well above `IDENTIFIER_MAX_LEN`.
 ///
 /// # Errors
 ///
-/// `GharsError::Validation` for any identifier-shape failure, or when
-/// `name.len() > CACHE_POOL_NAME_MAX_LEN`.
+/// `GharsError::Validation` for any identifier-shape failure.
 pub fn validate_cache_pool_name(name: &str) -> Result<()> {
-    validate_identifier(name)?;
-    if name.len() > CACHE_POOL_NAME_MAX_LEN {
-        return Err(validation(
-            format!(
-                "cache pool name '{}' too long: {} > {CACHE_POOL_NAME_MAX_LEN} \
-                 (project-wide cap on the cache pool name component, \
-                 retained from the pre-DynamicUser era for \
-                 path-component conservation)",
-                name,
-                name.len(),
-            ),
-            format!(
-                "shorten the cache pool name to ≤{CACHE_POOL_NAME_MAX_LEN} characters \
-                 (applies to both [cache_pools.NAME] keys and [[runner]].caches references)"
-            ),
-        ));
-    }
-    Ok(())
+    validate_identifier(name)
 }
 
 /// Validate a GitHub repo or org URL.
@@ -1272,152 +1156,85 @@ mod tests {
         assert!(validate_runner_name(name).is_err(), "must reject {name:?}");
     }
 
+    /// Past `IDENTIFIER_MAX_LEN` always rejects (the identifier layer
+    /// is the binding cap for runner names — no separate runner-name
+    /// cap layers on top). Pinned here so a future loosening of the
+    /// identifier layer doesn't silently re-introduce 65+ char names.
     #[test]
-    fn runner_name_rejects_too_long() {
-        // Past `IDENTIFIER_MAX_LEN` always rejects (was the only cap
-        // before the runner-cap was introduced); pinned here so a future
-        // loosening of the identifier layer doesn't silently re-introduce
-        // 65+ char names.
+    fn runner_name_rejects_one_past_identifier_max_len() {
         let s = "a".repeat(IDENTIFIER_MAX_LEN + 1);
-        assert!(validate_runner_name(&s).is_err());
-    }
-
-    /// `validate_runner_name` must accept a runner name at the cap.
-    /// `RUNNER_NAME_MAX_LEN` chars + "ghars-" 6-char prefix =
-    /// `SYSTEMD_GROUP_NAME_MAX` (31). The 31-char value is a
-    /// pre-DynamicUser holdover (see [`RUNNER_NAME_MAX_LEN`]). This
-    /// pin catches off-by-one shrinks of `RUNNER_NAME_MAX_LEN`.
-    #[test]
-    fn runner_name_accepts_max_len() {
-        let s = "a".repeat(RUNNER_NAME_MAX_LEN);
-        validate_runner_name(&s).expect("must accept exactly max len");
-    }
-
-    /// `validate_runner_name` must reject one char past the cap. The
-    /// error message must name the cap, echo the offending runner
-    /// name (so the operator can correlate the error to the offending
-    /// `[[runner]] name` key without guessing), and identify the
-    /// rejected length.
-    #[test]
-    fn runner_name_rejects_one_past_max_len() {
-        let s = "a".repeat(RUNNER_NAME_MAX_LEN + 1);
-        let err = validate_runner_name(&s).expect_err("must reject one past max");
+        let err = validate_runner_name(&s).expect_err("must reject one past IDENTIFIER_MAX_LEN");
         match err {
-            GharsError::Validation(msg, hint) => {
+            GharsError::Validation(msg, _) => {
                 assert!(
-                    msg.contains("too long") && msg.contains(&RUNNER_NAME_MAX_LEN.to_string()),
-                    "msg must name the cap; got: {msg}"
+                    msg.contains("identifier")
+                        && msg.contains("too long")
+                        && msg.contains(&IDENTIFIER_MAX_LEN.to_string()),
+                    "msg must come from validate_identifier; got: {msg}"
                 );
                 assert!(
                     msg.contains(&s),
-                    "msg must echo the offending runner name; got: {msg}"
-                );
-                assert!(
-                    msg.contains(&(RUNNER_NAME_MAX_LEN + 1).to_string()),
-                    "msg must include the rejected length; got: {msg}"
-                );
-                assert!(
-                    hint.contains(&RUNNER_NAME_MAX_LEN.to_string()),
-                    "hint must restate the cap; got: {hint}"
+                    "msg must echo the offending name; got: {msg}"
                 );
             }
             other => panic!("expected Validation, got {other:?}"),
         }
     }
 
-    /// For every length from `RUNNER_NAME_MAX_LEN + 1` through
-    /// `IDENTIFIER_MAX_LEN`, rejection must come from the runner-name
-    /// length layer (msg names `"project-wide cap"` from the
-    /// holdover-rationale phrasing), NOT the identifier length layer.
-    /// Symmetric to
-    /// `cache_pool_name_rejects_via_pool_cap_not_identifier_cap_above_max_len`.
+    /// `validate_runner_name` accepts a name at exactly
+    /// `IDENTIFIER_MAX_LEN`. Pins that the validator inherits the
+    /// identifier cap and does not layer a tighter one on top.
     #[test]
-    fn runner_name_rejects_via_runner_cap_not_identifier_cap_above_max_len() {
-        for len in (RUNNER_NAME_MAX_LEN + 1)..=IDENTIFIER_MAX_LEN {
-            let s = "a".repeat(len);
-            let err = validate_runner_name(&s).expect_err("must reject");
-            match &err {
-                GharsError::Validation(msg, _) => {
-                    assert!(
-                        msg.contains("project-wide cap"),
-                        "len={len}: rejection must come from runner-name layer, got: {msg}"
-                    );
-                }
-                other => panic!("len={len}: expected Validation, got {other:?}"),
-            }
-        }
+    fn runner_name_accepts_identifier_max_len() {
+        let s = "a".repeat(IDENTIFIER_MAX_LEN);
+        validate_runner_name(&s).expect("must accept exactly IDENTIFIER_MAX_LEN");
     }
 
-    /// Boundary above `IDENTIFIER_MAX_LEN`: at `IDENTIFIER_MAX_LEN + 1`,
-    /// rejection MUST come from `validate_identifier` (the outer-and-
-    /// first layer), not from the runner-name cap. Symmetric counterpart
-    /// to `runner_name_rejects_via_runner_cap_not_identifier_cap_above_max_len`
-    /// — together they pin the layered-validator contract:
-    /// ≤`RUNNER_NAME_MAX_LEN` accept,
-    /// `(RUNNER_NAME_MAX_LEN+1)..=IDENTIFIER_MAX_LEN` fail at runner-name
-    /// layer (msg contains `"project-wide cap"` from the holdover
-    /// rationale phrasing), `>IDENTIFIER_MAX_LEN` fail at identifier
-    /// layer (msg does NOT contain that phrasing). Mirrors
-    /// `cache_pool_name_above_identifier_cap_rejects_via_identifier_cap_not_pool_cap`.
+    /// Pre-WO-S25N, `validate_runner_name` rejected names longer than
+    /// the legacy 25-char `RUNNER_NAME_MAX_LEN` holdover cap. The cap
+    /// was retired because no synthesized identifier embedding the
+    /// runner name is bounded by it under the current DynamicUser
+    /// model. This test pins that names in the newly-accepted range
+    /// (26..=63 chars) PASS — a regression that re-introduced the
+    /// 25-char cap (or any sub-IDENTIFIER_MAX_LEN cap) would surface
+    /// here. 30 chars is comfortably above the legacy cap and
+    /// comfortably below IDENTIFIER_MAX_LEN.
     #[test]
-    fn runner_name_above_identifier_cap_rejects_via_identifier_cap_not_runner_cap() {
-        let s = "a".repeat(IDENTIFIER_MAX_LEN + 1);
-        let err = validate_runner_name(&s).expect_err("must reject");
-        match &err {
-            GharsError::Validation(msg, _) => {
-                assert!(
-                    !msg.contains("project-wide cap"),
-                    "len=IDENTIFIER_MAX_LEN+1: rejection must come from identifier layer, got: {msg}"
-                );
-            }
-            other => panic!("expected Validation, got {other:?}"),
-        }
+    fn runner_name_accepts_above_legacy_cap() {
+        let s = "a".repeat(30);
+        validate_runner_name(&s)
+            .expect("30-char runner name must accept (above legacy 25-char cap)");
     }
 
     // ---- cache_pool_name ---------------------------------------------
 
-    /// `validate_cache_pool_name` must accept a pool name at the cap.
-    /// `CACHE_POOL_NAME_MAX_LEN` chars + "ghars-cache-" 12-char prefix =
-    /// `SYSTEMD_GROUP_NAME_MAX` (31). The 31-char arithmetic is a
-    /// pre-DynamicUser holdover (see [`CACHE_POOL_NAME_MAX_LEN`]). This
-    /// pin catches off-by-one shrinks of `CACHE_POOL_NAME_MAX_LEN`.
+    /// `validate_cache_pool_name` accepts a pool name at exactly
+    /// `IDENTIFIER_MAX_LEN`. Pins that the validator inherits the
+    /// identifier cap and does not layer a tighter one on top.
     #[test]
-    fn cache_pool_name_accepts_max_len() {
-        let s = "a".repeat(CACHE_POOL_NAME_MAX_LEN);
-        validate_cache_pool_name(&s).expect("must accept exactly max len");
+    fn cache_pool_name_accepts_identifier_max_len() {
+        let s = "a".repeat(IDENTIFIER_MAX_LEN);
+        validate_cache_pool_name(&s).expect("must accept exactly IDENTIFIER_MAX_LEN");
     }
 
-    /// `validate_cache_pool_name` must reject one char past the cap.
-    /// The error message must name the cap, echo the offending pool
-    /// name (so the operator can correlate the error to the offending
-    /// `[cache_pools.NAME]` key without guessing), and surface the
-    /// holdover-rationale phrasing (`cache pool name component`,
-    /// `pre-DynamicUser era`) so the operator gets an actionable,
-    /// scope-tagged diagnostic.
+    /// `validate_cache_pool_name` rejects one char past
+    /// `IDENTIFIER_MAX_LEN`. Rejection comes from `validate_identifier`
+    /// since the cache-pool wrapper does not layer a tighter cap.
     #[test]
-    fn cache_pool_name_rejects_one_past_max_len() {
-        let s = "a".repeat(CACHE_POOL_NAME_MAX_LEN + 1);
-        let err = validate_cache_pool_name(&s).expect_err("must reject one past max");
+    fn cache_pool_name_rejects_one_past_identifier_max_len() {
+        let s = "a".repeat(IDENTIFIER_MAX_LEN + 1);
+        let err = validate_cache_pool_name(&s).expect_err("must reject one past IDENTIFIER_MAX_LEN");
         match err {
-            GharsError::Validation(msg, hint) => {
+            GharsError::Validation(msg, _) => {
                 assert!(
-                    msg.contains("too long") && msg.contains(&CACHE_POOL_NAME_MAX_LEN.to_string()),
-                    "msg must name the cap; got: {msg}"
+                    msg.contains("identifier")
+                        && msg.contains("too long")
+                        && msg.contains(&IDENTIFIER_MAX_LEN.to_string()),
+                    "msg must come from validate_identifier; got: {msg}"
                 );
                 assert!(
                     msg.contains(&s),
-                    "msg must echo the offending pool name; got: {msg}"
-                );
-                assert!(
-                    msg.contains("cache pool name component")
-                        && msg.contains("pre-DynamicUser era"),
-                    "msg must surface the cache-pool-cap holdover rationale \
-                     (`cache pool name component` policy phrasing + \
-                     `pre-DynamicUser era` rationale); got: {msg}"
-                );
-                assert!(
-                    hint.contains(&CACHE_POOL_NAME_MAX_LEN.to_string()),
-                    "hint must restate the cap; got: {hint}"
+                    "msg must echo the offending name; got: {msg}"
                 );
             }
             other => panic!("expected Validation, got {other:?}"),
@@ -1434,55 +1251,22 @@ mod tests {
         validate_cache_pool_name("a").expect("single-char pool must pass");
     }
 
-    /// For every length from `CACHE_POOL_NAME_MAX_LEN + 1` through
-    /// `IDENTIFIER_MAX_LEN`, rejection must come from the cache-pool
-    /// length layer (msg names `"cache pool name component"` from the
-    /// holdover-rationale phrasing), NOT the identifier length layer.
-    /// Without this pin, a future refactor that flipped the order —
-    /// `validate_identifier` first with a tighter cap, or
-    /// `validate_cache_pool_name` shrinking below the identifier cap —
-    /// would silently regress the operator-facing diagnostic so the
-    /// `≤{CACHE_POOL_NAME_MAX_LEN}` hint never lands.
+    /// Pre-WO-S25N, `validate_cache_pool_name` rejected pool names
+    /// longer than the legacy 19-char `CACHE_POOL_NAME_MAX_LEN`
+    /// holdover cap. The cap was retired because no per-pool group is
+    /// created under DynamicUser and the surfaces where the pool name
+    /// appears (systemd unit instance, UDS path, drop-in dir) are each
+    /// bounded well above `IDENTIFIER_MAX_LEN`. This test pins that
+    /// pool names in the newly-accepted range (20..=63 chars) PASS — a
+    /// regression that re-introduced the 19-char cap (or any
+    /// sub-IDENTIFIER_MAX_LEN cap) would surface here. 30 chars is
+    /// comfortably above the legacy cap and comfortably below
+    /// IDENTIFIER_MAX_LEN.
     #[test]
-    fn cache_pool_name_rejects_via_pool_cap_not_identifier_cap_above_max_len() {
-        for len in (CACHE_POOL_NAME_MAX_LEN + 1)..=IDENTIFIER_MAX_LEN {
-            let s = "a".repeat(len);
-            let err = validate_cache_pool_name(&s).expect_err("must reject");
-            match &err {
-                GharsError::Validation(msg, _) => {
-                    assert!(
-                        msg.contains("cache pool name component"),
-                        "len={len}: rejection must come from cache-pool layer, got: {msg}"
-                    );
-                }
-                other => panic!("len={len}: expected Validation, got {other:?}"),
-            }
-        }
-    }
-
-    /// Boundary above `IDENTIFIER_MAX_LEN`: at `IDENTIFIER_MAX_LEN + 1`,
-    /// rejection MUST come from `validate_identifier` (the outer-and-first
-    /// layer), not from the cache-pool cap. Symmetric counterpart to the
-    /// `above_max_len` test — together they pin the layered-validator
-    /// contract: ≤`CACHE_POOL_NAME_MAX_LEN` accept,
-    /// `(CACHE_POOL_NAME_MAX_LEN+1)..=IDENTIFIER_MAX_LEN` fail at
-    /// cache-pool layer (msg contains `"cache pool name component"`
-    /// from the holdover-rationale phrasing), `>IDENTIFIER_MAX_LEN`
-    /// fail at identifier layer (msg does NOT contain that phrasing).
-    /// A regression that re-ordered the validators would surface here.
-    #[test]
-    fn cache_pool_name_above_identifier_cap_rejects_via_identifier_cap_not_pool_cap() {
-        let s = "a".repeat(IDENTIFIER_MAX_LEN + 1);
-        let err = validate_cache_pool_name(&s).expect_err("must reject");
-        match &err {
-            GharsError::Validation(msg, _) => {
-                assert!(
-                    !msg.contains("cache pool name component"),
-                    "len=IDENTIFIER_MAX_LEN+1: rejection must come from identifier layer, got: {msg}"
-                );
-            }
-            other => panic!("expected Validation, got {other:?}"),
-        }
+    fn cache_pool_name_accepts_above_legacy_cap() {
+        let s = "a".repeat(30);
+        validate_cache_pool_name(&s)
+            .expect("30-char pool name must accept (above legacy 19-char cap)");
     }
 
     // ---- url ----------------------------------------------------------

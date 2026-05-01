@@ -273,26 +273,22 @@ pub fn discover(systemd: &dyn Systemd, paths: &Paths) -> Result<ActualState> {
     let pool_entries = list_cache_pool_drop_in_dirs(unit_dir).map_err(GharsError::Io)?;
     for (pool_name, drop_in_dir_path) in pool_entries {
         // Defense-in-depth length cap. Config-load already rejects
-        // oversize pool names via `validators::validate_cache_pool_name`,
-        // but a manually-created `ghars-cache@LONG.service.d/` directory
-        // (operator-installed, partial-apply crash, or a downgrade from
-        // a future ghars where the cap was relaxed) carries a name
-        // longer than `CACHE_POOL_NAME_MAX_LEN` — the historical-holdover
-        // cap retained from the pre-DynamicUser era for path-component
-        // conservation (see `validators::CACHE_POOL_NAME_MAX_LEN` for
-        // the full rationale; no per-pool group is created under the
-        // current DynamicUser model). We INCLUDE the pool in
-        // `actual.cache_pools` rather than skipping it — the planner
-        // diff against `cfg.cache_pools` (which CANNOT contain the
-        // oversize key thanks to `validate_cache_pool_name`) will
-        // surface the discovered-but-not-desired pool as a
-        // RemoveCachePool action. The warning here surfaces the
-        // offender to operator output before the next plan/apply
-        // cycle reconciles state.
-        if pool_name.len() > crate::validators::CACHE_POOL_NAME_MAX_LEN {
+        // oversize pool names via `validators::validate_cache_pool_name`
+        // (which enforces `IDENTIFIER_MAX_LEN`), but a manually-created
+        // `ghars-cache@LONG.service.d/` directory (operator-installed,
+        // partial-apply crash, or a downgrade from a future ghars where
+        // the cap was relaxed) might carry a name longer than the
+        // identifier cap. We INCLUDE the pool in `actual.cache_pools`
+        // rather than skipping it — the planner diff against
+        // `cfg.cache_pools` (which CANNOT contain the oversize key
+        // thanks to `validate_cache_pool_name`) will surface the
+        // discovered-but-not-desired pool as a RemoveCachePool action.
+        // The warning here surfaces the offender to operator output
+        // before the next plan/apply cycle reconciles state.
+        if pool_name.len() > crate::config::IDENTIFIER_MAX_LEN {
             tracing::warn!(
                 pool = %pool_name,
-                limit = crate::validators::CACHE_POOL_NAME_MAX_LEN,
+                limit = crate::config::IDENTIFIER_MAX_LEN,
                 "discovered cache pool exceeds name length limit; will be removed at next apply"
             );
         }
@@ -2331,7 +2327,7 @@ mod tests {
     }
 
     /// Discovery must INCLUDE pool drop-in directories whose `%i`
-    /// instance name exceeds `CACHE_POOL_NAME_MAX_LEN` so the planner
+    /// instance name exceeds `IDENTIFIER_MAX_LEN` so the planner
     /// can emit RemoveCachePool against the discovered-but-undesired
     /// pool. (The desired-side `cfg.cache_pools` cannot contain an
     /// oversize key — `validate_cache_pool_name` rejects it at config
@@ -2346,9 +2342,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let paths = paths_under(&tmp);
         // Plant an oversize-instance drop-in dir. Pool name length =
-        // CACHE_POOL_NAME_MAX_LEN + 1 chars. The shape passes
+        // IDENTIFIER_MAX_LEN + 1 chars. The shape passes
         // parse_cache_pool_drop_in_dir_name but exceeds the cap.
-        let oversize_pool = "a".repeat(crate::validators::CACHE_POOL_NAME_MAX_LEN + 1);
+        let oversize_pool = "a".repeat(crate::config::IDENTIFIER_MAX_LEN + 1);
         let bad_dir = paths
             .unit_dir
             .join(format!("ghars-cache@{oversize_pool}.service.d"));
@@ -2397,7 +2393,7 @@ mod tests {
     /// Uses `tracing-test` to capture per-test events and assert against
     /// the rendered log output. The warning includes both a static
     /// message (`"exceeds name length limit"`) and structured fields
-    /// (`pool = <name>`, `limit = CACHE_POOL_NAME_MAX_LEN`); both are
+    /// (`pool = <name>`, `limit = IDENTIFIER_MAX_LEN`); both are
     /// asserted to keep the contract pinned even if the message text or
     /// field names later evolve.
     #[test]
@@ -2405,7 +2401,7 @@ mod tests {
     fn discover_warns_on_oversize_cache_pool_name() {
         let tmp = TempDir::new().unwrap();
         let paths = paths_under(&tmp);
-        let oversize_pool = "a".repeat(crate::validators::CACHE_POOL_NAME_MAX_LEN + 1);
+        let oversize_pool = "a".repeat(crate::config::IDENTIFIER_MAX_LEN + 1);
         let bad_dir = paths
             .unit_dir
             .join(format!("ghars-cache@{oversize_pool}.service.d"));

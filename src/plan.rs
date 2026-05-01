@@ -860,26 +860,6 @@ fn validate_generated_identifier(name: &str, parent_prefix: &str) -> Result<()> 
             ),
         ),
         other => other,
-    })?;
-    // Layer the runner-name length cap on top. Catches the case
-    // where the prefix passes validate_identifier on its own but the
-    // generated `prefix-COUNT` overflows RUNNER_NAME_MAX_LEN. The
-    // cap is unconditional on runner.name — symmetric to
-    // validate_cache_pool_name's unconditional layering. The cap
-    // protects downstream consumers that interpolate the runner
-    // name into bounded surfaces (systemd unit filenames, the
-    // `ghars-runner@<NAME>.service.d` drop-in path, the
-    // `ghars-tz-<TRUST_ZONE>` DynamicUser identity, the
-    // `ghars-<NAME>-h` netns veth name with its IFNAMSIZ-1 ceiling).
-    crate::validators::validate_runner_name(name).map_err(|e| match e {
-        GharsError::Validation(msg, hint) => GharsError::Validation(
-            format!(
-                "count expansion: generated name '{name}' from prefix \
-                 '{parent_prefix}' fails runner-name validation: {msg}"
-            ),
-            hint,
-        ),
-        other => other,
     })
 }
 
@@ -2936,27 +2916,22 @@ mod tests {
         assert!(msg.contains("identifier"), "got: {msg}");
     }
 
-    /// Generated names that pass `validate_identifier` (length
-    /// ≤ IDENTIFIER_MAX_LEN) but exceed `RUNNER_NAME_MAX_LEN` after
-    /// the `-COUNT` suffix is appended must reject at expand_counts
+    /// Generated names that exceed `IDENTIFIER_MAX_LEN` after the
+    /// `-COUNT` suffix is appended must reject at expand_counts
     /// time. Catches the gap where validate_runner_names at
-    /// load_config saw only the prefix (≤ 25) but expansion produced
-    /// an over-cap name (e.g. 24-char prefix + "-12" = 27 chars).
+    /// load_config saw only the prefix (≤ 64) but expansion produced
+    /// an over-cap name (e.g. 63-char prefix + "-10" = 66 chars).
     /// Pinned at plan-time because config-load can't catch this
     /// without computing max-suffix from `count`.
     #[test]
-    fn expand_counts_rejects_generated_name_exceeding_runner_name_cap() {
-        // 24-char prefix + "-10" (suffix length 3 since count >= 10)
-        // = 27 chars > RUNNER_NAME_MAX_LEN (25). validate_identifier
-        // accepts (27 ≤ 64); validate_runner_name rejects.
-        let prefix = "x".repeat(24);
+    fn expand_counts_rejects_generated_name_exceeding_identifier_cap() {
+        // 63-char prefix + "-10" (suffix length 3 since count >= 10)
+        // = 66 chars > IDENTIFIER_MAX_LEN (64). validate_identifier
+        // rejects.
+        let prefix = "x".repeat(63);
         let cfg = config_with_runners(vec![count_runner(&prefix, 10)]);
         let err = expand_counts(&cfg).unwrap_err();
         let msg = format!("{err}");
-        assert!(
-            msg.contains("runner-name validation"),
-            "msg must come from runner-name layer (not identifier); got: {msg}"
-        );
         assert!(
             msg.contains("count expansion"),
             "msg must scope to count expansion; got: {msg}"

@@ -230,23 +230,22 @@ fn count_block_with_zero_count_skipped_alongside_others() {
 
 #[test]
 fn count_block_prefix_length_at_boundary_for_max_count_suffix() {
-    // RUNNER_NAME_MAX_LEN = 25 is the binding cap, tighter than
-    // IDENTIFIER_MAX_LEN = 64. Longest suffix from MAX_COUNT = 1024 is
-    // `-1024` (5 chars). Largest accepted prefix is 25 - 5 = 20 chars.
-    // 21-char prefix + `-1024` = 26 chars → rejects via the runner-name
-    // length cap which sits on top of validate_identifier in
-    // `validate_generated_identifier`.
-    let max_safe_prefix = "a".repeat(20);
+    // IDENTIFIER_MAX_LEN = 64 is the binding cap on generated names.
+    // Longest suffix from MAX_COUNT = 1024 is `-1024` (5 chars).
+    // Largest accepted prefix is 64 - 5 = 59 chars.
+    // 60-char prefix + `-1024` = 65 chars → rejects via
+    // validate_identifier inside `validate_generated_identifier`.
+    let max_safe_prefix = "a".repeat(59);
     expand_counts(&cfg(vec![count_runner(&max_safe_prefix, MAX_COUNT)]))
-        .expect("20-char prefix + -1024 fits within RUNNER_NAME_MAX_LEN");
+        .expect("59-char prefix + -1024 fits within IDENTIFIER_MAX_LEN");
 
-    let too_long_prefix = "a".repeat(21);
+    let too_long_prefix = "a".repeat(60);
     let err = expand_counts(&cfg(vec![count_runner(&too_long_prefix, MAX_COUNT)]))
-        .expect_err("21-char prefix + -1024 exceeds RUNNER_NAME_MAX_LEN");
+        .expect_err("60-char prefix + -1024 exceeds IDENTIFIER_MAX_LEN");
     let msg = format!("{err}");
     assert!(
-        msg.contains("runner-name validation"),
-        "msg must come from runner-name layer; got: {msg}"
+        msg.contains("count expansion"),
+        "msg must scope to count expansion; got: {msg}"
     );
 }
 

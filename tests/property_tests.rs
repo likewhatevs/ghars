@@ -25,8 +25,8 @@ use ghars::config::{
 use ghars::netns::{host_veth_name, runner_veth_name};
 use ghars::systemd::render_nft_rules;
 use ghars::validators::{
-    IFNAMSIZ, NETNS_RUNNER_NAME_MAX_LEN, RUNNER_NAME_MAX_LEN, validate_egress_comment,
-    validate_memory_max, validate_runner_name, validate_url,
+    IFNAMSIZ, NETNS_RUNNER_NAME_MAX_LEN, validate_egress_comment, validate_memory_max,
+    validate_runner_name, validate_url,
 };
 use ipnet::IpNet;
 use proptest::prelude::*;
@@ -34,14 +34,14 @@ use proptest::prelude::*;
 // --- validate_runner_name ---------------------------------------------
 
 /// Build strings that satisfy `IDENTIFIER_REGEX = ^[a-z]([a-z0-9-]*[a-z0-9])?$`
-/// AND `validate_runner_name`'s tighter `RUNNER_NAME_MAX_LEN` cap.
+/// AND the `IDENTIFIER_MAX_LEN` length cap.
 ///
 /// Construction:
 /// - First char ∈ `[a-z]`.
-/// - Optional middle: 0..=(RUNNER_NAME_MAX_LEN - 2) chars from `[a-z0-9-]`.
+/// - Optional middle: 0..=(IDENTIFIER_MAX_LEN - 2) chars from `[a-z0-9-]`.
 /// - Last char (when length ≥ 2) ∈ `[a-z0-9]`.
 ///
-/// Length cap = `RUNNER_NAME_MAX_LEN`. Max middle = `RUNNER_NAME_MAX_LEN - 2`.
+/// Length cap = `IDENTIFIER_MAX_LEN`. Max middle = `IDENTIFIER_MAX_LEN - 2`.
 fn valid_runner_name() -> impl Strategy<Value = String> {
     let middle_chars: Vec<char> = "abcdefghijklmnopqrstuvwxyz0123456789-".chars().collect();
     let first_chars: Vec<char> = "abcdefghijklmnopqrstuvwxyz".chars().collect();
@@ -52,8 +52,8 @@ fn valid_runner_name() -> impl Strategy<Value = String> {
     let first_for_single = first_chars.clone();
     let single = (0..first_chars.len()).prop_map(move |i| first_for_single[i].to_string());
 
-    // Multi-char branch: first + middle (0..=RUNNER_NAME_MAX_LEN-2) + last.
-    let max_middle = RUNNER_NAME_MAX_LEN - 2;
+    // Multi-char branch: first + middle (0..=IDENTIFIER_MAX_LEN-2) + last.
+    let max_middle = IDENTIFIER_MAX_LEN - 2;
     let multi = (
         proptest::sample::select(first_chars),
         proptest::collection::vec(proptest::sample::select(middle_chars), 0..=max_middle),
@@ -75,9 +75,9 @@ fn valid_runner_name() -> impl Strategy<Value = String> {
 proptest! {
     #[test]
     fn runner_name_accepts_arbitrary_valid_identifier(name in valid_runner_name()) {
-        // Length constraint: generator caps at 1 + (RUNNER_NAME_MAX_LEN-2) + 1
-        // = RUNNER_NAME_MAX_LEN per the runner-name cap.
-        prop_assert!(name.len() >= 1 && name.len() <= RUNNER_NAME_MAX_LEN);
+        // Length constraint: generator caps at 1 + (IDENTIFIER_MAX_LEN-2) + 1
+        // = IDENTIFIER_MAX_LEN per the identifier-shape cap.
+        prop_assert!(name.len() >= 1 && name.len() <= IDENTIFIER_MAX_LEN);
         validate_runner_name(&name).map_err(|e| {
             TestCaseError::fail(format!(
                 "valid identifier {name:?} rejected: {e}"

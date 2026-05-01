@@ -589,10 +589,12 @@ fn load_config(path: &Utf8Path) -> Result<Config> {
     // Dedup-loop trap.
     //
     // --- validate_cache_pool_names ---
-    // Length cap on pool keys + runner.caches refs.
+    // Identifier-shape gate on pool keys and runner.caches refs.
     //
     // --- validate_runner_names ---
-    // Length cap (derived ghars-{name} system user).
+    // Identifier-shape gate on every [[runner]] name. Netns-mode
+    // runners face an additional tighter cap enforced separately by
+    // validate_netns_runner_name_lengths below.
     //
     //
     // --- validate_pat_xor ---
@@ -804,43 +806,21 @@ fn validate_single_sccache_pool_per_runner(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-// ---------- cache-pool-name length cap ----------------------------------
+// ---------- cache-pool-name validation ----------------------------------
 
-/// Reject `[cache_pools.NAME]` keys and `[[runner]] caches = [...]`
-/// entries whose length exceeds [`validators::CACHE_POOL_NAME_MAX_LEN`].
+/// Apply identifier-shape validation to every `[cache_pools.NAME]`
+/// key and every `[[runner]] caches = [...]` reference. Validation
+/// runs through `validators::validate_cache_pool_name` (a wrapper
+/// over `validate_identifier`); the per-name surface bound is
+/// [`crate::config::IDENTIFIER_MAX_LEN`].
 ///
-/// Historical-holdover cap retained from the pre-DynamicUser era,
-/// when each pool produced a per-pool group `ghars-cache-<name>`
-/// passed through systemd's strict `valid_user_group_name` check
-/// (capped at `SYSTEMD_GROUP_NAME_MAX = 31` chars). Under the
-/// current DynamicUser model the cache server's `User=` is
-/// `ghars-tz-<TRUST_ZONE>` (sibling DynamicUser of the runners in
-/// the same trust_zone, bounded by trust_zone length not pool
-/// name), no `groupadd ghars-cache-<name>` runs (see
-/// `apply.rs::execute_create_cache_pool` "No groupadd" comment),
-/// and the pool name surfaces only in:
-///   - the systemd unit instance `ghars-cache@<pool>.service`,
-///   - the UDS path `/run/ghars/cache-<pool>.sock`,
-///   - the drop-in directory `ghars-cache@<pool>.service.d/`.
-/// None of those force the 31-char cap. The historical limit is
-/// kept for path-component conservation and backward compatibility —
-/// operator-authored configs from the pre-DynamicUser era continue
-/// to validate at the same shape, and shorter names keep the
-/// synthesized paths well clear of `NAME_MAX` (255). Catching at
-/// config load surfaces a scoped error (`cache_pool "NAME": ...` or
-/// `runner "NAME" caches[]: ...`) instead of letting an overlong
-/// pool name reach apply.
-///
-/// Defense-in-depth: runner.caches Vec entries are also validated
-/// here. The plan-time cross-reference in `plan::lower_to_effective`
-/// matches the entry against `cfg.cache_pools.keys()`, so an unknown
-/// `> CACHE_POOL_NAME_MAX_LEN`-char string normally fails at "unknown
-/// cache pool" before the length cap matters. But a future code path
-/// that synthesizes an EffectiveCacheBinding without round-tripping
-/// through that lookup would let an oversize string slip past — the
-/// historical-holdover cap would no longer be enforced uniformly
-/// across both config surfaces. Validating both surfaces here closes
-/// that gap pre-emptively.
+/// Defense-in-depth on runner.caches: the plan-time cross-reference
+/// in `plan::lower_to_effective` matches the entry against
+/// `cfg.cache_pools.keys()` and rejects unknown names ("unknown
+/// cache pool"). Validating each entry here closes the gap for any
+/// future code path that synthesizes an EffectiveCacheBinding
+/// without that lookup — every config-surface reference still passes
+/// through the identifier shape gate.
 ///
 /// # Errors
 ///
@@ -868,22 +848,15 @@ fn validate_cache_pool_names(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-// ---------- runner-name length cap --------------------------------------
+// ---------- runner-name validation --------------------------------------
 
-/// Reject `[[runner]] name = "..."` keys whose length exceeds
-/// [`validators::RUNNER_NAME_MAX_LEN`].
-///
-/// Historical-holdover cap retained from the pre-DynamicUser era;
-/// see [`validators::RUNNER_NAME_MAX_LEN`] for the full rationale.
-/// Under the current DynamicUser model, `User=ghars-tz-<TRUST_ZONE>`
-/// is bounded by trust_zone length, NOT runner name. The synthesized
-/// identifiers that DO embed the runner name (`LogNamespace=ghars-<name>`
-/// at LOG_NAMESPACE_MAX = 222 chars; `StateDirectory` /
-/// `WorkingDirectory` path segments at NAME_MAX = 255) all permit
-/// longer names than this 25-char cap. The cap is kept for
-/// path-component conservation and backward compatibility with
-/// operator-authored configs. Catching at config load surfaces a
-/// scoped error (`runner "NAME": ...`) before any side effects.
+/// Apply identifier-shape validation to every `[[runner]] name`.
+/// Validation runs through `validators::validate_runner_name` (a
+/// wrapper over `validate_identifier`); the per-name surface bound is
+/// [`crate::config::IDENTIFIER_MAX_LEN`]. Netns-mode runners face an
+/// additional tighter cap [`validators::NETNS_RUNNER_NAME_MAX_LEN`]
+/// enforced separately by [`validate_netns_runner_name_lengths`]
+/// (the rendered veth name `ghars-{name}-h` must fit `IFNAMSIZ - 1`).
 ///
 /// # Errors
 ///
@@ -1343,12 +1316,8 @@ fn validate_runner_tarballs(cfg: &Config) -> Result<()> {
 ///
 /// Only runners whose effective network mode resolves to `Netns`
 /// face this cap. Open-mode runners do not allocate a veth pair, so
-/// they inherit only the global `RUNNER_NAME_MAX_LEN` cap — a
-/// historical-holdover ceiling retained from the pre-DynamicUser era
-/// for path-component conservation and config-shape backward
-/// compatibility (see [`validators::RUNNER_NAME_MAX_LEN`] for the
-/// full rationale; under the current DynamicUser model no User= is
-/// bounded by the runner-name component). Effective network mode is
+/// they inherit only the identifier-shape cap
+/// [`crate::config::IDENTIFIER_MAX_LEN`]. Effective network mode is
 /// computed via the documented inheritance chain (Part 3 /
 /// `plan::merge_defaults`):
 ///   1. `runner.network` (Some) → use that network key.
@@ -3898,7 +3867,7 @@ fn cmd_logs(paths: &Paths, args: &LogsArgs) -> Result<i32> {
                         "names must match IDENTIFIER_REGEX (lowercase letters, digits, \
                          dashes; start with a letter, end with a letter or digit) and \
                          be ≤{} characters",
-                        validators::RUNNER_NAME_MAX_LEN,
+                        crate::config::IDENTIFIER_MAX_LEN,
                     ),
                 ),
                 other => other,
@@ -3975,7 +3944,7 @@ fn cmd_metrics(paths: &Paths, args: &MetricsArgs) -> Result<i32> {
                         "names must match IDENTIFIER_REGEX (lowercase letters, digits, \
                          dashes; start with a letter, end with a letter or digit) and \
                          be ≤{} characters",
-                        validators::RUNNER_NAME_MAX_LEN,
+                        crate::config::IDENTIFIER_MAX_LEN,
                     ),
                 ),
                 other => other,
@@ -5848,11 +5817,11 @@ token_env = \"GHARS_PAT\"
         let config_path = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
             .unwrap()
             .join("ghars.toml");
-        // CACHE_POOL_NAME_MAX_LEN + 1-char pool key. Body builds a
+        // IDENTIFIER_MAX_LEN + 1-char pool key. Body builds a
         // structurally-valid TOML so the only validator that can reject
         // is validate_cache_pool_names — proves the lift wired into
         // load_config rather than relying on cmd_status itself.
-        let oversize_pool = "a".repeat(crate::validators::CACHE_POOL_NAME_MAX_LEN + 1);
+        let oversize_pool = "a".repeat(crate::config::IDENTIFIER_MAX_LEN + 1);
         let body = format!(
             "\
 [defaults]
@@ -5888,15 +5857,11 @@ size = \"200G\"
             GharsError::Validation(msg, _) => {
                 assert!(
                     msg.contains("cache_pool") && msg.contains(&oversize_pool),
-                    "msg must scope to the offending pool by name; got: {msg}"
+                    "msg must scope to the offending cache_pool by name; got: {msg}"
                 );
                 assert!(
-                    msg.contains("cache pool name component")
-                        && msg.contains("pre-DynamicUser era"),
-                    "msg must come from the cache-pool-cap layer (mentions \
-                     the `cache pool name component` policy phrasing and \
-                     the `pre-DynamicUser era` holdover rationale), not \
-                     the identifier-cap layer; got: {msg}"
+                    msg.contains("identifier") && msg.contains("too long"),
+                    "msg must come from the identifier-shape gate; got: {msg}"
                 );
             }
             other => panic!("expected GharsError::Validation, got: {other:?}"),
@@ -5908,10 +5873,9 @@ size = \"200G\"
         );
     }
 
-    /// End-to-end: a `[[runner]] name` longer than
-    /// `RUNNER_NAME_MAX_LEN` must reject through `cmd_status` because
-    /// `validate_runner_names` is wired into `load_config` (the 6th
-    /// post-load validator). Symmetric to
+    /// End-to-end: a `[[runner]] name` longer than `IDENTIFIER_MAX_LEN`
+    /// must reject through `cmd_status` because `validate_runner_names`
+    /// is wired into `load_config`. Symmetric to
     /// `cmd_status_rejects_oversize_cache_pool_via_load_config` —
     /// proves the lift covers the runner-name surface end-to-end via
     /// the public CLI rather than relying on cmd_validate / cmd_apply
@@ -5922,7 +5886,7 @@ size = \"200G\"
         let config_path = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
             .unwrap()
             .join("ghars.toml");
-        let oversize_name = "a".repeat(crate::validators::RUNNER_NAME_MAX_LEN + 1);
+        let oversize_name = "a".repeat(crate::config::IDENTIFIER_MAX_LEN + 1);
         let body = format!(
             "\
 [defaults]
@@ -5962,17 +5926,8 @@ auth = \"pat\"
                     "msg must scope to the offending runner by name; got: {msg}"
                 );
                 assert!(
-                    msg.contains("too long")
-                        && msg.contains(
-                            &crate::validators::RUNNER_NAME_MAX_LEN.to_string(),
-                        )
-                        && msg.contains("[[runner]] name component")
-                        && msg.contains("pre-DynamicUser era"),
-                    "msg must come from the runner-name-cap layer \
-                     (mentions `too long`, RUNNER_NAME_MAX_LEN, the \
-                     `[[runner]] name component` policy phrasing, and \
-                     the `pre-DynamicUser era` holdover rationale); \
-                     got: {msg}"
+                    msg.contains("identifier") && msg.contains("too long"),
+                    "msg must come from the identifier-shape gate; got: {msg}"
                 );
             }
             other => panic!("expected GharsError::Validation, got: {other:?}"),
@@ -5988,8 +5943,8 @@ auth = \"pat\"
     /// character (here `\n`) must reject through `cmd_status` because
     /// `validate_identity_fields` is wired into `load_config` as one
     /// of the post-load validators (see the validator-order comment
-    /// in `load_config`). Symmetric to the cache-pool / runner-name /
-    /// runner-user end-to-end tests above. Pins the runner-scoped
+    /// in `load_config`). Symmetric to the cache-pool / runner-name
+    /// end-to-end tests above. Pins the runner-scoped
     /// surface of `validate_identity_fields`
     /// — the existing `validate_identity_fields_*` unit tests pin the
     /// helper directly; this exercises the end-to-end CLI path so a
@@ -6193,10 +6148,10 @@ trust_zone = \"audited\"
     /// End-to-end: a `[[runner]] runner_tarball = "/nonexistent..."`
     /// must reject through `cmd_status` because `validate_runner_tarballs`
     /// is the 8th post-load validator wired into `load_config`. Symmetric
-    /// to the runner-name / cache-pool / runner-user end-to-end tests
-    /// above — proves the lift covers the operator-supplied
-    /// runner_tarball surface so cmd_validate / cmd_plan / cmd_apply /
-    /// cmd_status / cmd_add all share the same gate.
+    /// to the runner-name / cache-pool end-to-end tests above —
+    /// proves the lift covers the operator-supplied runner_tarball
+    /// surface so cmd_validate / cmd_plan / cmd_apply / cmd_status /
+    /// cmd_add all share the same gate.
     ///
     /// The validator's lstat path is the gate: a non-existent path
     /// returns `validation()` from `validators::validate_runner_tarball`
@@ -6433,9 +6388,9 @@ runner_tarball = \"{}\"
         let config_path = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
             .unwrap()
             .join("ghars.toml");
-        // 8-char name (one over the cap) — fits the legacy
-        // RUNNER_NAME_MAX_LEN (25) so the runner-name length cap does
-        // not pre-reject; the failure must come from the new netns gate.
+        // 8-char name (one over the cap) — fits the IDENTIFIER_MAX_LEN
+        // (64) global cap so the identifier-shape gate does not
+        // pre-reject; the failure must come from the netns gate.
         let oversize_name = "a".repeat(crate::validators::NETNS_RUNNER_NAME_MAX_LEN + 1);
         let body = format!(
             "\
@@ -6585,9 +6540,10 @@ auth = \"pat\"
     /// Contract pin: the same 8-char runner name that fails the
     /// netns gate above MUST PASS when no [network.NAME] is referenced
     /// (implicit Open mode — no veth allocated, no IFNAMSIZ exposure).
-    /// Without this test a regression that tightened
-    /// `RUNNER_NAME_MAX_LEN` globally would silently break operator
-    /// configs that legitimately use longer names in Open mode.
+    /// Without this test a regression that hoisted
+    /// `NETNS_RUNNER_NAME_MAX_LEN` into the global runner-name gate
+    /// would silently break operator configs that legitimately use
+    /// longer names in Open mode.
     #[test]
     fn cmd_status_accepts_oversize_runner_name_in_open_mode() {
         let tmp = tempfile::tempdir().unwrap();
@@ -6596,8 +6552,8 @@ auth = \"pat\"
             .join("ghars.toml");
         let oversize_name = "a".repeat(crate::validators::NETNS_RUNNER_NAME_MAX_LEN + 1);
         // No [network.NAME], no defaults.network → implicit Open mode.
-        // The name is still well under RUNNER_NAME_MAX_LEN (25) so the
-        // global runner-name cap accepts it.
+        // The name is well under IDENTIFIER_MAX_LEN (64) so the
+        // identifier-shape gate accepts it.
         let body = format!(
             "\
 [defaults]
@@ -6623,31 +6579,27 @@ auth = \"pat\"
         );
     }
 
-    /// Contract pin: the existing RUNNER_NAME_MAX_LEN boundary at
-    /// `RUNNER_NAME_MAX_LEN` (25 chars) must still hold for Open-mode
-    /// runners. The new netns gate (= 7) is ADDITIONAL — it MUST NOT
-    /// retroactively tighten the global runner-name cap. A regression
-    /// that swapped `NETNS_RUNNER_NAME_MAX_LEN` for `RUNNER_NAME_MAX_LEN`
-    /// in load_config's check would silently break every operator on
+    /// Contract pin: the netns gate (= 7) is ADDITIONAL only for
+    /// Netns-mode runners — it MUST NOT retroactively tighten the
+    /// global runner-name cap on Open mode. A regression that
+    /// applied `NETNS_RUNNER_NAME_MAX_LEN` in load_config's
+    /// runner-name check (instead of the surface-bound
+    /// `IDENTIFIER_MAX_LEN`) would silently break every operator on
     /// Open mode.
     #[test]
-    fn validate_runner_name_still_allows_25_char_name() {
-        // 25-char name = exactly RUNNER_NAME_MAX_LEN. Open mode means
-        // no netns gate applies. Construct a minimal valid Config
-        // directly to exercise validate_runner_names + the load_config
-        // sweep without TOML parsing. (TOML basic-string parsing
-        // accepts the same name; the direct construction is faster
-        // and avoids the parse layer.)
+    fn validate_runner_name_in_open_mode_allows_above_netns_cap() {
+        // Pick a length above NETNS_RUNNER_NAME_MAX_LEN (= 7) but
+        // within IDENTIFIER_MAX_LEN. Open mode means no netns gate
+        // applies. Construct a minimal valid Config directly to
+        // exercise validate_runner_names + the load_config sweep
+        // without TOML parsing.
         let tmp = tempfile::tempdir().unwrap();
         let config_path = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
             .unwrap()
             .join("ghars.toml");
-        let max_name = "a".repeat(crate::validators::RUNNER_NAME_MAX_LEN);
-        assert_eq!(
-            max_name.len(),
-            25,
-            "RUNNER_NAME_MAX_LEN drift would invalidate this test's invariant"
-        );
+        // 25 chars: comfortably above NETNS_RUNNER_NAME_MAX_LEN = 7,
+        // well below IDENTIFIER_MAX_LEN = 64.
+        let max_name = "a".repeat(25);
         let body = format!(
             "\
 [defaults]
@@ -6664,7 +6616,7 @@ auth = \"pat\"
         );
         fs::write(config_path.as_std_path(), body).unwrap();
         load_config(&config_path).expect(
-            "25-char name (= RUNNER_NAME_MAX_LEN) in Open mode must pass — \
+            "name above NETNS_RUNNER_NAME_MAX_LEN in Open mode must pass — \
              netns-name-length gate must NOT retroactively tighten Open-mode runners",
         );
     }
@@ -14377,17 +14329,16 @@ auth = \"bad key\"
     // -------- cache pool name length cap --------------------------------
 
     /// Pins (a) `validate_cache_pool_names` returns a Validation error
-    /// scoped to the offending pool, (b) the error preserves the
-    /// cache-pool-cap layer signature (`cache pool name component` +
-    /// `pre-DynamicUser era` in the message), and (c) Validation maps
-    /// to exit code 6 via `err_to_exit_code`. Wire-up at cmd_validate /
-    /// cmd_plan / cmd_apply is structurally verified by code review;
-    /// end-to-end integration coverage is pending in the cmd_validate /
-    /// cmd_plan / cmd_apply integration suite.
+    /// scoped to the offending pool, (b) the rejection reaches the
+    /// identifier-shape gate, and (c) Validation maps to exit code 6
+    /// via `err_to_exit_code`. Wire-up at cmd_validate / cmd_plan /
+    /// cmd_apply is structurally verified by code review; end-to-end
+    /// integration coverage is pending in the cmd_validate / cmd_plan
+    /// / cmd_apply integration suite.
     #[test]
     fn validate_cache_pool_names_rejects_oversize_pool_with_exit_code_six() {
         let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
-        let pool_name = "a".repeat(crate::validators::CACHE_POOL_NAME_MAX_LEN + 1);
+        let pool_name = "a".repeat(crate::config::IDENTIFIER_MAX_LEN + 1);
         cfg.cache_pools.insert(
             pool_name.clone(),
             crate::config::CachePoolSpec {
@@ -14399,28 +14350,14 @@ auth = \"bad key\"
         );
         let err = validate_cache_pool_names(&cfg).expect_err("oversize pool name must reject");
         match &err {
-            GharsError::Validation(msg, hint) => {
+            GharsError::Validation(msg, _) => {
                 assert!(
                     msg.contains("cache_pool") && msg.contains(&pool_name),
-                    "msg must scope to the offending pool by name; got: {msg}"
+                    "msg must scope to the offending cache_pool by name; got: {msg}"
                 );
                 assert!(
-                    msg.contains("cache pool name component")
-                        && msg.contains("pre-DynamicUser era"),
-                    "msg must come from the cache-pool-cap layer (mentions \
-                     the `cache pool name component` policy phrasing and \
-                     the `pre-DynamicUser era` holdover rationale), not \
-                     the identifier-cap layer; got: {msg}"
-                );
-                // Hint covers BOTH callsite contexts —
-                // the [cache_pools.NAME] TOML key AND the [[runner]].caches
-                // reference list — so the operator isn't misdirected when
-                // the offender is a runner.caches entry rather than a
-                // pool key. Pins the generic hint contract.
-                assert!(
-                    hint.contains("[cache_pools.NAME]") && hint.contains("[[runner]].caches"),
-                    "hint must mention both [cache_pools.NAME] keys and \
-                     [[runner]].caches references; got: {hint}"
+                    msg.contains("identifier") && msg.contains("too long"),
+                    "msg must come from the identifier-shape gate; got: {msg}"
                 );
             }
             other => panic!("expected GharsError::Validation, got {other:?}"),
@@ -14433,16 +14370,16 @@ auth = \"bad key\"
     }
 
     /// Acceptance boundary: a runner.caches entry whose length
-    /// exactly equals `CACHE_POOL_NAME_MAX_LEN` must pass — and
-    /// the same name as a cache_pools key must also pass. Pins the
-    /// inclusive-of-MAX_LEN contract so a future tightening of the
-    /// cap (e.g. accidental change to `<` instead of `<=`) is caught
-    /// by this test rather than by an operator hitting a previously-
-    /// valid config.
+    /// exactly equals `IDENTIFIER_MAX_LEN` must pass — and the same
+    /// name as a cache_pools key must also pass. Pins the
+    /// inclusive-of-cap contract so a future tightening of the
+    /// identifier cap (e.g. accidental change to `<` instead of `<=`)
+    /// is caught by this test rather than by an operator hitting a
+    /// previously-valid config.
     #[test]
     fn validate_cache_pool_names_accepts_runner_caches_at_max_len() {
         let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
-        let at_max = "a".repeat(crate::validators::CACHE_POOL_NAME_MAX_LEN);
+        let at_max = "a".repeat(crate::config::IDENTIFIER_MAX_LEN);
         // Both the cache_pools key AND the runner.caches reference use
         // the same MAX_LEN string — this exercises both inner loops in
         // validate_cache_pool_names.
@@ -14458,55 +14395,36 @@ auth = \"bad key\"
         cfg.runners[0].caches = vec![at_max.clone()];
         validate_cache_pool_names(&cfg).unwrap_or_else(|e| {
             panic!(
-                "{}-char (== MAX_LEN) cache name must accept; got: {e}",
-                crate::validators::CACHE_POOL_NAME_MAX_LEN
+                "{}-char (== IDENTIFIER_MAX_LEN) cache name must accept; got: {e}",
+                crate::config::IDENTIFIER_MAX_LEN
             )
         });
     }
 
     /// Defense-in-depth: a runner.caches entry whose length exceeds
-    /// `CACHE_POOL_NAME_MAX_LEN` must reject at config load even when
-    /// the cache_pools map itself is empty / valid. Today the planner's
+    /// `IDENTIFIER_MAX_LEN` must reject at config load even when the
+    /// cache_pools map itself is empty / valid. Today the planner's
     /// cross-reference rejects unknown names earlier, but that error
-    /// is shape-agnostic ("unknown cache pool"). The cap layer here
-    /// surfaces a `runner "NAME" caches[]:` scope so the operator sees
-    /// which runner referenced the oversize string AND which length-cap
-    /// layer rejected it.
+    /// is shape-agnostic ("unknown cache pool"). The identifier-shape
+    /// gate here surfaces a `runner "NAME" caches[]:` scope so the
+    /// operator sees which runner referenced the oversize string.
     #[test]
     fn validate_cache_pool_names_rejects_oversize_runner_caches_entry() {
         let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
-        let oversize = "a".repeat(crate::validators::CACHE_POOL_NAME_MAX_LEN + 1);
+        let oversize = "a".repeat(crate::config::IDENTIFIER_MAX_LEN + 1);
         cfg.runners[0].caches = vec![oversize.clone()];
         let err =
             validate_cache_pool_names(&cfg).expect_err("oversize runner.caches entry must reject");
         match &err {
-            GharsError::Validation(msg, hint) => {
+            GharsError::Validation(msg, _) => {
                 assert!(
-                    msg.contains("runner \"buckos\" caches[]"),
-                    "msg must scope to the offending runner.caches entry; \
+                    msg.contains("runner \"buckos\" caches[]") && msg.contains(&oversize),
+                    "msg must scope to the offending runner.caches entry by value; \
                      got: {msg}"
                 );
                 assert!(
-                    msg.contains(&oversize),
-                    "msg must echo the offending value; got: {msg}"
-                );
-                assert!(
-                    msg.contains("cache pool name component")
-                        && msg.contains("pre-DynamicUser era"),
-                    "msg must come from the cache-pool-cap layer (mentions \
-                     the `cache pool name component` policy phrasing and \
-                     the `pre-DynamicUser era` holdover rationale); \
-                     got: {msg}"
-                );
-                // Same generic-hint pin as the
-                // pool-key sibling test. Pinned BOTH callsite contexts
-                // because this is the runner.caches surface — the hint
-                // would otherwise be actively misleading if it
-                // only mentioned [cache_pools.NAME].
-                assert!(
-                    hint.contains("[cache_pools.NAME]") && hint.contains("[[runner]].caches"),
-                    "hint must mention both [cache_pools.NAME] keys and \
-                     [[runner]].caches references; got: {hint}"
+                    msg.contains("identifier") && msg.contains("too long"),
+                    "msg must come from the identifier-shape gate; got: {msg}"
                 );
             }
             other => panic!("expected GharsError::Validation, got {other:?}"),
