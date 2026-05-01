@@ -22,10 +22,10 @@
 //!     other auth-credential reader.
 //!
 //! What IS allowed in messages:
-//!   - file paths (auth.rs:659/679/689 emit `path.display()` — the
+//!   - file paths (auth.rs error sites emit `path.display()` — the
 //!     existence/permissions of a credential file is operator-actionable
 //!     info that doesn't disclose the credential itself),
-//!   - environment variable names (auth.rs:263 emits `{env:?}` where
+//!   - environment variable names (auth.rs emits `{env:?}` where
 //!     `env` is the variable NAME like `"GHARS_PAT"`),
 //!   - `octocrab::Error` Display output. In octocrab 0.42, the
 //!     `GitHub` variant carries no `#[snafu(display(...))]` attribute,

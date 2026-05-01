@@ -1693,7 +1693,7 @@ mod tests {
     /// the caller boundary; the helper itself MUST surface the
     /// distinction so other callers (e.g. labels which DO accept
     /// empty as a meaningful value per the production parser
-    /// `SystemdUnit::from_text`) get the right answer.
+    /// `ParsedUnit::from_text`) get the right answer.
     #[test]
     fn extract_x_ghars_value_returns_some_empty_for_empty_value() {
         let body = "[Unit]\nX-Ghars-Empty=\n";

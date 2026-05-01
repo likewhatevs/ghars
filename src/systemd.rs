@@ -1383,8 +1383,8 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
     // caches-list shrinks. Without an unconditional emit, a runner
     // whose caches list goes from `["a"]` → `[]` would have no
     // on-disk record of the prior membership, so the in-place path
-    // could not compute a set diff to drive
-    // `users.remove_user_from_group`. Empty value is parsed as
+    // could not compute a set diff against `DiscoveredAnnotations`
+    // to detect the removed cache. Empty value is parsed as
     // `Some(vec![])` by the classifier (see DiscoveredAnnotations
     // labels handling).
     //
@@ -2698,7 +2698,8 @@ mod tests {
     /// rendered Display.
     ///
     /// `GharsError::Validation` Display is
-    /// `"validation: <msg>\n  hint: <hint>"` (see error.rs:55-58),
+    /// `"validation: <msg>\n  hint: <hint>"` (see error.rs's
+    /// `Validation` variant `#[error(...)]` thiserror attribute),
     /// so the message segment is everything before `"\n  hint:"`.
     /// Checking only that segment avoids a false positive when the
     /// bad byte is itself `\n` (which the Display formatter always
@@ -3521,7 +3522,8 @@ mod tests {
             "network drop-in missing RestrictAddressFamilies, got:\n{n}"
         );
         // Neither drop-in emits a bare `RestrictAddressFamilies=` reset
-        // (that would erase the union per systemd.exec.xml:2912-2920).
+        // (that would erase the union per systemd.exec(5)
+        // RestrictAddressFamilies — bare `=` resets the allowlist).
         for body in [h, n] {
             assert!(
                 !body.lines().any(|l| l.trim() == "RestrictAddressFamilies="),
@@ -4162,7 +4164,7 @@ mod tests {
 
     #[test]
     fn render_nft_dns_auto_allow_does_not_require_operator_egress_entry() {
-        // Coverage for design line 4229: "NO operator allowed_egress
+        // Coverage for the design contract: "NO operator allowed_egress
         // entry needed for DNS — it's implicit when dns = forward".
         // Empty allowed_egress + Forward dns must still produce
         // working DNS via the auto-allow rules.
