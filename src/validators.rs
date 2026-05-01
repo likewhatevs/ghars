@@ -1341,6 +1341,62 @@ mod tests {
             .expect("30-char pool name must accept (above legacy 19-char cap)");
     }
 
+    // ---- trust_zone --------------------------------------------------
+
+    /// Single-char trust_zone must pass — exercises the lower
+    /// boundary. The validator caps length only (charset / control-
+    /// char rejection lives in `check_identity_field`), so any
+    /// 1-char string is accepted.
+    #[test]
+    fn trust_zone_accepts_single_char() {
+        validate_trust_zone("a").expect("single-char trust_zone must pass");
+    }
+
+    /// A trust_zone of exactly TRUST_ZONE_MAX_LEN chars MUST pass —
+    /// the cap is inclusive (the longest accepted, not exclusive).
+    /// Pins `>` not `>=` at the comparison site.
+    #[test]
+    fn trust_zone_accepts_at_max_len() {
+        let s = "a".repeat(TRUST_ZONE_MAX_LEN);
+        validate_trust_zone(&s).expect("must accept exactly TRUST_ZONE_MAX_LEN");
+    }
+
+    /// A trust_zone one char past TRUST_ZONE_MAX_LEN MUST reject.
+    /// Error message must (a) echo the offending value, (b) contain
+    /// "too long" and the cap class, (c) cite SYSTEMD_USER_GROUP_NAME_MAX
+    /// or the User=ghars-tz- prefix so the operator understands the
+    /// derivation, and (d) the hint must restate the cap.
+    #[test]
+    fn trust_zone_rejects_one_past_max_len() {
+        let s = "a".repeat(TRUST_ZONE_MAX_LEN + 1);
+        let err = validate_trust_zone(&s)
+            .expect_err("must reject one past TRUST_ZONE_MAX_LEN");
+        match err {
+            GharsError::Validation(msg, hint) => {
+                assert!(
+                    msg.contains(&s),
+                    "msg must echo the offending trust_zone; got: {msg}"
+                );
+                assert!(
+                    msg.contains("too long")
+                        && msg.contains(&TRUST_ZONE_MAX_LEN.to_string()),
+                    "msg must name the cap class and value; got: {msg}"
+                );
+                assert!(
+                    msg.contains(&SYSTEMD_USER_GROUP_NAME_MAX.to_string())
+                        || msg.contains("ghars-tz-"),
+                    "msg must cite SYSTEMD_USER_GROUP_NAME_MAX or the \
+                     User=ghars-tz- prefix; got: {msg}"
+                );
+                assert!(
+                    hint.contains(&TRUST_ZONE_MAX_LEN.to_string()),
+                    "hint must restate the cap; got: {hint}"
+                );
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
     // ---- url ----------------------------------------------------------
 
     #[rstest]

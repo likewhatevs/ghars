@@ -238,13 +238,20 @@ fn count_block_prefix_length_at_boundary_for_max_count_suffix() {
     let max_count_suffix_len = format!("-{MAX_COUNT}").len();
     let max_safe_len = IDENTIFIER_MAX_LEN - max_count_suffix_len;
     let max_safe_prefix = "a".repeat(max_safe_len);
-    expand_counts(&cfg(vec![count_runner(&max_safe_prefix, MAX_COUNT)])).expect(
-        "max_safe_len-char prefix + -1024 fits within IDENTIFIER_MAX_LEN",
-    );
+    expand_counts(&cfg(vec![count_runner(&max_safe_prefix, MAX_COUNT)])).unwrap_or_else(|e| {
+        panic!(
+            "{max_safe_len}-char prefix + -{MAX_COUNT} fits within \
+             IDENTIFIER_MAX_LEN; got: {e}"
+        )
+    });
 
-    let too_long_prefix = "a".repeat(max_safe_len + 1);
+    let too_long_len = max_safe_len + 1;
+    let too_long_prefix = "a".repeat(too_long_len);
     let err = expand_counts(&cfg(vec![count_runner(&too_long_prefix, MAX_COUNT)])).expect_err(
-        "(max_safe_len + 1)-char prefix + -1024 exceeds IDENTIFIER_MAX_LEN",
+        &format!(
+            "{too_long_len}-char prefix + -{MAX_COUNT} exceeds \
+             IDENTIFIER_MAX_LEN"
+        ),
     );
     let msg = format!("{err}");
     assert!(
