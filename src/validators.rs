@@ -242,8 +242,8 @@ pub fn validate_cache_pool_name(name: &str) -> Result<()> {
 ///
 /// Catching at config-load surfaces a structured error before any
 /// unit starts, instead of an opaque systemd
-/// `valid_user_group_name` failure during apply. Charset / control-
-/// char rejection is a separate concern (`check_identity_field` /
+/// `valid_user_group_name` failure during apply. Control-char
+/// rejection is a separate concern (`check_identity_field` /
 /// `validate_identity_fields`); this validator covers length only.
 ///
 /// # Errors
@@ -1344,11 +1344,11 @@ mod tests {
     // ---- trust_zone --------------------------------------------------
 
     /// Single-char trust_zone must pass — exercises the lower
-    /// boundary. The validator caps length only (charset / control-
-    /// char rejection lives in `check_identity_field`), so any
-    /// 1-char string is accepted.
+    /// boundary. The validator caps length only (control-char
+    /// rejection lives in `check_identity_field`), so any 1-char
+    /// string is accepted.
     #[test]
-    fn trust_zone_accepts_single_char() {
+    fn trust_zone_accepts_one_char() {
         validate_trust_zone("a").expect("single-char trust_zone must pass");
     }
 
@@ -1356,7 +1356,7 @@ mod tests {
     /// the cap is inclusive (the longest accepted, not exclusive).
     /// Pins `>` not `>=` at the comparison site.
     #[test]
-    fn trust_zone_accepts_at_max_len() {
+    fn trust_zone_accepts_trust_zone_max_len() {
         let s = "a".repeat(TRUST_ZONE_MAX_LEN);
         validate_trust_zone(&s).expect("must accept exactly TRUST_ZONE_MAX_LEN");
     }
@@ -1367,7 +1367,7 @@ mod tests {
     /// or the User=ghars-tz- prefix so the operator understands the
     /// derivation, and (d) the hint must restate the cap.
     #[test]
-    fn trust_zone_rejects_one_past_max_len() {
+    fn trust_zone_rejects_one_past_trust_zone_max_len() {
         let s = "a".repeat(TRUST_ZONE_MAX_LEN + 1);
         let err = validate_trust_zone(&s)
             .expect_err("must reject one past TRUST_ZONE_MAX_LEN");

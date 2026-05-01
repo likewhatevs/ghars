@@ -12,7 +12,7 @@
 //! Gaps these integration tests close:
 //! 1. **Empty `config.runners`** — expand_counts on a config with no
 //!    runners returns an empty Vec, not an error.
-//! 2. **MAX_COUNT exact (1024) accepted** — boundary just-below the
+//! 2. **MAX_COUNT exact accepted** — boundary just-below the
 //!    rejection threshold.
 //! 3. **Source-order preservation across mixed explicit + count blocks**
 //!    — expansion lands in source position, not appended to the end.
@@ -27,8 +27,8 @@
 //!    after suffix is rejected** — boundary on `IDENTIFIER_MAX_LEN`.
 //! 8. **Count = 1 keeps the bare name (no `-1` suffix)** — verifies
 //!    expansion is gated on `count > 1`, not `>= 1`.
-//! 9. **Count block with short prefix expands at `MAX_COUNT` to 1024
-//!    distinct names** — full enumeration property check.
+//! 9. **Count block with short prefix expands at `MAX_COUNT` to
+//!    `MAX_COUNT` distinct names** — full enumeration property check.
 
 use ghars::config::{AuthSpec, Config, Defaults, Hardening, IDENTIFIER_MAX_LEN, RunnerSpec};
 use ghars::plan::{MAX_COUNT, expand_counts};
@@ -114,7 +114,8 @@ fn count_at_max_count_boundary_accepted() {
     // above rejects (existing in-tree test covers that). At exactly
     // MAX_COUNT the expander must succeed and emit MAX_COUNT entries.
     // Use a 2-char prefix so generated names fit IDENTIFIER_MAX_LEN
-    // (max suffix is `-1024` = 5 chars, total ≤ 7 chars).
+    // (max suffix is `-{MAX_COUNT}`; for MAX_COUNT = 1024 that's
+    // 5 chars, total ≤ 7 chars).
     let out = expand_counts(&cfg(vec![count_runner("ci", MAX_COUNT)]))
         .expect("count == MAX_COUNT must succeed");
     assert_eq!(out.len(), MAX_COUNT as usize);
