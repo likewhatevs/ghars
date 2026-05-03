@@ -83,7 +83,7 @@ mod exit_code {
 }
 
 /// Runner instance regex: matches the `IDENTIFIER_REGEX` from
-/// `validators.rs` (and the upstream Python tool). systemd is supposed
+/// `config.rs:24` (and the upstream Python tool). systemd is supposed
 /// to keep `%i` template values in this shape but a misconfigured
 /// drop-in could pass anything; defending here costs nothing.
 fn instance_name_is_valid(name: &str) -> bool {

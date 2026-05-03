@@ -84,9 +84,12 @@ pub trait Systemd {
     /// description, load_state, active_state, sub_state, follower,
     /// object_path, job_id, job_type, job_object_path)` tuples.
     ///
-    /// Used by state discovery to enumerate live `ghars-runner@*`
-    /// instances and `ghars-cache@*` services without `daemon-reload`-
-    /// triggering enumeration over the full unit set.
+    /// State discovery does NOT use this — it enumerates managed
+    /// units by globbing the filesystem (`state::list_runner_unit_files`
+    /// / `state::list_cache_pool_drop_in_dirs`) so partial-apply
+    /// residue and units in `not-found`/`failed` state are still
+    /// reconciled. The filesystem is the configuration source of
+    /// truth; D-Bus is the runtime status source.
     ///
     /// # Errors
     ///
@@ -171,8 +174,7 @@ pub trait Systemd {
     /// numeric / object-path / array values are rejected with a typed
     /// error.
     ///
-    /// Common properties: `Type`, `Result`,
-    /// `ExecMainStartTimestamp` (formatted-string variant).
+    /// Common properties: `Type`, `Result`.
     ///
     /// # Errors
     ///
@@ -507,8 +509,8 @@ impl DbusSystemd {
 /// signature MUST be `s`; any other shape is rejected with a typed
 /// error. There is NO `format!("{value:?}")` Debug fallback — that
 /// would have produced strings like `"U32(1234)"` for u32 properties
-/// and silently broken every parse-from-string caller (notably
-/// MainPID at apply.rs::verify_runner_netns).
+/// and silently broken parse-from-string callers. Numeric properties
+/// must use `decode_u64_value` instead.
 fn decode_string_value(
     unit: &str,
     iface: &str,
@@ -624,11 +626,11 @@ fn decode_object_path_value(
 // --- Reset-on-empty validator -------------------------------------------
 
 /// List-typed directives that systemd treats as RESET on empty
-/// assignment (per `systemd.exec.xml:2912-2920` for `SystemCallFilter`,
-/// the same rule applies to the rest). A managed drop-in (00-09 ..
-/// 50-59 ranges) MUST NOT emit any of these with a bare `=` —
-/// otherwise the entire allowlist / denylist defined by the template
-/// silently disappears.
+/// assignment (per `systemd.exec(5)` for `SystemCallFilter`, the same
+/// rule applies to the rest). A managed drop-in (00-09 .. 50-59
+/// ranges) MUST NOT emit any of these with a bare `=` — otherwise the
+/// entire allowlist / denylist defined by the template silently
+/// disappears.
 //
 // `DeviceAllow` is INTENTIONALLY ABSENT from this list. The runner
 // template grants exactly one device — `DeviceAllow=/dev/kvm rw` — and
@@ -665,8 +667,10 @@ const RESET_ON_EMPTY_DIRECTIVES: &[&str] = &[
 // - `(?m)` — `^` / `$` match per-line (multiline anchors), so the
 //   regex finds resets anywhere in the body.
 // - `^[ \t]*` — leading horizontal whitespace is allowed because
-//   `man systemd.syntax` says "leading whitespace is ignored". A
-//   line `   DeviceAllow=` is parsed by systemd as a reset, so the
+//   systemd's config parser strips it before parsing each line
+//   (`skip_leading_chars(buf, WHITESPACE)` in
+//   `src/shared/conf-parser.c::config_parse`). A line
+//   `   DeviceAllow=` is therefore parsed as a reset, so the
 //   validator MUST flag it. We use `[ \t]*` (NOT `\s*`) so the regex
 //   doesn't slurp newlines into "leading whitespace" and confuse
 //   per-line matching.

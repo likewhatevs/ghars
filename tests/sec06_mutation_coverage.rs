@@ -16,9 +16,10 @@
 //!
 //! Test strategy: drive the surface through `auth::TokenFileToken::new`
 //! (the public path most callers exercise). On non-root systems the
-//! UID check fires AFTER the mode check (auth.rs:641-650 → 651-660),
-//! so we accept either "mode" or "uid" in the rejection message but
-//! verify rejection happens.
+//! UID check fires AFTER the mode check inside `read_root_owned_0600`
+//! (the helper `TokenFileToken::new` calls), so we accept either
+//! "mode" or "uid" in the rejection message but verify rejection
+//! happens.
 //!
 //! The existing tests in `tests/security_scenarios.rs` cover the
 //! 6 single-bit cases (0o640, 0o620, 0o610, 0o604, 0o602, 0o601)

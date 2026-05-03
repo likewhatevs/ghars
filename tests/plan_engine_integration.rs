@@ -407,7 +407,7 @@ fn defaults_merge_labels_concat_dedup_sorted() {
 }
 
 #[test]
-fn defaults_merge_user_default_is_per_runner_secure() {
+fn effective_runner_spec_has_no_user_field_under_dynamic_user() {
     let mut cfg = make_config();
     cfg.runners = vec![make_runner("buckos")];
     let plan = run_plan(&cfg, &ActualState::default());

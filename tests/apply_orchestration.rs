@@ -1,7 +1,7 @@
 //! apply.rs integration tests.
 //!
 //! Coverage focus (paths exercisable from integration-test layer with
-//! the public traits Tarball / Users / ConfigShell + a public Systemd
+//! the public traits Tarball / ConfigShell + a public Systemd
 //! mock):
 //!
 //! `execute_create_runner` branch coverage:

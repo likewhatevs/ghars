@@ -273,11 +273,15 @@ impl Action {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
     /// Actions in source-emit order. `apply` re-orders into Part 8's
-    /// canonical execution order (`CreateCachePool` →
-    /// `UpdateCachePool` → `RemoveRunner` → `UpdateRunner` →
-    /// `CreateRunner` → `RemoveCachePool` + daemon-reload).
+    /// canonical execution order via `apply::sort_into_phases`:
+    /// `CreateCachePool` → `UpdateCachePool` → `RemoveRunner` →
+    /// `UpdateRunner` (in-place subset) → `UpdateRunner` (recreate
+    /// subset) → `CreateRunner` → `RemoveCachePool` → `NoOp`.
     pub actions: Vec<Action>,
-    /// Non-fatal warnings (e.g. "shared UID disables cross-runner isolation").
+    /// Non-fatal warnings. Currently always empty: `plan_from` has no
+    /// producers (the field's reader infrastructure exists in
+    /// `cli.rs` for both text and JSON output, but no plan-time site
+    /// pushes into this Vec today).
     pub warnings: Vec<String>,
     /// `bin.X.Y.Z/` retention count resolved from
     /// `Defaults.keep_versions` (or the
@@ -415,7 +419,7 @@ impl DriftCause {
 ///
 /// No `Number` variant: every current producer in
 /// `classify_recreate_reasons_from_annotations` emits either a
-/// scalar string (10 paths) or a list of strings (2 paths).
+/// scalar string (8 paths) or a list of strings (2 paths).
 /// Adding `Number` now would be premature — bump schema and add
 /// the variant when a numeric field appears. Likely v0.2
 /// candidates: `count` (pre-expansion runner count),

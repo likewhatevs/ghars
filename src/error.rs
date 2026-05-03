@@ -131,7 +131,7 @@ pub enum GharsError {
     Tarball(String, Option<String>),
     /// SHA256 mismatch on a downloaded or local tarball.
     #[error(
-        "sha256 mismatch on {path}: expected {expected} got {actual}\n  hint: re-download via `ghars apply --refresh-releases` or pass --runner-tarball with a verified file"
+        "sha256 mismatch on {path}: expected {expected} got {actual}\n  hint: delete the cached tarball and re-run `ghars apply`, correct `runner_sha256` in `ghars.toml`, or set `[[runner]].runner_tarball` to a verified local file"
     )]
     Sha256Mismatch {
         /// Path of the file that failed verification.

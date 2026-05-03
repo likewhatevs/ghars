@@ -335,7 +335,10 @@ pub enum FilterDecision {
 /// - Reject device / fifo / char / block entries (typeflag 3, 4, 6).
 /// - Reject member paths that are absolute or contain `..` components.
 /// - Reject symlink / hardlink targets that are absolute or contain `..`.
-/// - Strip setuid / setgid / sticky bits via `mode & 0o777 & ~0o7000`.
+///
+/// Mode masking (setuid/setgid/sticky stripping) is NOT performed by
+/// this function — it happens at unpack time via tar-rs's
+/// `preserve_permissions = false` default (see [`FilterDecision::Allow`]).
 ///
 /// uid / gid forcing happens at unpack time (the tar crate ignores
 /// header-recorded uid/gid by default; ghars never enables
@@ -675,7 +678,9 @@ pub fn verify_local_tarball_open(path: &Utf8Path) -> Result<File> {
 /// `state_dir` is the parent under which `.staging/` lives (the design
 /// pins this to `/var/lib/ghars/.staging/`; tests redirect both
 /// `state_dir` and `runner_home` to a tempdir). `runner_home` is the
-/// per-runner home directory (`/var/lib/ghars/<runner-name>/`).
+/// per-runner home directory
+/// (`/var/lib/ghars/<trust_zone>/ghars-<runner-name>/`, per
+/// `paths::Paths::runner_home`).
 ///
 /// On success the staging directory has been moved and is no longer
 /// present. On any failure the staging directory is best-effort removed

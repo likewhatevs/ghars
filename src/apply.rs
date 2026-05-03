@@ -186,9 +186,8 @@ pub enum ApplyOutcome {
     /// GitHub deregistration completed, system user + home dir
     /// removed.
     Removed,
-    /// `execute_create_cache_pool` finished — per-pool group +
-    /// storage dir + drop-in written, ghars-cache@POOL.service
-    /// started.
+    /// `execute_create_cache_pool` finished — per-pool storage dir +
+    /// drop-in written, ghars-cache@POOL.service started.
     PoolCreated,
     /// `execute_update_cache_pool` finished — drop-in rewritten,
     /// daemon-reload + stop + start cycled the existing
@@ -284,7 +283,7 @@ impl ApplyOutcome {
     #[must_use]
     pub fn detail(&self) -> String {
         match self {
-            Self::InPlaceSkipped => "noop (bytes + groups match)".into(),
+            Self::InPlaceSkipped => "noop (bytes match)".into(),
             Self::InPlaceRestarted {
                 files_changed,
                 pools_added,
@@ -320,11 +319,11 @@ impl ApplyOutcome {
             }
             Self::Recreated => "recreated (deregister + teardown + register + start)".into(),
             Self::Created => "created (GitHub registration + unit start)".into(),
-            Self::Removed => "removed (GitHub deregister + unit + home + user)".into(),
-            Self::PoolCreated => "pool created (group + storage + unit)".into(),
+            Self::Removed => "removed (GitHub deregister + unit + home)".into(),
+            Self::PoolCreated => "pool created (storage + unit)".into(),
             Self::PoolUpdated => "pool updated (drop-in rewrite + restart)".into(),
             Self::PoolSkipped => "pool noop (drop-in bytes match)".into(),
-            Self::PoolRemoved => "pool removed (group + storage + drop-in)".into(),
+            Self::PoolRemoved => "pool removed (storage + drop-in)".into(),
             Self::NoOp => "noop (in sync)".into(),
             Self::DryRunSkipped => "dry-run (skipped)".into(),
             Self::Failed { error_summary, .. } => error_summary.clone(),
@@ -630,7 +629,7 @@ impl UndoStep {
     /// through [`crate::escape_control_chars`] before formatting.
     /// Drop-in paths and unit names are derived from operator-supplied
     /// config (runner names flow into
-    /// `<runtime>/.../00-ghars.conf`, auth-block URLs into
+    /// `<runtime>/.../00-ghars.conf`, repo/org URLs into
     /// `GitHubRegistration.url`). Upstream validators
     /// (`validate_runner_name`, `check_identity_field`, the URL regex)
     /// reject control characters at config-load and render-identity
@@ -1259,7 +1258,7 @@ fn spawn_err(prog: &str, e: &std::io::Error) -> GharsError {
 // ---------- Config.sh runner seam --------------------------------------
 
 /// Runner-self-config seam. Production wires a [`RealConfigShell`] that
-/// shells out to `<runner_home>/bin/config.sh`. Tests inject a fake.
+/// shells out to `<runner_home>/config.sh`. Tests inject a fake.
 ///
 /// **SEC-05** — the registration / removal token is
 /// delivered to `config.sh` via the `ACTIONS_RUNNER_INPUT_TOKEN`
@@ -1432,9 +1431,9 @@ const STALE_TEMP_AGE_SECS: u64 = 60;
 ///   from under a concurrent writer; the age check is belt-and-
 ///   suspenders for clock skew).
 ///
-/// PID-LIVENESS IS NOT USED (symmetric with the `PID-LIVENESS IS
-/// DEPRECATED` section in [`gc_stale_staging_dirs`]): the filter
-/// intentionally does not probe `pid_is_alive(embedded_pid)`. PIDs
+/// PID-LIVENESS IS NOT USED (symmetric with the `PID-liveness is
+/// intentionally not used` section in [`gc_stale_staging_dirs`]): the
+/// filter intentionally does not probe `pid_is_alive(embedded_pid)`. PIDs
 /// recycle — once the dead PID slot is reclaimed by an unrelated
 /// process, a liveness probe would falsely report "still alive" and
 /// the temp file would be permanently retained even though no
@@ -2556,8 +2555,7 @@ fn execute_update_runner(
         // Collapse the inner Removed + Created outcomes into
         // a single `Recreated` — the user-facing contract is one row
         // per `Action`, and the inner remove+create are
-        // implementation detail of the recreate path (coordinator
-        // ruling (a)).
+        // implementation detail of the recreate path.
         execute_remove_runner(&delta.identity, deps, paths, log)?;
         execute_create_runner(&delta.after, deps, paths, log, keep_versions)?;
         return Ok(ApplyOutcome::Recreated);
@@ -2953,8 +2951,12 @@ fn teardown_netns_artifacts(
 ) -> Result<()> {
     let netns_unit = format!("ghars-net@{name}.service");
 
-    // 1) Stop + disable. Both are idempotent on missing/inactive units
-    //    (the trait already swallows expected error kinds).
+    // 1) Stop + disable. systemd's StopUnit and DisableUnitFiles are
+    //    idempotent at the D-Bus level — calling them on an inactive
+    //    unit or one without an enable symlink succeeds with a no-op
+    //    outcome. The trait propagates any D-Bus error verbatim via
+    //    map_err; teardown only relies on the kernel-level no-op
+    //    semantics, not on apply.rs swallowing error kinds.
     deps.systemd.stop_unit(&netns_unit)?;
     log.push(UndoStep::StopUnit {
         name: netns_unit.clone(),
@@ -3349,11 +3351,9 @@ fn write_root_owned(path: &Utf8Path, bytes: &[u8]) -> Result<()> {
     chown_to_root(&f, &temp_path)?;
     // Now that ownership is root:root, widen the mode from
     // 0o600 to 0o644 so systemd / readers can stat the published
-    // file. File::set_permissions on Unix calls fchmod(fd, mode)
-    // (std/sys/fs/unix.rs — same primitive `tighten_credential_perms`
-    // relies on), so the chmod target is pinned to the inode we
-    // wrote, not whatever a concurrent attacker might swap in at
-    // temp_path.
+    // file. File::set_permissions on Unix calls fchmod(fd, mode), so
+    // the chmod target is pinned to the inode we wrote, not whatever a
+    // concurrent attacker might swap in at temp_path.
     {
         use std::os::unix::fs::PermissionsExt;
         f.set_permissions(std::fs::Permissions::from_mode(0o644))?;
@@ -3547,10 +3547,9 @@ pub fn guard_home_dir_rmrf(
         Err(e) => return Err(GharsError::Io(e)),
     };
     if home_lmeta.file_type().is_symlink() {
-        // Std's modern `remove_dir_all` would unlink the symlink
-        // rather than follow it (rust-1.85 std/sys/fs/unix.rs:2683-
-        // 2689 lstats first, unlink-on-symlink). We still reject
-        // here so the runner home is replaced from a clean baseline
+        // Std's modern `remove_dir_all` lstats first and unlinks the
+        // symlink rather than following it. We still reject here so
+        // the runner home is replaced from a clean baseline
         // — a symlink at the home path means the parent directory's
         // permissions slipped (parent should be root-owned 0755 per
         // SEC-11) and apply should not silently paper over that.
@@ -3599,10 +3598,10 @@ pub fn guard_home_dir_rmrf(
 /// The kernel-side netns join races MainPID's recording. systemd
 /// calls service_set_main_pidref the moment exec_spawn returns the
 /// child PID — which is post-vfork-unblock, but BEFORE
-/// systemd-executor reaches the apply_namespace step that calls
+/// systemd-executor reaches the setup_namespace step that calls
 /// setns(CLONE_NEWNET) for NetworkNamespacePath=. The send_handoff
 /// timestamp only fires "as last thing before the execve()", AFTER
-/// apply_namespace. So a readlink at the moment
+/// setup_namespace. So a readlink at the moment
 /// StartUnit returns can observe the still-host netns symlink for the
 /// runner's PID and false-positive a netns fail-open.
 ///
@@ -3616,10 +3615,10 @@ pub fn guard_home_dir_rmrf(
 /// /proc reflects the entry, or the PID was recycled mid-poll); we
 /// retry on ENOENT, NOT treat it as success.
 ///
-/// v0.2 optimization (taskId 147): switch to
+/// v0.2 optimization: switch to
 /// `ExecMainHandoffTimestampMonotonic` D-Bus property — non-zero means
 /// systemd-executor reached send_handoff_timestamp, which is post-
-/// apply_namespace, eliminating the poll. v0.1 ships the simple loop.
+/// setup_namespace, eliminating the poll. v0.1 ships the simple loop.
 const NETNS_VERIFY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
 const NETNS_VERIFY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(100);
 
@@ -3739,7 +3738,7 @@ fn verify_runner_netns_at(
             format!(
                 "verify_runner_netns({unit_name}): /proc/PID/ns/net never resolved \
                  within {deadline_ms}ms ({attempts} polls); systemd-executor's \
-                 apply_namespace did not complete",
+                 setup_namespace did not complete",
                 deadline_ms = deadline_dur.as_millis(),
             ),
             "the runner unit failed to reach the post-netns-join state; \
@@ -3798,17 +3797,14 @@ mod tests {
         // message rather than recording the call. Used by recreate-path
         // tests that need execute_remove_runner to fail at its very
         // first systemd call so execute_create_runner is provably never
-        // dispatched. Symmetric shape with MockUsers.fail_remove_group.
+        // dispatched.
         fail_stop_unit: Mutex<Option<String>>,
         // Wiring: when `fail_daemon_reload_message` is Some(msg),
         // `daemon_reload()` returns Err carrying `msg` verbatim inside
         // a `GharsError::Systemd` instead of recording the call. Used
         // by the post-loop daemon_reload escape-pin test to inject a
         // hostile control-char payload into the synthetic Failed-row
-        // construction site in `apply` (post-loop daemon_reload
-        // arm). Symmetric shape with
-        // MockUsers.fail_add_group_message but for the synthetic
-        // post-loop step rather than a per-action handler.
+        // construction site in `apply` (post-loop daemon_reload arm).
         fail_daemon_reload_message: Mutex<Option<String>>,
     }
 
@@ -4411,9 +4407,8 @@ mod tests {
         // runner home path pointing to (e.g.) /etc, the guard must
         // reject before rmrf runs. Std's modern remove_dir_all also
         // detects this and unlinks-the-symlink rather than following
-        // (rust-1.85 std/sys/fs/unix.rs:2683-2689) — but the guard
-        // rejects explicitly so a future std regression cannot
-        // reintroduce the attack.
+        // — but the guard rejects explicitly so a future std
+        // regression cannot reintroduce the attack.
         let tmp = tempfile::tempdir().unwrap();
         let prefix = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
         // Create a symlink at <prefix>/buckos pointing to a real
@@ -5625,7 +5620,6 @@ mod tests {
         assert!(!unit_text.contains("ExecStart=!"));
         // Tarball was downloaded once.
         assert_eq!(tarball.fetched.lock().unwrap().len(), 1);
-        // User was added.
         // config.sh registered with the minted token.
         let regs = config_shell.registered.lock().unwrap();
         assert_eq!(regs.len(), 1);
@@ -5697,12 +5691,12 @@ mod tests {
 
     #[test]
     fn update_runner_in_place_preserves_operator_drop_ins() {
-        // BUG #B36: in-place update path must preserve operator-managed
-        // drop-ins. Anything outside MANAGED_DROP_IN_BASENAMES is
-        // operator territory (typically `99-*.conf` from `systemctl
-        // edit`) and must survive every apply. The `Drift` classifier
-        // already flags such files at plan time; deleting them here
-        // would silently undo `systemctl edit`.
+        // In-place update path must preserve operator-managed drop-ins.
+        // Anything outside MANAGED_DROP_IN_BASENAMES is operator
+        // territory (typically `99-*.conf` from `systemctl edit`) and
+        // must survive every apply. The `Drift` classifier already
+        // flags such files at plan time; deleting them here would
+        // silently undo `systemctl edit`.
         let tmp = tempfile::tempdir().unwrap();
         let paths = make_paths(&tmp);
         fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
@@ -5737,9 +5731,8 @@ mod tests {
             // + discovered keys, so an operator-edited
             // `99-operator.conf` discovered on disk but absent from
             // the rendered set DOES appear here as a Removed entry.
-            // The BUG #B36 invariant — operator drop-ins survive
-            // every apply — is enforced by the
-            // MANAGED_DROP_IN_BASENAMES guard inside
+            // The operator-drop-in-survival invariant is enforced by
+            // the MANAGED_DROP_IN_BASENAMES guard inside
             // execute_update_runner's deletion loop: it deletes only
             // basenames ghars itself would emit. We synthesize both
             // a managed `10-memory.conf` Removed (must be deleted)
@@ -6823,7 +6816,7 @@ mod tests {
         // deadline (e.g. systemd recorded MainPID but the unit failed
         // to start past fork), surface a Systemd error — not Ok (which
         // would be a fail-open). The error message must mention the
-        // poll count and the apply_namespace contract so an operator
+        // poll count and the setup_namespace contract so an operator
         // can correlate with `journalctl -u`.
         let tmp = tempfile::tempdir().unwrap();
         // PID 99999's /proc entry never exists.
@@ -6848,8 +6841,8 @@ mod tests {
             "expected 'never resolved' in error; got: {msg}"
         );
         assert!(
-            msg.contains("apply_namespace"),
-            "expected 'apply_namespace' citation in error; got: {msg}"
+            msg.contains("setup_namespace"),
+            "expected 'setup_namespace' citation in error; got: {msg}"
         );
     }
 
@@ -8635,7 +8628,7 @@ mod tests {
     fn apply_outcome_detail_strings_are_stable() {
         assert_eq!(
             ApplyOutcome::InPlaceSkipped.detail(),
-            "noop (bytes + groups match)"
+            "noop (bytes match)"
         );
         // Pool-membership Vecs empty ⇒ no parenthetical
         // suffix, preserving the no-suffix shape so operators with
@@ -8695,11 +8688,11 @@ mod tests {
         );
         assert_eq!(
             ApplyOutcome::Removed.detail(),
-            "removed (GitHub deregister + unit + home + user)"
+            "removed (GitHub deregister + unit + home)"
         );
         assert_eq!(
             ApplyOutcome::PoolCreated.detail(),
-            "pool created (group + storage + unit)"
+            "pool created (storage + unit)"
         );
         assert_eq!(
             ApplyOutcome::PoolUpdated.detail(),
@@ -8711,7 +8704,7 @@ mod tests {
         );
         assert_eq!(
             ApplyOutcome::PoolRemoved.detail(),
-            "pool removed (group + storage + drop-in)"
+            "pool removed (storage + drop-in)"
         );
         assert_eq!(ApplyOutcome::NoOp.detail(), "noop (in sync)");
         assert_eq!(ApplyOutcome::DryRunSkipped.detail(), "dry-run (skipped)");
@@ -9362,7 +9355,7 @@ mod tests {
     /// cycle fires. Operator drop-ins CAN appear in `drop_in_changes`
     /// as Removed entries (Stage 2 walks the union of rendered +
     /// discovered keys); the deletion loop's MANAGED_DROP_IN_BASENAMES
-    /// guard keeps them safe — see the BUG #B36 regression test
+    /// guard keeps them safe — see the regression test
     /// `update_runner_in_place_preserves_operator_drop_ins` for the
     /// guarded-operator-basename branch.
     #[test]
@@ -9450,13 +9443,13 @@ mod tests {
     /// `\u{1b}` escape form `char::escape_default` emits is present,
     /// and (iii) the surrounding `wrote ` prefix is intact.
     ///
-    /// Pinned because the `describe()` method has 13 String-typed
-    /// variant arms (RemoveFile, StartUnit, GitHubRegistration, etc.);
-    /// a future refactor that drops `escape_control_chars` from one
-    /// arm would compile and pass other describe() tests, but
-    /// re-introduce the ANSI-hijack attack surface for that variant.
-    /// WriteFile is the canary — symmetric coverage is one assertion
-    /// chain across all 13 (a separate field-set audit covers the rest).
+    /// Pinned because the `describe()` method has 9 variant arms
+    /// (RemoveFile, StartUnit, GitHubRegistration, etc.); a future
+    /// refactor that drops `escape_control_chars` from one arm would
+    /// compile and pass other describe() tests, but re-introduce the
+    /// ANSI-hijack attack surface for that variant. WriteFile is the
+    /// canary — symmetric coverage is one assertion chain across all 9
+    /// (a separate field-set audit covers the rest).
     #[test]
     fn undo_step_write_file_describe_escapes_hostile_path() {
         let hostile = Utf8PathBuf::from("/etc/ghars/\x1b[31mshim.conf");
@@ -10265,10 +10258,10 @@ mod tests {
     /// This test extends the wiring pin to the remaining variants and
     /// the second interpolated field of `GitHubRegistration`.
     ///
-    /// `UndoStep` has 13 variants total. Twelve are covered here
+    /// `UndoStep` has 9 variants total. Eight are covered here
     /// (every variant except `WriteFile`), plus a second
     /// `GitHubRegistration` row so the `name` and `url` interpolation
-    /// paths each get an independent pin. A 14th sub-case
+    /// paths each get an independent pin. A 10th sub-case
     /// (`GitHubRegistration[hostile-runner_home]`)
     /// is included as a forward-looking pin: today `describe()` does
     /// NOT interpolate `runner_home`, so the case asserts only the
@@ -10352,7 +10345,7 @@ mod tests {
             // two operator-readable fields). Cover hostile-name and
             // hostile-url separately so a refactor that escapes only
             // one of the two would still fail this test. Other fields
-            // (auth_name, runner_home, user) are not interpolated by
+            // (auth_name, runner_home) are not interpolated by
             // `describe()`'s `GitHubRegistration` arm, so the
             // hostile-runner_home row below uses the
             // `expects_interpolation=false` mode.

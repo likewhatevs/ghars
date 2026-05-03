@@ -1985,10 +1985,10 @@ mod tests {
 
     /// A regular file whose first bytes are not the gzip magic
     /// (`1f 8b`) MUST reject. Operators occasionally point
-    /// `--runner-tarball` at a saved HTML error page or a JPEG; the
-    /// validator surfaces an actionable error at config-load time so
-    /// they don't get a cryptic `extract_tarball` failure deep
-    /// inside `apply`.
+    /// `[[runner]].runner_tarball` at a saved HTML error page or a
+    /// JPEG; the validator surfaces an actionable error at
+    /// config-load time so they don't get a cryptic
+    /// `extract_tarball` failure deep inside `apply`.
     ///
     /// Format pin: the rejection MUST embed the actual bytes seen
     /// as `got: XX YY`. Operators can attribute the file format
