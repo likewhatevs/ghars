@@ -890,98 +890,101 @@ fn paths_equal(a: &Utf8Path, b: &Utf8Path) -> bool {
     a.as_str().trim_end_matches('/') == b.as_str().trim_end_matches('/')
 }
 
-/// Extract `tarball_path` into `staging`, then publish the staged tree
-/// at `final_dir`. The publish step is the design's "atomic rename"
-/// from Part 17 SEC-09 and is implemented in three layers:
-///
-/// 1. **Fresh install (`final_dir` absent).** Plain `rename(2)` of
-///    staging onto `final_dir`. `rename(2)` is atomic for a directory
-///    move when source and destination are on the same filesystem;
-///    the directory entry under `runner_home/` flips from absent to
-///    present in a single step.
-///
-/// 2. **Upgrade-in-place (`final_dir` already exists).** Use
-///    `renameat2(RENAME_EXCHANGE)` (via `nix::fcntl::renameat2` with
-///    `RenameFlags::RENAME_EXCHANGE`) to atomically swap the staging
-///    directory and the existing `bin.<version>/` directory. After
-///    the swap the OLD bin tree lives at `staging` and the new tree
-///    lives at `final_dir`; we then `remove_dir_all(staging)` to
-///    discard the old tree. There is no window where `final_dir` is
-///    absent — readers see either the old tree or the new tree at
-///    every instant, never a missing entry. This closes the
-///    upgrade-in-place atomicity gap from design Part 17 SEC-09.
-///
-/// 3. **Fallbacks.** Two fallbacks preserve correctness on
-///    less-capable filesystems and across-filesystem moves:
-///    - `EINVAL` / `ENOSYS` from `renameat2`: kernel < 3.15 or a
-///      filesystem that does not implement `RENAME_EXCHANGE`. Fall
-///      back to the historical remove-then-rename pattern
-///      (`remove_dir_all(final_dir)` then `rename(staging,
-///      final_dir)`). This pattern has the brief
-///      `final_dir`-is-absent window described in concern 2 above —
-///      acceptable because apply.rs holds the global `apply.lock`
-///      and stops the runner unit before this function runs, so no
-///      reader observes the gap. `tracing::warn` fires so operators
-///      on legacy systems see the degraded path.
-///    - `EXDEV`: `<state_dir>/.staging/` and `<runner_home>/` are
-///      on different filesystems. Fall back to `copy_dir_recursive`
-///      + `remove_dir_all(staging)`. NOT atomic — a crash mid-copy
-///      leaves a partial `bin.<version>/`. apply's self-healing
-///      re-extract on the next run covers this; forbidding cross-FS
-///      layouts at preflight would be operator-hostile and the
-///      design does not require it.
-///
-/// After the publish step completes (any of the three layers), both
-/// `runner_home/` and `staging.parent()` are fsynced via
-/// [`fsync_directory`]. Both parent directories' entries change as
-/// part of the swap (the new entry under `runner_home/`, the
-/// changed-or-removed entry under `staging.parent()`); fsyncing both
-/// makes both visible across a crash. Failures of the staging-parent
-/// fsync are logged but do NOT propagate — staging is transient and
-/// any orphan there is cleaned up by the next `install_runner_binary`
-/// (which removes a pre-existing staging directory before reusing
-/// it).
-///
-/// SEC-16 TOCTOU-safe extractor: takes an already-opened tarball
-/// `File` and threads it through to [`extract_tarball_from_file`]
-/// so the path is not re-resolved between the open-time validation
-/// in [`verify_local_tarball_open`] and the read.
-///
-/// `cfg(test)`-only test seam over `nix::fcntl::renameat2`. When the
-/// thread-local [`tests::FORCED_RENAMEAT2_ERRNO`] cell is set,
-/// returns the configured synthetic `Errno` (drives the EINVAL,
-/// ENOSYS, EXDEV, or unhandled-errno branches of
-/// [`extract_and_swap_from_file`] without requiring a kernel that
-/// actually rejects the call). Per-thread state means parallel
-/// tests cannot interfere — each test sets its own forcing on its
-/// own thread, and no global lock is needed. Production builds
-/// compile a no-op shim that delegates to the real syscall.
+/// Marker for `RENAME_EXCHANGE` that compiles on every `target_env`.
+/// nix 0.29 gates `RenameFlags` behind `target_env = "gnu"`;
+/// this zero-sized stand-in avoids the conditional-compile issue
+/// on musl while keeping the call site explicit about intent.
+struct RenameExchange;
+
+/// `cfg(test)`-only test seam over the `renameat2(RENAME_EXCHANGE)`
+/// upgrade-in-place path. When the thread-local
+/// [`tests::FORCED_RENAMEAT2_ERRNO`] cell is set, returns the
+/// configured synthetic `Errno` (drives the EINVAL, ENOSYS, EXDEV,
+/// or unhandled-errno branches of [`extract_and_swap_from_file`]
+/// without requiring a kernel that actually rejects the call).
+/// Per-thread state means parallel tests cannot interfere — each
+/// test sets its own forcing on its own thread, and no global lock
+/// is needed. Production builds compile a no-op shim that delegates
+/// to the real syscall on gnu and to a synthetic `ENOSYS` on musl
+/// (routing musl targets through the existing remove-then-rename
+/// fallback at compile time, since `nix::fcntl::renameat2` is gated
+/// behind `target_env = "gnu"` in nix 0.29).
 #[cfg(test)]
-fn renameat2_with_test_seam(
-    old_dirfd: Option<std::os::fd::RawFd>,
+fn renameat2_exchange_with_test_seam(
     old_path: &std::path::Path,
-    new_dirfd: Option<std::os::fd::RawFd>,
     new_path: &std::path::Path,
-    flags: nix::fcntl::RenameFlags,
+    _flag: RenameExchange,
 ) -> nix::Result<()> {
     if let Some(forced) = tests::FORCED_RENAMEAT2_ERRNO.with(std::cell::Cell::get) {
         return Err(forced);
     }
-    nix::fcntl::renameat2(old_dirfd, old_path, new_dirfd, new_path, flags)
+    renameat2_exchange_real(old_path, new_path)
 }
 
 #[cfg(not(test))]
 #[inline(always)]
-fn renameat2_with_test_seam(
-    old_dirfd: Option<std::os::fd::RawFd>,
+fn renameat2_exchange_with_test_seam(
     old_path: &std::path::Path,
-    new_dirfd: Option<std::os::fd::RawFd>,
     new_path: &std::path::Path,
-    flags: nix::fcntl::RenameFlags,
+    _flag: RenameExchange,
 ) -> nix::Result<()> {
-    nix::fcntl::renameat2(old_dirfd, old_path, new_dirfd, new_path, flags)
+    renameat2_exchange_real(old_path, new_path)
 }
 
+/// Real `renameat2(RENAME_EXCHANGE)` invocation, routed at compile
+/// time. On gnu, delegate to `nix::fcntl::renameat2` (which wraps
+/// `libc::renameat2` — only available on glibc). On any other libc
+/// (musl, android, …), `nix::fcntl::renameat2` is not compiled so
+/// we synthesize `Errno::ENOSYS`; the caller handles that errno by
+/// falling back to remove-then-rename. The `unsafe_code = "forbid"`
+/// lint rules out a direct `libc::syscall(SYS_renameat2, ...)`
+/// invocation here, and `libc::renameat2` itself is gated to glibc
+/// in libc 0.2.x — pulling rustix just for this one call would
+/// double the static-link footprint of the runsvc-wrapper binary
+/// for no atomicity benefit on musl: apply.rs holds the global
+/// `apply.lock` and stops the runner unit before
+/// [`extract_and_swap_from_file`] runs, so the brief absent-final
+/// window in the fallback is unobservable.
+#[cfg(target_env = "gnu")]
+#[inline]
+fn renameat2_exchange_real(
+    old_path: &std::path::Path,
+    new_path: &std::path::Path,
+) -> nix::Result<()> {
+    nix::fcntl::renameat2(
+        None,
+        old_path,
+        None,
+        new_path,
+        nix::fcntl::RenameFlags::RENAME_EXCHANGE,
+    )
+}
+
+#[cfg(not(target_env = "gnu"))]
+#[inline]
+fn renameat2_exchange_real(
+    _old_path: &std::path::Path,
+    _new_path: &std::path::Path,
+) -> nix::Result<()> {
+    // Non-glibc target_env (musl, etc.). nix 0.29's renameat2 is
+    // gnu-only; libc 0.2.x's `renameat2` symbol is also glibc-only.
+    // Synthesizing ENOSYS routes [`extract_and_swap_from_file`]
+    // through its existing remove-then-rename fallback, which is
+    // safe under apply.lock + stopped runner unit.
+    Err(nix::errno::Errno::ENOSYS)
+}
+
+/// Extract `tarball_path` into `staging`, then publish the staged tree
+/// at `final_dir`. Three layers: (1) fresh install via plain `rename(2)`,
+/// (2) upgrade-in-place via `renameat2(RENAME_EXCHANGE)` on glibc
+/// targets (musl synthesizes `ENOSYS` at compile time, routing through
+/// the fallback), (3) fallbacks for `EINVAL`/`ENOSYS` (remove-then-rename)
+/// and `EXDEV` (copy-then-remove). The brief absent-final window in
+/// the fallback is unobservable under `apply.lock` + stopped runner unit.
+///
+/// SEC-16 TOCTOU-safe: takes an already-opened tarball `File` and
+/// threads it through to [`extract_tarball_from_file`] so the path is
+/// not re-resolved between open-time validation and the read.
 fn extract_and_swap_from_file(
     tarball_file: File,
     staging: &Utf8Path,
@@ -995,12 +998,10 @@ fn extract_and_swap_from_file(
         // Upgrade-in-place: atomically swap staging ↔ final_dir.
         // After RENAME_EXCHANGE, the OLD tree is at staging and the
         // new tree is at final_dir; we remove the displaced old tree.
-        match renameat2_with_test_seam(
-            None,
+        match renameat2_exchange_with_test_seam(
             staging.as_std_path(),
-            None,
             final_dir.as_std_path(),
-            nix::fcntl::RenameFlags::RENAME_EXCHANGE,
+            RenameExchange,
         ) {
             Ok(()) => {
                 fs::remove_dir_all(staging)?;
@@ -1277,7 +1278,7 @@ mod tests {
 
     thread_local! {
         /// `cfg(test)` test seam: when `Some(errno)`, the seam
-        /// helper [`renameat2_with_test_seam`] returns that errno
+        /// helper [`renameat2_exchange_with_test_seam`] returns that errno
         /// synthetically instead of invoking the real syscall.
         /// Per-thread storage means parallel test threads each have
         /// their own forcing — no Mutex needed. Tests opt in via the

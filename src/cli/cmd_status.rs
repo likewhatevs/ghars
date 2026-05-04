@@ -522,8 +522,7 @@ Lots of lines above
     /// of the relaxed grammar; lock the exact value to 0.1.
     #[test]
     fn parse_overall_exposure_safe_label_preserves_decimal() {
-        let output =
-            "→ Overall exposure level for ghars-runner@hardened.service: 0.1 SAFE 😀\n";
+        let output = "→ Overall exposure level for ghars-runner@hardened.service: 0.1 SAFE 😀\n";
         let (score, label) = parse_overall_exposure(output).expect("must parse");
         assert!((score - 0.1).abs() < 1e-9, "score must be 0.1; got {score}");
         assert_eq!(label, "SAFE");
@@ -539,9 +538,7 @@ Lots of lines above
         for i in 0..50 {
             text.push_str(&format!("preamble line {i}\n"));
         }
-        text.push_str(
-            "→ Overall exposure level for ghars-cache@build.service: 7.2 EXPOSED 🙁\n",
-        );
+        text.push_str("→ Overall exposure level for ghars-cache@build.service: 7.2 EXPOSED 🙁\n");
         let (score, label) = parse_overall_exposure(&text).expect("must parse");
         assert!((score - 7.2).abs() < 1e-9);
         assert_eq!(label, "EXPOSED");
@@ -561,8 +558,7 @@ Lots of lines above
     /// label inserted before the numeric score) without panicking.
     #[test]
     fn parse_overall_exposure_returns_none_on_unparseable_score() {
-        let output =
-            "→ Overall exposure level for ghars-runner@x.service: NOT-A-NUMBER OK 🙂\n";
+        let output = "→ Overall exposure level for ghars-runner@x.service: NOT-A-NUMBER OK 🙂\n";
         assert!(parse_overall_exposure(output).is_none());
     }
 
@@ -771,7 +767,9 @@ Lots of lines above
             "header line must include the column titles; got: {out}"
         );
         assert!(
-            out.contains("ghars-runner@buckos.service") && out.contains("4.9") && out.contains("OK"),
+            out.contains("ghars-runner@buckos.service")
+                && out.contains("4.9")
+                && out.contains("OK"),
             "Ok row must include the unit name, formatted score, and label; got: {out}"
         );
         assert!(

@@ -28,7 +28,18 @@ multiple-versions = "deny"
 wildcards = "deny"
 allow = []
 deny = []
-skip = []
+# Transitive duplicate-version splits — all from upstream dep trees
+# that haven't converged on a single major. Benign; each pair is a
+# different consumer pulling a different major.
+skip = [
+    { crate = "getrandom" },
+    { crate = "redox_syscall" },
+    { crate = "toml_datetime" },
+    { crate = "toml_edit" },
+    { crate = "windows-sys" },
+    { crate = "winnow" },
+    { crate = "wit-bindgen" },
+]
 skip-tree = []
 
 [sources]
@@ -51,6 +62,7 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause",
     "GPL-2.0",
+    "GPL-2.0-only",
     "ISC",
     "MIT",
     "MPL-2.0",

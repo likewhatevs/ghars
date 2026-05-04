@@ -150,7 +150,10 @@ libc = "0.2"
 #               established the runner identity before the wrapper
 #               starts.
 # - `fs`      → `fcntl::{renameat2, RenameFlags::RENAME_EXCHANGE}` for
-#               extract.rs's atomic upgrade-in-place directory swap;
+#               extract.rs's atomic upgrade-in-place directory swap
+#               (gnu only; musl builds synthesize ENOSYS and use
+#               the remove-then-rename fallback — see
+#               extract.rs::renameat2_exchange_real);
 #               `fcntl::{FcntlArg, FdFlag, fcntl}` so the
 #               runsvc-wrapper can clear FD_CLOEXEC on the verified
 #               script fd before fexecve (binfmt_script requires
