@@ -1,16 +1,16 @@
-//! Tests for `apply::gc` (gc_stale_temp_files + gc_stale_staging_dirs).
+//! Tests for `apply::gc` (`gc_stale_temp_files` + `gc_stale_staging_dirs`).
 
 use std::fs::OpenOptions;
 use std::path::Path;
 
 use super::super::gc::{
-    STALE_TEMP_AGE_SECS, gc_stale_staging_dirs, gc_stale_temp_files,
-    parse_staging_dir_suffix, parse_temp_file_suffix,
+    STALE_TEMP_AGE_SECS, gc_stale_staging_dirs, gc_stale_temp_files, parse_staging_dir_suffix,
+    parse_temp_file_suffix,
 };
 use super::common::make_paths;
 
 /// Plant a synthetic `.NAME.tmp.PID.COUNTER` file in `dir`,
-/// optionally back-dating its mtime past STALE_TEMP_AGE_SECS.
+/// optionally back-dating its mtime past `STALE_TEMP_AGE_SECS`.
 fn plant_temp_file(dir: &Path, name: &str, age_secs: Option<u64>) -> std::path::PathBuf {
     std::fs::create_dir_all(dir).unwrap();
     let path = dir.join(name);
@@ -204,7 +204,7 @@ fn gc_stale_temp_files_tolerates_missing_dirs() {
 
 /// Plant a synthetic `<state_dir>/.staging/<name>-<version>-<pid>/`
 /// directory, optionally back-dating its mtime past
-/// STALE_TEMP_AGE_SECS. Returns the planted path so the test can
+/// `STALE_TEMP_AGE_SECS`. Returns the planted path so the test can
 /// assert presence / absence after the GC pass.
 fn plant_staging_dir(
     state_dir: &Path,
@@ -329,8 +329,8 @@ fn gc_stale_staging_dirs_preserves_unparseable_dir_names() {
     for name in cases {
         let dir = staging_root.as_std_path().join(name);
         std::fs::create_dir_all(&dir).unwrap();
-        let new_mtime = std::time::SystemTime::now()
-            - std::time::Duration::from_secs(STALE_TEMP_AGE_SECS + 30);
+        let new_mtime =
+            std::time::SystemTime::now() - std::time::Duration::from_secs(STALE_TEMP_AGE_SECS + 30);
         let f = OpenOptions::new().read(true).open(&dir).unwrap();
         f.set_modified(new_mtime).unwrap();
         planted.push(dir);
@@ -430,7 +430,7 @@ fn gc_stale_staging_dirs_removes_nested_contents() {
 /// Pin the no-op contract on an empty
 /// `.staging/`. After a previous gc pass the parent stays as an
 /// empty dir; subsequent gc invocations must NOT remove the
-/// parent (extract.rs::install_runner_binary calls
+/// parent (`extract.rs::install_runner_binary` calls
 /// `fs::create_dir_all(&staging_root)` on every install but the
 /// idempotent guarantee holds whether or not we delete the root)
 /// and must NOT panic. Pairs with the missing-root test above.
@@ -491,7 +491,7 @@ fn gc_stale_staging_dirs_no_op_on_empty_staging_root() {
 /// e.g. `/etc` and relying on a future regression of the lstat
 /// invariant (or a refactor that switches to `metadata()` —
 /// which DOES follow symlinks) to redirect `remove_dir_all`
-/// outside the staging root. Symmetric to gc_stale_temp_files's
+/// outside the staging root. Symmetric to `gc_stale_temp_files`'s
 /// `!is_file()` symlink-skip pattern.
 #[test]
 fn gc_stale_staging_dirs_skips_symlink_entries() {
@@ -579,7 +579,7 @@ fn parse_staging_dir_suffix_accepts_versioned_runner_name() {
 }
 
 /// 4i: directive-named contract pin for `parse_staging_dir_suffix`,
-/// symmetric with the parse_temp_file_suffix tests below.
+/// symmetric with the `parse_temp_file_suffix` tests below.
 /// Documents the four cases the convergence team called out:
 /// - canonical `<name>-<version>-<pid>` → Some(pid)
 /// - non-numeric trailing → None

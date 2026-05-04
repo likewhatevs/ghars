@@ -3,7 +3,6 @@
 
 use super::*;
 
-
 #[test]
 fn render_plan_json_update_runner_emits_field_changes_and_drop_in_changes() {
     // JSON output must surface
@@ -82,7 +81,7 @@ fn render_plan_json_update_runner_emits_field_changes_and_drop_in_changes() {
     assert!(dics[0].get("after").is_none(), "no body diff in basic JSON");
 }
 
-/// Pin the List-typed FieldValue JSON shape end-to-end.
+/// Pin the List-typed `FieldValue` JSON shape end-to-end.
 /// Symmetric with the String-typed pin in
 /// `render_plan_json_update_runner_emits_field_changes_and_drop_in_changes` —
 /// catches drift where a renderer change accidentally collapses
@@ -779,7 +778,6 @@ fn cmd_manpages_writes_top_level_and_per_subcommand_files() {
 // the compile (the `match cli.command` would emit a
 // non-exhaustive-pattern error).
 
-
 #[test]
 fn dispatch_routing_validate() {
     assert!(matches!(
@@ -908,7 +906,7 @@ fn dispatch_routing_netns_veth_hidden() {
 
 /// Compile-time exhaustiveness gate: this test fails to COMPILE
 /// if a new Command variant is added without extending the
-/// dispatch_routing_* test suite. The match must list every
+/// `dispatch_routing`_* test suite. The match must list every
 /// variant by name so the rustc non-exhaustive-pattern error
 /// surfaces during routine `cargo check --tests`.
 #[test]
@@ -973,7 +971,7 @@ fn dispatch_completions_returns_ok_zero() {
     assert_eq!(exit, 0);
 }
 
-/// dispatch's NetnsVeth arm propagates `run_in_netns`'s empty-
+/// dispatch's `NetnsVeth` arm propagates `run_in_netns`'s empty-
 /// program rejection. Pins the wiring; complementary to
 /// `netns::tests::run_in_netns_rejects_empty_program` which
 /// covers the helper directly.
@@ -1002,15 +1000,15 @@ fn dispatch_netns_veth_propagates_empty_program_rejection() {
 
 // -------- trust_zone charset validator ------------------------------
 
-/// Helper for the trust_zone tests: build the minimal Config that
+/// Helper for the `trust_zone` tests: build the minimal Config that
 /// `validate_identity_fields` expects, then mutate the runner /
-/// pool's trust_zone in-place. We bypass `toml::from_str` because
+/// pool's `trust_zone` in-place. We bypass `toml::from_str` because
 /// embedding raw `\n` / `\0` in a TOML basic string would also be
 /// rejected by the parser before our validator ran — we want to
 /// prove our validator catches the chars, not that TOML happens to
 /// reject the literal escape sequences.
 
-/// A runner.trust_zone containing `\n` must be rejected at
+/// A `runner.trust_zone` containing `\n` must be rejected at
 /// config-load by `validate_identity_fields`. Without this gate
 /// the only check would be `render_identity`, which surfaces the
 /// error during `plan` rather than `validate` and without the
@@ -1054,7 +1052,7 @@ fn validate_identity_fields_rejects_runner_trust_zone_with_newline() {
     }
 }
 
-/// A runner.trust_zone containing `\0` (NUL byte) must be
+/// A `runner.trust_zone` containing `\0` (NUL byte) must be
 /// rejected. Pinned alongside the newline test because NUL is a
 /// distinct branch in `check_identity_field`'s NUL-class branch
 /// — a future regression that broadened the newline check but
@@ -1096,7 +1094,7 @@ fn validate_identity_fields_rejects_runner_trust_zone_with_nul() {
 /// branch is exercised by the two tests above; this test pins the
 /// SECOND iteration in `validate_identity_fields` (the one over
 /// `cfg.cache_pools`). Without this test the cleaner could remove
-/// the cache_pool loop and only the runner tests would notice.
+/// the `cache_pool` loop and only the runner tests would notice.
 #[test]
 fn validate_identity_fields_rejects_cache_pool_trust_zone_with_newline() {
     // Reuse the runner-flavored fixture for everything but the
@@ -1143,7 +1141,7 @@ fn validate_identity_fields_rejects_cache_pool_trust_zone_with_newline() {
 
 // -------- trust_zone length cap ----------------------------------
 
-/// A runner trust_zone of exactly TRUST_ZONE_MAX_LEN chars MUST
+/// A runner `trust_zone` of exactly `TRUST_ZONE_MAX_LEN` chars MUST
 /// pass — the cap is inclusive (the longest accepted, not
 /// exclusive). Pins that the comparison is `>` not `>=`.
 #[test]
@@ -1159,7 +1157,7 @@ fn validate_trust_zone_lengths_accepts_runner_at_max_len() {
     });
 }
 
-/// A runner trust_zone one char past TRUST_ZONE_MAX_LEN MUST
+/// A runner `trust_zone` one char past `TRUST_ZONE_MAX_LEN` MUST
 /// reject. Error message must (a) scope to the offending runner,
 /// (b) echo the offending value, (c) name the cap, and (d) cite
 /// the systemd 31-char ceiling so the operator understands why.
@@ -1197,7 +1195,7 @@ fn validate_trust_zone_lengths_rejects_runner_one_past_max_len() {
     }
 }
 
-/// A cache_pool trust_zone of exactly TRUST_ZONE_MAX_LEN chars
+/// A `cache_pool` `trust_zone` of exactly `TRUST_ZONE_MAX_LEN` chars
 /// MUST pass — symmetric to the runner-side acceptance test.
 #[test]
 fn validate_trust_zone_lengths_accepts_cache_pool_at_max_len() {
@@ -1221,9 +1219,9 @@ fn validate_trust_zone_lengths_accepts_cache_pool_at_max_len() {
     });
 }
 
-/// A cache_pool trust_zone one char past TRUST_ZONE_MAX_LEN MUST
+/// A `cache_pool` `trust_zone` one char past `TRUST_ZONE_MAX_LEN` MUST
 /// reject — symmetric to the runner-side rejection test, scoped
-/// to the cache_pool surface.
+/// to the `cache_pool` surface.
 #[test]
 fn validate_trust_zone_lengths_rejects_cache_pool_one_past_max_len() {
     let oversize = "a".repeat(crate::validators::TRUST_ZONE_MAX_LEN + 1);
@@ -1270,7 +1268,7 @@ fn validate_trust_zone_lengths_rejects_cache_pool_one_past_max_len() {
 // -------- config_source charset (plan-time gate) -------------------
 
 /// `config_source` is composed at plan time from
-/// `paths.config_dir.join("ghars.toml")` (plan_from's config_source
+/// `paths.config_dir.join("ghars.toml")` (`plan_from`'s `config_source`
 /// synthesis). A `Paths`
 /// instance with a `\n` in `config_dir` (synthesizable in tests
 /// today, plumbable via a future `--config-dir` flag) must reject
@@ -1292,8 +1290,8 @@ fn plan_from_rejects_config_source_with_newline_in_paths_config_dir() {
         ..Paths::default()
     };
     let actual = state::ActualState::default();
-    let err = plan::plan_from(&cfg, &actual, &paths)
-        .expect_err("config_source with newline must reject");
+    let err =
+        plan::plan_from(&cfg, &actual, &paths).expect_err("config_source with newline must reject");
     match err {
         GharsError::Validation(msg, _) => {
             assert!(
@@ -1319,7 +1317,7 @@ fn plan_from_rejects_config_source_with_newline_in_paths_config_dir() {
 /// config load. The duplicate would render two identical
 /// X-Ghars-Caches comma-elements (`render_identity` joins the
 /// Vec via `cache_names.join(",")`), and apply.rs canonicalizes
-/// through BTreeSet, so plan would oscillate the spec_hash on
+/// through `BTreeSet`, so plan would oscillate the `spec_hash` on
 /// every re-run as the Vec equality flips between
 /// duplicate-preserved and dedup-canonical forms.
 #[test]
@@ -1413,8 +1411,8 @@ fn validate_single_sccache_pool_per_runner_rejects_two_sccache_refs() {
 }
 
 /// A runner referencing one sccache pool plus one ccache-only pool
-/// must pass. ccache pools use filesystem mode (CCACHE_DIR per pool)
-/// and do not emit SCCACHE_SERVER_UDS, so they don't conflict.
+/// must pass. ccache pools use filesystem mode (`CCACHE_DIR` per pool)
+/// and do not emit `SCCACHE_SERVER_UDS`, so they don't conflict.
 #[test]
 fn validate_single_sccache_pool_per_runner_accepts_one_sccache_plus_ccache() {
     let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
@@ -1427,7 +1425,7 @@ fn validate_single_sccache_pool_per_runner_accepts_one_sccache_plus_ccache() {
 
 /// A runner referencing one combined-kind pool (both ccache and
 /// sccache in the same `[cache_pools.NAME]`) must pass. The single
-/// pool emits exactly one SCCACHE_SERVER_UDS line.
+/// pool emits exactly one `SCCACHE_SERVER_UDS` line.
 #[test]
 fn validate_single_sccache_pool_per_runner_accepts_one_combined_pool() {
     let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
@@ -1445,7 +1443,7 @@ fn validate_single_sccache_pool_per_runner_accepts_one_combined_pool() {
 }
 
 /// A runner referencing two ccache-only pools must pass. Only
-/// sccache is single-valued; ccache pools have distinct CCACHE_DIR
+/// sccache is single-valued; ccache pools have distinct `CCACHE_DIR`
 /// values and compose without conflict.
 #[test]
 fn validate_single_sccache_pool_per_runner_accepts_two_ccache_pools() {
@@ -1453,8 +1451,7 @@ fn validate_single_sccache_pool_per_runner_accepts_two_ccache_pools() {
     insert_cache_pool(&mut cfg, "obj-a", vec![crate::config::CacheKind::Ccache]);
     insert_cache_pool(&mut cfg, "obj-b", vec![crate::config::CacheKind::Ccache]);
     cfg.runners[0].caches = vec!["obj-a".into(), "obj-b".into()];
-    validate_single_sccache_pool_per_runner(&cfg)
-        .expect("two ccache pools must pass validation");
+    validate_single_sccache_pool_per_runner(&cfg).expect("two ccache pools must pass validation");
 }
 
 /// Cross-runner sccache binding does NOT trip the per-runner gate.
@@ -1476,7 +1473,7 @@ fn validate_single_sccache_pool_per_runner_accepts_cross_runner_sccache() {
 }
 
 /// Unknown pool refs (referenced but not declared in
-/// `[cache_pools.NAME]`) are silently skipped here — plan_from's
+/// `[cache_pools.NAME]`) are silently skipped here — `plan_from`'s
 /// unknown-pool gate surfaces them later. The validator must not
 /// panic on `cfg.cache_pools.get(unknown) == None`.
 #[test]
@@ -1491,7 +1488,7 @@ fn validate_single_sccache_pool_per_runner_skips_unknown_refs() {
 // -------- AuthSpec::Pat XOR shape gate ------------------------------
 
 /// Build a fixture Config with a single `[auth.NAME]` entry of
-/// AuthSpec::Pat and the runner's auth ref pointing at `name`. The
+/// `AuthSpec::Pat` and the runner's auth ref pointing at `name`. The
 /// 4+ reject tests below all share this scaffold — the helper
 /// collapses the boilerplate and pins the auth-name → error
 /// scope linkage in one place.
@@ -1511,16 +1508,16 @@ fn validate_single_sccache_pool_per_runner_skips_unknown_refs() {
 ///     emitted by `prepend_validation_scope`.
 ///   - msg does NOT contain a redundant `kind = pat`/`kind =
 ///     "pat"` prefix — the scope already identifies
-///     the offending `[auth.NAME]` block and AuthSpec::Pat is the
+///     the offending `[auth.NAME]` block and `AuthSpec::Pat` is the
 ///     only variant the loop checks.
 ///   - hint is non-empty.
 #[track_caller]
 
 /// `[auth.NAME]` with `kind = "pat"` and BOTH `token_env` and
-/// `token_file` set must reject at config-load. PatToken::new
-/// re-validates at apply time, but cmd_validate / cmd_plan
+/// `token_file` set must reject at config-load. `PatToken::new`
+/// re-validates at apply time, but `cmd_validate` / `cmd_plan`
 /// short-circuit before reaching `build_token_source` — the
-/// load_config gate is the operator-visible rejection point for
+/// `load_config` gate is the operator-visible rejection point for
 /// `ghars validate`.
 #[test]
 fn validate_pat_xor_rejects_both_token_env_and_token_file_set() {
@@ -1574,8 +1571,8 @@ fn validate_pat_xor_accepts_token_file_only() {
 ///
 /// Hint shape is pinned via `assert_pat_xor_rejects` —
 /// asserts the hint references "environment variable" (the
-/// remediation domain) and the canonical example token_env =
-/// "GHARS_PAT" so a future regression that drops the example
+/// remediation domain) and the canonical example `token_env` =
+/// "`GHARS_PAT`" so a future regression that drops the example
 /// value or shifts the field-name reference is caught.
 #[test]
 fn validate_pat_xor_rejects_empty_token_env() {
@@ -1596,7 +1593,7 @@ fn validate_pat_xor_rejects_empty_token_env() {
 ///
 /// Hint shape pinned — references the SEC-25 invariant
 /// ("0600 root-owned file") and the canonical example
-/// token_file = "/etc/ghars/pat".
+/// `token_file` = "/etc/ghars/pat".
 #[test]
 fn validate_pat_xor_rejects_empty_token_file() {
     let cfg = cfg_with_pat_auth("pat", None, Some(""));
@@ -1633,7 +1630,7 @@ fn validate_pat_xor_rejects_whitespace_only_token_env_space() {
 /// Tab-only `token_env = "\t"` — same gate, different
 /// whitespace class (HT, U+0009). `str::trim` strips Unicode
 /// whitespace per `char::is_whitespace`, of which `\t` is one.
-/// Pinned so a regression that narrows trim() to spaces only
+/// Pinned so a regression that narrows `trim()` to spaces only
 /// (e.g. `s.replace(' ', "").is_empty()`) is caught.
 #[test]
 fn validate_pat_xor_rejects_whitespace_only_token_env_tab() {
@@ -1679,7 +1676,7 @@ fn validate_pat_xor_rejects_whitespace_only_token_env_mixed() {
 }
 
 /// Whitespace-only `token_file = " "` — symmetric with the
-/// token_env gate. `Utf8PathBuf::from(" ")` is a path with a
+/// `token_env` gate. `Utf8PathBuf::from(" ")` is a path with a
 /// single-space basename which would surface as a confusing
 /// "open failed" or "stat failed" error inside `PatToken::new`.
 #[test]
@@ -1708,7 +1705,7 @@ fn validate_pat_xor_rejects_whitespace_only_token_file_tab() {
 }
 
 /// CRLF `token_file = "\r\n"` — symmetric with the
-/// token_env CRLF gate. Operators occasionally paste from
+/// `token_env` CRLF gate. Operators occasionally paste from
 /// Windows tools that include `\r\n`. `str::trim` strips both,
 /// so the gate rejects.
 #[test]
@@ -1724,8 +1721,8 @@ fn validate_pat_xor_rejects_whitespace_only_token_file_crlf() {
 }
 
 /// Mixed whitespace `token_file = " \t\n "` — symmetric
-/// with the token_env mixed-whitespace gate. Pins that the
-/// token_file gate rejects ANY all-whitespace combination, not
+/// with the `token_env` mixed-whitespace gate. Pins that the
+/// `token_file` gate rejects ANY all-whitespace combination, not
 /// just single-class runs.
 #[test]
 fn validate_pat_xor_rejects_whitespace_only_token_file_mixed() {
@@ -2033,7 +2030,7 @@ fn validate_pat_xor_rejects_token_env_with_soft_hyphen() {
 
 /// `token_file` containing a BOM (U+FEFF) at the start
 /// rejects via the hidden-char gate. Symmetric with the
-/// token_env BOM pin; the path-side surface is independent
+/// `token_env` BOM pin; the path-side surface is independent
 /// because paths lack the POSIX charset gate that catches BOM
 /// implicitly on the env-var side.
 #[test]
@@ -2066,7 +2063,7 @@ fn validate_pat_xor_rejects_token_file_with_nul() {
 
 /// `token_file` containing a zero-width joiner (U+200D)
 /// rejects via the hidden-char gate. Symmetric with the
-/// token_env ZWNJ pin.
+/// `token_env` ZWNJ pin.
 #[test]
 fn validate_pat_xor_rejects_token_file_with_zero_width_joiner() {
     let cfg = cfg_with_pat_auth("pat", None, Some("/etc/ghars\u{200D}/pat"));
@@ -2086,8 +2083,8 @@ fn validate_pat_xor_rejects_token_file_with_zero_width_joiner() {
 /// the WJ + invisible-math block, the bidi-isolate block,
 /// the variation-selector block, and BOM) is pinned by at least
 /// one test so a regression that drops a slot from the matches
-/// arm is caught. ZWJ is covered by the token_file pin; this
-/// test pins WJ on the token_env side.
+/// arm is caught. ZWJ is covered by the `token_file` pin; this
+/// test pins WJ on the `token_env` side.
 #[test]
 fn validate_pat_xor_rejects_token_env_with_word_joiner() {
     let cfg = cfg_with_pat_auth("pat", Some("FOO\u{2060}BAR"), None);
@@ -2126,7 +2123,7 @@ fn validate_pat_xor_rejects_token_env_with_control_char_esc() {
 /// charset gate. Input `"\u{FEFF}foo-bar"` would fail BOTH:
 /// the BOM is in the explicit hidden-char list, AND the dash
 /// in `foo-bar` violates POSIX charset. The hidden-char gate is
-/// reached first (cli.rs check_empty_or_hidden runs before the
+/// reached first (cli.rs `check_empty_or_hidden` runs before the
 /// regex match), so the diagnostic must surface as
 /// "hidden character ... U+FEFF" — not "POSIX environment
 /// variable name". Pinned so a future restructure that flips
@@ -2149,7 +2146,7 @@ fn validate_pat_xor_precedence_hidden_char_before_posix_charset() {
 /// byte offset 1 (after a 1-byte ASCII 'X'). The diagnostic
 /// must surface "byte offset 1" — not 0 or any character index.
 /// Pinned so a regression that emits a character index instead
-/// of a byte offset (e.g. swapping char_indices for chars) is
+/// of a byte offset (e.g. swapping `char_indices` for chars) is
 /// caught.
 #[test]
 fn validate_pat_xor_rejects_token_env_hidden_char_at_nonzero_byte_offset() {
@@ -2174,14 +2171,13 @@ fn validate_pat_xor_rejects_token_env_hidden_char_at_nonzero_byte_offset() {
 #[test]
 fn validate_pat_xor_accepts_token_file_with_internal_space() {
     let cfg = cfg_with_pat_auth("pat", None, Some("/etc/ghars/my pat"));
-    validate_pat_xor(&cfg)
-        .expect("token_file with internal-only whitespace must pass shape gate");
+    validate_pat_xor(&cfg).expect("token_file with internal-only whitespace must pass shape gate");
 }
 
 /// Precedence pin: per-field gates fire BEFORE the XOR
 /// tuple-match. Input `(Some("FOO-BAR"), Some("/etc/ghars/pat"))`
 /// is BOTH XOR-violating (both fields set) AND charset-violating
-/// on token_env (dash in "FOO-BAR"). The per-field charset gate
+/// on `token_env` (dash in "FOO-BAR"). The per-field charset gate
 /// is reached on the env-side first, so the diagnostic surfaces
 /// as "POSIX environment variable name" — not "mutually
 /// exclusive". Pinned so a future restructure that hoists the
@@ -2232,7 +2228,7 @@ fn validate_pat_xor_rejects_unusual_auth_name_xor_both_set() {
 /// hardcoded substring drift in the rejector would slip past
 /// the canonical "pat" name. Defense-in-depth — the validator
 /// MUST identify the offending block by the operator's chosen
-/// name, not by a hardcoded substring of the AuthSpec variant.
+/// name, not by a hardcoded substring of the `AuthSpec` variant.
 #[test]
 fn validate_pat_xor_rejects_unusual_auth_name() {
     let cfg = cfg_with_pat_auth("alpha-zone-creds", Some(""), None);
@@ -2323,9 +2319,9 @@ fn validate_pat_xor_precedence_both_whitespace_emits_empty_env_not_xor() {
     );
 }
 
-/// Token_file precedence: `(None, Some(""))` — only
-/// token_file is set, and it is empty. The empty-token_file arm
-/// must fire and emit the "token_file is empty or whitespace-
+/// `Token_file` precedence: `(None, Some(""))` — only
+/// `token_file` is set, and it is empty. The empty-token_file arm
+/// must fire and emit the "`token_file` is empty or whitespace-
 /// only" diagnostic, NOT the (false, false) "exactly one"
 /// diagnostic. Pinned so a regression that confuses
 /// `token_file.is_some()` with `token_file.as_ref().is_some_and(non_empty)`
@@ -2353,7 +2349,7 @@ fn validate_pat_xor_precedence_token_file_only_empty_emits_empty_file_not_requir
 /// but without this test the continuation contract is unpinned —
 /// a regression that early-returned on
 /// the first non-Pat variant would silently let bad Pat configs
-/// flow through cmd_plan/cmd_status. IndexMap preserves insert
+/// flow through `cmd_plan/cmd_status`. `IndexMap` preserves insert
 /// order, so the fixture builds [interactive, pat] in that
 /// order and asserts the error scopes to "pat".
 #[test]
@@ -2414,7 +2410,7 @@ fn validate_pat_xor_rejects_bad_pat_before_non_pat_variant() {
 /// the bad one (and scopes the error to its name). Pinned so a
 /// regression that aborts on the first Pat regardless of shape
 /// (or that misattributes the error to the first auth name) is
-/// caught. IndexMap preserves insert order: [good-pat, bad-pat].
+/// caught. `IndexMap` preserves insert order: [good-pat, bad-pat].
 #[test]
 fn validate_pat_xor_rejects_only_the_bad_pat_in_multi_pat_auth() {
     let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
@@ -2449,13 +2445,13 @@ fn validate_pat_xor_rejects_only_the_bad_pat_in_multi_pat_auth() {
 }
 
 /// Reverse direction: bad Pat FIRST, good Pat SECOND. The
-/// validator iterates in IndexMap insert order and must early-
+/// validator iterates in `IndexMap` insert order and must early-
 /// return on the bad Pat without examining the trailing good
 /// one. Pins the early-return contract: the loop fires on the
 /// first Pat that fails the shape gate and never visits later
 /// entries. Pinned alongside the [good-pat, bad-pat] case so a
 /// regression that filters/skips Pat entries (e.g. a hypothetical
-/// "find_first(predicate)" rewrite that misorders) is caught
+/// "`find_first(predicate)`" rewrite that misorders) is caught
 /// from both sides.
 #[test]
 fn validate_pat_xor_rejects_first_bad_pat_before_trailing_good_pat() {
@@ -2494,9 +2490,9 @@ fn validate_pat_xor_rejects_first_bad_pat_before_trailing_good_pat() {
 /// order) and never examines the second. Pinned so a regression
 /// that "accumulates" failures across multiple Pat entries (or
 /// that misattributes the error to the second bad one) is
-/// caught. IndexMap preserves insert order: [bad1, bad2]. The
-/// fixture uses cfg_with_pat_auth for bad1, then manually
-/// inserts bad2 with the same fault shape (token_env=Some("")).
+/// caught. `IndexMap` preserves insert order: [bad1, bad2]. The
+/// fixture uses `cfg_with_pat_auth` for bad1, then manually
+/// inserts bad2 with the same fault shape (`token_env=Some`("")).
 #[test]
 fn validate_pat_xor_rejects_first_bad_pat_when_both_pats_faulted() {
     let mut cfg = cfg_with_pat_auth("bad1", Some(""), None);
@@ -2519,7 +2515,7 @@ fn validate_pat_xor_rejects_first_bad_pat_when_both_pats_faulted() {
     );
 }
 
-/// Non-Pat AuthSpec variants (`Interactive`, `TokenFile`,
+/// Non-Pat `AuthSpec` variants (`Interactive`, `TokenFile`,
 /// `GithubApp`) have no XOR shape to validate. The validator
 /// loop walks every entry but no-ops on non-Pat variants. Pinned
 /// so a future regression that fires on non-Pat variants is
@@ -2554,7 +2550,7 @@ fn validate_pat_xor_accepts_non_pat_auth_variants() {
 /// (Right-to-Left Override) rejects via the hidden-char gate.
 /// Load-bearing for the security claim that bidi-override
 /// attacks (Boucher & Anderson 2021) cannot reach apply-time
-/// env::var lookup. RLO renders subsequent characters
+/// `env::var` lookup. RLO renders subsequent characters
 /// right-to-left in operator terminals, allowing visually
 /// identical strings to be different bytewise.
 #[test]
@@ -2569,15 +2565,15 @@ fn validate_pat_xor_rejects_token_env_with_right_to_left_override() {
     );
 }
 
-/// RLO Trojan Source on token_file: symmetric with the
-/// token_env RLO pin above. A `token_file` path containing U+202E
+/// RLO Trojan Source on `token_file`: symmetric with the
+/// `token_env` RLO pin above. A `token_file` path containing U+202E
 /// (Right-to-Left Override) rejects via the hidden-char gate.
 /// RLO inside a path is a credible attack surface — bidi-rendered
 /// paths can disguise their actual byte sequence to a reviewing
 /// operator (e.g. `/etc/ghars/Pat.txt` rendered as
 /// `/etc/ghars/txt.taP` after RLO). Defense-in-depth pin so a
 /// regression that drops U+202E from the matches arm but leaves
-/// the token_env pin intact is still caught.
+/// the `token_env` pin intact is still caught.
 #[test]
 fn validate_pat_xor_rejects_token_file_with_right_to_left_override() {
     let cfg = cfg_with_pat_auth("pat", None, Some("/etc/ghars/\u{202E}pat"));
@@ -2800,7 +2796,7 @@ fn validate_pat_xor_rejects_token_env_with_arabic_letter_mark() {
 
 /// `token_file = "/etc/ghars/with\nnewline"` (embedded
 /// newline in a path) rejects via the hidden-char gate.
-/// ALL Cc chars reject in token_file — there is no `\t`
+/// ALL Cc chars reject in `token_file` — there is no `\t`
 /// `\n` `\r` carve-out, so a path with a literal newline
 /// cannot survive the hidden-char scan and slip past the
 /// trim-mismatch gate (which only catches whitespace at the
@@ -2874,7 +2870,7 @@ fn validate_pat_xor_rejects_first_bad_pat_charset_before_hidden_char_pat() {
 }
 
 /// Reverse-ordering pin: multi-Pat where the FIRST entry
-/// (IndexMap insertion order — `cfg.auth` is
+/// (`IndexMap` insertion order — `cfg.auth` is
 /// `IndexMap<String, AuthSpec>` so iteration follows insertion,
 /// NOT alphabetical) fails on hidden-char and the second entry
 /// fails on charset. The validator early-returns on the first
@@ -2882,7 +2878,7 @@ fn validate_pat_xor_rejects_first_bad_pat_charset_before_hidden_char_pat() {
 /// text, never the charset text. Symmetric with the
 /// charset-before-hidden pin above; together they pin
 /// iteration-order independence: whichever fault comes first in
-/// IndexMap insertion order is the one surfaced, regardless of
+/// `IndexMap` insertion order is the one surfaced, regardless of
 /// fault class.
 #[test]
 fn validate_pat_xor_rejects_first_bad_pat_hidden_char_before_charset_pat() {
@@ -2979,7 +2975,7 @@ fn validate_pat_xor_rejects_token_env_with_dollar() {
 /// listed Mn codepoints (CGJ U+034F, variation selectors
 /// U+FE00..=U+FE0F) rejected; arbitrary combining marks like
 /// U+0300..=U+036F passed through. Pinned to catch a regression
-/// that drops the GeneralCategory check.
+/// that drops the `GeneralCategory` check.
 #[test]
 fn is_disallowed_hidden_char_rejects_combining_grave_accent() {
     assert!(is_disallowed_hidden_char('\u{0300}'));
@@ -3070,7 +3066,7 @@ fn is_disallowed_hidden_char_rejects_variation_selector() {
 }
 
 /// Negative pin — U+0903 DEVANAGARI SIGN VISARGA is Mc
-/// (Spacing_Mark), NOT Mn. Defends against accidentally
+/// (`Spacing_Mark`), NOT Mn. Defends against accidentally
 /// broadening the check to all Mark class (Mn+Mc+Me). Without
 /// this pin a future regression that swaps the
 /// `GeneralCategory::NonspacingMark` check for a generic
@@ -3083,10 +3079,10 @@ fn is_disallowed_hidden_char_accepts_spacing_mark() {
 
 // -------- validate_auth_keys tests ---------------------------------
 
-/// A properly-shaped auth key (matches IDENTIFIER_REGEX:
+/// A properly-shaped auth key (matches `IDENTIFIER_REGEX`:
 /// lowercase letters + digits + dashes, starts with letter,
-/// ends with letter/digit) MUST pass validate_auth_keys. The
-/// canonical "pat" key from cfg_with_runner_trust_zone is the
+/// ends with letter/digit) MUST pass `validate_auth_keys`. The
+/// canonical "pat" key from `cfg_with_runner_trust_zone` is the
 /// happy-path pin.
 #[test]
 fn validate_auth_keys_accepts_canonical_pat() {
@@ -3104,10 +3100,10 @@ fn validate_auth_keys_accepts_kebab_case_multi_segment() {
     validate_auth_keys(&cfg).expect("kebab-case multi-segment auth key must pass");
 }
 
-/// An auth key with an underscore (e.g. "alpha_zone_creds")
-/// rejects via validate_identifier — IDENTIFIER_REGEX is
+/// An auth key with an underscore (e.g. "`alpha_zone_creds`")
+/// rejects via `validate_identifier` — `IDENTIFIER_REGEX` is
 /// kebab-only (`[a-z0-9-]`), no underscores. Operators
-/// migrating from snake_case TOML conventions need a clear
+/// migrating from `snake_case` TOML conventions need a clear
 /// rejection rather than a confusing apply-time error.
 #[test]
 fn validate_auth_keys_rejects_underscore() {
@@ -3137,7 +3133,7 @@ fn validate_auth_keys_rejects_underscore() {
 }
 
 /// An auth key with an uppercase letter rejects.
-/// IDENTIFIER_REGEX is lowercase-only.
+/// `IDENTIFIER_REGEX` is lowercase-only.
 #[test]
 fn validate_auth_keys_rejects_uppercase() {
     let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
@@ -3154,7 +3150,7 @@ fn validate_auth_keys_rejects_uppercase() {
 }
 
 /// An auth key starting with a dash rejects.
-/// IDENTIFIER_REGEX requires a leading letter.
+/// `IDENTIFIER_REGEX` requires a leading letter.
 #[test]
 fn validate_auth_keys_rejects_dash_leading() {
     let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
@@ -3171,7 +3167,7 @@ fn validate_auth_keys_rejects_dash_leading() {
 }
 
 /// An empty auth key rejects via the empty-input arm of
-/// validate_identifier. TOML allows empty quoted keys
+/// `validate_identifier`. TOML allows empty quoted keys
 /// (`[auth.""]`), so this is reachable from operator input.
 #[test]
 fn validate_auth_keys_rejects_empty() {
@@ -3207,7 +3203,7 @@ fn validate_auth_keys_rejects_embedded_whitespace() {
     assert!(matches!(err, GharsError::Validation(..)));
 }
 
-/// validate_auth_keys walks every entry. When the first
+/// `validate_auth_keys` walks every entry. When the first
 /// entry passes and the second fails, the validator surfaces
 /// the second's error. Pinned to catch a regression that early-
 /// returns on the first entry (only checking entry 0).
@@ -3241,20 +3237,20 @@ fn validate_auth_keys_walks_past_valid_to_invalid() {
     }
 }
 
-/// Load_config integration pin: a TOML config that has a
+/// `Load_config` integration pin: a TOML config that has a
 /// shape-valid `[auth.NAME]` Pat block but uses a quoted key
 /// containing whitespace (`[auth."bad key"]`) MUST reject at
-/// load_config time via the validate_auth_keys gate, BEFORE the
-/// downstream validate_pat_xor gate ever runs. Pinned end-to-end
-/// (file → load_config → first failing validator) because
-/// load_config is the single chokepoint that every CLI subcommand
-/// (cmd_validate, cmd_plan, cmd_apply, cmd_status, cmd_add) routes
-/// through; a regression that drops validate_auth_keys from the
-/// load_config sequence would silently accept hostile keys at all
-/// five callsites at once. The Pat block's token_env is shape-valid
+/// `load_config` time via the `validate_auth_keys` gate, BEFORE the
+/// downstream `validate_pat_xor` gate ever runs. Pinned end-to-end
+/// (file → `load_config` → first failing validator) because
+/// `load_config` is the single chokepoint that every CLI subcommand
+/// (`cmd_validate`, `cmd_plan`, `cmd_apply`, `cmd_status`, `cmd_add`) routes
+/// through; a regression that drops `validate_auth_keys` from the
+/// `load_config` sequence would silently accept hostile keys at all
+/// five callsites at once. The Pat block's `token_env` is shape-valid
 /// (`GHARS_PAT` passes POSIX charset and hidden-char gates) so the
-/// rejection here can ONLY come from validate_auth_keys — proves
-/// load_config wiring order.
+/// rejection here can ONLY come from `validate_auth_keys` — proves
+/// `load_config` wiring order.
 #[test]
 fn load_config_rejects_auth_key_with_space_before_pat_xor_gate() {
     let tmp = tempfile::tempdir().unwrap();
@@ -3300,10 +3296,10 @@ auth = \"bad key\"
 /// Pins (a) `validate_cache_pool_names` returns a Validation error
 /// scoped to the offending pool, (b) the rejection reaches the
 /// identifier-shape gate, and (c) Validation maps to exit code 6
-/// via `err_to_exit_code`. Wire-up at cmd_validate / cmd_plan /
-/// cmd_apply is structurally verified by code review; end-to-end
-/// integration coverage is pending in the cmd_validate / cmd_plan
-/// / cmd_apply integration suite.
+/// via `err_to_exit_code`. Wire-up at `cmd_validate` / `cmd_plan` /
+/// `cmd_apply` is structurally verified by code review; end-to-end
+/// integration coverage is pending in the `cmd_validate` / `cmd_plan`
+/// / `cmd_apply` integration suite.
 #[test]
 fn validate_cache_pool_names_rejects_oversize_pool_with_exit_code_six() {
     let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
@@ -3340,7 +3336,7 @@ fn validate_cache_pool_names_rejects_oversize_pool_with_exit_code_six() {
 
 /// Acceptance boundary: a runner.caches entry whose length
 /// exactly equals `IDENTIFIER_MAX_LEN` must pass — and the same
-/// name as a cache_pools key must also pass. Pins the
+/// name as a `cache_pools` key must also pass. Pins the
 /// inclusive-of-cap contract so a future tightening of the
 /// identifier cap (e.g. accidental change to `<` instead of `<=`)
 /// is caught by this test rather than by an operator hitting a

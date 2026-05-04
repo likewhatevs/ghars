@@ -8,16 +8,18 @@
 //! decision branch can be exercised without root or a controlled host.
 //!
 //! Coverage:
-//! - preflight_os: ubuntu 22 (fail), 24 (pass), fedora 38/40 (fail/pass),
+//! - `preflight_os`: ubuntu 22 (fail), 24 (pass), fedora 38/40 (fail/pass),
 //!   rhel 9/10 (fail/pass), centos/rocky/almalinux 10 (pass), debian
-//!   (unsupported), missing VERSION_ID, malformed VERSION_ID,
+//!   (unsupported), missing `VERSION_ID`, malformed `VERSION_ID`,
 //!   non-existent file, empty file, mismatched quotes, comment line.
-//! - preflight_root: euid=0 (pass), euid=1000 (fail), missing Uid line
+//! - `preflight_root`: euid=0 (pass), euid=1000 (fail), missing Uid line
 //!   (fail), non-existent status file (fail).
-//! - preflight_tools: every tool present (pass), one missing (fail with
+//! - `preflight_tools`: every tool present (pass), one missing (fail with
 //!   missing-name), all missing (fail listing all).
-//! - preflight_ptrace_scope: 0/1 (warn), 2/3 (pass), missing
+//! - `preflight_ptrace_scope`: 0/1 (warn), 2/3 (pass), missing
 //!   (warn-no-yama), malformed body (warn-cannot-parse).
+
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use ghars::preflight::{
     Outcome, preflight_os_with_path, preflight_ptrace_scope_with_path,
@@ -396,7 +398,7 @@ fn preflight_ptrace_scope_passes_at_two() {
     let p = write_fixture(&tmp, "scope", "2\n");
     let r = preflight_ptrace_scope_with_path(&p);
     assert_eq!(r.outcome, Outcome::Pass);
-    assert!(r.detail.contains("2"));
+    assert!(r.detail.contains('2'));
 }
 
 #[test]

@@ -90,7 +90,7 @@ use crate::github::{self, Scope};
 /// implement this safely without a dep, and CLAUDE.md prefers
 /// established crates over hand-rolled security primitives. The
 /// `source` and `expires_at` fields are not secret (source is a label
-/// like `github:NAME` and expires_at is a UTC instant); they are
+/// like `github:NAME` and `expires_at` is a UTC instant); they are
 /// `#[zeroize(skip)]` so derive does not require a `Zeroize` impl on
 /// `chrono::DateTime<Utc>`.
 ///
@@ -118,7 +118,7 @@ pub struct RegistrationToken {
     /// Expiry instant. For octocrab-minted tokens this is GitHub's
     /// `expires_at` (passed through verbatim — octocrab's
     /// `SelfHostedRunnerToken.expires_at` is already
-    /// `chrono::DateTime<Utc>`, so no SystemTime round-trip risks
+    /// `chrono::DateTime<Utc>`, so no `SystemTime` round-trip risks
     /// nanosecond precision loss). For sourced-from-disk / interactive
     /// tokens it is `Utc::now() + 3570s` (1h minus a 30s safety margin).
     /// Not secret; `#[zeroize(skip)]` so derive doesn't require a
@@ -488,6 +488,7 @@ impl InteractiveToken {
     /// Build an `InteractiveToken`. Construction is infallible — the
     /// TTY check happens at mint time so `validate` does not require
     /// a controlling terminal.
+    #[must_use]
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
@@ -747,7 +748,7 @@ async fn call_octocrab_token(
 /// `SelfHostedRunnerToken.expires_at` is already
 /// `chrono::DateTime<Utc>`, and ghars stores the same type, so no
 /// conversion is needed. `source` is the per-runner `"github:NAME"`
-/// tag used by ApplyResult to attribute audit-log entries to the
+/// tag used by `ApplyResult` to attribute audit-log entries to the
 /// auth principal.
 #[must_use]
 fn registration_token_from_api(
@@ -932,6 +933,7 @@ fn read_root_owned_0600(path: &Path, field_label: &str) -> Result<Vec<u8>> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use std::fs::File;
@@ -1226,7 +1228,7 @@ mod tests {
     /// token_env and token_file are set; pick exactly one`. Existing
     /// `pat_token_rejects_both_env_and_file` tests substring `"both"`
     /// + the [auth.NAME] hint substitution; this test pins the full
-    /// message wording so a future PatToken::new edit that softens
+    /// message wording so a future `PatToken::new` edit that softens
     /// "pick exactly one" to "remove one" (or similar) is caught at
     /// the test layer.
     #[test]
@@ -1289,7 +1291,7 @@ mod tests {
         // we do not assert post-state of `var` here.
     }
 
-    /// (None, Some) — token_file path — Ok arm. Cannot be
+    /// (None, Some) — `token_file` path — Ok arm. Cannot be
     /// exercised under unit tests because `read_root_owned_0600`
     /// requires the file to be `mode 0600 owner=root`, and the test
     /// runner is unprivileged. Existing tests pin the rejection
@@ -1375,7 +1377,7 @@ mod tests {
     /// mutation is documented thread-safe (illumos/netbsd/windows).
     /// libtest spawns at least one runner thread per test, so a Linux
     /// nextest+libtest test process is multi-threaded by construction;
-    /// the `env` crate refuses to mutate and PatToken::new's scrub is
+    /// the `env` crate refuses to mutate and `PatToken::new`'s scrub is
     /// skipped per spec ("warn but don't fail"). Per-process semantics
     /// in production (where ghars's CLI runs single-threaded until
     /// first mint at auth.rs:303-308 builds the tokio runtime) are
@@ -1386,7 +1388,7 @@ mod tests {
     ///   - exercises the scrub-fired branch (single-thread; var is
     ///     removed), OR
     ///   - exercises the warn-and-proceed branch (multi-thread; var
-    ///     stays set; PatToken::new still returns Ok because the PAT
+    ///     stays set; `PatToken::new` still returns Ok because the PAT
     ///     was already read into the token).
     /// Production single-threaded coverage is left to manual / CI
     /// integration tests that invoke the binary out-of-process.
@@ -1570,9 +1572,7 @@ mod tests {
         let dur = tok.expires_at.signed_duration_since(now);
         assert!(
             dur >= TimeDelta::seconds(3500) && dur <= NON_API_TOKEN_TTL + TimeDelta::seconds(2),
-            "expires_at {:?} not in expected range (now + ~{:?})",
-            dur,
-            NON_API_TOKEN_TTL
+            "expires_at {dur:?} not in expected range (now + ~{NON_API_TOKEN_TTL:?})"
         );
     }
 
@@ -1641,7 +1641,7 @@ mod tests {
 
     // ---- registration_token_from_api conversion -----------------------
 
-    /// Build a synthetic `SelfHostedRunnerToken` via serde_json since
+    /// Build a synthetic `SelfHostedRunnerToken` via `serde_json` since
     /// the upstream struct is `#[non_exhaustive]` (not constructible
     /// outside octocrab). Tests deserialize a JSON literal to drive
     /// the conversion helper as if octocrab had returned it.
@@ -1727,7 +1727,7 @@ mod tests {
 
     /// Helper: invoke the production code path `call_octocrab_token`
     /// then `octocrab_to_auth` against a real octocrab error. Returns
-    /// the rendered Display message of the resulting GharsError so
+    /// the rendered Display message of the resulting `GharsError` so
     /// tests assert on the operator-facing hint.
     fn drive_repo_registration_error_through_pipeline(
         client: &octocrab::Octocrab,
@@ -1768,7 +1768,7 @@ mod tests {
     }
 
     /// Pins that 403 shares the 401|403 match arm — parity with
-    /// github.rs fetch_latest_release_403 pattern. A regression
+    /// github.rs `fetch_latest_release_403` pattern. A regression
     /// splitting the arm would surface here.
     #[test]
     fn octocrab_to_auth_403_emits_permissions_scopes_hint() {
@@ -1959,7 +1959,7 @@ mod tests {
     // unmatched and `mock.assert()` would fail — so this test also
     // pins that the PAT does reach the wire.
 
-    /// Pin: octocrab::Error Display does not leak the
+    /// Pin: `octocrab::Error` Display does not leak the
     /// Authorization-bearer PAT, the request-body bytes, or the
     /// response-body bytes when rendered through `octocrab_to_auth`.
     /// Defense-in-depth supply-chain guard.
@@ -2110,7 +2110,7 @@ mod tests {
     /// `read_root_owned_0600` on a symlink fails at open(2) with
     /// ELOOP. The error must not include any indication of what was
     /// behind the symlink (its target file's contents). Even though
-    /// O_NOFOLLOW prevents following, a hypothetical future swap to
+    /// `O_NOFOLLOW` prevents following, a hypothetical future swap to
     /// followed-then-stat'd reads (regressing SEC-06) would expose
     /// target contents — this test pins the no-leak contract.
     #[test]
@@ -2184,8 +2184,8 @@ mod tests {
         );
     }
 
-    /// PatToken's "env var unset" error path (auth.rs:261-267) maps
-    /// `env::var(env)` failure to a GharsError::Auth that names the
+    /// `PatToken`'s "env var unset" error path (auth.rs:261-267) maps
+    /// `env::var(env)` failure to a `GharsError::Auth` that names the
     /// env VAR (config-level info) but cannot leak the env's VALUE
     /// because `env::var()` returns Err *only* when the var is
     /// unset / non-UTF-8 — neither path makes the value available.

@@ -1,10 +1,10 @@
 //! Test split part 3: covers caches classifier edge cases, labels classifier
-//! edge cases (parity with caches), delta.before_caches sort site, C-6
-//! regression (operator 99-*.conf masks recreate), trust_zone in-place
+//! edge cases (parity with caches), `delta.before_caches` sort site, C-6
+//! regression (operator 99-*.conf masks recreate), `trust_zone` in-place
 //! contract, network mode recreate contract, missing-annotation tolerance +
 //! empty-value handling, round-trip annotation symmetry, empty-value vs
-//! absent-line annotation contract, runsvc_integrity recreate when annotation
-//! missing, and recreate_reasons type-level invariant. Migrated verbatim
+//! absent-line annotation contract, `runsvc_integrity` recreate when annotation
+//! missing, and `recreate_reasons` type-level invariant. Migrated verbatim
 //! from plan.rs.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -34,7 +34,7 @@ use super::*;
 /// minimal-runner defaults via `spec_with_url` + `merge_defaults`,
 /// then `caches` is overwritten with synthesized
 /// `EffectiveCacheBinding`s (the classifier only reads
-/// `binding.name`, so kinds/size/mode/trust_zone are arbitrary).
+/// `binding.name`, so `kinds/size/mode/trust_zone` are arbitrary).
 fn spec_with_cache_names(names: &[&str]) -> EffectiveRunnerSpec {
     let mut spec = spec_with_url("a", "https://github.com/example/repo");
     spec.caches = names
@@ -64,7 +64,7 @@ fn anns_with_caches(caches: Option<&[&str]>) -> DiscoveredAnnotations {
 /// Edge case 1: discovered.caches = None (older runner that
 /// predates the unconditional X-Ghars-Caches emit). Classifier
 /// MUST skip the caches comparison entirely so no spurious
-/// FieldChange and no recreate reason fire — the post-upgrade
+/// `FieldChange` and no recreate reason fire — the post-upgrade
 /// runner's first plan/apply lands the annotation and a future
 /// edit can reconcile from there.
 #[test]
@@ -118,7 +118,7 @@ fn classify_caches_same_single_element_no_change() {
 /// Edge case 4 (set-semantic contract): same multi-element
 /// list in DIFFERENT order (discovered = ["a", "b"], desired =
 /// ["b", "a"]). Classifier MUST be silent — apply.rs uses
-/// BTreeSet semantics and would do nothing, so plan output must
+/// `BTreeSet` semantics and would do nothing, so plan output must
 /// agree. This pins the sort-then-compare contract.
 #[test]
 fn classify_caches_reorder_is_silent() {
@@ -134,7 +134,7 @@ fn classify_caches_reorder_is_silent() {
 }
 
 /// Edge case 5: caches grows from N to N+1 elements. Classifier
-/// MUST record a FieldChange with both sides rendered in sorted
+/// MUST record a `FieldChange` with both sides rendered in sorted
 /// order (the canonical form apply will execute against).
 #[test]
 fn classify_caches_grow_emits_field_change_sorted() {
@@ -160,7 +160,7 @@ fn classify_caches_grow_emits_field_change_sorted() {
 }
 
 /// Edge case 6: caches shrinks from N to N-1 elements. Symmetric
-/// to grow — FieldChange recorded, sides sorted.
+/// to grow — `FieldChange` recorded, sides sorted.
 #[test]
 fn classify_caches_shrink_emits_field_change_sorted() {
     let anns = anns_with_caches(Some(&["pool-b", "pool-a"]));
@@ -181,7 +181,7 @@ fn classify_caches_shrink_emits_field_change_sorted() {
 }
 
 /// Edge case 7: multi-element replacement (different sets of same
-/// size). Classifier records FieldChange; both sides sorted.
+/// size). Classifier records `FieldChange`; both sides sorted.
 #[test]
 fn classify_caches_multi_element_replacement_sorted() {
     let anns = anns_with_caches(Some(&["pool-c", "pool-a"]));
@@ -243,7 +243,7 @@ fn spec_with_label_names(names: &[&str]) -> EffectiveRunnerSpec {
 /// labels share the set-semantic treatment per the comment block
 /// above the labels branch in `classify_recreate_reasons_from_annotations`.
 /// A regression that drops the sort on either side would surface
-/// here as a spurious `labels` reason + FieldChange.
+/// here as a spurious `labels` reason + `FieldChange`.
 #[test]
 fn classify_labels_reorder_is_silent() {
     let anns = anns_with_labels(Some(&["beta", "alpha"]));
@@ -251,7 +251,7 @@ fn classify_labels_reorder_is_silent() {
     let mut changes = Vec::new();
     let reasons = classify_recreate_reasons_from_annotations(&anns, &desired, &mut changes);
     assert!(
-        !reasons.iter().any(|r| *r == "labels"),
+        !reasons.contains(&"labels"),
         "reorder is set-equal ⇒ no labels recreate reason; got {reasons:?}"
     );
     assert!(
@@ -261,7 +261,7 @@ fn classify_labels_reorder_is_silent() {
 }
 
 /// Grow from N to N+1 labels. Membership change MUST surface as a
-/// FieldChange with both before/after rendered in sorted order
+/// `FieldChange` with both before/after rendered in sorted order
 /// (the canonical form GitHub will see at registration time).
 /// Symmetric with `classify_caches_grow_emits_field_change_sorted`.
 #[test]
@@ -273,7 +273,7 @@ fn classify_labels_grow_emits_field_change_sorted() {
     // Labels are recreate-class per the classifier — record the
     // typed reason AND the FieldChange.
     assert!(
-        reasons.iter().any(|r| *r == "labels"),
+        reasons.contains(&"labels"),
         "grow must record `labels` recreate reason; got {reasons:?}"
     );
     let labels_change = changes
@@ -302,7 +302,7 @@ fn classify_labels_none_annotation_skips() {
     let mut changes = Vec::new();
     let reasons = classify_recreate_reasons_from_annotations(&anns, &desired, &mut changes);
     assert!(
-        !reasons.iter().any(|r| *r == "labels"),
+        !reasons.contains(&"labels"),
         "None annotation must skip labels comparison; got {reasons:?}"
     );
     assert!(
@@ -318,7 +318,7 @@ fn classify_labels_none_annotation_skips() {
 /// (--diff output, plan JSON, error messages naming "removed
 /// pools") see canonical alphabetical order regardless of the
 /// order the on-disk `X-Ghars-Caches=` annotation happened to be
-/// written in. Drive plan_from end-to-end with a discovered
+/// written in. Drive `plan_from` end-to-end with a discovered
 /// annotation in non-canonical order; assert the populated
 /// `delta.before_caches` is sorted. A regression that drops the
 /// sort would surface here as Vec equality against the unsorted
@@ -446,9 +446,9 @@ fn delta_before_caches_is_sorted_for_display() {
 /// unmanaged drop-in (e.g. 99-tuning.conf) as in-place evidence —
 /// it must NOT mask a co-occurring recreate-class change.
 ///
-/// Setup: discovered runner has 99-tuning.conf in drop_ins +
+/// Setup: discovered runner has 99-tuning.conf in `drop_ins` +
 /// `Drift::DropInsModified(["99-tuning.conf"])`. Desired spec
-/// changes runner_sha256. Result: recreate must fire with the typed
+/// changes `runner_sha256`. Result: recreate must fire with the typed
 /// `runner_sha256` reason (Stage 1 annotation detection),
 /// NOT silently fall through to in-place.
 #[test]
@@ -514,10 +514,10 @@ fn plan_recreate_on_runner_sha256_change_with_operator_drop_in() {
 
 // ---- trust_zone in-place contract ---------------------------------
 
-/// trust_zone is in EffectiveRunnerSpec spec_hash but has no
+/// `trust_zone` is in `EffectiveRunnerSpec` `spec_hash` but has no
 /// runner-unit body dependency once cache-pool cross-references
 /// validate at config-load time. A trust_zone-only edit must be
-/// in-place: FieldChange recorded, no recreate reason, no
+/// in-place: `FieldChange` recorded, no recreate reason, no
 /// `uncovered` fallback (gated on `field_changes.is_empty()`).
 #[test]
 fn plan_update_runner_trust_zone_change_is_in_place_with_field_change() {
@@ -581,11 +581,11 @@ fn plan_update_runner_trust_zone_change_is_in_place_with_field_change() {
     assert_eq!(tz_change.after, FieldValue::String("audited".into()));
 }
 
-/// Pin that lower_to_effective still rejects a runner whose
-/// declared trust_zone doesn't match a referenced
-/// cache_pool's trust_zone, REGARDLESS of the trust_zone
+/// Pin that `lower_to_effective` still rejects a runner whose
+/// declared `trust_zone` doesn't match a referenced
+/// `cache_pool`'s `trust_zone`, REGARDLESS of the `trust_zone`
 /// annotation's in-place classification. The validation lives at
-/// plan.rs::lower_to_effective (around the cache resolution
+/// `plan.rs::lower_to_effective` (around the cache resolution
 /// loop) and runs BEFORE the classifier ever sees the spec —
 /// so a cross-zone reference is a config-load error, not an
 /// in-place update.
@@ -616,11 +616,11 @@ fn plan_validates_trust_zone_mismatch_with_referenced_cache_pool() {
 // ---- network mode recreate contract -------------------------------
 
 /// Open→Netns transition MUST recreate. The in-place rewrite path
-/// would write 40-network.conf with NetworkNamespacePath= but
+/// would write 40-network.conf with `NetworkNamespacePath`= but
 /// leave the ghars-net@INSTANCE side-units / netns / nft rules
 /// missing, which fail-closes the unit at restart. Recreate
-/// (execute_remove_runner + execute_create_runner) calls
-/// provision_netns_artifacts so all side-units land before the
+/// (`execute_remove_runner` + `execute_create_runner`) calls
+/// `provision_netns_artifacts` so all side-units land before the
 /// runner starts.
 #[test]
 fn plan_update_recreate_on_network_mode_open_to_netns() {
@@ -693,7 +693,7 @@ fn plan_update_recreate_on_network_mode_open_to_netns() {
 /// in-place rewrite would remove 40-network.conf cleanly but
 /// leave ghars-net@INSTANCE active + nft files + the netns
 /// itself orphaned on the host. The recreate path's
-/// execute_remove_runner runs teardown_netns_artifacts.
+/// `execute_remove_runner` runs `teardown_netns_artifacts`.
 #[test]
 fn plan_update_recreate_on_network_mode_netns_to_open() {
     let cfg = config_with_runners(vec![minimal_runner("a")]); // network=None ⇒ Open
@@ -765,10 +765,10 @@ fn plan_update_recreate_on_network_mode_netns_to_open() {
 // ---- missing-annotation tolerance + empty-value handling ---------
 
 /// When the discovered unit has no X-Ghars-Runner-Sha256 line at
-/// all and the desired spec ALSO has no runner_sha256 set, the
-/// missing-on-both-sides shape does not perturb spec_hash — both
-/// sides hash the same `None` — so the planner produces a NoOp
-/// (the classifier never runs for NoOp paths). The test asserts
+/// all and the desired spec ALSO has no `runner_sha256` set, the
+/// missing-on-both-sides shape does not perturb `spec_hash` — both
+/// sides hash the same `None` — so the planner produces a `NoOp`
+/// (the classifier never runs for `NoOp` paths). The test asserts
 /// no `UpdateRunner` action is emitted, pinning that the empty-
 /// vs-empty case stays in-sync rather than spuriously firing
 /// recreate.
@@ -810,7 +810,7 @@ fn plan_update_runner_sha256_none_on_both_sides_does_not_recreate() {
 /// When the discovered unit predates the X-Ghars-Runner-Sha256
 /// annotation (no annotation emitted) but the desired spec sets
 /// a value, Stage
-/// 1 SKIPS the comparison (annotation == None). The spec_hash
+/// 1 SKIPS the comparison (annotation == None). The `spec_hash`
 /// mismatch propagates the change once via the recreate-class
 /// `runner_sha256` reason emitted on the next apply (after the
 /// fresh annotation lands). The point of this test: don't
@@ -865,21 +865,16 @@ fn plan_runner_sha256_missing_annotation_skips_classification() {
         "missing line must yield None (skip), not Some(\"\")"
     );
     let mut field_changes = Vec::new();
-    let reasons = classify_recreate_reasons_from_annotations(
-        &annotations,
-        &desired_spec,
-        &mut field_changes,
-    );
+    let reasons =
+        classify_recreate_reasons_from_annotations(&annotations, &desired_spec, &mut field_changes);
     assert!(
         !reasons.contains(&"runner_sha256"),
         "Stage 1 must skip when annotation is None (post-upgrade tolerance); \
-         got reasons {:?}",
-        reasons
+         got reasons {reasons:?}"
     );
     assert!(
         !field_changes.iter().any(|c| c.path == "runner_sha256"),
-        "no FieldChange should fire on None-side comparison; got: {:?}",
-        field_changes
+        "no FieldChange should fire on None-side comparison; got: {field_changes:?}"
     );
 }
 
@@ -892,9 +887,9 @@ fn plan_runner_sha256_missing_annotation_skips_classification() {
 /// into the right field. Catches mutants on either side that
 /// spell the key wrong or encode the value differently.
 ///
-/// Coverage: url, auth_name, runner_version, labels, arch,
-/// runner_sha256, runner_tarball_hash, trust_zone,
-/// network_mode, caches. The spec is built with non-default values
+/// Coverage: url, `auth_name`, `runner_version`, labels, arch,
+/// `runner_sha256`, `runner_tarball_hash`, `trust_zone`,
+/// `network_mode`, caches. The spec is built with non-default values
 /// for every field so a single mismatch surfaces as a per-field
 /// assertion failure rather than a spec_hash-derived
 /// false-positive.
@@ -1134,7 +1129,7 @@ fn from_drop_in_body_sorts_labels_and_caches_at_parse_time() {
 
 // ---- runsvc_integrity recreate when annotation missing -----------
 
-/// In-place class change (memory_max edit) on a discovered
+/// In-place class change (`memory_max` edit) on a discovered
 /// runner whose 00-ghars.conf is missing X-Ghars-Runsvc-Sha256
 /// MUST route to the recreate path with the `runsvc_integrity`
 /// reason. Hashing runsvc.sh from disk would weaken SEC-02 (the
@@ -1213,7 +1208,7 @@ fn plan_update_recreate_on_runsvc_integrity_when_annotation_missing() {
 /// `field_changes[].before` / `field_changes[].after` as bare
 /// scalar JSON values) fail predictably when reading the v2
 /// tagged-object shape from `FieldValue::to_json`. The v2 JSON
-/// for a String FieldValue is `{"type": "string", "value": "x"}`;
+/// for a String `FieldValue` is `{"type": "string", "value": "x"}`;
 /// a v1 consumer doing `value.as_str()` returns `None` because
 /// the outer value is an Object, not a String. Same predictable-
 /// failure contract for List: v2 wraps in an Object, so a v1
@@ -1295,8 +1290,8 @@ fn field_value_to_json_v1_consumer_predictable_failure() {
 // whenever that branch fires. No direct scenario drives it here.
 
 /// Drive every annotation-detected recreate-class path (url,
-/// runner_version, labels, runner_sha256, runner_tarball, arch,
-/// network) plus the runsvc_integrity guard through
+/// `runner_version`, labels, `runner_sha256`, `runner_tarball`, arch,
+/// network) plus the `runsvc_integrity` guard through
 /// `plan_from` end-to-end. For each scenario, assert that the
 /// resulting `RunnerDelta` satisfies the invariant
 /// `requires_recreate=true ⇒ !recreate_reasons.is_empty()` AND
@@ -1585,14 +1580,14 @@ fn plan_invariant_recreate_implies_non_empty_reasons_across_all_field_classes() 
     );
 }
 
-/// Build a plan that drives the runsvc_integrity recreate path
+/// Build a plan that drives the `runsvc_integrity` recreate path
 /// (missing X-Ghars-Runsvc-Sha256 annotation in 00-ghars.conf)
 /// and return the resulting `UpdateRunner` delta. Mirrors the
 /// existing `plan_update_recreate_on_runsvc_integrity_when_annotation_missing`
-/// fixture: render_identity at systemd.rs only emits the annotation
-/// when spec.runsvc_sha256 is non-empty; feeding the empty
+/// fixture: `render_identity` at systemd.rs only emits the annotation
+/// when `spec.runsvc_sha256` is non-empty; feeding the empty
 /// original spec produces the wire format that triggers the
-/// runsvc_integrity recreate guard.
+/// `runsvc_integrity` recreate guard.
 fn drive_runsvc_integrity_recreate() -> RunnerDelta {
     let cfg = config_with_runners(vec![{
         let mut r = minimal_runner("a");
@@ -1628,13 +1623,13 @@ fn drive_runsvc_integrity_recreate() -> RunnerDelta {
         .expect("[runsvc_integrity] missing-digest fixture must emit UpdateRunner")
 }
 
-/// Drive every in-place classifier path (memory_max, auth_name,
-/// trust_zone, caches) through `plan_from` end-to-end. For each
+/// Drive every in-place classifier path (`memory_max`, `auth_name`,
+/// `trust_zone`, caches) through `plan_from` end-to-end. For each
 /// scenario, assert the inverse invariant
 /// `requires_recreate=false ⇒ recreate_reasons.is_empty()`.
 ///
 /// The inverse direction is load-bearing too. A future regression
-/// that pushed a recreate reason without flipping requires_recreate
+/// that pushed a recreate reason without flipping `requires_recreate`
 /// (e.g. by hard-coding `requires_recreate=false` instead of
 /// deriving it from `!recreate_reasons.is_empty()`) would surface
 /// here as a non-empty reasons Vec on a non-recreate delta — and
@@ -1671,8 +1666,8 @@ fn plan_invariant_no_recreate_implies_empty_recreate_reasons() {
 /// and assert the in-place invariant
 /// (`requires_recreate=false ⇒ recreate_reasons.is_empty()`).
 /// Panics with the scenario label if the plan emits no
-/// UpdateRunner, surfaces requires_recreate=true, or surfaces a
-/// non-empty recreate_reasons Vec.
+/// `UpdateRunner`, surfaces `requires_recreate=true`, or surfaces a
+/// non-empty `recreate_reasons` Vec.
 fn assert_in_place_invariant(label: &str, plan: Plan) {
     let upd = plan
         .actions

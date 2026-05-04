@@ -74,13 +74,13 @@ impl Systemd for MockSystemd {
         Ok(())
     }
     fn stop_unit(&self, unit: &str) -> Result<()> {
-        if let Some(target) = self.fail_stop_unit.lock().unwrap().as_deref() {
-            if target == unit {
-                return Err(GharsError::Systemd(
-                    format!("mock: stop_unit({unit}) injected failure"),
-                    "test injected fault via MockSystemd::fail_stop_unit".into(),
-                ));
-            }
+        if let Some(target) = self.fail_stop_unit.lock().unwrap().as_deref()
+            && target == unit
+        {
+            return Err(GharsError::Systemd(
+                format!("mock: stop_unit({unit}) injected failure"),
+                "test injected fault via MockSystemd::fail_stop_unit".into(),
+            ));
         }
         self.record(format!("stop_unit({unit})"));
         Ok(())
@@ -239,11 +239,10 @@ pub(super) struct MockConfigShell {
 
 impl ConfigShell for MockConfigShell {
     fn run_register(&self, ctx: &ConfigShellCtx<'_>) -> Result<()> {
-        self.registered.lock().unwrap().push((
-            ctx.name.into(),
-            ctx.url.into(),
-            ctx.token.into(),
-        ));
+        self.registered
+            .lock()
+            .unwrap()
+            .push((ctx.name.into(), ctx.url.into(), ctx.token.into()));
         // The real config.sh writes runsvc.sh into $HOME at
         // register time (design Part 9f). Mirror that so
         // execute_create_runner's SEC-02 hash step sees a real

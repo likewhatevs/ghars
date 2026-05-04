@@ -7,18 +7,20 @@
 //! TOML schema.
 //!
 //! Coverage:
-//! - Single runner, default config — one CreateRunner action.
+//! - Single runner, default config — one `CreateRunner` action.
 //! - Single runner with cache pool reference — Create cache pool +
-//!   Create runner; ordering verified by sort_into_phases (apply layer)
-//!   not plan_from output.
+//!   Create runner; ordering verified by `sort_into_phases` (apply layer)
+//!   not `plan_from` output.
 //! - Single runner with netns network — netns binding flows into
-//!   EffectiveNetworkBinding; subnet allocated per /30.
-//! - Multi-runner config (3 explicit + count=4) — 7 CreateRunner
+//!   `EffectiveNetworkBinding`; subnet allocated per /30.
+//! - Multi-runner config (3 explicit + count=4) — 7 `CreateRunner`
 //!   actions, all unique names.
 //! - Auto-skip across explicit collision — count="ci"/3 + explicit
 //!   "ci-2" produces ci-1, ci-2 (explicit), ci-3 only.
 //! - Defaults flow into per-runner specs.
 //! - Auth + cache + network cross-references resolve correctly.
+
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use ghars::config::{AuthSpec, Config, NetworkMode};
 use ghars::paths::Paths;
@@ -548,7 +550,10 @@ caches = ["build", "test"]
     );
     let err = plan_from(&cfg, &ActualState::default(), &Paths::default()).unwrap_err();
     let msg = format!("{err}");
-    assert!(msg.contains("sccache pools"), "msg must name the directive: {msg}");
+    assert!(
+        msg.contains("sccache pools"),
+        "msg must name the directive: {msg}"
+    );
     assert!(
         msg.contains("clobbered") || msg.contains("last-writer-wins"),
         "msg must explain the clobber: {msg}"

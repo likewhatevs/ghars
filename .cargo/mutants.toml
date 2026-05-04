@@ -3,40 +3,31 @@
 # Excludes target adapter modules where the unit tests intentionally
 # don't drive the kernel/D-Bus/network paths. Mutating these files
 # would require either a live D-Bus + systemd + nftables environment
-# (CI runners don't have one wired) or fixtures the design hasn't
-# specified yet. See design Part 13 Tier 4 mutants.toml for the
-# motivating list.
-#
-# Re-include candidates as their tester tasks land:
-#   - preflight.rs once #137 (synthesized /etc/os-release fixtures) +
-#     #174 (preflight test gap) land. Currently 22.71% line coverage.
-#   - netns.rs once #228 (setup/teardown error paths) lands.
-#     Currently 33.01%.
-#   - cli.rs once #138 (status callsite tests) lands. Currently 10.75%.
-#   - bin/runsvc_wrapper.rs once #231 (fexecve mocking strategy)
-#     lands. Currently 58.70% — kept in for now since the parser bits
-#     are already pure-logic.
-#   - main.rs is just CLI dispatch glue; permanent exclude.
+# (CI runners don't have one wired) or fixtures that haven't been
+# synthesized yet. Re-include each file when its tester gap closes:
+# preflight.rs needs synthesized /etc/os-release fixtures; netns.rs
+# needs a mocking seam in front of the ip / nft / sysctl / systemctl
+# shell-outs; the cli command modules dispatch into DbusSystemd::new
+# (live D-Bus only); systemd/dbus.rs IS the live D-Bus adapter.
 
 profile = "mutants"
 
 exclude_globs = [
   "src/main.rs",
-  # cli.rs is mostly dispatch + DbusSystemd::new calls; mutating
-  # logic without a live D-Bus produces only timeout-class outcomes.
-  "src/cli.rs",
+  # CLI command dispatch modules call DbusSystemd::new() and other
+  # live D-Bus paths. Mutating logic without a live D-Bus produces
+  # only timeout-class outcomes.
+  "src/cli/cmd_*.rs",
   # preflight.rs reads /etc/os-release, /proc/self/status, /sys; tests
-  # need synthesized filesystem fixtures (#137) before mutation is
-  # productive.
+  # need synthesized filesystem fixtures before mutation is productive.
   "src/preflight.rs",
   # netns.rs shells out to ip / nft / sysctl / systemctl; without a
-  # mocking seam (#52, #228) mutations time out instead of being caught.
+  # mocking seam the mutations time out instead of being caught.
   "src/netns.rs",
-  # systemd.rs DbusSystemd is the live D-Bus adapter — pure-logic
-  # mutation runs would still load it. The render_* + validate_*
-  # functions ARE pure, but cargo-mutants operates at file granularity
-  # in v25.x. Re-include when DbusSystemd is split into its own module.
-  "src/systemd.rs",
+  # systemd/dbus.rs is the live D-Bus adapter — pure-logic mutation
+  # runs would still load it. The render_* + validate_* helpers in
+  # systemd/units.rs ARE pure and remain in scope.
+  "src/systemd/dbus.rs",
 ]
 
 # Mutants on a slow runner: nextest's pre-compile pass + the actual

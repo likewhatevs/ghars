@@ -23,7 +23,7 @@ use super::render::recreate_removed_basenames;
 /// so consumers can disambiguate without context.
 ///
 /// `diff` controls whether each `drop_in_changes` entry carries the
-/// drop-in body content (`true`) or only the basename + change_kind
+/// drop-in body content (`true`) or only the basename + `change_kind`
 /// (`false`, the body-omitting shape — backward compatible with
 /// existing consumers).
 ///
@@ -33,7 +33,7 @@ use super::render::recreate_removed_basenames;
 /// - `Modified` adds `unified_diff` (string from
 ///   `similar::udiff::unified_diff`).
 /// - `Preserved` adds nothing — the basename + `"preserved"`
-///   change_kind is the entire payload.
+///   `change_kind` is the entire payload.
 ///
 /// For `Action::UpdateRunner` with `requires_recreate = true`, the
 /// planner's `drop_in_changes` is empty by design (recreate
@@ -291,10 +291,10 @@ pub(crate) fn plan_to_json_value(plan: &Plan, diff: bool) -> serde_json::Value {
 ///
 /// **`recreates` element contract**:
 /// - Each element matches the verbatim `Action::label()` output —
-///   the same string cmd_apply emits in `ok: LABEL` and
+///   the same string `cmd_apply` emits in `ok: LABEL` and
 ///   `fail: LABEL` lines, so a single grep on the label spans
 ///   plan and apply surfaces.
-/// - The shape is `Variant(name)` (PascalCase variant + paren-
+/// - The shape is `Variant(name)` (`PascalCase` variant + paren-
 ///   wrapped entity name): `CreateRunner(alpha)`,
 ///   `RemoveRunner(beta)`, `CreateCachePool(build)`,
 ///   `RemoveCachePool(build)`, `UpdateRunner(gamma)` (only when
@@ -302,11 +302,11 @@ pub(crate) fn plan_to_json_value(plan: &Plan, diff: bool) -> serde_json::Value {
 ///   `UpdateRunner` is `Restart` and is excluded). `UpdateCachePool`
 ///   is always `Restart` and never appears here. `NoOp` is
 ///   `Disruption::None` and never appears.
-/// - Element values are PascalCase to match `Action::label()`;
+/// - Element values are `PascalCase` to match `Action::label()`;
 ///   JSON keys (`total_actions`, `by_disruption`, `any_recreate`,
-///   `recreates`) are snake_case. (Mixed case is intentional —
+///   `recreates`) are `snake_case`. (Mixed case is intentional —
 ///   element values mirror Rust enum variant names verbatim;
-///   keys follow snake_case JSON convention.)
+///   keys follow `snake_case` JSON convention.)
 /// - Same-name entities of different kinds disambiguate via the
 ///   variant prefix: `RemoveRunner(alpha)` and `RemoveCachePool(alpha)`
 ///   are distinct labels.
@@ -315,7 +315,7 @@ pub(crate) fn plan_to_json_value(plan: &Plan, diff: bool) -> serde_json::Value {
 ///   elements are indistinguishable). For ASCII-only labels
 ///   (`Action::label()` interpolates entity names matching
 ///   `IDENTIFIER_REGEX` = `^[a-z]([a-z0-9-]*[a-z0-9])?$`, plus the
-///   static PascalCase variant prefix and parens), this coincides
+///   static `PascalCase` variant prefix and parens), this coincides
 ///   with operator-readable alphabetical order.
 ///
 /// **Invariants** (pinned by tests at

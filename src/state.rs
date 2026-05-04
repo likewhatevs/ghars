@@ -51,7 +51,7 @@ pub const MANAGED_DROP_IN_BASENAMES: &[&str] = &[
 /// `<unit_dir>/ghars-cache@POOL.service.d/`. Cache pools have a single
 /// per-pool drop-in (`render_cache_drop_in` in
 /// `crate::systemd`) carrying spec-hash, kinds, group, env, and
-/// ExecStart; nothing else is ghars-managed. Anything outside this set
+/// `ExecStart`; nothing else is ghars-managed. Anything outside this set
 /// (e.g. operator-added `99-tuning.conf`) is treated as drift by
 /// [`classify_cache_pool_drift`].
 pub const MANAGED_CACHE_DROP_IN_BASENAMES: &[&str] = &["00-ghars.conf"];
@@ -396,7 +396,7 @@ fn parse_runner_unit_name(file_name: &str) -> Option<String> {
 /// drop_in_dir_path)` pairs sorted by name.
 ///
 /// Critical asymmetry vs runner discovery: cache pools are systemd
-/// template instances. apply.rs::execute_create_cache_pool writes only
+/// template instances. `apply.rs::execute_create_cache_pool` writes only
 /// (a) the shared template file `ghars-cache@.service` (no `%i`) and
 /// (b) the per-pool drop-in directory `ghars-cache@POOL.service.d/`.
 /// Per-pool unit *files* (`ghars-cache@POOL.service`) NEVER exist on
@@ -677,12 +677,11 @@ impl ParsedUnit {
             if let (Some((key, value)), Some(section)) = (l.split_once('='), current_section) {
                 let key = key.trim().to_owned();
                 let value = value.trim().to_owned();
-                if !key.is_empty() {
-                    if let Some((_, bucket)) =
+                if !key.is_empty()
+                    && let Some((_, bucket)) =
                         out.sections.iter_mut().find(|(name, _)| *name == section)
-                    {
-                        bucket.push((key, value));
-                    }
+                {
+                    bucket.push((key, value));
                 }
             }
         }
@@ -1632,7 +1631,7 @@ mod tests {
     /// `extract_x_ghars` returned an empty iterator on every real
     /// 00-ghars.conf, the in-place update preserved no digest, and
     /// the freshly-rendered drop-in failed runsvc-wrapper's
-    /// ANNOTATION_MISSING fail-stop at the next runner restart.
+    /// `ANNOTATION_MISSING` fail-stop at the next runner restart.
     #[test]
     fn extract_x_ghars_in_section_service_pulls_only_service_section() {
         let body = "[Unit]\n\
@@ -1716,7 +1715,7 @@ mod tests {
     /// Section absent entirely ⇒ None. Even if the key exists in a
     /// different section (here `[Unit]`), looking under `[Service]`
     /// must yield None — same byte-for-byte section match contract
-    /// SystemdSection enforces against typoed casings.
+    /// `SystemdSection` enforces against typoed casings.
     #[test]
     fn extract_x_ghars_value_returns_none_when_section_absent() {
         let body = "[Unit]\nX-Ghars-Runsvc-Sha256=sha256:in-wrong-section\n";
@@ -1847,8 +1846,8 @@ mod tests {
 
     // ---- discover() error path coverage -------------------------------
 
-    /// EACCES on the unit dir: `read_dir` returns PermissionDenied,
-    /// which is NOT NotFound, so `discover` propagates it as
+    /// EACCES on the unit dir: `read_dir` returns `PermissionDenied`,
+    /// which is NOT `NotFound`, so `discover` propagates it as
     /// `GharsError::Io`. Operators see a real error instead of a
     /// silent empty state — matters because a misconfigured /etc
     /// permissions wouldn't masquerade as "no runners managed".
@@ -1917,7 +1916,7 @@ mod tests {
     }
 
     /// Unit file with binary garbage (invalid UTF-8) at the path.
-    /// `read_to_string` returns InvalidData; discover must propagate
+    /// `read_to_string` returns `InvalidData`; discover must propagate
     /// as `Io`. This guards against silent truncation when a partially
     /// written or corrupted unit file is on disk after a crash.
     #[test]
@@ -1967,7 +1966,7 @@ mod tests {
     /// Missing drop-in directory (the unit exists, but the
     /// `<runner>.service.d/` sibling never got created). Drift again
     /// `InSync` when the unit matches the template — `read_drop_ins`
-    /// treats NotFound as an empty map (in `read_drop_ins`).
+    /// treats `NotFound` as an empty map (in `read_drop_ins`).
     #[test]
     fn discover_missing_drop_in_dir_treated_as_empty() {
         let tmp = TempDir::new().unwrap();
@@ -1989,7 +1988,7 @@ mod tests {
     /// the loop returns `Err` on the first failure.
     ///
     /// We simulate this race deterministically with a dangling symlink:
-    /// readdir lists it (state.rs::list_runner_unit_files filters by
+    /// readdir lists it (`state.rs::list_runner_unit_files` filters by
     /// suffix only, not file existence), but `read_to_string` follows
     /// it and gets ENOENT. No timing-dependent file removal needed.
     ///
@@ -2027,10 +2026,10 @@ mod tests {
     }
 
     /// EACCES on the per-runner drop-in directory. The unit file itself
-    /// is readable, but `read_drop_ins` hits PermissionDenied
+    /// is readable, but `read_drop_ins` hits `PermissionDenied`
     /// on the `<runner>.service.d/` directory readdir. Distinct from
     /// `discover_propagates_eacces_as_io_error` which targets the
-    /// top-level unit_dir — this targets the inner drop_in_dir read
+    /// top-level `unit_dir` — this targets the inner `drop_in_dir` read
     /// path that mutation-test runs against the `map_err(GharsError::Io)`
     /// on the `read_drop_ins` call inside `discover`'s per-runner
     /// loop, which would silently turn into a panic if the
@@ -2072,7 +2071,7 @@ mod tests {
         fs::set_permissions(drop_in_dir.as_std_path(), restore).unwrap();
     }
 
-    /// Edge case in `classify_drift`: unit text is edited, drop_ins
+    /// Edge case in `classify_drift`: unit text is edited, `drop_ins`
     /// is EMPTY (operator deleted every drop-in including ghars-managed
     /// ones). The `drop_ins.keys().filter(...)` predicate in
     /// `classify_drift` is vacuous over an empty iterator →
@@ -2082,8 +2081,8 @@ mod tests {
     /// This pins the "vacuously false" semantics: a future swap to
     /// `.all(|k| MANAGED_DROP_IN_BASENAMES.contains(...))` (which is
     /// vacuously TRUE on empty) would invert this case and would not
-    /// be caught by the existing classify_drift test (which always
-    /// uses non-empty drop_ins for the UnitEdited branch).
+    /// be caught by the existing `classify_drift` test (which always
+    /// uses non-empty `drop_ins` for the `UnitEdited` branch).
     #[test]
     fn classify_drift_empty_drop_ins_with_edited_unit_is_unit_edited_not_both() {
         let drop_ins: BTreeMap<String, String> = BTreeMap::new();
@@ -2184,7 +2183,7 @@ mod tests {
     /// `99-tuning.conf` from `systemctl edit ghars-cache@build`)
     /// must surface `Drift::DropInsModified` carrying the unmanaged
     /// basenames. Mirrors the runner-side payload contract; without
-    /// this signal the planner couldn't fire UpdateCachePool on
+    /// this signal the planner couldn't fire `UpdateCachePool` on
     /// drift-only changes.
     #[test]
     fn discover_classifies_cache_pool_drift_drop_ins_modified() {
@@ -2220,15 +2219,15 @@ mod tests {
         }
     }
 
-    /// classify_cache_pool_drift must emit unmanaged basenames in
+    /// `classify_cache_pool_drift` must emit unmanaged basenames in
     /// lexicographic order across a 3+ element set, even when the
     /// insertion order into the source `BTreeMap` would suggest
     /// otherwise. The runner-side analogue is
     /// `classify_drift_emits_vec_sorted_lexicographically` (above);
     /// pool drift uses an independent code path
     /// (`classify_cache_pool_drift`) that filters against
-    /// MANAGED_CACHE_DROP_IN_BASENAMES instead of
-    /// MANAGED_DROP_IN_BASENAMES, so the sort guarantee must be
+    /// `MANAGED_CACHE_DROP_IN_BASENAMES` instead of
+    /// `MANAGED_DROP_IN_BASENAMES`, so the sort guarantee must be
     /// pinned separately.
     #[test]
     fn classify_cache_pool_drift_emits_vec_sorted_lexicographically() {
@@ -2328,14 +2327,14 @@ mod tests {
 
     /// Discovery must INCLUDE pool drop-in directories whose `%i`
     /// instance name exceeds `IDENTIFIER_MAX_LEN` so the planner
-    /// can emit RemoveCachePool against the discovered-but-undesired
+    /// can emit `RemoveCachePool` against the discovered-but-undesired
     /// pool. (The desired-side `cfg.cache_pools` cannot contain an
     /// oversize key — `validate_cache_pool_name` rejects it at config
     /// load — so any oversize entry in actual is by definition
     /// unreachable in desired and produces a removal in the diff.)
     /// A `tracing::warn!` surfaces the offender to operator output;
     /// the planner-level integration test in
-    /// tests/plan_engine_integration.rs pins the RemoveCachePool
+    /// `tests/plan_engine_integration.rs` pins the `RemoveCachePool`
     /// emission end-to-end.
     #[test]
     fn discover_includes_cache_pool_with_oversize_name_for_removal() {
@@ -2427,9 +2426,9 @@ mod tests {
         );
     }
 
-    /// Boundary pin: the warning at state.rs::discover fires on
+    /// Boundary pin: the warning at `state.rs::discover` fires on
     /// `pool_name.len() > IDENTIFIER_MAX_LEN`. A pool name of exactly
-    /// IDENTIFIER_MAX_LEN chars MUST NOT trigger the warning. A
+    /// `IDENTIFIER_MAX_LEN` chars MUST NOT trigger the warning. A
     /// regression that off-by-one'd the comparison (e.g. `>=` instead
     /// of `>`) would falsely warn on every operator-authored
     /// max-length pool name. Sister to
@@ -2485,14 +2484,15 @@ mod tests {
         // Symlink target points elsewhere; we never follow it.
         std::os::unix::fs::symlink(
             "/etc/passwd",
-            unit_dir
-                .join("ghars-runner@bad.service")
-                .as_std_path(),
+            unit_dir.join("ghars-runner@bad.service").as_std_path(),
         )
         .unwrap();
         let entries = list_runner_unit_files(&unit_dir).unwrap();
         let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(names.contains(&"real"), "real unit must surface; got {names:?}");
+        assert!(
+            names.contains(&"real"),
+            "real unit must surface; got {names:?}"
+        );
         assert!(
             !names.contains(&"bad"),
             "symlink unit must NOT surface as managed runner; got {names:?}"
@@ -2509,19 +2509,12 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let unit_dir = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
         // Real per-pool drop-in dir.
-        fs::create_dir_all(
-            unit_dir
-                .join("ghars-cache@real.service.d")
-                .as_std_path(),
-        )
-        .unwrap();
+        fs::create_dir_all(unit_dir.join("ghars-cache@real.service.d").as_std_path()).unwrap();
         // Symlink pointing at the real dir — even pointing at a
         // ghars-managed location, the symlink itself is rejected.
         std::os::unix::fs::symlink(
             "ghars-cache@real.service.d",
-            unit_dir
-                .join("ghars-cache@bad.service.d")
-                .as_std_path(),
+            unit_dir.join("ghars-cache@bad.service.d").as_std_path(),
         )
         .unwrap();
         let entries = list_cache_pool_drop_in_dirs(&unit_dir).unwrap();
@@ -2555,13 +2548,12 @@ mod tests {
         // would let ghars apply read /etc/shadow's bytes into the
         // ActualState's drop-in body, then re-render under a
         // ghars-managed path, leaking the shadow content.
-        std::os::unix::fs::symlink(
-            "/etc/shadow",
-            dir.join("99-evil.conf").as_std_path(),
-        )
-        .unwrap();
+        std::os::unix::fs::symlink("/etc/shadow", dir.join("99-evil.conf").as_std_path()).unwrap();
         let map = read_drop_ins(&dir).unwrap();
-        assert!(map.contains_key("00-ghars.conf"), "real *.conf must surface");
+        assert!(
+            map.contains_key("00-ghars.conf"),
+            "real *.conf must surface"
+        );
         assert!(
             !map.contains_key("99-evil.conf"),
             "symlink *.conf must NOT be read into ActualState"

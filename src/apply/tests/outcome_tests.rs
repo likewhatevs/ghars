@@ -9,15 +9,12 @@ use super::super::undo::{UndoLog, UndoStep};
 // ---------- ApplyOutcome::detail() string contracts -----------------
 
 /// Pin the per-variant detail string vocabulary so a future
-/// rename of the strings is a single-place audit. cmd_apply renders
+/// rename of the strings is a single-place audit. `cmd_apply` renders
 /// `ok: LABEL ({detail})` and downstream operators may grep on
 /// these tokens.
 #[test]
 fn apply_outcome_detail_strings_are_stable() {
-    assert_eq!(
-        ApplyOutcome::InPlaceSkipped.detail(),
-        "noop (bytes match)"
-    );
+    assert_eq!(ApplyOutcome::InPlaceSkipped.detail(), "noop (bytes match)");
     // Pool-membership Vecs empty ⇒ no parenthetical
     // suffix, preserving the no-suffix shape so operators with
     // downstream parsers see no churn on plans that rewrite
@@ -134,7 +131,7 @@ fn apply_outcome_in_place_restarted_none_before_caches_detail_no_parenthetical()
     );
 }
 
-/// Multi-element detail() coverage for InPlaceRestarted.
+/// Multi-element `detail()` coverage for `InPlaceRestarted`.
 /// Existing `apply_outcome_detail_strings_are_stable` covers the
 /// 1-element and 2-element add cases. Defense-in-depth format
 /// pin for multi-element pool lists (3+ adds / 2+ removes).
@@ -156,8 +153,8 @@ fn apply_outcome_in_place_restarted_detail_multi_element() {
     );
 }
 
-/// Pin the ApplyOutcome → Disruption mapping. The mapping
-/// must mirror plan-time `Action::disruption` so cmd_apply's
+/// Pin the `ApplyOutcome` → Disruption mapping. The mapping
+/// must mirror plan-time `Action::disruption` so `cmd_apply`'s
 /// `[disruption]` bracket tag uses the same vocabulary as
 /// plan output. Operator grep on `[recreate]` matches both
 /// surfaces.
@@ -204,7 +201,7 @@ fn apply_outcome_disruption_mapping_mirrors_plan_vocabulary() {
 }
 
 /// Pin the `UndoStep::describe()` output for every variant.
-/// cmd_apply's rollback-state advisory greps these strings in tests
+/// `cmd_apply`'s rollback-state advisory greps these strings in tests
 /// and operators may grep them in production output, so the
 /// vocabulary is stable. Past-tense per the doc-comment ("wrote",
 /// "started", "created", etc.). Byte-content fields
@@ -315,10 +312,10 @@ fn undo_log_into_steps_preserves_insertion_order() {
 /// and (iii) the surrounding `wrote ` prefix is intact.
 ///
 /// Pinned because the `describe()` method has 9 variant arms
-/// (RemoveFile, StartUnit, GitHubRegistration, etc.); a future
+/// (`RemoveFile`, `StartUnit`, `GitHubRegistration`, etc.); a future
 /// refactor that drops `escape_control_chars` from one arm would
-/// compile and pass other describe() tests, but re-introduce the
-/// ANSI-hijack attack surface for that variant. WriteFile is the
+/// compile and pass other `describe()` tests, but re-introduce the
+/// ANSI-hijack attack surface for that variant. `WriteFile` is the
 /// canary — symmetric coverage is one assertion chain across all 9
 /// (a separate field-set audit covers the rest).
 #[test]
@@ -355,7 +352,7 @@ fn undo_step_write_file_describe_escapes_hostile_path() {
 /// `apply()` (apply.rs `escape_control_chars(&e.to_string()).into_owned()`,
 /// also tested at `apply_failed_error_summary_escapes_hostile_inner_error`);
 /// this companion test pins the END-USER consumer surface — when
-/// cmd_apply renders the `fail:` row via `outcome.detail()`, the
+/// `cmd_apply` renders the `fail:` row via `outcome.detail()`, the
 /// rendered string must have no embedded `\n` byte that would split
 /// the row across multiple stderr lines.
 ///
@@ -364,11 +361,11 @@ fn undo_step_write_file_describe_escapes_hostile_path() {
 ///       wiring): the resulting `Failed.detail()` must contain no
 ///       raw `\n` and must contain the printable `\\n` form
 ///       `char::escape_default('\n')` emits.
-///   (ii) Round-trip integrity: detail() returns the same bytes
-///        that were stored in error_summary (no double-escape, no
+///   (ii) Round-trip integrity: `detail()` returns the same bytes
+///        that were stored in `error_summary` (no double-escape, no
 ///        mutation). The doc-comment on
-///        `ApplyOutcome::Failed.error_summary` says detail() is
-///        verbatim from error_summary.
+///        `ApplyOutcome::Failed.error_summary` says `detail()` is
+///        verbatim from `error_summary`.
 #[test]
 fn apply_outcome_failed_detail_has_no_raw_newline_when_pre_sanitized() {
     // Simulate what the apply()-loop construction site does:
@@ -426,7 +423,7 @@ fn apply_outcome_failed_detail_has_no_raw_newline_when_pre_sanitized() {
 }
 
 /// Per-variant `UndoStep::describe()` escape pin.
-/// Helper-level coverage already lives in `lib.rs`; the WriteFile
+/// Helper-level coverage already lives in `lib.rs`; the `WriteFile`
 /// arm is pinned at
 /// `undo_step_write_file_describe_escapes_hostile_path`.
 /// This test extends the wiring pin to the remaining variants and
@@ -444,7 +441,7 @@ fn apply_outcome_failed_detail_has_no_raw_newline_when_pre_sanitized() {
 /// that assertion trips with the labeled prefix.
 ///
 /// Pinned because a regression dropping `escape_control_chars`
-/// from one variant arm would compile and pass the WriteFile
+/// from one variant arm would compile and pass the `WriteFile`
 /// test, but reintroduce the ANSI-hijack vector for that
 /// variant. Table-driven layout names the broken arm via the
 /// `[{label}]` assertion-message prefix.

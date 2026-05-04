@@ -4,20 +4,20 @@
 //! in this file (the parent of tests sub-files) so every chunk submodule
 //! can reach them via `use super::*;` without duplication. Production
 //! helpers from sibling cli/ submodules (cmd_*, json, load, render,
-//! exit_codes, args) are re-exported here via wildcard `use` so the
+//! `exit_codes`, args) are re-exported here via wildcard `use` so the
 //! tests retain the flat-namespace access pattern they had under the
 //! original `mod tests { use super::*; }` shape.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 #![allow(unused_imports)]
 
-pub(crate) use super::dispatch;
 pub(crate) use super::args::*;
 pub(crate) use super::cmd_apply::*;
 pub(crate) use super::cmd_metrics::*;
 pub(crate) use super::cmd_misc::*;
 pub(crate) use super::cmd_plan::*;
 pub(crate) use super::cmd_status::*;
+pub(crate) use super::dispatch;
 pub(crate) use super::exit_codes::*;
 pub(crate) use super::json::*;
 pub(crate) use super::load::*;
@@ -41,7 +41,7 @@ pub(crate) use crate::state;
 /// Placeholder runsvc.sh SHA-256 digest for discovered-runner
 /// fixtures. Concrete value is irrelevant to assertions —
 /// `execute_remove_runner` does not consult the digest, and the
-/// runsvc_wrapper trampoline runs only at runner start time. What
+/// `runsvc_wrapper` trampoline runs only at runner start time. What
 /// matters is that the value is non-empty: a populated annotation
 /// mirrors the post-install steady state (a prior
 /// `apply.rs::execute_create_runner` would have computed the
@@ -182,7 +182,7 @@ fn fake_cache_binding(name: &str) -> crate::config::EffectiveCacheBinding {
 }
 
 /// Build a recreate-class `RunnerDelta` with the given name +
-/// recreate_reasons. All other fields default to the same values
+/// `recreate_reasons`. All other fields default to the same values
 /// callers would otherwise inline. Use for any recreate-class
 /// `UpdateRunner` test fixture where only name + reasons matter.
 fn recreate_delta(name: &str, reasons: Vec<&'static str>) -> plan::RunnerDelta {
@@ -229,7 +229,7 @@ fn inplace_delta(name: &str) -> plan::RunnerDelta {
 /// 1. The plan emits exactly 3 `CreateRunner` actions — `expand_counts`
 ///    auto-skips the count-expanded `ci-1` via its
 ///    `explicit_names.contains("ci-1")` arm, so the explicit ci-1's
-///    RunnerSpec passes through directly while the count block
+///    `RunnerSpec` passes through directly while the count block
 ///    contributes ci-2 and ci-3.
 /// 2. `summary.recreates` is exactly
 ///    `["CreateRunner(ci-1)", "CreateRunner(ci-2)", "CreateRunner(ci-3)"]`
@@ -240,7 +240,7 @@ fn inplace_delta(name: &str) -> plan::RunnerDelta {
 /// 4. Discriminating-fixture guard: `cfg.runners[0].memory_max`
 ///    (the count block) exactly equals `count_block_memory_max`.
 ///    If a future fixture refactor drifts the count block's
-///    memory_max, the assertion below becomes non-discriminating
+///    `memory_max`, the assertion below becomes non-discriminating
 ///    (e.g. forward: both sides Some("8G") would silently pass
 ///    even if precedence broke; inverse: both sides None would
 ///    silently pass).
@@ -248,7 +248,7 @@ fn inplace_delta(name: &str) -> plan::RunnerDelta {
 ///    None. `merge_defaults`'s `runner.memory_max OR defaults.memory_max`
 ///    or-chain falls through to defaults when the
 ///    runner-level field is None — if a future fixture sets
-///    defaults.memory_max, the explicit-side None case would
+///    `defaults.memory_max`, the explicit-side None case would
 ///    silently inherit the defaults value, masking the "explicit
 ///    wins" assertion through the defaults-inheritance path
 ///    rather than the count-block override path.
@@ -293,8 +293,8 @@ fn assert_explicit_collision_precedence(
     let actual = state::ActualState::default();
     let paths = Paths::default();
 
-    let plan = plan::plan_from(&cfg, &actual, &paths)
-        .expect("count+explicit plan_from must succeed");
+    let plan =
+        plan::plan_from(&cfg, &actual, &paths).expect("count+explicit plan_from must succeed");
 
     // 1. 3 CreateRunner actions total.
     let create_count = plan
@@ -303,7 +303,8 @@ fn assert_explicit_collision_precedence(
         .filter(|a| matches!(a, Action::CreateRunner(_)))
         .count();
     assert_eq!(
-        create_count, 3,
+        create_count,
+        3,
         "count=3 with explicit ci-1 collision must yield 3 CreateRunner actions \
          (no duplicate ci-1); got {} actions: {:?}",
         plan.actions.len(),
@@ -374,9 +375,9 @@ fn parse_command(argv: &[&str]) -> Command {
     Cli::try_parse_from(argv).unwrap().command
 }
 
-/// Helper for the trust_zone tests: build the minimal Config that
+/// Helper for the `trust_zone` tests: build the minimal Config that
 /// `validate_identity_fields` expects, then mutate the runner /
-/// pool's trust_zone in-place. We bypass `toml::from_str` because
+/// pool's `trust_zone` in-place. We bypass `toml::from_str` because
 /// embedding raw `\n` / `\0` in a TOML basic string would also be
 /// rejected by the parser before our validator ran — we want to
 /// prove our validator catches the chars, not that TOML happens to
@@ -437,7 +438,7 @@ fn insert_cache_pool(cfg: &mut Config, name: &str, kinds: Vec<crate::config::Cac
 }
 
 /// Build a fixture Config with a single `[auth.NAME]` entry of
-/// AuthSpec::Pat and the runner's auth ref pointing at `name`. The
+/// `AuthSpec::Pat` and the runner's auth ref pointing at `name`. The
 /// 4+ reject tests below all share this scaffold — the helper
 /// collapses the boilerplate and pins the auth-name → error
 /// scope linkage in one place.
@@ -470,7 +471,7 @@ fn cfg_with_pat_auth(name: &str, token_env: Option<&str>, token_file: Option<&st
 ///     emitted by `prepend_validation_scope`.
 ///   - msg does NOT contain a redundant `kind = pat`/`kind =
 ///     "pat"` prefix — the scope already identifies
-///     the offending `[auth.NAME]` block and AuthSpec::Pat is the
+///     the offending `[auth.NAME]` block and `AuthSpec::Pat` is the
 ///     only variant the loop checks.
 ///   - hint is non-empty.
 #[track_caller]
@@ -533,7 +534,7 @@ fn assert_pat_xor_rejects(
 /// shared helper for `render_rollback_advisory` test fixtures.
 /// Every advisory test that drives the renderer with one or more
 /// failures must push to BOTH `failed` and `failed_undo_logs` in
-/// lockstep — the typed-error tuple and the per-action UndoLog
+/// lockstep — the typed-error tuple and the per-action `UndoLog`
 /// pairing is the lockstep invariant `apply::apply` enforces in
 /// production (apply.rs Err arms push to both Vecs in the same
 /// loop iteration), and the `debug_assert_eq!` at
@@ -594,7 +595,7 @@ fn push_failed(result: &mut apply::ApplyResult, label: &str, steps: Vec<apply::U
 /// The variant distribution is roughly uniform — proptest
 /// will reduce to the minimum failing input on a regression.
 ///
-/// The two UpdateRunner arms are split rather than generated
+/// The two `UpdateRunner` arms are split rather than generated
 /// from a single bool because the Restart arm must NOT appear
 /// in `summary.recreates` — pinning separate strategies makes
 /// the `Action::disruption()` → recreate-list mapping

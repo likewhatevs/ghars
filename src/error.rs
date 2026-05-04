@@ -37,7 +37,7 @@
 //!     status code and hint text are extracted by
 //!     `auth::octocrab_to_auth`
 //!     from the typed `source.status_code` field
-//!     (auth.rs::octocrab_to_auth), not from the upstream Display
+//!     (`auth.rs::octocrab_to_auth`), not from the upstream Display
 //!     surface. The supply-chain pin in
 //!     `auth.rs::octocrab_to_auth_display_does_not_leak_pat_or_
 //!     request_body` fails loudly if a future octocrab cargo update
@@ -230,7 +230,7 @@ pub(crate) fn prepend_validation_scope(scope: &str, err: GharsError) -> GharsErr
 /// Depth cap for `format_error_chain` traversal. Defends against
 /// pathological cyclic source chains that would otherwise loop
 /// forever. 16 layers exceeds any realistic nesting (reqwest →
-/// hyper → rustls → io::Error is 4 layers; doubling that again
+/// hyper → rustls → `io::Error` is 4 layers; doubling that again
 /// covers any future wrapper additions).
 pub(crate) const FORMAT_ERROR_CHAIN_MAX_DEPTH: usize = 16;
 
@@ -273,8 +273,8 @@ pub(crate) fn human_bytes(n: u64) -> String {
 /// and concatenate each layer's Display with ": " separators. The
 /// outer Display of types like `std::io::Error` and `reqwest::Error`
 /// only formats the outermost layer, so nested causes (e.g.
-/// reqwest::Error wrapping hyper::Error wrapping a rustls error, or
-/// reqwest::Error wrapping a TLS/DNS error) are dropped if the
+/// `reqwest::Error` wrapping `hyper::Error` wrapping a rustls error, or
+/// `reqwest::Error` wrapping a TLS/DNS error) are dropped if the
 /// operator only sees `format!("{err}")`. This helper preserves the
 /// full chain so an operator triaging a
 /// connection-reset-during-TLS-handshake sees both the outer "request
@@ -321,7 +321,7 @@ pub(crate) fn format_error_chain(err: &(dyn std::error::Error + 'static)) -> Str
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    //! ApplyResult error rendering must not leak build-machine
+    //! `ApplyResult` error rendering must not leak build-machine
     //! paths or stack traces. The cli.rs `cmd_apply` per-failed-action
     //! emission prints `{err}` — `err: &GharsError` resolves to
     //! Display, NOT Debug. These tests pin the Display contract: only
@@ -333,13 +333,13 @@ mod tests {
     //! - `src/` path fragments (build-machine source layout);
     //! - `target/` path fragments (build artifacts);
     //! - `at <file>:<line>:<col>` (rust panic / backtrace format);
-    //! - `stack backtrace:` markers (env_logger / RUST_BACKTRACE);
+    //! - `stack backtrace:` markers (`env_logger` / `RUST_BACKTRACE`);
     //! - absolute path prefixes `/home/`, `/Users/`, `/root/` (Unix
     //!   home dirs) and `C:\` (Windows) — the operator should never
     //!   see "where the developer's source tree lived";
     //! - `#0`, `#1`, ... frame markers from `std::backtrace::Backtrace`.
     //!
-    //! The tests construct each GharsError variant directly (no I/O)
+    //! The tests construct each `GharsError` variant directly (no I/O)
     //! and assert the Display output against a forbidden-fragment set.
 
     use super::*;
@@ -355,7 +355,7 @@ mod tests {
     /// `apply lock held by PID 12345 at /run/ghars/apply.lock`).
     /// Adding `"at /"` to the forbidden set produces false positives
     /// against every error variant whose Display includes a path
-    /// reference, including the SEC-19 ApplyLocked variant whose
+    /// reference, including the SEC-19 `ApplyLocked` variant whose
     /// hint is the operator's primary signal for stale-lock cleanup.
     const FORBIDDEN: &[&str] = &[
         "src/",    // source path fragment

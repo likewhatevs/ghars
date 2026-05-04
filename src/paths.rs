@@ -63,8 +63,8 @@ impl Paths {
 
     /// `<state_dir>/<trust_zone>/ghars-<name>` — runner state directory
     /// (e.g. `/var/lib/ghars/default/ghars-buckos`). Per design Part 3 +
-    /// the DynamicUser pivot: runners that share a `trust_zone` share
-    /// the parent dir (and thus the trust_zone's transient UID), so
+    /// the `DynamicUser` pivot: runners that share a `trust_zone` share
+    /// the parent dir (and thus the `trust_zone`'s transient UID), so
     /// they can read/write each other's state through DAC.
     #[must_use]
     pub fn runner_home(&self, trust_zone: &str, name: &str) -> Utf8PathBuf {
@@ -101,7 +101,7 @@ impl Paths {
     }
 
     /// `<unit_dir>/ghars-net@.service` — canonical netns template unit
-    /// file (Part 9c). Written once by the first netns CreateRunner and
+    /// file (Part 9c). Written once by the first netns `CreateRunner` and
     /// shared by every per-runner instance `ghars-net@INSTANCE.service`.
     #[must_use]
     pub fn netns_template_unit_file(&self) -> Utf8PathBuf {
@@ -199,6 +199,7 @@ impl Paths {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

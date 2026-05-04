@@ -71,15 +71,15 @@ pub(super) fn write_audit_log_entry(paths: &Paths, label: &str, outcome: &str) {
     let mut line = entry.to_string();
     line.push('\n');
 
-    if let Some(parent) = log_path.parent() {
-        if let Err(e) = fs::create_dir_all(parent.as_std_path()) {
-            tracing::warn!(
-                path = %log_path,
-                error = %e,
-                "audit log: failed to create parent directory; skipping entry"
-            );
-            return;
-        }
+    if let Some(parent) = log_path.parent()
+        && let Err(e) = fs::create_dir_all(parent.as_std_path())
+    {
+        tracing::warn!(
+            path = %log_path,
+            error = %e,
+            "audit log: failed to create parent directory; skipping entry"
+        );
+        return;
     }
     let open_result = OpenOptions::new()
         .create(true)
@@ -110,11 +110,11 @@ pub(super) fn write_audit_log_entry(paths: &Paths, label: &str, outcome: &str) {
 /// `(variant, name)`. Returns `(label, "")` if the label doesn't
 /// parse — defense in depth against future label format changes.
 pub(super) fn parse_audit_label(label: &str) -> (&str, &str) {
-    if let Some(open) = label.find('(') {
-        if let Some(close_rel) = label[open..].rfind(')') {
-            let close = open + close_rel;
-            return (&label[..open], &label[open + 1..close]);
-        }
+    if let Some(open) = label.find('(')
+        && let Some(close_rel) = label[open..].rfind(')')
+    {
+        let close = open + close_rel;
+        return (&label[..open], &label[open + 1..close]);
     }
     (label, "")
 }

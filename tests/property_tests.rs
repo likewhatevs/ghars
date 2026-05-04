@@ -1,7 +1,7 @@
-//! Property tests for validators.rs and systemd::render_nft_rules.
+//! Property tests for validators.rs and `systemd::render_nft_rules`.
 //!
 //! Default 256 cases per proptest macro (the proptest crate's default —
-//! ProptestConfig::cases). When run with `PROPTEST_CASES=4096` (or the
+//! `ProptestConfig::cases`). When run with `PROPTEST_CASES=4096` (or the
 //! nightly CI matrix), the count escalates without code changes.
 //!
 //! Why integration-test layer: `validate_runner_name`, `validate_url`,
@@ -13,9 +13,11 @@
 //!
 //! Each property follows the form: generate input → exercise function →
 //! assert invariant. Strategies are derived from the production regex
-//! (validators.rs IDENTIFIER_REGEX, URL_RE, MEMORY_MAX_RE) so positive
+//! (validators.rs `IDENTIFIER_REGEX`, `URL_RE`, `MEMORY_MAX_RE`) so positive
 //! cases by construction satisfy the regex; negative cases use a
 //! generator that includes the rejection charset.
+
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use camino::Utf8PathBuf;
 use ghars::config::{
@@ -38,7 +40,7 @@ use proptest::prelude::*;
 ///
 /// Construction:
 /// - First char ∈ `[a-z]`.
-/// - Optional middle: 0..=(IDENTIFIER_MAX_LEN - 2) chars from `[a-z0-9-]`.
+/// - Optional middle: `0..=(IDENTIFIER_MAX_LEN` - 2) chars from `[a-z0-9-]`.
 /// - Last char (when length ≥ 2) ∈ `[a-z0-9]`.
 ///
 /// Length cap = `IDENTIFIER_MAX_LEN`. Max middle = `IDENTIFIER_MAX_LEN - 2`.
@@ -77,7 +79,7 @@ proptest! {
     fn runner_name_accepts_arbitrary_valid_identifier(name in valid_runner_name()) {
         // Length constraint: generator caps at 1 + (IDENTIFIER_MAX_LEN-2) + 1
         // = IDENTIFIER_MAX_LEN per the identifier-shape cap.
-        prop_assert!(name.len() >= 1 && name.len() <= IDENTIFIER_MAX_LEN);
+        prop_assert!(!name.is_empty() && name.len() <= IDENTIFIER_MAX_LEN);
         validate_runner_name(&name).map_err(|e| {
             TestCaseError::fail(format!(
                 "valid identifier {name:?} rejected: {e}"
@@ -220,7 +222,7 @@ proptest! {
 
 /// Build `MemoryMax=` values the validator must accept:
 /// - empty string,
-/// - `<integer>[K|M|G|T]`, integer 1..=u32::MAX,
+/// - `<integer>[K|M|G|T]`, integer `1..=u32::MAX`,
 /// - `<N>%`, N ∈ 1..=100,
 /// - `infinity`.
 fn valid_memory_max() -> impl Strategy<Value = String> {

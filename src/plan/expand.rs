@@ -129,4 +129,3 @@ fn validate_generated_identifier(name: &str, parent_prefix: &str) -> Result<()> 
         other => other,
     })
 }
-

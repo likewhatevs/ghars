@@ -28,6 +28,8 @@
 //! tests below close that gap: every PAIR of bits and the FULL mask
 //! 0o077 are tested.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use camino::Utf8PathBuf;
 use ghars::auth::TokenFileToken;
 use std::fs::File;

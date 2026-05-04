@@ -2,7 +2,7 @@
 //! adversary surfaced during convergence review.
 //!
 //! - SEC-02: runsvc tamper detection — annotation parser hits.
-//! - SEC-06: GitHub App / TokenFile mode enforcement — per-bit coverage
+//! - SEC-06: GitHub App / `TokenFile` mode enforcement — per-bit coverage
 //!   for the 0o077 mask.
 //! - SEC-09: tarball extraction into root-owned staging dir; staging
 //!   layout verified.
@@ -11,7 +11,7 @@
 //! `GithubAppToken::new`) gate file mode + owner uid + symlink at
 //! construction. Non-root test environments cannot exercise the
 //! "owner = root + permissive mode" branch directly — chown to uid 0
-//! requires CAP_CHOWN. The tests therefore split into two camps:
+//! requires `CAP_CHOWN`. The tests therefore split into two camps:
 //!
 //! 1. Mode-rejection: per-bit coverage for the `mode & 0o077` mask. We
 //!    chmod the file to a non-root-owned mode and confirm rejection
@@ -20,9 +20,11 @@
 //!    surfaces "mode" first (mode check happens before uid check); when
 //!    it isn't, the uid check takes over — both are accepted.
 //!
-//! 2. Symlink rejection: O_NOFOLLOW propagates from
+//! 2. Symlink rejection: `O_NOFOLLOW` propagates from
 //!    `read_root_owned_0600`; symlink → target with mode 0600 must
 //!    still be rejected at open(2) time.
+
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use camino::Utf8PathBuf;
 use ghars::auth::TokenFileToken;

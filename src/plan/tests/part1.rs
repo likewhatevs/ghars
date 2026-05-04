@@ -1,6 +1,6 @@
-//! Test split part 1: covers expand_counts, netns_subnet_for_slot,
-//! merge_defaults (basic + scalar regression + proptest + bind_readonly +
-//! ParsedUnit), and spec_hash (basic + serde + proptest + cross-construction
+//! Test split part 1: covers `expand_counts`, `netns_subnet_for_slot`,
+//! `merge_defaults` (basic + scalar regression + proptest + `bind_readonly` +
+//! `ParsedUnit`), and `spec_hash` (basic + serde + proptest + cross-construction
 //! + cross-construction). Migrated verbatim from plan.rs.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -102,9 +102,9 @@ fn expand_counts_rejects_overlong_generated_name() {
 }
 
 /// Generated names that exceed `IDENTIFIER_MAX_LEN` after the
-/// `-COUNT` suffix is appended must reject at expand_counts
-/// time. Catches the gap where validate_runner_names at
-/// load_config saw only the prefix (≤ 64) but expansion produced
+/// `-COUNT` suffix is appended must reject at `expand_counts`
+/// time. Catches the gap where `validate_runner_names` at
+/// `load_config` saw only the prefix (≤ 64) but expansion produced
 /// an over-cap name (e.g. 63-char prefix + "-10" = 66 chars).
 /// Pinned at plan-time because config-load can't catch this
 /// without computing max-suffix from `count`.
@@ -744,8 +744,7 @@ fn plan_update_in_place_on_memory_max_change_via_drop_in_diff() {
     );
     assert!(
         updates[0].drop_in_changes.iter().any(|c| {
-            c.basename == "10-memory.conf"
-                && matches!(c.change, DropInChangeKind::Modified { .. })
+            c.basename == "10-memory.conf" && matches!(c.change, DropInChangeKind::Modified { .. })
         }),
         "drop_in_changes must include 10-memory.conf Modified; got: {:?}",
         updates[0].drop_in_changes
@@ -795,15 +794,15 @@ fn plan_update_recreate_on_runner_version_change_via_annotations() {
 
 /// End-to-end through `plan_from` — when discovered state
 /// carries an operator drop-in (e.g. `99-custom.conf`) plus the
-/// managed `00-ghars.conf`, the recreate-class RunnerDelta must
+/// managed `00-ghars.conf`, the recreate-class `RunnerDelta` must
 /// surface `before_drop_in_basenames = Some([..])` containing BOTH
 /// basenames. Pins the construction-site contract at the
-/// intersection branch (plan.rs near the RunnerDelta builder):
+/// intersection branch (plan.rs near the `RunnerDelta` builder):
 /// `discovered.drop_ins.keys()` is the authoritative pre-update
 /// view, and `Some` (never `None`) is emitted whenever
 /// `discovered` is in scope. The renderer relies on this to emit
 /// `- 99-custom.conf` under `--diff` so operators see what the
-/// recreate is about to delete. BTreeMap iteration order ⇒ Vec is
+/// recreate is about to delete. `BTreeMap` iteration order ⇒ Vec is
 /// already alphabetically sorted.
 #[test]
 fn plan_recreate_populates_before_drop_in_basenames_with_operator_drop_in() {
@@ -1019,7 +1018,7 @@ fn plan_update_recreate_on_labels_change() {
     );
 }
 
-/// memory_max change is IN-PLACE per design table. Stage 2's
+/// `memory_max` change is IN-PLACE per design table. Stage 2's
 /// drop-in body diff localizes the change to 10-memory.conf so
 /// the plan classifies a memory_max-only edit as in-place (no
 /// recreate) instead of conservatively recreating.
@@ -1067,10 +1066,10 @@ fn plan_update_in_place_on_memory_max_change() {
 
 /// name change is IDENTITY — handled by the desired-vs-actual set
 /// diff, not by `classify_recreate_reasons`. The plan emits
-/// CreateRunner(new) + RemoveRunner(old), no UpdateRunner.
+/// CreateRunner(new) + RemoveRunner(old), no `UpdateRunner`.
 /// `plan_create_and_remove_when_names_diverge` already covers
 /// this pattern; this test pins the SAME contract via a different
-/// test name so an audit reading recreate_reasons coverage finds
+/// test name so an audit reading `recreate_reasons` coverage finds
 /// the identity row of the table mapped here.
 #[test]
 fn plan_name_change_is_identity_not_recreate() {
@@ -1129,7 +1128,7 @@ fn plan_name_change_is_identity_not_recreate() {
     assert_eq!(removes, vec!["original"]);
 }
 
-/// runner_sha256 change is recreate-class per Part 3. The
+/// `runner_sha256` change is recreate-class per Part 3. The
 /// X-Ghars-Runner-Sha256 annotation makes the change Stage 1
 /// detectable — recreate fires with the typed `runner_sha256`
 /// reason rather than falling through to the `uncovered`
@@ -1193,7 +1192,7 @@ fn plan_update_recreate_on_runner_sha256_change() {
     );
 }
 
-/// runner_tarball change is recreate-class per Part 3. The
+/// `runner_tarball` change is recreate-class per Part 3. The
 /// X-Ghars-Runner-Tarball-Hash annotation (sha256 of the path
 /// string — NOT the path itself, to avoid env leakage) makes
 /// the change Stage 1 detectable — recreate fires with the
@@ -1261,19 +1260,19 @@ fn plan_update_recreate_on_runner_tarball_change() {
 /// fires with reason "arch" rather than falling through to the
 /// "uncovered" fallback.
 ///
-/// We construct a desired spec on x86_64 against a discovered spec
+/// We construct a desired spec on `x86_64` against a discovered spec
 /// recorded as aarch64. Because `merge_defaults` resolves arch as
 /// `runner.arch.or(defaults.arch).unwrap_or(host_arch)`, the
 /// discovered spec must EXPLICITLY pin arch to aarch64 via
-/// runner.arch — otherwise the test machine's host_arch
-/// (typically x86_64) defeats the diff.
+/// runner.arch — otherwise the test machine's `host_arch`
+/// (typically `x86_64`) defeats the diff.
 ///
 /// A single flake of this test's prior form
 /// (`*_via_spec_hash`) was reported during full-suite nextest with
 /// `updates.len() == 0 expected 1` and never reproduced. Audit
-/// found no static mut / OnceLock / lazy_static / thread_local /
-/// env::set_var in plan.rs or its dependencies that could leak
-/// across tests; spec_hash and render_runner_unit are pure
+/// found no static mut / `OnceLock` / `lazy_static` / `thread_local` /
+/// `env::set_var` in plan.rs or its dependencies that could leak
+/// across tests; `spec_hash` and `render_runner_unit` are pure
 /// functions of their inputs. The hardening below explicitly
 /// asserts every intermediate invariant (discovered arch,
 /// discovered annotation present, hash divergence) so a future
@@ -1377,12 +1376,12 @@ fn plan_update_recreate_on_arch_change() {
 /// name (e.g. desired = ["new"], discovered = ["old"]),
 /// `plan_from` must emit BOTH a `CreateRunner("new")` and a
 /// `RemoveRunner("old")` — the diff is a strict set
-/// difference, not a rename. RemoveRunner carries the OLD
+/// difference, not a rename. `RemoveRunner` carries the OLD
 /// runner's `RunnerIdentity` (reconstructed from the discovered
-/// `00-ghars.conf` annotations: url + auth_name + trust_zone)
+/// `00-ghars.conf` annotations: url + `auth_name` + `trust_zone`)
 /// so apply's `execute_remove_runner` can mint a removal token
 /// against the right URL/auth + invalidate state under the
-/// correct trust_zone home.
+/// correct `trust_zone` home.
 #[test]
 fn plan_create_and_remove_when_names_diverge() {
     let cfg = config_with_runners(vec![minimal_runner("new")]);
@@ -1727,7 +1726,7 @@ fn action_label_covers_each_variant() {
 
 // --- spec_hash: serde-skip / config-source coverage ----------------
 
-/// Helper used by the spec_hash + merge_defaults follow-up tests
+/// Helper used by the `spec_hash` + `merge_defaults` follow-up tests
 /// below to construct an `EffectiveRunnerSpec` with stable inputs
 /// minus the field under test.
 fn build_baseline_spec() -> EffectiveRunnerSpec {
@@ -1792,7 +1791,7 @@ fn spec_hash_includes_config_source_field() {
 /// Apply a single property-driven mutation to a spec and return
 /// it. Each variant changes exactly one logical field; the test
 /// asserts the hash also changes. This catches mutants that drop
-/// a field from canonical_json (e.g. someone adds `#[serde(skip)]`
+/// a field from `canonical_json` (e.g. someone adds `#[serde(skip)]`
 /// to a field that should be hashed).
 #[derive(Debug, Clone)]
 enum SpecMutation {
@@ -1955,7 +1954,7 @@ fn merge_defaults_empty_runner_vec_inherits_defaults_for_pick_vec_fields() {
     assert_eq!(eff.hardening.extra_syscalls, vec!["@privileged"]);
 }
 
-/// Property: extra_bind_paths and extra_capabilities are
+/// Property: `extra_bind_paths` and `extra_capabilities` are
 /// ADDITIVE (defaults entries first, then runner entries) — NOT
 /// override. A mutant that swaps to override semantics drops the
 /// defaults entries and fails here.
@@ -2003,8 +2002,7 @@ fn merge_defaults_extra_paths_and_caps_are_additive_not_override() {
 // --- merge_defaults: proptest scalar-override semantics ------------
 
 fn defaults_strategy()
--> impl proptest::strategy::Strategy<Value = (Option<String>, Option<String>, Option<String>)>
-{
+-> impl proptest::strategy::Strategy<Value = (Option<String>, Option<String>, Option<String>)> {
     (
         proptest::option::of("ghars-[a-z]{3,6}"),
         proptest::option::of("[1-9][0-9]?[GM]"),
@@ -2013,8 +2011,7 @@ fn defaults_strategy()
 }
 
 fn runner_overrides_strategy()
--> impl proptest::strategy::Strategy<Value = (Option<String>, Option<String>, Option<String>)>
-{
+-> impl proptest::strategy::Strategy<Value = (Option<String>, Option<String>, Option<String>)> {
     (
         proptest::option::of("runner-[a-z]{3,6}"),
         proptest::option::of("[1-9][0-9]?[GM]"),
@@ -2417,7 +2414,7 @@ proptest::proptest! {
             Some(spec.auth_name.as_str()),
         );
         proptest::prop_assert_eq!(
-            anns.labels.as_ref().map(|v| v.as_slice()),
+            anns.labels.as_deref(),
             Some(spec.labels.as_slice()),
         );
         let arch_str = match spec.arch {
@@ -2471,4 +2468,3 @@ proptest::proptest! {
         proptest::prop_assert_eq!(eff.trust_zone, "default");
     }
 }
-

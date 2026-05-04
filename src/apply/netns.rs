@@ -35,12 +35,12 @@ use super::writes::{read_prior, write_record_undo, write_root_owned};
 /// 3. Write `<unit_dir>/ghars-net@.service` (template) — idempotent;
 ///    every netns runner shares the same template body.
 /// 4. `daemon-reload` so the template is visible, then `enable` +
-///    `start` `ghars-net@<name>.service`. The netns unit's ExecStart
+///    `start` `ghars-net@<name>.service`. The netns unit's `ExecStart`
 ///    runs `_netns-setup` which builds the kernel-level state.
 ///
 /// On any step failure the kernel-level state is left for
 /// [`teardown_netns_artifacts`] to clean up via the runner's
-/// RemoveRunner action; we do not roll back here because partial
+/// `RemoveRunner` action; we do not roll back here because partial
 /// writes are idempotent (next apply re-runs them).
 ///
 /// # Errors
@@ -194,14 +194,14 @@ pub(super) fn teardown_netns_artifacts(
 /// back to the host network namespace and the action aborts as a
 /// belt-and-suspenders defense against a netns fail-open regression.
 ///
-/// The kernel-side netns join races MainPID's recording. systemd
-/// calls service_set_main_pidref the moment exec_spawn returns the
+/// The kernel-side netns join races `MainPID`'s recording. systemd
+/// calls `service_set_main_pidref` the moment `exec_spawn` returns the
 /// child PID — which is post-vfork-unblock, but BEFORE
-/// systemd-executor reaches the setup_namespace step that calls
-/// setns(CLONE_NEWNET) for NetworkNamespacePath=. The send_handoff
-/// timestamp only fires "as last thing before the execve()", AFTER
-/// setup_namespace. So a readlink at the moment
-/// StartUnit returns can observe the still-host netns symlink for the
+/// systemd-executor reaches the `setup_namespace` step that calls
+/// `setns(CLONE_NEWNET)` for `NetworkNamespacePath`=. The `send_handoff`
+/// timestamp only fires "as last thing before the `execve()`", AFTER
+/// `setup_namespace`. So a readlink at the moment
+/// `StartUnit` returns can observe the still-host netns symlink for the
 /// runner's PID and false-positive a netns fail-open.
 ///
 /// Mitigation: poll-with-timeout. 5s deadline at 100ms cadence (50
@@ -216,8 +216,8 @@ pub(super) fn teardown_netns_artifacts(
 ///
 /// v0.2 optimization: switch to
 /// `ExecMainHandoffTimestampMonotonic` D-Bus property — non-zero means
-/// systemd-executor reached send_handoff_timestamp, which is post-
-/// setup_namespace, eliminating the poll. v0.1 ships the simple loop.
+/// systemd-executor reached `send_handoff_timestamp`, which is post-
+/// `setup_namespace`, eliminating the poll. v0.1 ships the simple loop.
 const NETNS_VERIFY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
 const NETNS_VERIFY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(100);
 

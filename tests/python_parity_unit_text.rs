@@ -14,12 +14,14 @@
 //! - `test_unit_kernel_hardening`        → all 12 directives
 //! - `test_unit_cgroup_no_permits_cpuset`→ ProtectControlGroups=no
 //! - `test_unit_rt_priority`             → RestrictRealtime=no, LimitRTPRIO=2
-//! - `test_unit_kvm_device_allow`        → DevicePolicy=closed + DeviceAllow
+//! - `test_unit_kvm_device_allow`        → DevicePolicy=closed + `DeviceAllow`
 //! - `test_unit_syscall_filter`          → @system-service + denylist
 //! - `test_unit_path_env_*`              → PATH structure, no leak, etc.
 //! - `test_unit_no_proxy_leak`           → forbidden env-var fragments absent
-//! - `test_unit_filesystem_allowlist`    → BindReadOnlyPaths set
+//! - `test_unit_filesystem_allowlist`    → `BindReadOnlyPaths` set
 //! - `test_unit_private_devices`         → PrivateDevices=yes
+
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use ghars::config::{Arch, EffectiveRunnerSpec, Hardening};
 use ghars::systemd::{render_runner_unit, runner_template_text};
@@ -139,9 +141,7 @@ fn unit_syscall_filter_positive_line_precedes_inverse_line() {
     // disable the denylist.
     let t = runner_template_text();
     let positive_idx = t
-        .find(
-            "SystemCallFilter=@system-service pkey_alloc pkey_mprotect pkey_free perf_event_open",
-        )
+        .find("SystemCallFilter=@system-service pkey_alloc pkey_mprotect pkey_free perf_event_open")
         .expect("positive SystemCallFilter line must be present");
     let inverse_idx = t
         .find("SystemCallFilter=~@mount @clock @keyring")
@@ -430,10 +430,7 @@ fn render_runner_unit_state_directory_paths_per_trust_zone() {
     // body contains only the `StateDirectoryMode=0700` directive.
     let spec = minimal_spec("buckos");
     let r = render_runner_unit(&spec).unwrap();
-    let body = r
-        .drop_ins
-        .get("00-ghars.conf")
-        .expect("00-ghars.conf");
+    let body = r.drop_ins.get("00-ghars.conf").expect("00-ghars.conf");
     assert!(body.contains("ConditionPathExists=/var/lib/ghars/default/ghars-buckos/runsvc.sh"));
     assert!(body.contains("WorkingDirectory=/var/lib/ghars/default/ghars-buckos"));
     assert!(body.contains("Environment=HOME=/var/lib/ghars/default/ghars-buckos"));

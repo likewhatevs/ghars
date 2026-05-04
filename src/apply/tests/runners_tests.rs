@@ -565,9 +565,10 @@ fn execute_create_runner_records_unit_start_in_log() {
     };
     let mut log = UndoLog::new();
     execute_create_runner(&plan, &deps, &paths, &mut log, 2).unwrap();
-    let has_start = log.steps().iter().any(
-        |s| matches!(s, UndoStep::StartUnit { name } if name == "ghars-runner@rt.service"),
-    );
+    let has_start = log
+        .steps()
+        .iter()
+        .any(|s| matches!(s, UndoStep::StartUnit { name } if name == "ghars-runner@rt.service"));
     assert!(
         has_start,
         "execute_create_runner must push StartUnit; got {:?}",
@@ -610,6 +611,8 @@ fn execute_create_runner_invokes_prune_with_keep_versions() {
         "expected exactly one prune call after install; got {pruned:?}"
     );
     let (_runner_home, keep_versions) = &pruned[0];
-    assert_eq!(*keep_versions, 5, "keep_versions must thread through verbatim");
+    assert_eq!(
+        *keep_versions, 5,
+        "keep_versions must thread through verbatim"
+    );
 }
-

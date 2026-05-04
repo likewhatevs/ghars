@@ -2,6 +2,8 @@
 //! "spec-hash") and the parallel hash for cache-pool bindings consumed
 //! by the cache-pool create/update plan path.
 
+#![allow(clippy::expect_used)]
+
 use crate::config::{EffectiveCacheBinding, EffectiveRunnerSpec};
 
 /// Compute the canonical-JSON sha256 of an [`EffectiveRunnerSpec`]
@@ -32,7 +34,7 @@ use crate::config::{EffectiveCacheBinding, EffectiveRunnerSpec};
 ///   `config.sh` (assembled at `apply.rs::build_register_cmd`) is
 ///   handed to GitHub at registration time; the runner's behavior
 ///   is order-independent for matching workflow `runs-on:`
-///   selectors. Local order-sensitivity in the spec_hash would cause
+///   selectors. Local order-sensitivity in the `spec_hash` would cause
 ///   spurious recreate-class `UpdateRunner` plans (registration is
 ///   labels-bound, so a hash flip drives a recreate reason) on
 ///   cosmetic TOML edits.
@@ -84,4 +86,3 @@ pub(super) fn cache_pool_hash(binding: &EffectiveCacheBinding) -> String {
     hasher.update(json.as_bytes());
     format!("sha256:{}", hex::encode(hasher.finalize()))
 }
-

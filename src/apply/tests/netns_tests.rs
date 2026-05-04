@@ -1,5 +1,5 @@
-//! Tests for `apply::netns` (provision_netns_artifacts,
-//! teardown_netns_artifacts, verify_runner_netns_at).
+//! Tests for `apply::netns` (`provision_netns_artifacts`,
+//! `teardown_netns_artifacts`, `verify_runner_netns_at`).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -22,8 +22,8 @@ use super::common::{
 /// `provision_netns_artifacts`. Mirrors the systemd-test fixture.
 fn make_netns_binding(subnet: &str) -> crate::config::EffectiveNetworkBinding {
     use crate::config::{
-        DnsMode, EffectiveNetworkBinding, EgressRule, Ipv6Mode, NetworkMode, NetworkSpec,
-        PortSpec, Proto,
+        DnsMode, EffectiveNetworkBinding, EgressRule, Ipv6Mode, NetworkMode, NetworkSpec, PortSpec,
+        Proto,
     };
     EffectiveNetworkBinding {
         name: "buck2-isolated".into(),
@@ -290,11 +290,11 @@ fn synth_proc_netns_layout(
 /// uses `NETNS_VERIFY_DEADLINE` (5s).
 const TEST_NETNS_VERIFY_DEADLINE: std::time::Duration = std::time::Duration::from_millis(50);
 
-/// 5ms backoff for verify_runner_netns_at unit tests. Combined
+/// 5ms backoff for `verify_runner_netns_at` unit tests. Combined
 /// with the 50ms deadline, this allows up to ~10 polls per
-/// test — enough to exercise FlippingMockSystemd's flip_after=1
+/// test — enough to exercise `FlippingMockSystemd`'s `flip_after=1`
 /// (recovers-on-second-poll) and the persistent-ENOENT fail path.
-/// Production uses NETNS_VERIFY_BACKOFF (100ms).
+/// Production uses `NETNS_VERIFY_BACKOFF` (100ms).
 const TEST_NETNS_VERIFY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(5);
 
 #[test]
@@ -321,11 +321,11 @@ fn verify_runner_netns_at_passes_when_targets_differ() {
     .expect("isolated netns must pass verify");
 }
 
-/// MockSystemd variant whose MainPID property changes after the
+/// `MockSystemd` variant whose `MainPID` property changes after the
 /// first `flip_after` calls. Used by the retry-recovery test:
 /// the first reads return the host-netns'd PID; subsequent reads
 /// return the freshly-joined PID, mimicking the kernel-side setns
-/// race. MainPID flows through get_unit_property_u64 on the
+/// race. `MainPID` flows through `get_unit_property_u64` on the
 /// Service interface; the mock stores u64 directly, no String
 /// round-trip.
 struct FlippingMockSystemd {

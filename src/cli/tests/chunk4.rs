@@ -3,10 +3,9 @@
 
 use super::*;
 
-
 /// Defense-in-depth: a runner.caches entry whose length exceeds
 /// `IDENTIFIER_MAX_LEN` must reject at config load even when the
-/// cache_pools map itself is empty / valid. Today the planner's
+/// `cache_pools` map itself is empty / valid. Today the planner's
 /// cross-reference rejects unknown names earlier, but that error
 /// is shape-agnostic ("unknown cache pool"). The identifier-shape
 /// gate here surfaces a `runner "NAME" caches[]:` scope so the
@@ -41,7 +40,7 @@ fn validate_cache_pool_names_rejects_oversize_runner_caches_entry() {
 
 // ---------- sigil tests ---------------------------------------------
 
-/// pin the `!` sigil contract for recreate-class UpdateRunner
+/// pin the `!` sigil contract for recreate-class `UpdateRunner`
 /// against an EMPTY `recreate_reasons` Vec. Adds new coverage axes
 /// over `render_action_line_update_runner_sigil_distinguishes_recreate_from_inplace`
 /// (which uses a single non-empty reason): the empty-reasons case
@@ -94,9 +93,9 @@ fn render_action_line_update_runner_recreate_uses_bang_sigil() {
     );
 }
 
-/// Yellow ANSI color for recreate-class UpdateRunner.
+/// Yellow ANSI color for recreate-class `UpdateRunner`.
 /// `render_action_line` selects ANSI prefix by Action variant; both
-/// recreate and in-place UpdateRunner paths share `\x1b[33m`
+/// recreate and in-place `UpdateRunner` paths share `\x1b[33m`
 /// (yellow). Sigil distinction (`!` vs `~`) is the column-0 signal;
 /// color is the variant signal. The wrap shape is `\x1b[33m{sigil}
 /// {summary}\x1b[0m`, so the sigil byte lives INSIDE the ANSI
@@ -135,24 +134,24 @@ fn render_action_line_recreate_update_runner_color_disabled_no_ansi() {
 }
 
 /// Operator-grep parity — `^! ` line count == count of
-/// recreate-class UpdateRunner actions, NOT `summary.recreates.len()`.
+/// recreate-class `UpdateRunner` actions, NOT `summary.recreates.len()`.
 ///
 /// `summary.recreates` is the JSON sibling of the Recreate-class
 /// label list; it includes ALL Action variants whose
-/// `Action::disruption` is `Disruption::Recreate` — CreateRunner,
-/// UpdateRunner-recreate, RemoveRunner, CreateCachePool,
-/// RemoveCachePool. The `!` sigil only marks the UpdateRunner-
+/// `Action::disruption` is `Disruption::Recreate` — `CreateRunner`,
+/// UpdateRunner-recreate, `RemoveRunner`, `CreateCachePool`,
+/// `RemoveCachePool`. The `!` sigil only marks the `UpdateRunner`-
 /// recreate branch (per `render_action_line`'s doc-comment).
 ///
-/// Fixture covers the asymmetry: CreateRunner + UpdateRunner-
-/// recreate + in-place UpdateRunner + RemoveRunner + RemoveCachePool.
+/// Fixture covers the asymmetry: `CreateRunner` + `UpdateRunner`-
+/// recreate + in-place `UpdateRunner` + `RemoveRunner` + `RemoveCachePool`.
 /// `^! ` count = 1 (only the UpdateRunner-recreate row); summary
 /// recreate count = 4 (every recreate-class variant). Pins the
 /// strict-greater asymmetry so a future renderer change that
 /// broadens `!` to other variants would fail.
 #[test]
 fn render_action_line_sigil_count_matches_recreate_update_runners() {
-    let actions = vec![
+    let actions = [
         Action::CreateRunner(fake_runner_plan("a")),
         Action::UpdateRunner(recreate_delta("b", vec!["arch"])),
         Action::UpdateRunner(inplace_delta("c")),
@@ -215,8 +214,7 @@ fn render_action_line_recreate_sigil_holds_under_diff_flag() {
         .insert("10-memory.conf".into(), "[Service]\nMemoryMax=2G\n".into());
     // Populate before_drop_in_basenames with a basename absent
     // from after.drop_ins so the Removed branch fires.
-    delta.before_drop_in_basenames =
-        Some(vec!["00-ghars.conf".into(), "99-custom.conf".into()]);
+    delta.before_drop_in_basenames = Some(vec!["00-ghars.conf".into(), "99-custom.conf".into()]);
     let line = render_action_line(
         &Action::UpdateRunner(delta),
         ColorMode { enabled: false },
@@ -248,11 +246,11 @@ fn render_action_line_recreate_sigil_holds_under_diff_flag() {
 /// Defense-in-depth — `!` MUST NOT appear at column 0 on any
 /// non-recreate-UpdateRunner variant. Sigil vocabulary per
 /// `render_action_line`:
-/// - CreateRunner / CreateCachePool → `+`
-/// - RemoveRunner / RemoveCachePool → `-`
-/// - UpdateRunner-inplace / UpdateCachePool → `~`
-/// - NoOp → ` ` (space)
-/// `!` is reserved for UpdateRunner with `requires_recreate=true`.
+/// - `CreateRunner` / `CreateCachePool` → `+`
+/// - `RemoveRunner` / `RemoveCachePool` → `-`
+/// - UpdateRunner-inplace / `UpdateCachePool` → `~`
+/// - `NoOp` → ` ` (space)
+/// `!` is reserved for `UpdateRunner` with `requires_recreate=true`.
 /// Pins the vocabulary so a future refactor cannot silently
 /// broaden `!` to other variants.
 #[test]
@@ -318,7 +316,7 @@ fn render_action_line_bang_sigil_only_on_recreate_update_runner() {
 /// pastes a plan line into a shell. Two cases cover both format
 /// branches: bare/plain (sigil at column 0) and bare/color (sigil
 /// after the `\x1b[33m` ANSI prefix). Both must end the `!` byte
-/// with `b' '`. Other shape variants (with field_changes, with
+/// with `b' '`. Other shape variants (with `field_changes`, with
 /// drop-in synthesis, etc.) test the body-block rendering, not
 /// the byte contract — coverage is on the `!` itself, not
 /// the surrounding payload.
@@ -355,11 +353,11 @@ fn render_action_line_bang_sigil_always_followed_by_space() {
 
 /// Pins that ApplyResult.details can carry multiple Failed
 /// rows interleaved with non-Failed rows. The fixture mirrors what
-/// the apply() loop produces under non-fail_fast: every action's
+/// the `apply()` loop produces under non-fail_fast: every action's
 /// outcome lands in details, and the success/failure split lives
 /// in `succeeded` / `failed` Vecs (which mirror details by label).
 /// This test pins the data shape; integration coverage via the
-/// real apply() loop.
+/// real `apply()` loop.
 #[test]
 fn details_carries_multiple_failed_rows_with_independent_summaries() {
     let result = apply::ApplyResult {
@@ -427,14 +425,14 @@ fn details_carries_multiple_failed_rows_with_independent_summaries() {
     assert_eq!(apply_exit_code(false, false, &result), 4);
 }
 
-/// Pin the per-action prefix shapes cmd_apply emits for each
-/// outcome class. cmd_apply's per-action loop routes by variant to
-/// stdout (NoOp, success) or stderr (Failed); the stream routing
+/// Pin the per-action prefix shapes `cmd_apply` emits for each
+/// outcome class. `cmd_apply`'s per-action loop routes by variant to
+/// stdout (`NoOp`, success) or stderr (Failed); the stream routing
 /// itself is not directly testable without helper extraction
 /// (a separate refactor tracks that). This test reproduces the exact
-/// format!() invocations from the cmd_apply per-action loop and
+/// format!() invocations from the `cmd_apply` per-action loop and
 /// pins the prefix-shape contract:
-/// - `noop: REASON [none]` (NoOp arm)
+/// - `noop: REASON [none]` (`NoOp` arm)
 /// - `fail: LABEL [DISRUPTION] (DETAIL)` (Failed match arm)
 /// - `ok: LABEL [DISRUPTION] (DETAIL)` (catch-all arm)
 /// Operator grep pipelines (`^fail:`, `^ok:`, `^noop:`) survive
@@ -560,7 +558,7 @@ fn apply_exit_code_unaffected_by_details_failed_rows() {
 
 // ---------- cmd_apply summary footer tests -------------------------
 
-/// cmd_apply summary footer mixed-outcome shape.
+/// `cmd_apply` summary footer mixed-outcome shape.
 /// `render_apply_summary_line` emits the headline triple
 /// (`A applied, F failed, S skipped`) followed by the disruption
 /// parenthetical + `any_recreate` suffix produced by the shared
@@ -601,10 +599,10 @@ fn render_apply_summary_line_mixed_outcomes_full_shape() {
 }
 
 /// Applied-bucket coverage for Removed / Recreated /
-/// PoolCreated / PoolRemoved. The sibling test
+/// `PoolCreated` / `PoolRemoved`. The sibling test
 /// `render_apply_summary_line_buckets_every_variant_correctly`
-/// exercises Created / InPlaceRestarted / PoolUpdated / NoOp /
-/// InPlaceSkipped / Failed. This test covers the four remaining
+/// exercises Created / `InPlaceRestarted` / `PoolUpdated` / `NoOp` /
+/// `InPlaceSkipped` / Failed. This test covers the four remaining
 /// `applied`-bucket variants — all of which are
 /// `Disruption::Recreate` per `ApplyOutcome::disruption` at
 /// apply.rs.
@@ -684,8 +682,8 @@ fn render_apply_summary_line_multi_failure_only_plan() {
 }
 
 /// Synthetic `daemon_reload` Failed row — verifies the data
-/// shape apply() produces for the daemon_reload synthetic row, not
-/// apply() behavior directly. apply.rs's post-loop daemon_reload
+/// shape `apply()` produces for the `daemon_reload` synthetic row, not
+/// `apply()` behavior directly. apply.rs's post-loop `daemon_reload`
 /// synthesis pushes a Failed row with `plan_disruption =
 /// Disruption::None` (Manager.Reload is a cache-flush
 /// with zero blast radius, hand-set explicitly because no `Action`
@@ -724,7 +722,7 @@ fn render_apply_summary_line_synthetic_daemon_reload_failed_row() {
 
 /// Inverse pin — Restart-class Failed must NOT flip
 /// `any_recreate`. `Failed.disruption()` delegates to
-/// `plan_disruption`; for an in-place UpdateRunner that fails
+/// `plan_disruption`; for an in-place `UpdateRunner` that fails
 /// mid-execution, plan-time disruption is Restart, so the row
 /// contributes to `restart` count, NOT `recreate`. `any_recreate`
 /// stays false. Symmetric guard against the
@@ -758,7 +756,7 @@ fn render_apply_summary_line_restart_class_failed_does_not_flip_any_recreate() {
 
 /// Ordering invariant pin —
 /// `failed_undo_logs[i].0 == failed[i].0` for every `i` in a
-/// multi-failure non-fail_fast scenario. apply::apply pushes
+/// multi-failure non-fail_fast scenario. `apply::apply` pushes
 /// to both Vecs in the same execute-order loop iteration; the
 /// advisory renderer walks `failed_undo_logs` for both the body
 /// blocks and the header count (header N is the count
@@ -834,9 +832,7 @@ fn render_rollback_advisory_renders_steps_in_reverse_lifo_order() {
         "CreateCachePool(build)",
         vec![
             apply::UndoStep::CreateDir {
-                path: camino::Utf8PathBuf::from(
-                    "/etc/systemd/system/ghars-cache@build.service.d",
-                ),
+                path: camino::Utf8PathBuf::from("/etc/systemd/system/ghars-cache@build.service.d"),
             },
             apply::UndoStep::WriteFile {
                 path: camino::Utf8PathBuf::from(
@@ -872,9 +868,9 @@ fn render_rollback_advisory_renders_steps_in_reverse_lifo_order() {
 }
 
 /// Daemon_reload-only failure renders NO ADVISORY at all.
-/// The daemon_reload synthesis at apply::apply pushes to
+/// The `daemon_reload` synthesis at `apply::apply` pushes to
 /// `result.failed` AND `result.failed_undo_logs` with an EMPTY
-/// step Vec (no per-action UndoLog exists for the synthetic
+/// step Vec (no per-action `UndoLog` exists for the synthetic
 /// post-loop step).
 ///
 /// When EVERY entry in `failed_undo_logs` has an empty
@@ -882,7 +878,7 @@ fn render_rollback_advisory_renders_steps_in_reverse_lifo_order() {
 /// of emitting a header that promises actionable cleanup with
 /// no body underneath. Silence is more honest than a header
 /// without a list. The per-action `fail:` line emitted by
-/// cmd_apply's detail loop already communicates the failure
+/// `cmd_apply`'s detail loop already communicates the failure
 /// to the operator.
 ///
 /// `render_rollback_advisory_skips_empty_step_lists` (sibling) pins
@@ -903,7 +899,7 @@ fn render_rollback_advisory_daemon_reload_only_failure_returns_none() {
 
 /// Multi-failure all-empty pin — verify the
 /// `filter(!is_empty()).count() == 0` gate scales beyond the
-/// single-entry daemon_reload case. Three failed actions, all
+/// single-entry `daemon_reload` case. Three failed actions, all
 /// with empty `UndoStep` Vecs (e.g. each errored before recording
 /// any side effect). The advisory renderer should still return
 /// `None` because the filter yields 0 for uniformly-empty input
@@ -972,7 +968,7 @@ fn render_rollback_advisory_debug_assert_passes_on_equal_lengths() {
 /// `apply::apply` pushes to `result.failed` and
 /// `result.failed_undo_logs` in lockstep on every Err arm —
 /// both the per-action loop's Err arm and the synthetic
-/// post-loop daemon_reload arm. The lengths can only diverge in
+/// post-loop `daemon_reload` arm. The lengths can only diverge in
 /// hand-constructed `ApplyResult` test fixtures. The
 /// `debug_assert_eq!` at `render_rollback_advisory`'s entry
 /// catches such fixtures (and any future production-code
@@ -1009,7 +1005,7 @@ fn render_rollback_advisory_debug_assert_panics_on_length_mismatch() {
 /// shared helper for `render_rollback_advisory` test fixtures.
 /// Every advisory test that drives the renderer with one or more
 /// failures must push to BOTH `failed` and `failed_undo_logs` in
-/// lockstep — the typed-error tuple and the per-action UndoLog
+/// lockstep — the typed-error tuple and the per-action `UndoLog`
 /// pairing is the lockstep invariant `apply::apply` enforces in
 /// production (apply.rs Err arms push to both Vecs in the same
 /// loop iteration), and the `debug_assert_eq!` at
@@ -1085,7 +1081,7 @@ fn format_rollback_advisory_header_n_one_format() {
 
 /// Direct unit test at N=5 — the typical
 /// multi-failure case (e.g. an apply run with five actions all
-/// of which left non-empty UndoLogs). Pin the `{n}` interpolation
+/// of which left non-empty `UndoLogs`). Pin the `{n}` interpolation
 /// renders the integer as a decimal without padding or
 /// thousands-separator artifacts.
 ///
@@ -1146,7 +1142,7 @@ fn format_rollback_advisory_header_n_zero_gated_upstream() {
 /// This pins the asymmetry between `failed` (3 entries) and the
 /// rendered output (header N=1, body block count=1) under the
 /// most operator-confusing input shape: the per-action
-/// `fail:` lines from cmd_apply's detail loop will report all
+/// `fail:` lines from `cmd_apply`'s detail loop will report all
 /// three labels, but the advisory's "what to clean up" block
 /// only lists the one entry that actually mutated state.
 /// Sibling: `render_rollback_advisory_skips_empty_step_lists`
@@ -1213,7 +1209,7 @@ fn render_rollback_advisory_mixed_two_empty_one_non_empty() {
 ///
 /// Sibling: `render_rollback_advisory_failed_and_failed_undo_logs_share_label_ordering`
 /// also covers 3 non-empty entries; that test pins ORDER
-/// (failed[i].0 == failed_undo_logs[i].0). This test is focused
+/// (failed[i].0 == `failed_undo_logs`[i].0). This test is focused
 /// on the HEADER N count == total failures invariant under
 /// all-non-empty conditions.
 #[test]
@@ -1240,8 +1236,7 @@ fn render_rollback_advisory_all_non_empty_header_matches_total() {
             name: "ghars-runner@c.service".into(),
         }],
     );
-    let advisory =
-        render_rollback_advisory(&result).expect("all-non-empty must yield an advisory");
+    let advisory = render_rollback_advisory(&result).expect("all-non-empty must yield an advisory");
     // Header N == total failure count (3) under all-non-empty
     // input; the filter is a no-op here.
     assert!(
@@ -1289,7 +1284,7 @@ fn render_rollback_advisory_all_non_empty_header_matches_total() {
 /// insertion order — a future reorder (e.g. partition into
 /// non-empty-first then empty-last before iterating) would
 /// scramble the operator's expected ordering relative to the
-/// per-action `fail:` lines emitted by cmd_apply's detail loop.
+/// per-action `fail:` lines emitted by `cmd_apply`'s detail loop.
 ///
 /// Sibling: `render_rollback_advisory_skips_empty_step_lists` pins
 /// the empty-skip contract on a 2-element Vec; this test extends
@@ -1317,8 +1312,8 @@ fn render_rollback_advisory_alternating_order_preserves_position() {
             name: "ghars-runner@third.service".into(),
         }],
     );
-    let advisory = render_rollback_advisory(&result)
-        .expect("two non-empty entries must yield an advisory");
+    let advisory =
+        render_rollback_advisory(&result).expect("two non-empty entries must yield an advisory");
     // Header: N=2 (only the two non-empty entries; the middle
     // empty entry is filtered out).
     assert!(
@@ -1374,7 +1369,7 @@ fn render_rollback_advisory_alternating_order_preserves_position() {
 /// This `(REASONS)` parenthetical only applies when
 /// `recreate_reasons` is non-empty. The empty-reasons branch
 /// emits `update: recreate` with NO parens (omit-parens guard
-/// in render_action_line) — see
+/// in `render_action_line`) — see
 /// `render_action_line_update_runner_recreate_uses_bang_sigil`
 /// for that pin.
 #[test]
@@ -1435,7 +1430,7 @@ fn recreate_reason_note_glosses_opaque_tokens() {
 /// from `RunnerDelta::recreate_reasons` field doc (plan.rs); this
 /// test pins every named-field token to the no-gloss branch so a
 /// future addition that pushes a non-field token into
-/// recreate_reasons surfaces here unannotated. Adding a new opaque
+/// `recreate_reasons` surfaces here unannotated. Adding a new opaque
 /// token without extending `recreate_reason_note` would leave the
 /// new token bare in plan output.
 #[test]
@@ -1476,7 +1471,7 @@ fn recreate_reason_note_returns_none_for_unknown_token() {
 /// `recreate (uncovered)` keeps working — pinned by the existing
 /// `render_action_line_recreate_multi_element_reasons_join_format`
 /// sibling); the gloss rides as a separate detail line at the
-/// 4-space indent matching the field_changes loop above.
+/// 4-space indent matching the `field_changes` loop above.
 #[test]
 fn render_action_line_recreate_uncovered_emits_note_line() {
     let action = Action::UpdateRunner(recreate_delta("buckos", vec!["uncovered"]));
@@ -1527,7 +1522,7 @@ fn render_action_line_recreate_runsvc_integrity_emits_note_line() {
 }
 
 /// field-name tokens (`url`, `runner_version`, …) MUST NOT
-/// emit a `note:` line — the field_changes loop renders the
+/// emit a `note:` line — the `field_changes` loop renders the
 /// before→after pair already, and a redundant gloss would clutter
 /// the brief view. Pin the no-note guarantee for all
 /// field-name reasons.
@@ -1582,7 +1577,7 @@ fn render_action_line_recreate_mixed_reasons_emits_note_per_opaque_token() {
     );
 }
 
-/// in-place UpdateRunner (no recreate) MUST NOT emit any
+/// in-place `UpdateRunner` (no recreate) MUST NOT emit any
 /// `note:` lines even when `recreate_reasons` somehow contains an
 /// opaque token (which `plan::plan_from` never produces — the
 /// `requires_recreate = !recreate_reasons.is_empty()` invariant
@@ -1637,8 +1632,7 @@ fn plan_to_json_value_summary_recreates_serde_round_trip() {
     let body = plan_to_json_value(&plan, false);
     // Serialize to wire-format JSON string and back.
     let wire = serde_json::to_string(&body).expect("serialize body");
-    let reread: serde_json::Value =
-        serde_json::from_str(&wire).expect("deserialize wire format");
+    let reread: serde_json::Value = serde_json::from_str(&wire).expect("deserialize wire format");
     // Per-element equality: every label survives the round-trip.
     let original = body["summary"]["recreates"].as_array().unwrap();
     let after = reread["summary"]["recreates"].as_array().unwrap();
@@ -1667,9 +1661,9 @@ fn plan_to_json_value_summary_recreates_serde_round_trip() {
 /// `any_recreate` is true. Strengthens the existing
 /// `plan_to_json_value_summary_recreates_only_recreate_class_actions`
 /// by exercising a 5-action mixed-class-but-all-recreate fixture
-/// (CreateRunner + UpdateRunner-recreate + RemoveRunner +
-/// CreateCachePool + RemoveCachePool) so all five recreate-class
-/// variants round-trip through the by_disruption counter, not just
+/// (`CreateRunner` + UpdateRunner-recreate + `RemoveRunner` +
+/// `CreateCachePool` + `RemoveCachePool`) so all five recreate-class
+/// variants round-trip through the `by_disruption` counter, not just
 /// the 3-variant subset the existing test exercises.
 #[test]
 fn plan_to_json_value_summary_recreates_all_five_recreate_class_variants() {
@@ -1887,7 +1881,7 @@ fn disruption_summary_variants_contains_all_disruption_variants() {
 /// existing in-memory pin
 /// `render_plan_json_update_runner_emits_typed_list_field_value_for_labels`
 /// by adding the wire-string round-trip axis — a future change to
-/// a non-self-describing serializer (bincode, serde_cbor, etc.)
+/// a non-self-describing serializer (bincode, `serde_cbor`, etc.)
 /// that keeps the in-memory shape but breaks JSON would be caught
 /// here.
 #[test]
@@ -1942,7 +1936,7 @@ fn field_value_list_json_shape_round_trips_end_to_end() {
 /// outcomes must return 0 (not 8). Strengthens existing
 /// `apply_exit_code_recreate_flag_without_recreate_outcome_returns_zero`
 /// by adding a multi-action mixed-non-recreate fixture
-/// (InPlaceRestarted + PoolUpdated + NoOp + InPlaceSkipped) so the
+/// (`InPlaceRestarted` + `PoolUpdated` + `NoOp` + `InPlaceSkipped`) so the
 /// recreate-detection short-circuit at `ApplyOutcome::disruption`
 /// is exercised against a richer set of non-recreate variants.
 #[test]
@@ -2057,7 +2051,7 @@ fn apply_exit_code_fail_fast_single_failed_row_drives_correct_exit() {
 /// Pin that the recreate-Removed text path at
 /// `render_action_line` actually runs the basename through
 /// `escape_control_chars`. Helper-level coverage already lives in
-/// `lib.rs` (Cow allocation, escape_default semantics); this test
+/// `lib.rs` (Cow allocation, `escape_default` semantics); this test
 /// pins the WIRING — that the production render site invokes the
 /// helper and the operator's terminal never sees the raw control
 /// byte. Drives the renderer with a hostile basename containing
@@ -2069,7 +2063,7 @@ fn apply_exit_code_fail_fast_single_failed_row_drives_correct_exit() {
 /// `format!` call to a path that bypasses `escape_control_chars`
 /// would compile and pass other recreate-Removed render tests
 /// (which use sanitized basenames) but reintroduce the ANSI-
-/// hijack vector that escape_control_chars closes.
+/// hijack vector that `escape_control_chars` closes.
 #[test]
 fn render_action_line_recreate_removed_text_path_escapes_hostile_basename() {
     let mut after_plan = fake_runner_plan("buckos");
@@ -2205,7 +2199,7 @@ fn plan_to_json_value_recreate_removed_json_path_escapes_hostile_basename() {
 /// sites use the same `escape_control_chars(basename)` form, so
 /// a regression in one would not catch a regression in the other.
 ///
-/// Drives `render_action_line` with an in-place RunnerDelta whose
+/// Drives `render_action_line` with an in-place `RunnerDelta` whose
 /// sole `drop_in_changes` entry has a hostile basename. Asserts
 /// (a) raw ESC byte gone, (b) `\u{1b}` escape form present,
 /// (c) "hostile.conf" non-control suffix passes through.
@@ -2261,7 +2255,7 @@ fn render_action_line_inplace_text_path_escapes_hostile_drop_in_basename() {
 /// pins.
 ///
 /// Drives `plan_to_json_value` (diff=false) with an in-place
-/// RunnerDelta. The `drop_in_change_to_json` helper is invoked
+/// `RunnerDelta`. The `drop_in_change_to_json` helper is invoked
 /// for each `dc` in `d.drop_in_changes` from inside
 /// `plan_to_json_value`, and the helper's `obj.insert("basename",
 /// escape_control_chars(...))` is the wiring point under test.
@@ -2372,7 +2366,7 @@ fn plan_to_json_value_inplace_json_path_escapes_hostile_drop_in_basename() {
 /// and over-constraining a single fixture.
 ///
 /// Drives the renderer with an `ApplyResult` carrying one
-/// failure + one `StartUnit` UndoStep whose `name` field
+/// failure + one `StartUnit` `UndoStep` whose `name` field
 /// contains an ESC. Asserts (a) no raw `\x1b` anywhere in the
 /// rendered advisory, (b) `\u{1b}` escape form present,
 /// (c) header / step bullet structure intact.
@@ -2441,7 +2435,7 @@ fn render_rollback_advisory_escapes_hostile_undo_step() {
 /// `IDENTIFIER_REGEX` rejects
 /// control chars at config-load, so a hostile label cannot
 /// reach this site through normal inputs — but the
-/// failed_undo_logs key is constructed from `Action::label()`
+/// `failed_undo_logs` key is constructed from `Action::label()`
 /// output, and a future regex relaxation or a synthetic test
 /// fixture (this very test) can drive a hostile label through.
 /// Defense-in-depth pin.
@@ -2799,7 +2793,7 @@ fn render_drop_in_body_block_modified_escapes_hostile_diff_lines() {
 /// Successful single-action plan (Created outcome) routes the
 /// `ok:` row plus the summary footer to stdout, with stderr
 /// completely empty. This is the success-path baseline:
-/// the cmd_apply output must stay grep-able on stdout when no
+/// the `cmd_apply` output must stay grep-able on stdout when no
 /// action failed.
 #[test]
 fn render_apply_emission_ok_outcome_routes_to_stdout_only() {
@@ -2854,12 +2848,12 @@ fn render_apply_emission_failed_outcome_routes_to_stderr() {
     );
 }
 
-/// NoOp action emits the special `noop: REASON [none]` line
+/// `NoOp` action emits the special `noop: REASON [none]` line
 /// (label-strip collapses `NoOp(REASON)` into bare `REASON`)
 /// and routes to stdout. Pins both:
 /// (a) the strip-prefix/strip-suffix branch that converts
 ///     `NoOp(idempotent)` → `idempotent`, and
-/// (b) the stream routing — NoOp goes to stdout, never stderr.
+/// (b) the stream routing — `NoOp` goes to stdout, never stderr.
 #[test]
 fn render_apply_emission_noop_strips_label_prefix_and_routes_to_stdout() {
     let result = apply::ApplyResult {
@@ -2878,7 +2872,7 @@ fn render_apply_emission_noop_strips_label_prefix_and_routes_to_stdout() {
     assert!(err.is_empty(), "noop must not touch stderr; got: {err:?}");
 }
 
-/// Pins the `unwrap_or` fallback in the NoOp arm: when the label
+/// Pins the `unwrap_or` fallback in the `NoOp` arm: when the label
 /// does NOT have the `NoOp(...)` prefix wrapper (e.g. a synthetic
 /// fixture or future label-shape evolution that supplies a bare
 /// reason), the helper renders the label verbatim as the reason.
@@ -2888,10 +2882,7 @@ fn render_apply_emission_noop_strips_label_prefix_and_routes_to_stdout() {
 #[test]
 fn render_apply_emission_noop_without_wrapper_renders_label_verbatim() {
     let result = apply::ApplyResult {
-        details: vec![(
-            "literal-no-wrapper".into(),
-            apply::ApplyOutcome::NoOp,
-        )],
+        details: vec![("literal-no-wrapper".into(), apply::ApplyOutcome::NoOp)],
         ..apply::ApplyResult::default()
     };
     let (out, _err) = capture_apply_emission(&result);
@@ -2902,8 +2893,8 @@ fn render_apply_emission_noop_without_wrapper_renders_label_verbatim() {
 }
 
 /// `DryRunSkipped` is one of the non-NoOp non-Failed
-/// ApplyOutcome variants and must route to stdout via its
-/// explicit DryRunSkipped arm (one branch of the merged
+/// `ApplyOutcome` variants and must route to stdout via its
+/// explicit `DryRunSkipped` arm (one branch of the merged
 /// success/skip `|`-chain) without falsely matching the
 /// `Failed` or `NoOp` arms.
 #[test]
@@ -3027,10 +3018,7 @@ fn render_apply_emission_advisory_routes_to_stderr() {
         "footer missing from stdout: {out}",
     );
     // Symmetric cross-stream negative pin: footer must NOT appear on stderr.
-    assert!(
-        !err.contains("Apply:"),
-        "footer must NOT appear on stderr"
-    );
+    assert!(!err.contains("Apply:"), "footer must NOT appear on stderr");
 }
 
 /// When `failed_undo_logs` is empty (no failures at all),

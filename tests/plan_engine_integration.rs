@@ -5,16 +5,18 @@
 //! and behaves correctly as a third party would consume it.
 //!
 //! Coverage:
-//! - count expansion: auto-skip with explicit collision, MAX_COUNT
+//! - count expansion: auto-skip with explicit collision, `MAX_COUNT`
 //!   boundary, count-zero skip, identifier validation on generated
 //!   names.
 //! - defaults merge: every field from `Defaults` flows correctly into
 //!   `EffectiveRunnerSpec` — labels concat-and-dedup, hardening
 //!   field-by-field merge, runner.X overrides defaults.X.
-//! - plan diff: NoOp / CreateRunner / RemoveRunner / UpdateRunner
+//! - plan diff: `NoOp` / `CreateRunner` / `RemoveRunner` / `UpdateRunner`
 //!   classification across paired states.
-//! - spec_hash: idempotent (hash → embed → re-hash returns same value),
+//! - `spec_hash`: idempotent (hash → embed → re-hash returns same value),
 //!   stable across irrelevant field reorderings.
+
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use camino::Utf8PathBuf;
 use ghars::config::{Arch, AuthSpec, Config, Defaults, EtcBindStyle, Hardening, RunnerSpec};
@@ -668,7 +670,7 @@ fn plan_mixed_create_remove_noop_resolves_correctly() {
 /// End-to-end: a cache pool drop-in directory with an
 /// instance name longer than `IDENTIFIER_MAX_LEN` exists on
 /// disk (operator-installed, partial-apply crash, or downgrade
-/// from a future ghars). state::discover() INCLUDES the oversize
+/// from a future ghars). `state::discover()` INCLUDES the oversize
 /// entry in `actual.cache_pools` rather than skipping it. Because
 /// `validate_cache_pool_name` rejects oversize keys at config load,
 /// `cfg.cache_pools` cannot contain a matching entry, so the
@@ -712,6 +714,9 @@ fn plan_emits_remove_cache_pool_for_oversize_discovered_name() {
         vec![oversize_name.as_str()],
         "oversize discovered pool must drive a RemoveCachePool; \
          actions: {:?}",
-        plan.actions.iter().map(|a| a.label()).collect::<Vec<_>>()
+        plan.actions
+            .iter()
+            .map(ghars::plan::Action::label)
+            .collect::<Vec<_>>()
     );
 }

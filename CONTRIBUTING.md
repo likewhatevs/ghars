@@ -6,15 +6,43 @@ compat wrappers) are not accepted.
 
 ## Build, test, lint
 
+One-time setup (installs nextest, llvm-cov, mutants, mdbook, mdbook-linkcheck2,
+rust-script, cargo-deny, and wires up the local pre-commit hook via
+`git config core.hooksPath .githooks`):
+
+```sh
+cargo install just --locked
+just setup
+```
+
+Day-to-day:
+
+```sh
+just lint        # cargo fmt --check + cargo clippy --workspace --all-targets -- -D warnings
+just test        # cargo nextest run
+just coverage    # cargo llvm-cov nextest --fail-under-lines 70
+```
+
+Raw cargo invocations work as a fallback when `just` is unavailable:
+
 ```sh
 cargo build
 cargo nextest run         # do NOT use `cargo test`
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
 `cargo test` runs the same tests but does not give per-test isolation;
 this repository standardizes on nextest. CI uses nextest exclusively.
+
+### Pre-commit hook
+
+`just setup` runs `git config core.hooksPath .githooks`, which points
+git at the in-tree `.githooks/pre-commit` script. The hook runs
+`cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,
+and `cargo build --tests` on every commit and aborts on failure. The
+clippy invocation matches CI exactly so lint regressions surface
+locally before the push.
 
 The `runsvc-wrapper` binary is a SEC-02 root-owned trampoline. It builds
 as part of `cargo build`. Tests that exercise privileged paths (chown,
@@ -87,9 +115,9 @@ Source tree: `src/lib.rs`, `src/main.rs`, the modules listed in
 ## PR process
 
 1. Branch off `main`. Keep PRs scoped to one logical change.
-2. Run `cargo build`, `cargo nextest run`, `cargo clippy`, `cargo fmt --check` locally before pushing.
+2. Run `just lint && just test` locally before pushing (the same gates CI runs).
 3. Open the PR against `likewhatevs/ghars`. Fill in the test plan with a checklist of what you exercised — only items that are done, every box checked.
-4. CI must be green before review. CI runs build + nextest + clippy + fmt + coverage + (nightly) cargo-mutants.
+4. CI must be green before review. CI runs build + nextest + clippy + fmt + coverage.
 5. Reviewers will read both the diff and the call sites of anything you changed. The architectural rules above are non-negotiable; expect to be asked to refactor if you cross the sync/async boundary or introduce a new tokio dependency.
 6. Squash on merge. Commit subject is imperative; the body explains why.
 

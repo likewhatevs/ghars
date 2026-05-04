@@ -42,7 +42,7 @@ use super::DEFAULT_TRUST_ZONE;
 ///   runner entries).
 /// - `allowed_cpus`, `allowed_memory_nodes` — scalar override.
 ///
-/// Inputs threaded by the caller (because merge_defaults can't fetch
+/// Inputs threaded by the caller (because `merge_defaults` can't fetch
 /// them on its own):
 /// - `auth_name` — already validated against `[auth.NAME]`.
 /// - `caches` — `EffectiveCacheBinding` list (resolved against
@@ -55,13 +55,13 @@ use super::DEFAULT_TRUST_ZONE;
 ///
 /// `spec_hash` is left empty in the returned spec — call
 /// [`super::spec_hash`] on the result to fill it. Two-step pattern keeps
-/// the hash domain (canonical_json of the spec) and the spec
+/// the hash domain (`canonical_json` of the spec) and the spec
 /// construction orthogonal.
 ///
 /// Canonicalization asymmetry between `caches` and `labels`:
 ///
 /// - `caches`: `merge_defaults` threads the caller-supplied bindings
-///   verbatim. Reorder-invariant spec_hash for caches requires going
+///   verbatim. Reorder-invariant `spec_hash` for caches requires going
 ///   through [`super::compute::lower_to_effective`], which sorts
 ///   `caches` by name as part of cache-pool resolution. Direct
 ///   `merge_defaults` callers (test fixtures, future synthetic spec
@@ -72,7 +72,7 @@ use super::DEFAULT_TRUST_ZONE;
 ///   concat-and-dedup of `defaults.labels` and `runner.labels`,
 ///   `merge_defaults` sorts the resulting Vec alphabetically (and
 ///   applies `dedup` as defense-in-depth). Direct callers therefore
-///   inherit reorder-invariant spec_hash for labels without going
+///   inherit reorder-invariant `spec_hash` for labels without going
 ///   through `lower_to_effective`. Labels are set-semantic for
 ///   GitHub Actions runner registration, so canonicalization at
 ///   merge time keeps the on-disk `X-Ghars-Labels=` annotation,
@@ -287,4 +287,3 @@ fn pick_vec<T: Clone>(runner: &[T], defaults: &[T]) -> Vec<T> {
         runner.to_vec()
     }
 }
-

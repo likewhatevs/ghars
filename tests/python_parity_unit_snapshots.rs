@@ -33,11 +33,13 @@
 //!   Part 9c.
 //!
 //! The fixture builder uses pinned, deterministic field values
-//! (spec_hash, config_source, runsvc_sha256) so the snapshot bytes
+//! (`spec_hash`, `config_source`, `runsvc_sha256`) so the snapshot bytes
 //! don't shift across runs. Operator-supplied paths and IPs in the
 //! fixtures are documentation examples lifted from the design spec —
 //! `/var/lib/ghars`, `192.168.2.84` (squid proxy example), `10.200.0.0/30`
 //! (the design's first /30 slot) — none are environment-derived.
+
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::BTreeMap;
 

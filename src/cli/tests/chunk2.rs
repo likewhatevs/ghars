@@ -3,9 +3,8 @@
 
 use super::*;
 
-
-/// Recreate-class UpdateRunner must use the `!` sigil.
-/// In-place UpdateRunner keeps `~`. Both header lines still
+/// Recreate-class `UpdateRunner` must use the `!` sigil.
+/// In-place `UpdateRunner` keeps `~`. Both header lines still
 /// terminate with the `[recreate]`/`[restart]` bracket tag from
 /// the disruption tag, but the column-0 sigil is the fast-scan signal that
 /// distinguishes destructive (token re-mint + GitHub
@@ -374,9 +373,9 @@ fn render_apply_summary_line_empty_result() {
 
 /// Every outcome class lands in the right bucket.
 /// `applied` covers Created/Removed/Recreated/InPlaceRestarted/
-/// PoolCreated/PoolUpdated/PoolRemoved; `skipped` covers NoOp,
-/// DryRunSkipped, InPlaceSkipped, PoolSkipped; `failed` covers
-/// ApplyOutcome::Failed. The disruption parenthetical mirrors
+/// PoolCreated/PoolUpdated/PoolRemoved; `skipped` covers `NoOp`,
+/// `DryRunSkipped`, `InPlaceSkipped`, `PoolSkipped`; `failed` covers
+/// `ApplyOutcome::Failed`. The disruption parenthetical mirrors
 /// each outcome's `disruption()` mapping (verified against
 /// `apply::ApplyOutcome::disruption`).
 #[test]
@@ -487,9 +486,7 @@ fn render_rollback_advisory_renders_per_action_steps() {
         "CreateCachePool(build)",
         vec![
             apply::UndoStep::CreateDir {
-                path: camino::Utf8PathBuf::from(
-                    "/etc/systemd/system/ghars-cache@build.service.d",
-                ),
+                path: camino::Utf8PathBuf::from("/etc/systemd/system/ghars-cache@build.service.d"),
             },
             apply::UndoStep::WriteFile {
                 path: camino::Utf8PathBuf::from(
@@ -518,9 +515,8 @@ fn render_rollback_advisory_renders_per_action_steps() {
     );
     // Per-step bullet, indented 4 spaces, past-tense via describe().
     assert!(
-        advisory.contains(
-            "\n    - created directory /etc/systemd/system/ghars-cache@build.service.d"
-        ),
+        advisory
+            .contains("\n    - created directory /etc/systemd/system/ghars-cache@build.service.d"),
         "advisory must include CreateDir step via describe(); got: {advisory}",
     );
     assert!(
@@ -532,7 +528,7 @@ fn render_rollback_advisory_renders_per_action_steps() {
 }
 
 /// The synthetic `daemon_reload` post-loop
-/// failure has an empty UndoLog (no per-action mutation manifest).
+/// failure has an empty `UndoLog` (no per-action mutation manifest).
 /// The advisory renderer skips per-action blocks whose step list
 /// is empty AND counts ONLY non-empty entries in the header N
 /// so header count matches body block count under the
@@ -589,7 +585,7 @@ fn render_rollback_advisory_skips_empty_step_lists() {
 /// fragment (e.g. searching for `"    - created directory
 /// /etc/systemd/system/ghars-cache@a"` if a future regression
 /// drops or shortens the trailing `.service.d` suffix from the
-/// describe() output) folds the shorter into the longer and
+/// `describe()` output) folds the shorter into the longer and
 /// overcounts.
 ///
 /// Exact-line equality (`lines().filter(|l| *l ==
@@ -613,14 +609,10 @@ fn render_rollback_advisory_step_bullets_disambiguate_prefix_paths() {
         "CreateCachePool(a)",
         vec![
             apply::UndoStep::CreateDir {
-                path: camino::Utf8PathBuf::from(
-                    "/etc/systemd/system/ghars-cache@a.service.d",
-                ),
+                path: camino::Utf8PathBuf::from("/etc/systemd/system/ghars-cache@a.service.d"),
             },
             apply::UndoStep::CreateDir {
-                path: camino::Utf8PathBuf::from(
-                    "/etc/systemd/system/ghars-cache@ab.service.d",
-                ),
+                path: camino::Utf8PathBuf::from("/etc/systemd/system/ghars-cache@ab.service.d"),
             },
         ],
     );
@@ -631,10 +623,8 @@ fn render_rollback_advisory_step_bullets_disambiguate_prefix_paths() {
     // `.service.d` suffix), so a future regression that
     // shortens, joins, or duplicates a bullet shifts the count
     // off 1.
-    let short_bullet =
-        "    - created directory /etc/systemd/system/ghars-cache@a.service.d";
-    let long_bullet =
-        "    - created directory /etc/systemd/system/ghars-cache@ab.service.d";
+    let short_bullet = "    - created directory /etc/systemd/system/ghars-cache@a.service.d";
+    let long_bullet = "    - created directory /etc/systemd/system/ghars-cache@ab.service.d";
     let short_count = advisory.lines().filter(|l| *l == short_bullet).count();
     let long_count = advisory.lines().filter(|l| *l == long_bullet).count();
     assert_eq!(
@@ -676,29 +666,20 @@ fn render_rollback_advisory_step_bullets_disambiguate_three_transitive_prefix_pa
         "CreateCachePool(a)",
         vec![
             apply::UndoStep::CreateDir {
-                path: camino::Utf8PathBuf::from(
-                    "/etc/systemd/system/ghars-cache@a.service.d",
-                ),
+                path: camino::Utf8PathBuf::from("/etc/systemd/system/ghars-cache@a.service.d"),
             },
             apply::UndoStep::CreateDir {
-                path: camino::Utf8PathBuf::from(
-                    "/etc/systemd/system/ghars-cache@ab.service.d",
-                ),
+                path: camino::Utf8PathBuf::from("/etc/systemd/system/ghars-cache@ab.service.d"),
             },
             apply::UndoStep::CreateDir {
-                path: camino::Utf8PathBuf::from(
-                    "/etc/systemd/system/ghars-cache@abc.service.d",
-                ),
+                path: camino::Utf8PathBuf::from("/etc/systemd/system/ghars-cache@abc.service.d"),
             },
         ],
     );
     let advisory = render_rollback_advisory(&result).unwrap();
-    let bullet_a =
-        "    - created directory /etc/systemd/system/ghars-cache@a.service.d";
-    let bullet_ab =
-        "    - created directory /etc/systemd/system/ghars-cache@ab.service.d";
-    let bullet_abc =
-        "    - created directory /etc/systemd/system/ghars-cache@abc.service.d";
+    let bullet_a = "    - created directory /etc/systemd/system/ghars-cache@a.service.d";
+    let bullet_ab = "    - created directory /etc/systemd/system/ghars-cache@ab.service.d";
+    let bullet_abc = "    - created directory /etc/systemd/system/ghars-cache@abc.service.d";
     let count_a = advisory.lines().filter(|l| *l == bullet_a).count();
     let count_ab = advisory.lines().filter(|l| *l == bullet_ab).count();
     let count_abc = advisory.lines().filter(|l| *l == bullet_abc).count();
@@ -1861,7 +1842,7 @@ fn plan_to_json_value_summary_recreates_empty_when_no_actions() {
 
 /// Every recreate-class action lands in `recreates` and the
 /// list is sorted alphabetically by `Action::label()`. Non-
-/// recreate actions (NoOp, in-place UpdateRunner, UpdateCachePool)
+/// recreate actions (`NoOp`, in-place `UpdateRunner`, `UpdateCachePool`)
 /// must NOT appear in `recreates`. Pin the full label vocabulary
 /// (`CreateRunner(...)`, `RemoveRunner(...)`, `CreateCachePool(...)`,
 /// `RemoveCachePool(...)`, `UpdateRunner(...)` when
@@ -1951,7 +1932,7 @@ fn plan_to_json_value_summary_recreates_lists_all_recreate_actions_sorted() {
 }
 
 /// Restart-only + noop plan reports `recreates: []` even
-/// when total_actions > 0. Symmetric pin against
+/// when `total_actions` > 0. Symmetric pin against
 /// `summary_any_recreate_false_when_only_restart_and_none`.
 #[test]
 fn plan_to_json_value_summary_recreates_empty_when_only_restart_and_none() {
@@ -2150,7 +2131,7 @@ fn plan_to_json_value_summary_recreates_pool_only_plan() {
 }
 
 /// End-to-end pin: a count-expanded `[[runner]]` config with no
-/// discovered runners produces N CreateRunner actions, and every
+/// discovered runners produces N `CreateRunner` actions, and every
 /// expanded label appears in `summary.recreates` (sorted).
 /// Closes the integration gap between the count expansion at
 /// `plan::expand_counts` and the recreate listing at
@@ -2163,14 +2144,14 @@ fn plan_to_json_value_summary_recreates_pool_only_plan() {
 /// composition has been the load-bearing operator path
 /// (`ghars plan --json | jq '.summary.recreates'`) since the
 /// recreates field landed; this test pins the e2e contract so a
-/// regression at any stage (expand_counts, plan_from's CreateRunner
-/// emission, summary_value's recreate filter) surfaces here.
+/// regression at any stage (`expand_counts`, `plan_from`'s `CreateRunner`
+/// emission, `summary_value`'s recreate filter) surfaces here.
 ///
 /// **Count-fixture choice**: count=3 is chosen so single-digit
 /// naming keeps lex-order coincident with natural-order
 /// (`ci-1, ci-2, ci-3`). For count >= 10 lex-sort produces
 /// `ci-1, ci-10, ci-2, ...` — operator-confusing but contractually
-/// correct (sort_unstable on `Vec<String>` is byte-wise). The
+/// correct (`sort_unstable` on `Vec<String>` is byte-wise). The
 /// count=0 + discovered-runner shape is pinned by the sibling
 /// `plan_from_count_zero_with_discovered_runner_emits_remove_in_summary_recreates`
 /// test below.
@@ -2178,8 +2159,8 @@ fn plan_to_json_value_summary_recreates_pool_only_plan() {
 /// Asserts:
 /// - `summary.total_actions == 3` — fan-out arity.
 /// - `summary.recreates == ["CreateRunner(ci-1)", "CreateRunner(ci-2)",
-///   "CreateRunner(ci-3)"]` (sorted by Action::label, which is
-///   what plan_summary_value emits).
+///   "CreateRunner(ci-3)"]` (sorted by `Action::label`, which is
+///   what `plan_summary_value` emits).
 /// - `summary.by_disruption["recreate"] == 3`.
 /// - `summary.any_recreate == true`.
 #[test]
@@ -2279,8 +2260,7 @@ fn plan_from_count_expanded_double_digit_summary_recreates_byte_wise_lex_sorted(
     let actual = state::ActualState::default();
     let paths = Paths::default();
 
-    let plan = plan::plan_from(&cfg, &actual, &paths)
-        .expect("count=12 plan_from must succeed");
+    let plan = plan::plan_from(&cfg, &actual, &paths).expect("count=12 plan_from must succeed");
 
     let create_count = plan
         .actions
@@ -2324,13 +2304,13 @@ fn plan_from_count_expanded_double_digit_summary_recreates_byte_wise_lex_sorted(
 
 /// Count=0 orphan-removal shape: a managed runner exists
 /// on disk (surfaced via `actual.orphans`) with no matching
-/// `[[runner]]` block, so plan_from emits one `RemoveRunner` action.
+/// `[[runner]]` block, so `plan_from` emits one `RemoveRunner` action.
 /// `RemoveRunner` is recreate-class, so its label appears in
 /// `summary.recreates`.
 ///
-/// `actual.orphans` is the upstream-callable orphan path (cmd_status
+/// `actual.orphans` is the upstream-callable orphan path (`cmd_status`
 /// populates it inline; `state::discover` itself never does). The
-/// (false, true) discovery branch in plan_from would cover the same
+/// (false, true) discovery branch in `plan_from` would cover the same
 /// ground but requires a fully-built `DiscoveredRunner` fixture.
 /// Using `orphans` keeps the fixture minimal — only an
 /// `OrphanedUnit { name }` is needed.
@@ -2346,8 +2326,7 @@ fn plan_from_orphan_remove_runner_lists_label_in_summary_recreates() {
     });
     let paths = Paths::default();
 
-    let plan =
-        plan::plan_from(&cfg, &actual, &paths).expect("orphan plan_from must succeed");
+    let plan = plan::plan_from(&cfg, &actual, &paths).expect("orphan plan_from must succeed");
 
     let remove_count = plan
         .actions
@@ -2355,7 +2334,8 @@ fn plan_from_orphan_remove_runner_lists_label_in_summary_recreates() {
         .filter(|a| matches!(a, Action::RemoveRunner(_)))
         .count();
     assert_eq!(
-        remove_count, 1,
+        remove_count,
+        1,
         "one orphan must produce one RemoveRunner; got {} actions",
         plan.actions.len(),
     );
@@ -2373,10 +2353,10 @@ fn plan_from_orphan_remove_runner_lists_label_in_summary_recreates() {
 }
 
 /// Empty plan shape: no runners in config, no discovered
-/// state. plan_from emits zero actions; `summary.recreates` is the
+/// state. `plan_from` emits zero actions; `summary.recreates` is the
 /// empty array `[]` (stable JSON shape so CI consumers can `jq
 /// '.summary.recreates | length'` without conditional key checks).
-/// Pinned via plan_from end-to-end (sibling
+/// Pinned via `plan_from` end-to-end (sibling
 /// `plan_to_json_value_summary_recreates_empty_when_no_actions`
 /// pins the same shape from a hand-built `Plan { actions: vec![] }`
 /// — this test threads through the count-expansion + diff
@@ -2427,7 +2407,7 @@ fn plan_from_no_desired_no_actual_emits_empty_summary_recreates() {
 /// Count expansion with explicit collision: a count block
 /// `name = "ci" count = 3` plus an explicit `[[runner]] name =
 /// "ci-1"` produces 3 distinct expanded names — the explicit ci-1
-/// pre-empts the count-block ci-1, so the plan has CreateRunner
+/// pre-empts the count-block ci-1, so the plan has `CreateRunner`
 /// for ci-1, ci-2, ci-3 (one each, no duplicates). The
 /// `expand_counts_auto_skips_explicit_collision` test in plan.rs
 /// pins the expansion-side count; this test extends the contract
@@ -2440,21 +2420,17 @@ fn plan_from_no_desired_no_actual_emits_empty_summary_recreates() {
 /// `memory_max = Some("8G")`, expected ci-1 `Some("8G")`).
 #[test]
 fn plan_from_count_with_explicit_collision_lists_each_name_once_in_recreates() {
-    assert_explicit_collision_precedence(
-        None,
-        Some("8G".into()),
-        Some("8G".into()),
-    );
+    assert_explicit_collision_precedence(None, Some("8G".into()), Some("8G".into()));
 }
 
 /// Inverse of `plan_from_count_with_explicit_collision_lists_each_name_once_in_recreates`:
 /// the explicit ci-1 carries `memory_max = None` while the count
-/// block carries `memory_max = Some("4G")`. expand_counts's
+/// block carries `memory_max = Some("4G")`. `expand_counts`'s
 /// `if explicit_names.contains(...)` arm still auto-skips the
-/// count-expanded ci-1, so the explicit ci-1's RunnerSpec —
-/// with its None memory_max — is what flows through
-/// merge_defaults and into the resulting EffectiveRunnerSpec.
-/// merge_defaults's `runner.memory_max OR defaults.memory_max`
+/// count-expanded ci-1, so the explicit ci-1's `RunnerSpec` —
+/// with its None `memory_max` — is what flows through
+/// `merge_defaults` and into the resulting `EffectiveRunnerSpec`.
+/// `merge_defaults`'s `runner.memory_max OR defaults.memory_max`
 /// or-chain then resolves to None (defaults left None by
 /// `cfg_with_runner_trust_zone`).
 ///
@@ -2473,15 +2449,11 @@ fn plan_from_count_with_explicit_collision_lists_each_name_once_in_recreates() {
 /// `memory_max = None`, expected ci-1 `None`).
 #[test]
 fn plan_from_count_with_explicit_collision_explicit_none_wins_over_count_some() {
-    assert_explicit_collision_precedence(
-        Some("4G".into()),
-        None,
-        None,
-    );
+    assert_explicit_collision_precedence(Some("4G".into()), None, None);
 }
 
-/// Count=0 → orphan RemoveRunner end-to-end shape: a `[[runner]]`
-/// block with `count = Some(0)` is dropped at expand_counts
+/// Count=0 → orphan `RemoveRunner` end-to-end shape: a `[[runner]]`
+/// block with `count = Some(0)` is dropped at `expand_counts`
 /// (`expand_counts`'s `matches!(spec.count, Some(0)) => continue`
 /// arm — the explicit early-return for the count=0 case keeps
 /// count=Some(1) and count=None passing through unchanged), so
@@ -2498,7 +2470,7 @@ fn plan_from_count_with_explicit_collision_explicit_none_wins_over_count_some() 
 /// — that fixture uses `cfg.runners.clear()` plus an
 /// `actual.orphans` push, exercising step 9's
 /// `for orphan in &actual.orphans` arm in `plan_from`. This test
-/// instead routes through expand_counts's count=0 skip + the
+/// instead routes through `expand_counts`'s count=0 skip + the
 /// `(false, true)` discovery branch (the shape `state::discover`
 /// + `actual.runners` produces in production, since
 /// `state::discover` itself never populates orphans). Together
@@ -2545,7 +2517,8 @@ fn plan_from_count_zero_with_discovered_runner_emits_remove_in_summary_recreates
         .filter(|a| matches!(a, Action::RemoveRunner(_)))
         .count();
     assert_eq!(
-        remove_count, 1,
+        remove_count,
+        1,
         "count=0 + one discovered runner must yield one RemoveRunner; \
          got {} actions: {:?}",
         plan.actions.len(),
@@ -2587,23 +2560,23 @@ fn plan_from_count_zero_with_discovered_runner_emits_remove_in_summary_recreates
 /// `reconstruct_identity` reads
 /// `discovered.drop_ins["00-ghars.conf"]` via
 /// `DiscoveredAnnotations::from_discovered` for url and
-/// auth_name. A populated fixture therefore produces a
-/// `RunnerIdentity` with non-empty url + auth_name — matching
+/// `auth_name`. A populated fixture therefore produces a
+/// `RunnerIdentity` with non-empty url + `auth_name` — matching
 /// what `apply.rs::execute_remove_runner` needs to mint a
 /// deregistration token on recreate.
 ///
 /// The count=0 sibling
 /// (`plan_from_count_zero_with_discovered_runner_emits_remove_in_summary_recreates`)
-/// uses an empty fixture (empty on_disk_unit_text + empty
-/// drop_ins), exercising `reconstruct_identity`'s `unwrap_or_else`
+/// uses an empty fixture (empty `on_disk_unit_text` + empty
+/// `drop_ins`), exercising `reconstruct_identity`'s `unwrap_or_else`
 /// fallbacks. This test takes the populated path, distinct from
 /// that fallback.
 ///
 /// Distinct config shape: no count block; one explicit runner
 /// "web" desired, one different-named "old-web" discovered. The
-/// desired-only arm fires for "web" (CreateRunner), the
-/// discovered-only arm fires for "old-web" (RemoveRunner). The
-/// assertion focuses on the RemoveRunner — its identity must
+/// desired-only arm fires for "web" (`CreateRunner`), the
+/// discovered-only arm fires for "old-web" (`RemoveRunner`). The
+/// assertion focuses on the `RemoveRunner` — its identity must
 /// carry the annotation values, not the fallback empty strings.
 #[test]
 fn plan_from_discovered_only_runner_populates_remove_runner_identity() {
@@ -3119,7 +3092,7 @@ fn render_plan_json_path_succeeds_for_full_plan() -> Result<()> {
 }
 
 /// Item 6: end-to-end exercise of `render_plan_json` against an
-/// UpdateRunner action carrying a populated `field_changes` Vec
+/// `UpdateRunner` action carrying a populated `field_changes` Vec
 /// AND a `drop_in_changes` Vec covering all four
 /// `DropInChangeKind` variants. The production renderer takes
 /// `&Plan` and writes to stdout — there is no return value, so

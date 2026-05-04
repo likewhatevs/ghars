@@ -98,7 +98,7 @@ const MAX_RELEASES_BODY_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Initial allocation hint for `read_body_capped`. The helper sizes
 /// the buffer to `min(cap, INITIAL_BODY_CAPACITY)` so the realistic
-/// releases-API payload (~256 KiB per the MAX_RELEASES_BODY_BYTES
+/// releases-API payload (~256 KiB per the `MAX_RELEASES_BODY_BYTES`
 /// doc above) starts from a non-zero base instead of the default
 /// `Vec::new()`, amortizing the geometric-growth cost of
 /// `read_to_end`. A small-cap test (e.g. 64 bytes) caps the
@@ -411,14 +411,14 @@ fn is_hex64(s: &str) -> bool {
 /// digest matching `filename`.
 fn extract_sha256(payload: &ReleaseApiPayload, filename: &str) -> Result<String> {
     for asset in &payload.assets {
-        if asset.name == filename {
-            if let Some(digest) = &asset.digest {
-                let lower = digest.to_lowercase();
-                if let Some(hex) = lower.strip_prefix("sha256:") {
-                    let hex = hex.trim();
-                    if is_hex64(hex) {
-                        return Ok(hex.to_string());
-                    }
+        if asset.name == filename
+            && let Some(digest) = &asset.digest
+        {
+            let lower = digest.to_lowercase();
+            if let Some(hex) = lower.strip_prefix("sha256:") {
+                let hex = hex.trim();
+                if is_hex64(hex) {
+                    return Ok(hex.to_string());
                 }
             }
         }
@@ -626,25 +626,23 @@ fn http_get_payload_with_cap(
     // to get the on-wire size before reqwest's gzip decoder mangles the
     // size hint.
     // Malformed Content-Length silently falls through to Layer 2 streaming backstop.
-    if let Some(cl_header) = resp.headers().get(reqwest::header::CONTENT_LENGTH) {
-        if let Ok(cl_str) = cl_header.to_str() {
-            if let Ok(cl) = cl_str.parse::<u64>() {
-                if cl > max_bytes {
-                    return Err(GharsError::GitHub(
-                        format!(
-                            "GitHub API response Content-Length {cl_h} ({cl} bytes) exceeds {max_h} ({max_bytes} bytes): {url}",
-                            cl_h = human_bytes(cl),
-                            max_h = human_bytes(max_bytes)
-                        ),
-                        "the on-wire (pre-decompression) Content-Length is suspiciously \
+    if let Some(cl_header) = resp.headers().get(reqwest::header::CONTENT_LENGTH)
+        && let Ok(cl_str) = cl_header.to_str()
+        && let Ok(cl) = cl_str.parse::<u64>()
+        && cl > max_bytes
+    {
+        return Err(GharsError::GitHub(
+            format!(
+                "GitHub API response Content-Length {cl_h} ({cl} bytes) exceeds {max_h} ({max_bytes} bytes): {url}",
+                cl_h = human_bytes(cl),
+                max_h = human_bytes(max_bytes)
+            ),
+            "the on-wire (pre-decompression) Content-Length is suspiciously \
                          large; verify network path (compromised mirror, hostile proxy CA, \
                          or non-GitHub origin); if the upstream payload is legitimately \
                          this large, file a ghars issue to raise MAX_RELEASES_BODY_BYTES"
-                            .into(),
-                    ));
-                }
-            }
-        }
+                .into(),
+        ));
     }
 
     // Layer 2: streaming bounded read on the post-decompression byte
@@ -1040,11 +1038,11 @@ mod tests {
 
     /// Spawning a tokio task that itself tries to `block_on` is the
     /// other reentrancy footgun: the spawned future runs on the same
-    /// reactor thread (current_thread runtime), and its inner
+    /// reactor thread (`current_thread` runtime), and its inner
     /// `block_on` hits the same already-entered guard. The panic
-    /// surfaces when the outer block_on awaits the JoinHandle. This
+    /// surfaces when the outer `block_on` awaits the `JoinHandle`. This
     /// pins the contract so a future caller who refactors auth.rs to
-    /// use spawn + block_on doesn't silently introduce a deadlock.
+    /// use spawn + `block_on` doesn't silently introduce a deadlock.
     #[test]
     #[should_panic(expected = "Cannot start a runtime from within a runtime")]
     fn block_on_inside_spawned_task_panics() {
@@ -1066,10 +1064,10 @@ mod tests {
     /// Audit-style guard: every `block_on` call site in the production
     /// source tree (excluding `block_on`'s own definition + the
     /// `#[cfg(test)]` modules) must NOT lexically appear inside a
-    /// future body. We can't statically verify "passed to block_on"
+    /// future body. We can't statically verify "passed to `block_on`"
     /// from a unit test, but the next-best check is that auth.rs
     /// keeps its 4 call sites top-level — this fails fast if a
-    /// teammate refactors auth.rs into a nested block_on shape and
+    /// teammate refactors auth.rs into a nested `block_on` shape and
     /// forgets to break the call chain.
     ///
     /// Implementation: read the source files, count `block_on(` /
@@ -1952,13 +1950,13 @@ mod tests {
     }
 
     /// Oversize body rejection pin: when the body exceeds
-    /// `MAX_RELEASES_BODY_BYTES`, http_get_payload rejects the
+    /// `MAX_RELEASES_BODY_BYTES`, `http_get_payload` rejects the
     /// response. Mockito sets Content-Length automatically from the
     /// served body, so this single test exercises the Layer-1
     /// pre-read rejection path (the CL header reflects the real
     /// oversize body length, the pre-check fires before any read).
     /// The Layer-2 streaming defense — the `reader.take(cap + 1).read_to_end()`
-    /// code at github.rs::read_body_capped — is exercised separately
+    /// code at `github.rs::read_body_capped` — is exercised separately
     /// by `http_get_payload_with_cap_rejects_via_layer_2_streaming_when_no_content_length`
     /// (chunked transfer-encoding bypasses Layer 1) and by
     /// `read_body_capped_rejects_over_cap` (direct helper test).
@@ -2044,7 +2042,9 @@ mod tests {
                     "CapExceeded must propagate the configured cap value; got: {reported}"
                 );
             }
-            other => panic!("expected BodyCapError::CapExceeded, got {other:?}"),
+            BodyCapError::Io(other) => {
+                panic!("expected BodyCapError::CapExceeded, got Io({other:?})")
+            }
         }
     }
 
@@ -2056,7 +2056,7 @@ mod tests {
     /// requiring a 4 MiB body. Also pins Layer 1 hint differentiation
     /// (on-wire / pre-decompression framing distinct from Layer 2's
     /// post-decompression / bomb-signature framing) and the
-    /// MAX_RELEASES_BODY_BYTES escape-hatch breadcrumb.
+    /// `MAX_RELEASES_BODY_BYTES` escape-hatch breadcrumb.
     #[test]
     fn http_get_payload_with_cap_rejects_via_layer_1_cl_check() {
         let mut server = mockito::Server::new();
@@ -2147,7 +2147,7 @@ mod tests {
             .mock("GET", "/repos/actions/runner/releases/latest")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_chunked_body(|w| w.write_all(&vec![b'q'; 128]))
+            .with_chunked_body(|w| w.write_all(&[b'q'; 128]))
             .expect(1)
             .create();
         let url = format!("{}/repos/actions/runner/releases/latest", server.url());
@@ -2255,7 +2255,7 @@ mod tests {
     /// header reflects the compressed wire size, which is meaningless
     /// once the body is decoded), so `resp.headers().get(CONTENT_LENGTH)`
     /// returns `None` regardless of whether the compressed body is
-    /// under or over the cap. The fixture also pins compressed_size
+    /// under or over the cap. The fixture also pins `compressed_size`
     /// under cap as belt-and-suspenders insurance against a future
     /// reqwest version that propagates the on-wire length.
     ///
@@ -2270,7 +2270,7 @@ mod tests {
     /// cap defense at Layer 2 is what blocks it.
     ///
     /// Asserts:
-    /// 1. err is GharsError::GitHub(msg, hint) — Layer 2 cap-firing branch.
+    /// 1. err is `GharsError::GitHub(msg`, hint) — Layer 2 cap-firing branch.
     /// 2. msg contains "post-decompression" — Layer 2 framing, distinct
     ///    from Layer 1's "on-wire" framing.
     /// 3. msg contains "body exceeds" + "64 B" — pins the cap-firing format.
@@ -2285,7 +2285,7 @@ mod tests {
     ///    different error path.
     /// 7. hint mentions `MAX_RELEASES_BODY_BYTES` — operator escape
     ///    hatch breadcrumb the cap-fire hint surfaces.
-    /// 8. mock.assert() — confirms the request reached the server.
+    /// 8. `mock.assert()` — confirms the request reached the server.
     #[test]
     fn read_body_capped_post_decompression_via_gzip_response_pins_layer_2_decoder_path() {
         use flate2::Compression;
@@ -2389,7 +2389,7 @@ mod tests {
     /// failure must produce `BodyCapError::Io`, never
     /// `BodyCapError::CapExceeded` — otherwise the wrapper would
     /// mis-route the operator hint. The pin also verifies the
-    /// underlying io::Error is preserved so the wrapper can surface
+    /// underlying `io::Error` is preserved so the wrapper can surface
     /// its Display to the operator.
     #[test]
     fn read_body_capped_io_error_routes_to_read_failed_branch() {
@@ -2467,19 +2467,19 @@ mod tests {
                     "anti-doubling pin: wrapper must not produce doubled 'response' noun; got: {wrapped}"
                 );
             }
-            other => panic!(
-                "I/O failure must produce BodyCapError::Io — that variant is the wrapper's I/O-error discriminant; got: {other:?}"
+            BodyCapError::CapExceeded { cap: reported } => panic!(
+                "I/O failure must produce BodyCapError::Io — that variant is the wrapper's I/O-error discriminant; got: CapExceeded {{ cap: {reported} }}"
             ),
         }
     }
 
-    /// `format_error_chain` walks an io::Error's `.source()` chain so
-    /// nested causes (e.g. reqwest::Error wrapping hyper::Error
+    /// `format_error_chain` walks an `io::Error`'s `.source()` chain so
+    /// nested causes (e.g. `reqwest::Error` wrapping `hyper::Error`
     /// wrapping rustls) survive into the operator-visible message.
-    /// Synthesize: outer io::Error wraps a custom mid error that
-    /// wraps an inner error via source(). io::Error Custom Display
-    /// delegates to the wrapped error, so outer.to_string() emits
-    /// mid's text; format_error_chain walks source chain to append
+    /// Synthesize: outer `io::Error` wraps a custom mid error that
+    /// wraps an inner error via `source()`. `io::Error` Custom Display
+    /// delegates to the wrapped error, so `outer.to_string()` emits
+    /// mid's text; `format_error_chain` walks source chain to append
     /// inner's Display. Output has 2 text segments joined by ": ".
     #[test]
     fn format_error_chain_walks_nested_sources() {
@@ -2537,12 +2537,11 @@ mod tests {
         // format_error_chain produces strictly more than that.
         assert!(
             chain.len() > outer.to_string().len(),
-            "chain must add inner-layer text beyond the outer Display; chain={chain}, outer={}",
-            outer.to_string()
+            "chain must add inner-layer text beyond the outer Display; chain={chain}, outer={outer}"
         );
     }
 
-    /// `format_error_chain` on an io::Error with no source returns just
+    /// `format_error_chain` on an `io::Error` with no source returns just
     /// the outer Display verbatim — no trailing ": ", no inner-layer
     /// addition, no transformation. Exact-identity assertion defends
     /// against a regression that prepends/appends framing or transforms
@@ -2559,20 +2558,20 @@ mod tests {
         );
     }
 
-    /// E2E pin: a 2-level io::Error source chain must survive
+    /// E2E pin: a 2-level `io::Error` source chain must survive
     /// `read_body_capped` → `BodyCapError::Io` → wrapper at
     /// `http_get_payload_with_cap`'s I/O-error arm → final
     /// `GharsError::GitHub` message. Both the outer (mid-layer) and
     /// inner Display strings must appear in the operator-visible
     /// message, joined by the wrapper's "response read failed:" prefix
-    /// + format_error_chain's ": " separator. Defends against a
+    /// + `format_error_chain`'s ": " separator. Defends against a
     /// regression that switches the wrapper from `format_error_chain`
     /// back to `{io_err}` (which would drop the inner Display).
     ///
     /// Synthesizes the full path: a `FailingReader` that returns an
     /// `io::Error::Other` whose payload is a custom `Mid` error whose
     /// `.source()` points at an `Inner` error. `read_body_capped`
-    /// preserves the io::Error in `BodyCapError::Io(io_err)`. The
+    /// preserves the `io::Error` in `BodyCapError::Io(io_err)`. The
     /// production wrapper arm at `http_get_payload_with_cap` then calls
     /// `format_error_chain(&io_err)` which walks `io_err.source()` →
     /// `Mid` → `Inner` and joins all three Display layers with ": ".
@@ -2625,7 +2624,7 @@ mod tests {
                     msg: self.mid_msg,
                     cause: Inner(self.inner_msg),
                 };
-                Err(io::Error::new(io::ErrorKind::Other, mid))
+                Err(io::Error::other(mid))
             }
         }
 
@@ -2638,7 +2637,9 @@ mod tests {
         let err = read_body_capped(reader, cap).unwrap_err();
         let io_err = match err {
             BodyCapError::Io(e) => e,
-            other => panic!("expected BodyCapError::Io with chain payload, got {other:?}"),
+            BodyCapError::CapExceeded { cap: reported } => panic!(
+                "expected BodyCapError::Io with chain payload, got CapExceeded {{ cap: {reported} }}"
+            ),
         };
         let chain = format_error_chain(&io_err);
         assert!(
@@ -2682,12 +2683,12 @@ mod tests {
     /// The complementary disconfirmation: construct an outer that DOES
     /// embed inner text in its own Display (using
     /// `io::Error::other(inner)` which delegates Display to the
-    /// wrapped error per std::io::Error::fmt at io/error.rs:1140-1147).
+    /// wrapped error per `std::io::Error::fmt` at io/error.rs:1140-1147).
     /// In that case the inner text legitimately appears twice (once
-    /// from outer.to_string() because outer Display delegates, once
+    /// from `outer.to_string()` because outer Display delegates, once
     /// from the source walk). This is by design — `format_error_chain`
     /// cannot peek into outer Display formatters to deduplicate. The
-    /// test pins the io::Error::other behavior as a known acceptable
+    /// test pins the `io::Error::other` behavior as a known acceptable
     /// repetition so a future maintainer reading the test sees what
     /// IS guaranteed (no fabrication of doubled text by the helper)
     /// vs. what is NOT guaranteed (no double when outer Display
@@ -2695,10 +2696,10 @@ mod tests {
     ///
     /// Source-of-truth read: io/error.rs Display impl for the
     /// inner-Custom variant calls `fmt::Display::fmt(&c.error, fmt)`
-    /// which delegates outright. reqwest::Error Display writes ONLY
+    /// which delegates outright. `reqwest::Error` Display writes ONLY
     /// its own kind-specific text and the URL — it does NOT walk
     /// into the source chain. So `format_error_chain` over a
-    /// reqwest::Error produces `<outer-kind-text>: <source-text>`
+    /// `reqwest::Error` produces `<outer-kind-text>: <source-text>`
     /// with no doubling.
     #[test]
     fn format_error_chain_no_doubling_on_distinct_outer_display() {
@@ -2771,7 +2772,7 @@ mod tests {
     /// 1.94.x):
     ///   - Display impl (Custom variant) at io/error.rs:1046-1058
     ///     calls `c.error.fmt(fmt)` — delegates to wrapped Display
-    ///     verbatim (so outer.to_string() emits inner text).
+    ///     verbatim (so `outer.to_string()` emits inner text).
     ///   - `source()` impl (Custom variant) at io/error.rs:1072-1079
     ///     returns `c.error.source()` — NOT `Some(&*c.error)`. The
     ///     wrapped error itself is SKIPPED in the source walk; the
@@ -2787,8 +2788,8 @@ mod tests {
     /// Production impact: none. Production code calls
     /// `format_error_chain(&reqwest_err)` and
     /// `format_error_chain(&io_err)` directly on the outermost
-    /// type, never wrapping reqwest::Error in io::Error::other.
-    /// Reqwest::Error Display writes ONLY its own kind-specific
+    /// type, never wrapping `reqwest::Error` in `io::Error::other`.
+    /// `Reqwest::Error` Display writes ONLY its own kind-specific
     /// text and URL, never embedding the source — so the production
     /// no-doubling regime is pinned by
     /// `format_error_chain_no_doubling_on_distinct_outer_display`.
@@ -2820,7 +2821,7 @@ mod tests {
         //     inner itself), and DistinctInner has no source override
         //     so the source walk yields None.
         // Net: chain emits sentinel exactly once.
-        let outer = io::Error::new(io::ErrorKind::Other, DistinctInner);
+        let outer = io::Error::other(DistinctInner);
         let chain = format_error_chain(&outer);
         assert_eq!(
             chain.matches(INNER_SENTINEL).count(),
@@ -2839,19 +2840,19 @@ mod tests {
 
     /// `format_error_chain` depth cap pin. Construct a 17-level Error
     /// chain where each level's `.source()` returns the next level;
-    /// after format_error_chain, the output must contain exactly 16
+    /// after `format_error_chain`, the output must contain exactly 16
     /// ": " separators (= 17 layers of Display joined by 16 separators
     /// would be the unbounded case, but the cap stops the walk at
-    /// FORMAT_ERROR_CHAIN_MAX_DEPTH = 16 source-chain hops, producing
+    /// `FORMAT_ERROR_CHAIN_MAX_DEPTH` = 16 source-chain hops, producing
     /// outermost + 16 hops = 17 emitted layers separated by 16 ": ").
     /// The cap fires *before* the 17th hop, so the 18th-and-beyond
     /// layers are dropped. This defends against regressions that
     /// remove the depth cap (would cycle/explode on cyclic chains) or
     /// off-by-one regressions that set the cap to 15 or 17.
     ///
-    /// Note on counting: format_error_chain emits the outermost layer's
+    /// Note on counting: `format_error_chain` emits the outermost layer's
     /// Display first (no leading ": "), then walks `.source()` up to
-    /// FORMAT_ERROR_CHAIN_MAX_DEPTH (16) more levels, prepending ": "
+    /// `FORMAT_ERROR_CHAIN_MAX_DEPTH` (16) more levels, prepending ": "
     /// before each. So a chain with depth >= 17 produces exactly 16
     /// ": " separators in output.
     #[test]
@@ -2894,9 +2895,8 @@ mod tests {
             "chain must include outermost layer; got: {chain}"
         );
         assert!(
-            chain.contains(&format!("layer-{}", FORMAT_ERROR_CHAIN_MAX_DEPTH)),
-            "chain must include the last layer reached by the cap (layer-{}); got: {chain}",
-            FORMAT_ERROR_CHAIN_MAX_DEPTH
+            chain.contains(&format!("layer-{FORMAT_ERROR_CHAIN_MAX_DEPTH}")),
+            "chain must include the last layer reached by the cap (layer-{FORMAT_ERROR_CHAIN_MAX_DEPTH}); got: {chain}"
         );
         assert!(
             !chain.contains(&format!("layer-{}", FORMAT_ERROR_CHAIN_MAX_DEPTH + 1)),

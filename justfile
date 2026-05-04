@@ -2,14 +2,20 @@
 
 mod scripts
 
+# List recipes (default when running bare `just`)
+default:
+    @just --list
+
 # Run all tests
 test:
     cargo nextest run
 
-# Run tests with coverage
-coverage:
-    cargo llvm-cov nextest --lcov --output-path lcov.info --fail-under-lines 70
-    @echo "Coverage report: lcov.info"
+# Format the workspace
+fmt:
+    cargo fmt --all
+
+# Run tests with coverage (70% line gate)
+coverage: ci-coverage
 
 # Run mutation testing and print score
 mutants:
@@ -17,23 +23,61 @@ mutants:
     @just scripts::mutants-score
 
 # Lint (same checks as CI)
-lint:
-    cargo fmt --all -- --check
-    cargo clippy --workspace --all-targets -- -D warnings
+lint: ci-fmt ci-clippy
 
 # Build mdbook
-book:
-    mdbook build docs
+book: ci-docs
 
 # Serve mdbook locally
 book-serve:
     mdbook serve docs --open
 
-# Install development tools
+# Install development tools and wire up the local pre-commit hook
 setup:
     cargo install cargo-nextest --locked
     cargo install cargo-llvm-cov --locked
     cargo install cargo-mutants --locked
     cargo install mdbook --locked
-    cargo install mdbook-linkcheck --locked
+    cargo install mdbook-linkcheck2 --locked
     cargo install rust-script --locked
+    cargo install cargo-deny --locked
+    git config core.hooksPath .githooks
+
+# --- CI recipes (called by .github/workflows/ci.yml) ---
+
+# Format check
+ci-fmt:
+    cargo fmt --all -- --check
+
+# Clippy
+ci-clippy:
+    cargo clippy --workspace --all-targets -- -D warnings
+
+# Test + coverage with 70% line gate (lcov output gitignored)
+ci-coverage:
+    cargo llvm-cov nextest \
+        --workspace \
+        --lcov \
+        --output-path lcov.info \
+        --fail-under-lines 70
+
+# Musl static build + link assertion for both binaries
+ci-musl:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rustup target add x86_64-unknown-linux-musl
+    cargo build --release --target x86_64-unknown-linux-musl
+    for BIN in ghars runsvc-wrapper; do
+        P="target/x86_64-unknown-linux-musl/release/$BIN"
+        file "$P"
+        file "$P" | grep -qE "statically linked|static-pie linked"
+    done
+
+# cargo deny check (advisories, bans, sources, licenses)
+ci-audit:
+    cargo deny check advisories bans sources licenses
+
+# mdbook build + test
+ci-docs:
+    mdbook build docs
+    mdbook test docs

@@ -51,7 +51,7 @@ pub enum Command {
     Status(StatusArgs),
     /// Scaffold ghars.toml. Runner identity comes from
     /// `DynamicUser=yes` at unit start (transient UID/GID per
-    /// trust_zone); init does not provision any system user.
+    /// `trust_zone`); init does not provision any system user.
     Init(InitArgs),
     /// Add one runner interactively (prompts then runs apply).
     Add(AddArgs),

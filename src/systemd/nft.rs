@@ -515,10 +515,7 @@ mod tests {
         // config-load, so the renderer can rely on at least one IP.
         let mut binding = netns_binding("10.200.0.0/30", vec![]);
         binding.spec.dns = crate::config::DnsMode::Static {
-            servers: vec![
-                "1.1.1.1".parse().unwrap(),
-                "8.8.8.8".parse().unwrap(),
-            ],
+            servers: vec!["1.1.1.1".parse().unwrap(), "8.8.8.8".parse().unwrap()],
         };
         let rules = render_nft_rules("buckos", &binding).unwrap();
         for body in [&rules.host_rules, &rules.ns_rules] {

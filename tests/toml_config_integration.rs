@@ -11,6 +11,8 @@
 //! like after parsing. Plan-time validation (unknown auth refs, etc.)
 //! runs separately in `plan_engine_integration.rs`.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use ghars::config::{
     Arch, AuthSpec, CacheKind, CacheMode, Config, EtcBindStyle, NetworkMode, PortSpec, Proto,
 };
@@ -377,10 +379,10 @@ not_a_real_field = "bad"
 
 #[test]
 fn rejects_unknown_hardening_field() {
-    let text = r#"
+    let text = r"
 [defaults.hardening]
 made_up = true
-"#;
+";
     let err = parse(text).unwrap_err();
     let msg = format!("{err}");
     assert!(msg.contains("made_up") || msg.contains("unknown"));

@@ -16,9 +16,9 @@
 //!
 //! All sites that mutate managed config files MUST go through one of
 //! these helpers — bypassing them would either break rollback fidelity
-//! (no UndoStep::WriteFile pushed) or skip the byte-equality optimization.
+//! (no `UndoStep::WriteFile` pushed) or skip the byte-equality optimization.
 //! The exception is shared templates (`netns_template_unit_file` and
-//! `cache_template_unit_file`) which use write_root_owned directly with
+//! `cache_template_unit_file`) which use `write_root_owned` directly with
 //! explicit "NOT recorded" comment blocks — undoing those would clobber
 //! other live consumers. Per-pool drop-ins (00-ghars.conf at
 //! `cache_drop_in_dir`) are NOT shared templates and DO go through the
@@ -327,11 +327,7 @@ pub(super) fn read_then_write_if_changed(
 /// snapshot read failed AND the file pre-existed, all of which are
 /// rare; the design accepts the conflation rather than failing the
 /// forward path because we cannot snapshot.
-pub(super) fn write_record_undo(
-    path: &Utf8Path,
-    bytes: &[u8],
-    log: &mut UndoLog,
-) -> Result<()> {
+pub(super) fn write_record_undo(path: &Utf8Path, bytes: &[u8], log: &mut UndoLog) -> Result<()> {
     let prior = read_prior(path);
     write_root_owned(path, bytes)?;
     log.push(UndoStep::WriteFile {

@@ -46,7 +46,9 @@ fn write_audit_log_entry_emits_canonical_json_line_shape() {
     // Timestamp is RFC3339; we test that it parses as a chrono
     // DateTime to ensure the format is compatible with downstream
     // consumers (jq, ELK, journald JSON ingestion).
-    let ts = entry["timestamp"].as_str().expect("timestamp must be string");
+    let ts = entry["timestamp"]
+        .as_str()
+        .expect("timestamp must be string");
     chrono::DateTime::parse_from_rfc3339(ts).expect("timestamp must be RFC3339");
 }
 
@@ -89,10 +91,7 @@ fn parse_audit_label_splits_variant_and_target() {
         parse_audit_label("UpdateCachePool(build-cache)"),
         ("UpdateCachePool", "build-cache")
     );
-    assert_eq!(
-        parse_audit_label("NoOp(in sync)"),
-        ("NoOp", "in sync")
-    );
+    assert_eq!(parse_audit_label("NoOp(in sync)"), ("NoOp", "in sync"));
 }
 
 #[test]
@@ -147,8 +146,5 @@ fn apply_outcome_audit_summary_carries_failure_diagnostic() {
         error_summary: "auth registry: pat not found".into(),
         plan_disruption: crate::plan::Disruption::Recreate,
     };
-    assert_eq!(
-        outcome.audit_summary(),
-        "auth registry: pat not found"
-    );
+    assert_eq!(outcome.audit_summary(), "auth registry: pat not found");
 }

@@ -225,6 +225,7 @@ pub(crate) fn render_status_json(
                 "spec_hash": r.spec_hash,
             });
             if !unmanaged.is_empty() {
+                #[allow(clippy::expect_used)]
                 obj.as_object_mut()
                     .expect("serde_json::json!({...}) always returns Object")
                     .insert(

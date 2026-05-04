@@ -16,9 +16,7 @@ use super::rmrf::guard_home_dir_rmrf;
 use super::shell::ConfigShellCtx;
 use super::tarball::sha256_of_runsvc;
 use super::undo::{Deps, UndoLog, UndoStep};
-use super::writes::{
-    mint_token, read_prior, read_then_write_if_changed, write_record_undo,
-};
+use super::writes::{mint_token, read_prior, read_then_write_if_changed, write_record_undo};
 
 pub(super) fn execute_create_runner(
     plan: &RunnerPlan,
@@ -91,7 +89,9 @@ pub(super) fn execute_create_runner(
     //     (read_dir failure on runner_home, or keep_versions = 0)
     //     DO propagate — those indicate a structural problem the
     //     operator should see.
-    let _pruned = deps.tarball.prune_old_versions(&runner_home, keep_versions)?;
+    let _pruned = deps
+        .tarball
+        .prune_old_versions(&runner_home, keep_versions)?;
 
     // 3) Mint a registration token. SEC-05: the token is short-lived
     //    (1h GitHub TTL); we hand it to config.sh and never persist it.

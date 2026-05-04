@@ -55,7 +55,7 @@ impl Plan {
     /// `RemoveRunner`, `CreateCachePool`, and `RemoveCachePool`.
     /// `UpdateCachePool` is always `Disruption::Restart`. Ignores
     /// `Disruption::Restart` (in-place restart) and
-    /// `Disruption::None` (NoOp).
+    /// `Disruption::None` (`NoOp`).
     ///
     /// Lives on `Plan` rather than as a free function in cli.rs
     /// because the predicate reads only plan data and the disruption
@@ -110,7 +110,7 @@ pub enum DriftCause {
 }
 
 impl DriftCause {
-    /// Stable snake_case label for text + JSON rendering. Mirrors the
+    /// Stable `snake_case` label for text + JSON rendering. Mirrors the
     /// drift-label vocabulary used by `state::Drift` rendering so a
     /// single `grep spec_changed` finds both surfaces.
     #[must_use]
@@ -191,6 +191,7 @@ impl FieldValue {
     /// Comma-joined text rendering. Stable across schema versions
     /// because the v1 → v2 migration is JSON-only — text consumers
     /// (operator grep) see the same surface.
+    #[must_use]
     pub fn render_text(&self) -> String {
         match self {
             FieldValue::String(s) => s.clone(),
@@ -209,6 +210,7 @@ impl FieldValue {
     /// wire-breaking and requires a `schema_version` bump in
     /// `cli::plan_to_json_value`, even when the in-memory enum
     /// shape is preserved.
+    #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
         match self {
             FieldValue::String(s) => serde_json::json!({
@@ -294,7 +296,7 @@ pub enum DropInChangeKind {
     },
     /// Drop-in absent from desired render, present on disk.
     /// Operator-edited or remnant from a prior config that referenced
-    /// a now-removed field family (e.g. memory_max set then unset).
+    /// a now-removed field family (e.g. `memory_max` set then unset).
     Removed {
         /// Body found on disk that will be deleted.
         before: String,
@@ -356,14 +358,14 @@ pub struct RunnerDelta {
     ///   recreate path).
     /// - `"runsvc_integrity"` — discovered 00-ghars.conf is missing
     ///   `X-Ghars-Runsvc-Sha256`; recreate forces config.sh to mint
-    ///   a fresh trusted digest (SEC-02). No FieldChange — this is a
+    ///   a fresh trusted digest (SEC-02). No `FieldChange` — this is a
     ///   host-state recovery trigger, not a per-field diff.
     /// - `"uncovered"` — conservative fallback for hash-mismatch with
     ///   no Stage 1 reason and no Stage 2 drop-in diff (should be
     ///   unreachable in practice; logs at warn level).
     pub recreate_reasons: Vec<&'static str>,
-    /// Why this update was emitted: SpecChanged (config edit),
-    /// DriftDetected (on-disk drift only), or both. Drives the CLI
+    /// Why this update was emitted: `SpecChanged` (config edit),
+    /// `DriftDetected` (on-disk drift only), or both. Drives the CLI
     /// renderer's drift-cause label so the operator can tell the two
     /// apart at a glance.
     pub drift_cause: DriftCause,
@@ -376,7 +378,7 @@ pub struct RunnerDelta {
     /// an annotation source (`auth_name`, `trust_zone`, `caches` —
     /// the apply-time reconciliation rewrites the per-runner drop-in
     /// body and cycles the unit, not remove → create). The presence
-    /// of a FieldChange does NOT imply `requires_recreate=true`;
+    /// of a `FieldChange` does NOT imply `requires_recreate=true`;
     /// check `recreate_reasons` for that.
     ///
     /// Empty when:
@@ -400,7 +402,7 @@ pub struct RunnerDelta {
     /// names in the per-action `ApplyOutcome::InPlaceRestarted`
     /// detail string, and the rendered 30-cache-pool.conf drop-in
     /// reflects the new pool list verbatim (cache reach is
-    /// materialized by the trust_zone-shared DynamicUser + the
+    /// materialized by the trust_zone-shared `DynamicUser` + the
     /// `BindPaths=` entries in the drop-in). `None` ⇒ the runner
     /// predates the unconditional `X-Ghars-Caches` emit; apply skips
     /// the diff rendering to avoid spurious "removed: …" messages
@@ -426,7 +428,7 @@ pub struct RunnerDelta {
     /// Value semantics:
     /// - `Some(vec![..])` ⇒ discovered state was available at plan
     ///   time; the Vec is an exact snapshot of the on-disk drop-in
-    ///   basenames (BTreeMap iteration order ⇒ already sorted).
+    ///   basenames (`BTreeMap` iteration order ⇒ already sorted).
     ///   Renderers MAY use this directly to compute the
     ///   "removed by recreate" set.
     /// - `Some(vec![])` ⇒ the discovered drop-in directory was
@@ -456,7 +458,7 @@ pub struct RunnerDelta {
 /// reference an existing runner. `apply` looks up the rendered spec via
 /// state discovery for removals; the identity carries everything required
 /// to drive systemd D-Bus calls (`ghars-runner@NAME.service`),
-/// home-directory rmrf safety checks (name + trust_zone), and
+/// home-directory rmrf safety checks (name + `trust_zone`), and
 /// registration-token mints (`url` + `auth_name`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunnerIdentity {

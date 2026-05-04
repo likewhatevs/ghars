@@ -26,6 +26,8 @@
 //!    write through the symlink is blocked by the unpacker — but never
 //!    both written and written outside the extraction root.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use camino::Utf8PathBuf;
 use ghars::extract::extract_tarball;
 use std::fs;

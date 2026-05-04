@@ -5,9 +5,7 @@ use std::process::Command;
 
 use camino::Utf8Path;
 
-use super::super::shell::{
-    ConfigShellCtx, RUNNER_TOKEN_ENV, build_register_cmd, build_remove_cmd,
-};
+use super::super::shell::{ConfigShellCtx, RUNNER_TOKEN_ENV, build_register_cmd, build_remove_cmd};
 
 /// Construct a `ConfigShellCtx` with a recognisable token sentinel
 /// so each SEC-05 test can scan for it across argv vs env.

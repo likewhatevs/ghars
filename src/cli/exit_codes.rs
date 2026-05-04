@@ -17,11 +17,11 @@ use crate::preflight;
 ///
 /// Per-variant mapping (Part 5):
 /// - `Config(_, _)`           → 6 (config parse / shape error)
-/// - `Validation(_, _)`       → 6 (config-shape rejection: trust_zone
-///   charset, duplicate caches, render_identity defense-in-depth —
+/// - `Validation(_, _)`       → 6 (config-shape rejection: `trust_zone`
+///   charset, duplicate caches, `render_identity` defense-in-depth —
 ///   operator must edit the TOML to recover, same actionable class
 ///   as Config)
-/// - `Interactive(_, _)`      → 7 (confirm_apply on non-TTY
+/// - `Interactive(_, _)`      → 7 (`confirm_apply` on non-TTY
 ///   stdin; distinct from 6 so wrapping scripts can branch on
 ///   "config is broken" vs "apply needs --auto-approve" without
 ///   parsing the error message)
@@ -29,7 +29,7 @@ use crate::preflight;
 ///   per-action accounting; same exit code per-action auth failures
 ///   route to via `apply_exit_code`)
 /// - `Preflight(_, _)`        → 3 (preflight check failure; same
-///   exit code cmd_apply / cmd_status emit via `Ok(3)`)
+///   exit code `cmd_apply` / `cmd_status` emit via `Ok(3)`)
 /// - `GitHub(_, _)`           → 1 (API error)
 /// - `Systemd(_, _)`          → 1 (D-Bus / unit error)
 /// - `Apply { .. }`           → 1 (should never reach here — apply
@@ -77,7 +77,7 @@ pub fn err_to_exit_code(err: &GharsError) -> i32 {
 /// rsync.
 ///
 /// Used by `main.rs` to compose the `EnvFilter` fallback when
-/// `RUST_LOG` is not set; RUST_LOG always wins when present.
+/// `RUST_LOG` is not set; `RUST_LOG` always wins when present.
 #[must_use]
 pub fn verbose_to_filter_level(quiet: bool, verbose: u8) -> &'static str {
     if quiet && verbose == 0 {
@@ -152,7 +152,7 @@ pub(crate) fn recreate_exit_code(detailed_exitcode_recreate: bool, plan: &Plan) 
 
 /// Process exit code when the operator cancels at the apply prompt
 /// (`y/N` answered N). Pulled out so tests can pin the contract
-/// without driving the cmd_apply path through a TTY mock.
+/// without driving the `cmd_apply` path through a TTY mock.
 ///
 /// Precedence:
 /// - `--detailed-exitcode-recreate` set + recreate-class action in

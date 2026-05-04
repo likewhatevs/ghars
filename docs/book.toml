@@ -11,11 +11,11 @@ preferred-dark-theme = "navy"
 git-repository-url = "https://github.com/likewhatevs/ghars"
 edit-url-template = "https://github.com/likewhatevs/ghars/edit/main/docs/{path}"
 
-# mdbook-linkcheck runs alongside the html backend when configured.
+# mdbook-linkcheck2 runs alongside the html backend when configured.
 # Without this section the CI `mdbook build` skips link validation.
 # `follow-web-links = false` keeps the gate offline and deterministic;
 # external URL drift is flagged by manual link audits, not the merge
 # gate.
-[output.linkcheck]
+[output.linkcheck2]
 follow-web-links = false
 warning-policy = "error"

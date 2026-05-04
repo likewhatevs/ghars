@@ -40,7 +40,7 @@ The two `[[bin]]` targets:
 
 ## Lifecycle: config → plan → apply
 
-### 1. Config load (`config.rs`, `cli.rs::load_config`)
+### 1. Config load (`config.rs`, `cli::load::load_config`)
 
 `cli::load_config` reads `--config PATH` (default
 `/etc/ghars/ghars.toml`), runs `toml::from_str`, then runs the
@@ -75,9 +75,9 @@ The result is `ActualState`: known runners and pools with their
 discovered annotations and drop-in basenames. The plan engine
 diffs the desired specs against this.
 
-### 3. Plan computation (`plan.rs::plan_from`)
+### 3. Plan computation (`plan::compute::plan_from`)
 
-Four orthogonal pieces (see the `plan.rs` module-level doc):
+Four orthogonal pieces (see the `plan` module-level doc):
 
 1. `expand_counts` — flatten `[[runner]] count = N` blocks into one
    `RunnerSpec` per generated name. Auto-skip collisions with
@@ -131,7 +131,7 @@ Disruption::Recreate` without a hand-rolled comparator. `Plan::has_recreate`
 walks the action vec and drives the `--detailed-exitcode-recreate`
 exit-code 8 path.
 
-### 5. Apply (`apply.rs::apply`)
+### 5. Apply (`apply::orchestrator::apply`)
 
 `apply` is the single entry point. Its lifecycle:
 
@@ -174,7 +174,7 @@ exit-code 8 path.
 
 The canonical execution order:
 
-```
+```text
 CreateCachePool
 UpdateCachePool
 RemoveRunner

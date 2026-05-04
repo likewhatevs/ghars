@@ -17,6 +17,7 @@ use crate::error::GharsError;
 use crate::paths::Paths;
 use crate::state::{ActualState, DiscoveredRunner, Drift};
 
+use super::DEFAULT_TRUST_ZONE;
 use super::action::Action;
 use super::classify::{DiscoveredAnnotations, classify_recreate_reasons_from_annotations};
 use super::expand::expand_counts;
@@ -26,7 +27,6 @@ use super::types::{
     CachePoolDelta, CachePoolPlan, DriftCause, DropInChange, DropInChangeKind, FieldChange, Plan,
     RunnerDelta, RunnerIdentity, RunnerPlan,
 };
-use super::DEFAULT_TRUST_ZONE;
 
 /// First octet of the default netns subnet pool. The full pool is
 /// `NETNS_POOL_BASE.0.0/24` — i.e. `10.200.0.0/24` — yielding 64 /30
@@ -124,13 +124,14 @@ pub(super) fn netns_subnet_for_slot(slot_idx: usize, runner_name: &str) -> Resul
 /// # Errors
 ///
 /// Returns `GharsError::Validation` when:
-/// - `expand_counts` fails (count > MAX_COUNT, regex mismatch, cross-
+/// - `expand_counts` fails (count > `MAX_COUNT`, regex mismatch, cross-
 ///   block name collision);
 /// - a runner references an unknown auth name (no
 ///   `[defaults] auth` and no `[[runner]] auth`);
 /// - a runner references an unknown cache pool;
 /// - a runner references an unknown network;
 /// - a runner's `trust_zone` doesn't match a referenced cache pool's.
+#[allow(clippy::expect_used)]
 pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result<Plan> {
     let host_arch = host_arch();
     let config_source = paths.config_dir.join("ghars.toml").to_string();
@@ -168,13 +169,8 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
     let mut desired: BTreeMap<String, EffectiveRunnerSpec> = BTreeMap::new();
     let warnings: Vec<String> = Vec::new();
     for (slot_idx, runner) in expanded.iter().enumerate() {
-        let effective = lower_to_effective(
-            runner,
-            config,
-            host_arch,
-            config_source.clone(),
-            slot_idx,
-        )?;
+        let effective =
+            lower_to_effective(runner, config, host_arch, config_source.clone(), slot_idx)?;
         desired.insert(effective.name.clone(), effective);
     }
 
@@ -723,7 +719,7 @@ pub(super) fn with_hash(mut spec: EffectiveRunnerSpec) -> EffectiveRunnerSpec {
     spec
 }
 
-/// Clear the spec_hash so it can be re-computed. Used by the
+/// Clear the `spec_hash` so it can be re-computed. Used by the
 /// in-place update path after mutating a field that *might* be a
 /// hash input on some future revision (e.g. `runsvc_sha256`, which is
 /// `#[serde(skip)]` today and therefore NOT a hash input). Re-call
@@ -749,7 +745,7 @@ pub(super) fn strip_hash(mut spec: EffectiveRunnerSpec) -> EffectiveRunnerSpec {
 /// `None` for every real 00-ghars.conf and the in-place update at
 /// the call site emitted a freshly-rendered drop-in without the
 /// annotation, which would fail-stop runsvc-wrapper's SEC-02
-/// trampoline at the next runner restart with ANNOTATION_MISSING.
+/// trampoline at the next runner restart with `ANNOTATION_MISSING`.
 pub(super) fn extract_runsvc_sha256(drop_ins: &BTreeMap<String, String>) -> Option<String> {
     let body = drop_ins.get("00-ghars.conf")?;
     // Point-lookup via extract_x_ghars_value avoids the full
@@ -763,9 +759,9 @@ pub(super) fn extract_runsvc_sha256(drop_ins: &BTreeMap<String, String>) -> Opti
     if v.is_empty() { None } else { Some(v) }
 }
 
-/// Build a RunnerPlan from an effective spec, computing the spec_hash
+/// Build a `RunnerPlan` from an effective spec, computing the `spec_hash`
 /// (if not already set) and rendering the unit text + drop-ins.
-/// RunnerPlan carries the rendered bytes that apply.rs writes to
+/// `RunnerPlan` carries the rendered bytes that apply.rs writes to
 /// disk verbatim, instead of re-rendering.
 pub(super) fn into_runner_plan(spec: EffectiveRunnerSpec) -> Result<RunnerPlan> {
     let spec_with_hash = if spec.spec_hash.is_empty() {
@@ -963,7 +959,8 @@ pub(super) fn lower_to_effective(
             "split the runner into multiple runners (one per sccache pool), \
              or merge the pools, or change all but one to ccache-only \
              (filesystem mode is multi-bind safe — only sccache's daemon \
-             model is single-server)".into(),
+             model is single-server)"
+                .into(),
         ));
     }
 

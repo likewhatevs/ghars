@@ -12,7 +12,7 @@ fn guard_home_dir_rmrf_rejects_root() {
         "buckos",
     )
     .unwrap_err();
-    assert!(format!("{err}").contains("/"));
+    assert!(format!("{err}").contains('/'));
 }
 
 #[test]
@@ -55,9 +55,7 @@ fn guard_home_dir_rmrf_rejects_path_separator_in_name() {
         "foo/bar",
     )
     .unwrap_err();
-    assert!(
-        format!("{err}").contains("expected") || format!("{err}").contains("path separator")
-    );
+    assert!(format!("{err}").contains("expected") || format!("{err}").contains("path separator"));
 }
 
 #[test]

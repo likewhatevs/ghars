@@ -138,25 +138,23 @@ fn http_download_with_cap(
     // partial file cannot be promoted by a later step.
     // Malformed Content-Length silently falls through to Layer 2 streaming
     // backstop (the cumulative byte counter inside the chunk loop).
-    if let Some(cl_header) = resp.headers().get(reqwest::header::CONTENT_LENGTH) {
-        if let Ok(cl_str) = cl_header.to_str() {
-            if let Ok(cl) = cl_str.parse::<u64>() {
-                if cl > max_bytes {
-                    return Err(GharsError::Tarball(
-                        format!(
-                            "download failed: {url}: Content-Length {cl_h} ({cl} bytes) exceeds {max_h} ({max_bytes} bytes); \
+    if let Some(cl_header) = resp.headers().get(reqwest::header::CONTENT_LENGTH)
+        && let Ok(cl_str) = cl_header.to_str()
+        && let Ok(cl) = cl_str.parse::<u64>()
+        && cl > max_bytes
+    {
+        return Err(GharsError::Tarball(
+            format!(
+                "download failed: {url}: Content-Length {cl_h} ({cl} bytes) exceeds {max_h} ({max_bytes} bytes); \
                              the on-wire (pre-decompression) Content-Length is suspiciously large; \
                              verify network path (compromised mirror, hostile proxy CA, or non-GitHub \
                              origin); if the upstream payload is legitimately this large, file a \
                              ghars issue to raise MAX_TARBALL_DOWNLOAD_BYTES",
-                            cl_h = human_bytes(cl),
-                            max_h = human_bytes(max_bytes)
-                        ),
-                        None,
-                    ));
-                }
-            }
-        }
+                cl_h = human_bytes(cl),
+                max_h = human_bytes(max_bytes)
+            ),
+            None,
+        ));
     }
 
     let mut out = File::create(dest).map_err(|e| {
@@ -617,24 +615,23 @@ pub fn verify_local_tarball(path: &Utf8Path) -> Result<()> {
 /// `GharsError::Tarball` if the path is now a symlink, missing, or
 /// not a regular file.
 pub fn verify_local_tarball_open(path: &Utf8Path) -> Result<File> {
-    let (file, meta) = crate::validators::open_no_follow_with_meta(path.as_std_path()).map_err(|e| {
-        // ELOOP from O_NOFOLLOW is the symlink-rejection path —
-        // surface it specifically so the operator doesn't conflate
-        // it with a missing-file error.
-        if e.raw_os_error() == Some(libc::ELOOP) {
-            GharsError::Tarball(
-                format!(
-                    "runner_tarball is now a symlink (was not at validation time): {path}"
-                ),
-                None,
-            )
-        } else {
-            GharsError::Tarball(
-                format!("runner_tarball cannot be opened: {path}: {e}"),
-                None,
-            )
-        }
-    })?;
+    let (file, meta) =
+        crate::validators::open_no_follow_with_meta(path.as_std_path()).map_err(|e| {
+            // ELOOP from O_NOFOLLOW is the symlink-rejection path —
+            // surface it specifically so the operator doesn't conflate
+            // it with a missing-file error.
+            if e.raw_os_error() == Some(libc::ELOOP) {
+                GharsError::Tarball(
+                    format!("runner_tarball is now a symlink (was not at validation time): {path}"),
+                    None,
+                )
+            } else {
+                GharsError::Tarball(
+                    format!("runner_tarball cannot be opened: {path}: {e}"),
+                    None,
+                )
+            }
+        })?;
     if !meta.is_file() {
         return Err(GharsError::Tarball(
             format!("runner_tarball is no longer a regular file: {path}"),
@@ -670,7 +667,7 @@ pub fn verify_local_tarball_open(path: &Utf8Path) -> Result<File> {
 ///    `bin.<version>/` is swapped with the staging tree, then the
 ///    displaced old tree is removed), plain `rename(2)` on fresh
 ///    install. On upgrade, EINVAL/ENOSYS (legacy kernel/FS without
-///    RENAME_EXCHANGE) falls back to remove-then-rename, and EXDEV
+///    `RENAME_EXCHANGE`) falls back to remove-then-rename, and EXDEV
 ///    (cross-filesystem) falls back to remove-then-copy-then-remove.
 ///    Both fallbacks emit `tracing::warn` so operators see the
 ///    degraded path.
@@ -844,9 +841,7 @@ pub fn prune_old_bin_versions(runner_home: &Utf8Path, keep_versions: u32) -> Res
         if !meta.is_dir() {
             continue;
         }
-        let mtime = meta
-            .modified()
-            .unwrap_or_else(|_| std::time::SystemTime::UNIX_EPOCH);
+        let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
         let path = match Utf8PathBuf::from_path_buf(entry.path()) {
             Ok(p) => p,
             Err(_) => continue,
@@ -890,7 +885,7 @@ pub fn prune_old_bin_versions(runner_home: &Utf8Path, keep_versions: u32) -> Res
 /// slashes. We avoid `fs::canonicalize` (would resolve symlinks and
 /// fail for missing paths); for our purposes a byte-equal check
 /// after normalization is sufficient because both inputs come from
-/// trusted construction (read_link result + read_dir entry path).
+/// trusted construction (`read_link` result + `read_dir` entry path).
 fn paths_equal(a: &Utf8Path, b: &Utf8Path) -> bool {
     a.as_str().trim_end_matches('/') == b.as_str().trim_end_matches('/')
 }
@@ -943,7 +938,7 @@ fn paths_equal(a: &Utf8Path, b: &Utf8Path) -> bool {
 /// changed-or-removed entry under `staging.parent()`); fsyncing both
 /// makes both visible across a crash. Failures of the staging-parent
 /// fsync are logged but do NOT propagate — staging is transient and
-/// any orphan there is cleaned up by the next install_runner_binary
+/// any orphan there is cleaned up by the next `install_runner_binary`
 /// (which removes a pre-existing staging directory before reusing
 /// it).
 ///
@@ -969,7 +964,7 @@ fn renameat2_with_test_seam(
     new_path: &std::path::Path,
     flags: nix::fcntl::RenameFlags,
 ) -> nix::Result<()> {
-    if let Some(forced) = tests::FORCED_RENAMEAT2_ERRNO.with(|c| c.get()) {
+    if let Some(forced) = tests::FORCED_RENAMEAT2_ERRNO.with(std::cell::Cell::get) {
         return Err(forced);
     }
     nix::fcntl::renameat2(old_dirfd, old_path, new_dirfd, new_path, flags)
@@ -1010,7 +1005,7 @@ fn extract_and_swap_from_file(
             Ok(()) => {
                 fs::remove_dir_all(staging)?;
             }
-            Err(nix::errno::Errno::EINVAL) | Err(nix::errno::Errno::ENOSYS) => {
+            Err(nix::errno::Errno::EINVAL | nix::errno::Errno::ENOSYS) => {
                 // Kernel < 3.15 or the filesystem doesn't implement
                 // RENAME_EXCHANGE. Degrade to remove-then-rename:
                 // there is a brief window where final_dir is absent,
@@ -1088,14 +1083,14 @@ fn extract_and_swap_from_file(
         );
         e
     })?;
-    if let Some(staging_parent) = staging.parent() {
-        if let Err(e) = fsync_directory(staging_parent) {
-            tracing::warn!(
-                staging_parent = %staging_parent,
-                error = %e,
-                "staging-parent fsync failed; staging cleanup is best-effort and the next apply removes any orphan"
-            );
-        }
+    if let Some(staging_parent) = staging.parent()
+        && let Err(e) = fsync_directory(staging_parent)
+    {
+        tracing::warn!(
+            staging_parent = %staging_parent,
+            error = %e,
+            "staging-parent fsync failed; staging cleanup is best-effort and the next apply removes any orphan"
+        );
     }
     Ok(())
 }
@@ -1237,16 +1232,18 @@ fn copy_dir_recursive(src: &Utf8Path, dst: &Utf8Path) -> Result<()> {
             // this is a no-op in production; the lossy fallback is
             // confined to the recurse boundary and emits a
             // structured error rather than substituting U+FFFD.
-            let from_utf8 = Utf8PathBuf::from_path_buf(from)
-                .map_err(|p| GharsError::Tarball(
+            let from_utf8 = Utf8PathBuf::from_path_buf(from).map_err(|p| {
+                GharsError::Tarball(
                     format!("non-UTF-8 directory name in tarball: {}", p.display()),
                     None,
-                ))?;
-            let to_utf8 = Utf8PathBuf::from_path_buf(to)
-                .map_err(|p| GharsError::Tarball(
+                )
+            })?;
+            let to_utf8 = Utf8PathBuf::from_path_buf(to).map_err(|p| {
+                GharsError::Tarball(
                     format!("non-UTF-8 directory name in tarball: {}", p.display()),
                     None,
-                ))?;
+                )
+            })?;
             copy_dir_recursive(&from_utf8, &to_utf8)?;
         } else if ftype.is_symlink() {
             let target = fs::read_link(&from)?;
@@ -1272,6 +1269,7 @@ fn set_dir_mode(_path: &Utf8Path, _mode: u32) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use std::cell::Cell;
@@ -1568,8 +1566,8 @@ mod tests {
         let dest = Utf8PathBuf::from_path_buf(tmp.path().join("runner-path.tar.gz")).unwrap();
         let url = format!("{}/runner-path.tar.gz", server.url());
         let bogus_sha = "f".repeat(64);
-        let err = download_and_verify(&url, &dest, &bogus_sha, Duration::from_secs(10))
-            .unwrap_err();
+        let err =
+            download_and_verify(&url, &dest, &bogus_sha, Duration::from_secs(10)).unwrap_err();
         match err {
             GharsError::Sha256Mismatch { path, .. } => {
                 assert_eq!(
@@ -1844,7 +1842,10 @@ mod tests {
         // present — proving the extractor read from the fd, not
         // the post-replace path.
         let extracted = dest.join("hello.txt");
-        assert!(extracted.as_std_path().exists(), "extraction must succeed via fd");
+        assert!(
+            extracted.as_std_path().exists(),
+            "extraction must succeed via fd"
+        );
         assert_eq!(
             fs::read(extracted.as_std_path()).unwrap(),
             b"hello",
@@ -2569,6 +2570,7 @@ mod tests {
     /// tests that can construct gigabyte-scale mocks under cargo
     /// nextest's per-test timeout.
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn max_tarball_download_bytes_constant_has_expected_shape() {
         // Pin (a) the cap exists at module scope and (b) is in the
         // sane range — a regression that drops it to 0 (always-reject)
@@ -2643,7 +2645,6 @@ mod tests {
         m.assert();
     }
 
-
     /// Over-cap rejection + no-leak pin: a body whose Content-Length
     /// exceeds the test cap fires the Layer-1 pre-check in
     /// `http_download_with_cap`. mockito auto-populates Content-Length
@@ -2653,7 +2654,7 @@ mod tests {
     /// value + "exceeds" + "Content-Length" + "on-wire" /
     /// "pre-decompression" vocabulary, (d) network-path triage hint
     /// (mirrors github.rs Layer-1 surface), (e) the
-    /// MAX_TARBALL_DOWNLOAD_BYTES escape hatch, and (f) the
+    /// `MAX_TARBALL_DOWNLOAD_BYTES` escape hatch, and (f) the
     /// load-bearing security invariant: dest does NOT exist
     /// post-call. Layer-2 (cumulative byte counter) is harder to
     /// exercise from mockito because the mock always sets
@@ -2801,11 +2802,13 @@ mod tests {
         let _ = prune_old_bin_versions(home, 1).unwrap();
         assert!(
             dirs[0].as_std_path().exists(),
-            "active symlink target {} must be preserved", dirs[0]
+            "active symlink target {} must be preserved",
+            dirs[0]
         );
         assert!(
             dirs[3].as_std_path().exists(),
-            "newest dir {} must be preserved", dirs[3]
+            "newest dir {} must be preserved",
+            dirs[3]
         );
         // The two middle versions are pruned.
         for old in &dirs[1..3] {
@@ -2919,8 +2922,8 @@ mod tests {
             .unwrap()
     }
 
-    /// Layout helper: produces (runner_home, final_dir, staging,
-    /// tarball_path) anchored at a fresh tempdir. `final_dir_name`
+    /// Layout helper: produces (`runner_home`, `final_dir`, staging,
+    /// `tarball_path`) anchored at a fresh tempdir. `final_dir_name`
     /// and `staging_name` distinguish per-test paths so a panicking
     /// test cannot leak state into a sibling.
     fn renameat2_test_layout(
@@ -2928,8 +2931,7 @@ mod tests {
         final_dir_name: &str,
         staging_name: &str,
     ) -> (Utf8PathBuf, Utf8PathBuf, Utf8PathBuf, Utf8PathBuf) {
-        let runner_home =
-            Utf8Path::from_path(tmp.path()).unwrap().to_path_buf();
+        let runner_home = Utf8Path::from_path(tmp.path()).unwrap().to_path_buf();
         let final_dir = runner_home.join(final_dir_name);
         let staging = runner_home.join(staging_name);
         let tarball_path = runner_home.join("input.tar.gz");
@@ -2939,8 +2941,7 @@ mod tests {
     /// Pre-populate `final_dir` with `body` under `marker.txt`.
     fn populate_final_dir(final_dir: &Utf8Path, body: &[u8]) {
         fs::create_dir_all(final_dir.as_std_path()).unwrap();
-        fs::write(final_dir.join("marker.txt").as_std_path(), body)
-            .unwrap();
+        fs::write(final_dir.join("marker.txt").as_std_path(), body).unwrap();
     }
 
     #[test]
@@ -2959,17 +2960,16 @@ mod tests {
         let (runner_home, final_dir, staging, tarball_path) =
             renameat2_test_layout(&tmp, "bin.happy", ".staging-happy");
         populate_final_dir(&final_dir, b"old-payload");
-        let file = write_and_open_tarball(
-            &tarball_path,
-            &tar_gz_with_marker(b"new-payload"),
-        );
+        let file = write_and_open_tarball(&tarball_path, &tar_gz_with_marker(b"new-payload"));
 
         extract_and_swap_from_file(file, &staging, &runner_home, &final_dir)
             .expect("happy path must succeed");
 
-        let body =
-            fs::read(final_dir.join("marker.txt").as_std_path()).unwrap();
-        assert_eq!(body, b"new-payload", "RENAME_EXCHANGE must publish the new tree");
+        let body = fs::read(final_dir.join("marker.txt").as_std_path()).unwrap();
+        assert_eq!(
+            body, b"new-payload",
+            "RENAME_EXCHANGE must publish the new tree"
+        );
         assert!(
             !staging.as_std_path().exists(),
             "staging path must be removed after RENAME_EXCHANGE",
@@ -2989,21 +2989,19 @@ mod tests {
         let (runner_home, final_dir, staging, tarball_path) =
             renameat2_test_layout(&tmp, "bin.einval", ".staging-einval");
         populate_final_dir(&final_dir, b"old-payload");
-        let file = write_and_open_tarball(
-            &tarball_path,
-            &tar_gz_with_marker(b"new-payload"),
-        );
+        let file = write_and_open_tarball(&tarball_path, &tar_gz_with_marker(b"new-payload"));
 
         extract_and_swap_from_file(file, &staging, &runner_home, &final_dir)
             .expect("EINVAL fallback must succeed via remove-then-rename");
 
-        let body =
-            fs::read(final_dir.join("marker.txt").as_std_path()).unwrap();
-        assert_eq!(body, b"new-payload", "EINVAL fallback must publish the new tree");
+        let body = fs::read(final_dir.join("marker.txt").as_std_path()).unwrap();
+        assert_eq!(
+            body, b"new-payload",
+            "EINVAL fallback must publish the new tree"
+        );
         // Post-success invariant: final_dir is a directory (not a
         // dangling symlink, not absent).
-        let meta =
-            fs::symlink_metadata(final_dir.as_std_path()).unwrap();
+        let meta = fs::symlink_metadata(final_dir.as_std_path()).unwrap();
         assert!(meta.file_type().is_dir(), "final_dir must be a directory");
         assert!(
             !staging.as_std_path().exists(),
@@ -3032,17 +3030,16 @@ mod tests {
         let (runner_home, final_dir, staging, tarball_path) =
             renameat2_test_layout(&tmp, "bin.enosys", ".staging-enosys");
         populate_final_dir(&final_dir, b"old-payload");
-        let file = write_and_open_tarball(
-            &tarball_path,
-            &tar_gz_with_marker(b"new-payload"),
-        );
+        let file = write_and_open_tarball(&tarball_path, &tar_gz_with_marker(b"new-payload"));
 
         extract_and_swap_from_file(file, &staging, &runner_home, &final_dir)
             .expect("ENOSYS fallback must succeed via remove-then-rename");
 
-        let body =
-            fs::read(final_dir.join("marker.txt").as_std_path()).unwrap();
-        assert_eq!(body, b"new-payload", "ENOSYS fallback must publish the new tree");
+        let body = fs::read(final_dir.join("marker.txt").as_std_path()).unwrap();
+        assert_eq!(
+            body, b"new-payload",
+            "ENOSYS fallback must publish the new tree"
+        );
         assert!(
             !staging.as_std_path().exists(),
             "staging path must be removed after ENOSYS fallback",
@@ -3071,17 +3068,16 @@ mod tests {
         let (runner_home, final_dir, staging, tarball_path) =
             renameat2_test_layout(&tmp, "bin.exdev", ".staging-exdev");
         populate_final_dir(&final_dir, b"old-payload");
-        let file = write_and_open_tarball(
-            &tarball_path,
-            &tar_gz_with_marker(b"new-payload"),
-        );
+        let file = write_and_open_tarball(&tarball_path, &tar_gz_with_marker(b"new-payload"));
 
         extract_and_swap_from_file(file, &staging, &runner_home, &final_dir)
             .expect("EXDEV fallback must succeed via copy-then-remove");
 
-        let body =
-            fs::read(final_dir.join("marker.txt").as_std_path()).unwrap();
-        assert_eq!(body, b"new-payload", "EXDEV fallback must publish the new tree");
+        let body = fs::read(final_dir.join("marker.txt").as_std_path()).unwrap();
+        assert_eq!(
+            body, b"new-payload",
+            "EXDEV fallback must publish the new tree"
+        );
         assert!(
             !staging.as_std_path().exists(),
             "staging path must be removed after EXDEV fallback",
@@ -3104,16 +3100,12 @@ mod tests {
         let (runner_home, final_dir, staging, tarball_path) =
             renameat2_test_layout(&tmp, "bin.fresh", ".staging-fresh");
         // final_dir intentionally NOT pre-populated.
-        let file = write_and_open_tarball(
-            &tarball_path,
-            &tar_gz_with_marker(b"fresh-payload"),
-        );
+        let file = write_and_open_tarball(&tarball_path, &tar_gz_with_marker(b"fresh-payload"));
 
         extract_and_swap_from_file(file, &staging, &runner_home, &final_dir)
             .expect("fresh-install path must not touch renameat2");
 
-        let body =
-            fs::read(final_dir.join("marker.txt").as_std_path()).unwrap();
+        let body = fs::read(final_dir.join("marker.txt").as_std_path()).unwrap();
         assert_eq!(body, b"fresh-payload");
         assert!(
             !staging.as_std_path().exists(),
@@ -3133,17 +3125,9 @@ mod tests {
         let (runner_home, final_dir, staging, tarball_path) =
             renameat2_test_layout(&tmp, "bin.eacces", ".staging-eacces");
         populate_final_dir(&final_dir, b"old-payload");
-        let file = write_and_open_tarball(
-            &tarball_path,
-            &tar_gz_with_marker(b"new-payload"),
-        );
+        let file = write_and_open_tarball(&tarball_path, &tar_gz_with_marker(b"new-payload"));
 
-        let outcome = extract_and_swap_from_file(
-            file,
-            &staging,
-            &runner_home,
-            &final_dir,
-        );
+        let outcome = extract_and_swap_from_file(file, &staging, &runner_home, &final_dir);
         assert!(
             outcome.is_err(),
             "unhandled errno (EACCES) must propagate as Err",
@@ -3154,8 +3138,7 @@ mod tests {
         // mutation. The catch-all `Err(e) => return Err(...)` arm
         // happens BEFORE any mutation in the RENAME_EXCHANGE branch,
         // so final_dir's contents must be untouched.
-        let body =
-            fs::read(final_dir.join("marker.txt").as_std_path()).unwrap();
+        let body = fs::read(final_dir.join("marker.txt").as_std_path()).unwrap();
         assert_eq!(
             body, b"old-payload",
             "unhandled-errno path must NOT mutate final_dir",

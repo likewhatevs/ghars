@@ -6,9 +6,7 @@ use std::collections::HashMap;
 use crate::Result;
 use crate::auth::TokenSource;
 use crate::paths::Paths;
-use crate::plan::{
-    Action, DropInChangeKind, Plan, RunnerDelta, RunnerIdentity, RunnerPlan,
-};
+use crate::plan::{Action, DropInChangeKind, Plan, RunnerDelta, RunnerIdentity, RunnerPlan};
 use crate::systemd::render_runner_unit;
 
 use super::super::orchestrator::apply;
@@ -63,16 +61,16 @@ pub(super) fn make_caches_delta(
 
 /// Pin that `execute_update_runner` populates the
 /// `InPlaceRestarted.pools_added` / `pools_removed` Vecs from the
-/// caches diff so cmd_apply's per-action detail line surfaces the
+/// caches diff so `cmd_apply`'s per-action detail line surfaces the
 /// pool NAMES (not just a count). This is the construction-side
 /// counterpart to the detail-string pin at
 /// `apply_outcome_detail_strings_are_stable` — together they
 /// guarantee an end-to-end "operator sees which pools moved".
 /// Three sub-cases mirror the existing in-place-caches tests:
-///   - grow: `[]` → `["new-pool"]`     ⇒ pools_added=[new-pool], pools_removed=[]
-///   - shrink: `["old-pool"]` → `[]`   ⇒ pools_added=[], pools_removed=[old-pool]
-///   - replace: `["a","z"]` → `["m"]`  ⇒ pools_added=[m], pools_removed=[a,z] (sorted)
-/// The `replace` case also pins BTreeSet::difference's alphabetical
+///   - grow: `[]` → `["new-pool"]`     ⇒ `pools_added`=[new-pool], `pools_removed`=[]
+///   - shrink: `["old-pool"]` → `[]`   ⇒ `pools_added`=[], `pools_removed`=[old-pool]
+///   - replace: `["a","z"]` → `["m"]`  ⇒ `pools_added`=[m], `pools_removed`=[a,z] (sorted)
+/// The `replace` case also pins `BTreeSet::difference`'s alphabetical
 /// ordering — `pools_removed` must be `[a, z]` not `[z, a]` so the
 /// rendered detail string is deterministic across runs.
 #[test]
@@ -140,7 +138,7 @@ fn execute_update_runner_in_place_populates_pool_name_vecs() {
 }
 
 /// Pin the detail-string surface end-to-end — feed a
-/// real-world replace into execute_update_runner, assert the
+/// real-world replace into `execute_update_runner`, assert the
 /// outcome's `detail()` output reads "(added: m; removed: a, z)".
 /// This is the integration counterpart to
 /// `apply_outcome_detail_strings_are_stable` (which builds the
@@ -326,7 +324,7 @@ fn execute_update_runner_in_place_skips_restart_when_bytes_match() {
 }
 
 /// When the on-disk unit-file bytes drift from the rendered
-/// effective_unit_text, the helper writes through and the
+/// `effective_unit_text`, the helper writes through and the
 /// daemon-reload + stop + start cycle fires as before.
 #[test]
 fn execute_update_runner_in_place_restarts_when_unit_file_differs() {
@@ -444,7 +442,7 @@ fn execute_update_runner_in_place_restarts_when_drop_in_differs() {
 /// file is deleted, `files_changed` increments, and the restart
 /// cycle fires. Operator drop-ins CAN appear in `drop_in_changes`
 /// as Removed entries (Stage 2 walks the union of rendered +
-/// discovered keys); the deletion loop's MANAGED_DROP_IN_BASENAMES
+/// discovered keys); the deletion loop's `MANAGED_DROP_IN_BASENAMES`
 /// guard keeps them safe — see the regression test
 /// `update_runner_in_place_preserves_operator_drop_ins` for the
 /// guarded-operator-basename branch.

@@ -66,7 +66,7 @@ pub const USER_AGENT: &str = concat!("ghars/", env!("CARGO_PKG_VERSION"));
 ///     `IDENTIFIER_REGEX` rejects control chars at config-load, but
 ///     a regex relaxation must not silently reintroduce ANSI hijack
 ///     risk on the rollback advisory.
-///   - **per-step describe() output** — second pass over
+///   - **per-step `describe()` output** — second pass over
 ///     `UndoStep::describe()`'s already-escaped output. Idempotent
 ///     (pinned by `escape_control_chars_is_idempotent` in lib.rs),
 ///     so the redundancy costs only one byte scan; closes the seam

@@ -12,7 +12,7 @@
 //!   so the helper deletes-then-creates).
 //! - `ghars _netns-veth INSTANCE PROGRAM ARGS` is the `ip netns exec`
 //!   wrapper used to load the inside-netns nft rules.
-//! - `ghars _netns-teardown INSTANCE` runs from ExecStop; every step
+//! - `ghars _netns-teardown INSTANCE` runs from `ExecStop`; every step
 //!   swallows ENOENT so re-running on already-clean state is safe.
 //!
 //! `setup_netns` reads the per-instance config dropped by `apply`
@@ -186,7 +186,7 @@ pub fn subnet_addresses(subnet: &IpNet) -> Result<(IpAddr, IpAddr)> {
 /// instance names support backslash-`x` escapes (per
 /// `systemd.unit(5)`), but `ip netns add` does NOT speak that
 /// escape — the kernel uses the raw bytes. ghars dodges the issue
-/// by enforcing the IDENTIFIER_REGEX at the gate, which forbids
+/// by enforcing the `IDENTIFIER_REGEX` at the gate, which forbids
 /// every character that would need escaping. The state-discovery
 /// parser (`state.rs::parse_runner_unit_name`) strips
 /// `ghars-runner@` + `.service` and does NOT systemd-unescape, on
@@ -227,7 +227,7 @@ pub fn resolved_drop_in_path(paths: &Paths, instance: &str) -> Utf8PathBuf {
 ///
 /// Asserts `geteuid() == 0` up front: every kernel-level operation
 /// (`ip netns add`, `ip link add`, `sysctl -w net.ipv4.conf.X.forwarding`)
-/// requires root. systemd already runs `ghars-net@.service` ExecStart
+/// requires root. systemd already runs `ghars-net@.service` `ExecStart`
 /// with `+` prefix (root regardless of `User=`), but the
 /// defense-in-depth check surfaces a clear error when an operator
 /// invokes the helper directly.
@@ -292,8 +292,8 @@ fn require_root(label: &str) -> Result<()> {
     ))
 }
 
-/// Gate the instance name against IDENTIFIER_REGEX
-/// (`^[a-z]([a-z0-9-]*[a-z0-9])?$`, ≤ IDENTIFIER_MAX_LEN). The
+/// Gate the instance name against `IDENTIFIER_REGEX`
+/// (`^[a-z]([a-z0-9-]*[a-z0-9])?$`, ≤ `IDENTIFIER_MAX_LEN`). The
 /// instance flows through `format!()` into:
 /// - iproute2 args (`ghars-{instance}`, `ghars-{instance}-h/r`)
 /// - nft table names via _netns-veth's `nft destroy table inet
@@ -447,7 +447,7 @@ pub fn setup_with_config(paths: &Paths, instance: &str, cfg: &NetnsConfig) -> Re
 /// Setup driver parameterized over a [`NetnsOps`] implementation.
 /// Production calls [`setup_with_config`] (which wires `RealNetnsOps`);
 /// tests inject `MockNetnsOps` to inject failures at chosen step
-/// labels and observe the teardown_inner rollback.
+/// labels and observe the `teardown_inner` rollback.
 ///
 /// # Errors
 ///
@@ -539,15 +539,14 @@ fn setup_steps(ops: &dyn NetnsOps, paths: &Paths, instance: &str, cfg: &NetnsCon
     //    (path MTU blackholes, large-payload TLS handshakes hanging).
     //    The warning surfaces the divergence so the operator can
     //    investigate `ip route show default` and `ip link show <dev>`.
-    let mtu = match detect_host_mtu() {
-        Some(m) => m,
-        None => {
-            tracing::warn!(
-                instance = %instance,
-                "detect_host_mtu returned None (could not parse `ip -j route show default` or `ip -j link show dev`); falling back to MTU 1500. If the host's primary interface uses a non-1500 MTU, the runner's veth pair will mismatch and may experience PMTU blackholes."
-            );
-            1500
-        }
+    let mtu = if let Some(m) = detect_host_mtu() {
+        m
+    } else {
+        tracing::warn!(
+            instance = %instance,
+            "detect_host_mtu returned None (could not parse `ip -j route show default` or `ip -j link show dev`); falling back to MTU 1500. If the host's primary interface uses a non-1500 MTU, the runner's veth pair will mismatch and may experience PMTU blackholes."
+        );
+        1500
     };
     ops.run_required(
         Command::new("/usr/sbin/ip").args(["link", "set", &host_veth, "mtu", &mtu.to_string()]),
@@ -1181,7 +1180,7 @@ mod tests {
     /// Pin that `run_required` actually surfaces stderr to the
     /// operator. Without `.output()` capture, iproute2 / nft
     /// diagnostics would vanish and the operator would only see
-    /// "exit ExitStatus(...)" with no clue what went wrong. Use
+    /// "exit `ExitStatus`(...)" with no clue what went wrong. Use
     /// /bin/sh as a stand-in for an iproute2 binary that fails on
     /// bad argv.
     #[test]
@@ -1244,13 +1243,13 @@ mod tests {
 
     // -------- adversarial instance-name handling --------------------------
 
-    /// Every adversarial form the validate_runner_name gate must
+    /// Every adversarial form the `validate_runner_name` gate must
     /// reject before any kernel work starts. Each entry exercises
     /// one shape of attack against the format strings into iproute2
     /// / nftables / systemd unit names / filesystem paths.
     ///
-    /// The IDENTIFIER_REGEX (`^[a-z]([a-z0-9-]*[a-z0-9])?$`, ≤
-    /// IDENTIFIER_MAX_LEN) is the single source of truth — any name
+    /// The `IDENTIFIER_REGEX` (`^[a-z]([a-z0-9-]*[a-z0-9])?$`, ≤
+    /// `IDENTIFIER_MAX_LEN`) is the single source of truth — any name
     /// that isn't strictly ASCII-lowercase-letters-digits-dashes
     /// MUST fail.
     #[rstest::rstest]

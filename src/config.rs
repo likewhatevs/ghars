@@ -349,7 +349,7 @@ pub struct Hardening {
     /// `DeviceAllow=/dev/kvm rw`. None ≡ true (Python default).
     pub kvm: Option<bool>,
     /// `RestrictRealtime=`. None ≡ false (Python default; KVM vCPU
-    /// SCHED_FIFO).
+    /// `SCHED_FIFO`).
     pub restrict_realtime: Option<bool>,
     /// `ProtectControlGroups=`. None ≡ no (Python default; buck2
     /// nested virt).
@@ -374,7 +374,7 @@ pub struct Hardening {
     pub etc_bind_style: EtcBindStyle,
     /// Explicit `BindReadOnlyPaths` replacement list. None ≡ use the
     /// template's curated set (or whole /etc per `etc_bind_style`).
-    /// Some(list) ≡ REPLACE the template's BindReadOnlyPaths entirely
+    /// Some(list) ≡ REPLACE the template's `BindReadOnlyPaths` entirely
     /// (the reset-on-empty validator gates safety).
     pub bind_readonly_paths: Option<Vec<Utf8PathBuf>>,
     /// Additional `BindReadOnlyPaths` entries APPENDED to the
@@ -553,7 +553,7 @@ pub struct NetworkSpec {
     /// Network mode. `Netns` is the only non-Open mode in v0.1.
     pub mode: NetworkMode,
 
-    /// Allowed egress destinations. Each entry: addr (IpAddr or
+    /// Allowed egress destinations. Each entry: addr (`IpAddr` or
     /// CIDR), port (single / range / set), proto (tcp/udp/both),
     /// optional comment. Maps directly to
     /// `ip daddr ADDR PROTO dport PORT accept`.
@@ -705,14 +705,14 @@ pub fn load(_path: &camino::Utf8Path) -> crate::Result<Config> {
 /// Validate every `[network.NAME]` block in `config` using the
 /// validators in `crate::validators` (egress rule address + port
 /// shape, DNS mode, netns-requires-egress-or-ip-allow). Iterates the
-/// `cfg.networks` IndexMap in source order and returns on the first
+/// `cfg.networks` `IndexMap` in source order and returns on the first
 /// failure — matches `load`'s contract; multi-error reporting is a
 /// separate feature.
 ///
 /// Called by `cli::load_config` (alongside the four other post-load
 /// validators that live in `cli.rs`) so every CLI entry point that
-/// accepts a Config — cmd_validate, cmd_plan, cmd_apply, cmd_status,
-/// cmd_add — runs this gate uniformly. Each network's per-rule errors
+/// accepts a Config — `cmd_validate`, `cmd_plan`, `cmd_apply`, `cmd_status`,
+/// `cmd_add` — runs this gate uniformly. Each network's per-rule errors
 /// carry the network name in the message so the operator can locate
 /// the offending block.
 ///

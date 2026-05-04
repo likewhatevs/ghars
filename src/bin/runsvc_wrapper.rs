@@ -44,7 +44,7 @@
 //!    shebang's interpreter, and never refers back to the path we
 //!    opened — closing the open-then-rename TOCTOU window the
 //!    runner could otherwise exploit. NO setuid/setgid/setgroups —
-//!    DynamicUser= already established the runner identity before
+//!    `DynamicUser`= already established the runner identity before
 //!    this binary ever started.
 //!
 //! On any failure the binary writes a single actionable line to
@@ -123,10 +123,10 @@ fn find_section_key<'a>(body: &'a str, section: &str, key: &str) -> Option<&'a s
         if line.is_empty() {
             continue;
         }
-        if let Some(c) = line.chars().next() {
-            if c == '#' || c == ';' {
-                continue;
-            }
+        if let Some(c) = line.chars().next()
+            && (c == '#' || c == ';')
+        {
+            continue;
         }
         if let Some(stripped) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
             current_section = Some(stripped);
@@ -161,6 +161,7 @@ fn annotation_well_formed(value: &str) -> bool {
 /// should NOT depend on the position.
 fn sha256_of_reader<R: Read>(mut r: R) -> std::io::Result<String> {
     let mut hasher = Sha256::new();
+    #[allow(clippy::large_stack_arrays)]
     let mut buf = [0u8; 64 * 1024];
     loop {
         let n = r.read(&mut buf)?;
@@ -192,6 +193,11 @@ fn die(code: u8, msg: impl AsRef<str>) -> ExitCode {
     ExitCode::from(code)
 }
 
+// `args` (env::args_os iterator) and `argv` (the execve argv array)
+// are both load-bearing names for the C-level argv vector at distinct
+// stages — clippy flags the pair as too-similar but renaming either
+// would obscure intent.
+#[allow(clippy::similar_names)]
 fn main() -> ExitCode {
     let mut args = std::env::args_os();
     let _self = args.next();
@@ -438,7 +444,7 @@ fn read_file_no_follow(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

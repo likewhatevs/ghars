@@ -82,7 +82,7 @@ pub(super) const RUNNER_TOKEN_ENV: &str = "ACTIONS_RUNNER_INPUT_TOKEN";
 ///
 /// `--preserve-env=ACTIONS_RUNNER_INPUT_TOKEN` (sudo 1.8.21+) tells
 /// sudo to copy the named env var from its own environ into the
-/// target user's environ; without it, sudo's default env_reset
+/// target user's environ; without it, sudo's default `env_reset`
 /// strips the token before exec'ing config.sh.
 pub(super) fn build_register_cmd(ctx: &ConfigShellCtx<'_>) -> Command {
     let labels_csv = ctx.labels.join(",");

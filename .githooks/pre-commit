@@ -1,0 +1,27 @@
+#!/bin/sh
+
+if command -v cargo >/dev/null 2>&1; then
+    echo "Running cargo fmt..."
+    cargo fmt --all
+
+    echo "Running cargo clippy..."
+    cargo clippy --workspace --all-targets -- -D warnings
+    if [ $? -ne 0 ]; then
+        echo "clippy failed, aborting commit"
+        exit 1
+    fi
+
+    echo "Running cargo build --tests..."
+    if ! cargo build --tests --quiet; then
+        echo "test build failed, aborting commit"
+        exit 1
+    fi
+else
+    echo "Warning: cargo not found, skipping fmt, clippy, and test build"
+fi
+
+# Re-add only files that were already staged, in case cargo fmt
+# reformatted them.
+git diff --cached --name-only --diff-filter=ACM | xargs -r git add
+
+exit 0

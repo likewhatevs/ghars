@@ -21,7 +21,7 @@ use super::types::{FieldChange, FieldValue};
 /// annotations live entirely in the drop-in.
 ///
 /// State discovery doesn't carry the full `EffectiveRunnerSpec` of
-/// the discovered unit (only the spec_hash + raw text), so the plan
+/// the discovered unit (only the `spec_hash` + raw text), so the plan
 /// engine reconstructs the comparable subset from the X-Ghars-*
 /// annotations the unit-text generator emits in `00-ghars.conf`.
 ///
@@ -34,7 +34,7 @@ use super::types::{FieldChange, FieldValue};
 /// pool names, sorted by `lower_to_effective`; empty value parses
 /// as `Some(vec![])` to distinguish from missing annotation).
 /// Fields still NOT annotated
-/// (memory_max, hardening, allowed_cpus, proxy, hooks) live in
+/// (`memory_max`, hardening, `allowed_cpus`, proxy, hooks) live in
 /// their own drop-ins; the in-place classification (Stage 2 in
 /// `classify_recreate_reasons_from_annotations`) detects them by
 /// comparing rendered drop-in bodies against the discovered drop-
@@ -209,13 +209,13 @@ impl DiscoveredAnnotations {
 ///   on-disk unit).
 /// - `network` — recreate (Open↔Netns toggle requires
 ///   `provision_netns_artifacts` / `teardown_netns_artifacts`, which
-///   only execute_create_runner / execute_remove_runner call; the
+///   only `execute_create_runner` / `execute_remove_runner` call; the
 ///   in-place rewrite path leaves orphan netns side-units or
 ///   unprovisioned netns paths). Within-mode config edits (egress
 ///   rules, DNS mode) stay in-place via the 40-network.conf body
 ///   diff at Stage 2.
 ///
-/// In-place-only detection (FieldChange recorded, no recreate
+/// In-place-only detection (`FieldChange` recorded, no recreate
 /// reason):
 /// - `auth_name` — auth-ref change is in-place per design Part 3.
 ///   The underlying secret is rotated out-of-band and apply
@@ -230,10 +230,10 @@ impl DiscoveredAnnotations {
 ///   30-cache-pool.conf drop-in with the new pool list, diffs
 ///   `delta.before_caches` against the desired list to produce
 ///   the `(added: …; removed: …)` detail string, and cycles the
-///   unit so the post-update BindPaths take effect — no recreate
+///   unit so the post-update `BindPaths` take effect — no recreate
 ///   needed.
 ///
-/// All three of these record FieldChanges WITHOUT pushing a
+/// All three of these record `FieldChanges` WITHOUT pushing a
 /// recreate reason; the `uncovered` guard at the call site gates
 /// on `field_changes.is_empty()` so any one signal alone prevents
 /// the spurious recreate-class fallback.
@@ -515,4 +515,3 @@ pub(super) fn classify_recreate_reasons_from_annotations(
 
     reasons
 }
-

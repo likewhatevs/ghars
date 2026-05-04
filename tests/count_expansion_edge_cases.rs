@@ -6,13 +6,13 @@
 //! - count = 0 → skipped
 //! - auto-skip across explicit collision
 //! - cross-block collision errors
-//! - count > MAX_COUNT rejected
+//! - count > `MAX_COUNT` rejected
 //! - overlong generated name rejected
 //!
 //! Gaps these integration tests close:
-//! 1. **Empty `config.runners`** — expand_counts on a config with no
+//! 1. **Empty `config.runners`** — `expand_counts` on a config with no
 //!    runners returns an empty Vec, not an error.
-//! 2. **MAX_COUNT exact accepted** — boundary just-below the
+//! 2. **`MAX_COUNT` exact accepted** — boundary just-below the
 //!    rejection threshold.
 //! 3. **Source-order preservation across mixed explicit + count blocks**
 //!    — expansion lands in source position, not appended to the end.
@@ -29,6 +29,8 @@
 //!    expansion is gated on `count > 1`, not `>= 1`.
 //! 9. **Count block with short prefix expands at `MAX_COUNT` to
 //!    `MAX_COUNT` distinct names** — full enumeration property check.
+
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use ghars::config::{AuthSpec, Config, Defaults, Hardening, IDENTIFIER_MAX_LEN, RunnerSpec};
 use ghars::plan::{MAX_COUNT, expand_counts};
@@ -124,7 +126,7 @@ fn count_at_max_count_boundary_accepted() {
     assert_eq!(names.len(), out.len(), "all expanded names unique");
     // First and last names match the documented pattern.
     assert!(names.contains("ci-1"));
-    assert!(names.contains(&format!("ci-{}", MAX_COUNT)));
+    assert!(names.contains(&format!("ci-{MAX_COUNT}")));
 }
 
 #[test]
@@ -248,12 +250,11 @@ fn count_block_prefix_length_at_boundary_for_max_count_suffix() {
 
     let too_long_len = max_safe_len + 1;
     let too_long_prefix = "a".repeat(too_long_len);
-    let err = expand_counts(&cfg(vec![count_runner(&too_long_prefix, MAX_COUNT)])).expect_err(
-        &format!(
+    let err =
+        expand_counts(&cfg(vec![count_runner(&too_long_prefix, MAX_COUNT)])).expect_err(&format!(
             "{too_long_len}-char prefix + -{MAX_COUNT} exceeds \
              IDENTIFIER_MAX_LEN"
-        ),
-    );
+        ));
     let msg = format!("{err}");
     assert!(
         msg.contains("count expansion"),

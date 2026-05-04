@@ -175,9 +175,7 @@ fn verify_plan_inner(plan: &Plan, staging: &Path, verifier: &dyn UnitVerifier) -
             Action::UpdateCachePool(d) => {
                 units.push(rendered_cache_unit(&d.binding.name, &d.drop_in_body));
             }
-            Action::RemoveRunner(_)
-            | Action::RemoveCachePool(_)
-            | Action::NoOp(_) => {}
+            Action::RemoveRunner(_) | Action::RemoveCachePool(_) | Action::NoOp(_) => {}
         }
     }
 
@@ -278,7 +276,7 @@ mod tests {
             self.calls.lock().unwrap().push(unit_path.to_path_buf());
             let fname = unit_path.file_name().unwrap().to_string_lossy().to_string();
             let fail_set = self.fail_for.lock().unwrap();
-            if fail_set.iter().any(|f| fname == *f) {
+            if fail_set.contains(&fname) {
                 Err(format!("simulated failure on {fname}"))
             } else {
                 Ok(())
@@ -341,9 +339,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let runtime = camino::Utf8Path::from_path(tmp.path()).unwrap();
         let verifier = StubVerifier::default();
-        verifier.fail_for.lock().unwrap().push(
-            "ghars-runner@bad.service".to_string()
-        );
+        verifier
+            .fail_for
+            .lock()
+            .unwrap()
+            .push("ghars-runner@bad.service".to_string());
         let plan = Plan {
             actions: vec![
                 Action::CreateRunner(crate::plan::RunnerPlan {
@@ -462,7 +462,10 @@ mod tests {
             seen_dropin: Mutex::new(false),
         };
         let mut drop_ins = BTreeMap::new();
-        drop_ins.insert("00-ghars.conf".into(), "[Service]\nUser=ghars-tz-default\n".into());
+        drop_ins.insert(
+            "00-ghars.conf".into(),
+            "[Service]\nUser=ghars-tz-default\n".into(),
+        );
         let plan = Plan {
             actions: vec![Action::CreateRunner(crate::plan::RunnerPlan {
                 spec: minimal_effective_spec("buckos"),

@@ -3,7 +3,6 @@
 
 use super::*;
 
-
 // ---- err_to_exit_code variant mapping ---------------------------
 
 /// `GharsError::Config` → exit code 6 (Part 5).
@@ -14,8 +13,8 @@ fn err_to_exit_code_config_returns_six() {
 }
 
 /// `GharsError::Validation` → exit code 6. Validation
-/// errors are config-shape rejections (trust_zone charset,
-/// duplicate caches, render_identity defense-in-depth) — the
+/// errors are config-shape rejections (`trust_zone` charset,
+/// duplicate caches, `render_identity` defense-in-depth) — the
 /// operator must edit the TOML to recover, same actionable
 /// class as Config.
 #[test]
@@ -243,7 +242,7 @@ fn plan_has_recreate_detects_create_runner() {
     assert!(plan.has_recreate());
 }
 
-/// `Plan::has_recreate` returns `false` for plans with only NoOp
+/// `Plan::has_recreate` returns `false` for plans with only `NoOp`
 /// actions. Empty action vec is also `false` — no actions, nothing
 /// to recreate.
 #[test]
@@ -446,7 +445,7 @@ fn cancel_exit_code_recreate_flag_only_with_recreate_returns_eight() {
     assert_eq!(cancel_exit_code(false, true, &plan), 8);
 }
 
-/// cancel + both flags + NoOp plan → 2 (recreate flag set
+/// cancel + both flags + `NoOp` plan → 2 (recreate flag set
 /// but no recreate present, falls through to detailed-exitcode).
 #[test]
 fn cancel_exit_code_both_flags_no_recreate_returns_two() {
@@ -458,7 +457,7 @@ fn cancel_exit_code_both_flags_no_recreate_returns_two() {
     assert_eq!(cancel_exit_code(true, true, &all_noop), 2);
 }
 
-/// cancel + recreate flag (alone) + NoOp plan → 0.
+/// cancel + recreate flag (alone) + `NoOp` plan → 0.
 /// No detailed flag, no recreate present — default to 0.
 #[test]
 fn cancel_exit_code_recreate_flag_only_no_recreate_returns_zero() {
@@ -485,7 +484,7 @@ fn dry_run_exit_code_recreate_flag_only_with_recreate_returns_eight() {
 }
 
 /// dry-run + both flags + non-NoOp non-recreate plan → 2.
-/// (Synthesized via UpdateRunner with `requires_recreate=false`,
+/// (Synthesized via `UpdateRunner` with `requires_recreate=false`,
 /// which is `Disruption::Restart`, not `Disruption::Recreate`.)
 /// Recreate flag set but no recreate present, falls through to
 /// detailed-exitcode → 2 because plan has non-NoOp action.
@@ -510,7 +509,7 @@ fn dry_run_exit_code_both_flags_no_recreate_returns_two() {
     assert_eq!(dry_run_exit_code(true, true, &plan), 2);
 }
 
-/// dry-run + recreate flag (alone) + NoOp plan → 0.
+/// dry-run + recreate flag (alone) + `NoOp` plan → 0.
 /// No detailed flag, no recreate present — default to 0.
 #[test]
 fn dry_run_exit_code_recreate_flag_only_no_recreate_returns_zero() {
@@ -527,7 +526,7 @@ fn dry_run_exit_code_recreate_flag_only_no_recreate_returns_zero() {
 /// `apply_exit_code` with both flags set + success path +
 /// recreate-class outcome → 8. Pins that recreate (8) trumps
 /// detailed-changes (2) at the apply layer too — symmetric with
-/// dry_run/cancel rule.
+/// `dry_run/cancel` rule.
 #[test]
 fn apply_exit_code_recreate_trumps_detailed_at_apply_layer() {
     let result = apply::ApplyResult {
@@ -570,7 +569,7 @@ fn apply_exit_code_total_non_auth_failure_trumps_recreate() {
 
 /// `Plan::has_recreate` returns `true` for
 /// recreate-class actions BEYOND `CreateRunner`. Existing tests
-/// only cover Create + NoOp. `RemoveRunner` is unambiguously
+/// only cover Create + `NoOp`. `RemoveRunner` is unambiguously
 /// recreate per `Action::disruption` — pin so the helper does
 /// not regress to a Create-only check.
 #[test]
@@ -806,8 +805,6 @@ fn cmd_init_refuses_to_overwrite_existing_config() {
 
 // -------- cmd_add validates inputs ---------------------------------
 
-
-
 #[test]
 fn cmd_add_rejects_invalid_repo_url() {
     // A malformed --repo (e.g. ftp://, userinfo, traversal)
@@ -982,7 +979,12 @@ fn cmd_add_filters_empty_labels_from_clap_value_delimiter_artifact() {
     write_minimal_config(&config_path);
     let paths = Paths::default();
     let mut args = add_args_for("owner/repo", Some("owner-repo-1"), Some("pat"));
-    args.labels = vec!["".into(), "self-hosted".into(), "".into(), "linux".into()];
+    args.labels = vec![
+        String::new(),
+        "self-hosted".into(),
+        String::new(),
+        "linux".into(),
+    ];
     let rc = cmd_add(
         &config_path,
         &paths,
@@ -1072,10 +1074,7 @@ fn cli_rejects_removed_plan_flag_refresh_releases() {
     // the flag back even though it's not implemented" change
     // fails CI.
     let r = Cli::try_parse_from(["ghars", "plan", "--refresh-releases"]);
-    assert!(
-        r.is_err(),
-        "plan --refresh-releases must be rejected"
-    );
+    assert!(r.is_err(), "plan --refresh-releases must be rejected");
 }
 
 #[test]
@@ -1087,10 +1086,7 @@ fn cli_rejects_removed_plan_flag_output_dir() {
 #[test]
 fn cli_rejects_removed_apply_flag_refresh_releases() {
     let r = Cli::try_parse_from(["ghars", "apply", "--refresh-releases"]);
-    assert!(
-        r.is_err(),
-        "apply --refresh-releases must be rejected"
-    );
+    assert!(r.is_err(), "apply --refresh-releases must be rejected");
 }
 
 // ---------- exit-code precedence -----------------------------------
@@ -1100,8 +1096,6 @@ fn cli_rejects_removed_apply_flag_refresh_releases() {
 // applies `detailed_exitcode_recreate = false` so the
 // 2-flag-arity tests stay terse; recreate-flag tests call
 // `apply_exit_code` with all three args inline.
-
-
 
 #[test]
 fn exit_code_partial_failure_beats_auth_only() {
@@ -1262,10 +1256,6 @@ fn exit_code_detailed_does_not_affect_failure_paths() {
 }
 
 // ---------- status_exit_code ---------------------------------------
-
-
-
-
 
 #[test]
 fn status_exit_code_zero_when_all_pass() {
@@ -1523,17 +1513,17 @@ fn cmd_status_runners_only_propagates_config_parse_error() {
     );
 }
 
-/// cmd_status calls load_config which runs the
-/// full post-load validator sweep. Pre-batch-18, cmd_status only
-/// got validate_networks via load_config — the other 4 validators
-/// (security_overrides, identity_fields, no_duplicate_caches,
-/// cache_pool_names) were wired into cmd_validate / cmd_plan /
-/// cmd_apply individually but NOT cmd_status. An oversize pool key
+/// `cmd_status` calls `load_config` which runs the
+/// full post-load validator sweep. Pre-batch-18, `cmd_status` only
+/// got `validate_networks` via `load_config` — the other 4 validators
+/// (`security_overrides`, `identity_fields`, `no_duplicate_caches`,
+/// `cache_pool_names`) were wired into `cmd_validate` / `cmd_plan` /
+/// `cmd_apply` individually but NOT `cmd_status`. An oversize pool key
 /// would slip past `ghars status` and only fail later at apply.
 /// This test pins that the lift fixed the gap end-to-end via the
-/// public cmd_status surface.
+/// public `cmd_status` surface.
 ///
-/// runners_only=true skips D-Bus (no MockSystemd needed) — config
+/// `runners_only=true` skips D-Bus (no `MockSystemd` needed) — config
 /// load (with validators) is the only thing exercised before the
 /// state-discovery branch.
 #[test]
@@ -1603,7 +1593,7 @@ size = \"200G\"
 /// is wired into `load_config`. Symmetric to
 /// `cmd_status_rejects_oversize_cache_pool_via_load_config` —
 /// proves the lift covers the runner-name surface end-to-end via
-/// the public CLI rather than relying on cmd_validate / cmd_apply
+/// the public CLI rather than relying on `cmd_validate` / `cmd_apply`
 /// individually.
 #[test]
 fn cmd_status_rejects_oversize_runner_name_via_load_config() {
@@ -1746,7 +1736,7 @@ trust_zone = \"audited\\nInjected=stuff\"
 
 /// End-to-end: a `[cache_pools.NAME] trust_zone` containing
 /// a control character (here `\r`) must reject through `cmd_status`.
-/// Symmetric to the runner-scoped trust_zone test above —
+/// Symmetric to the runner-scoped `trust_zone` test above —
 /// `validate_identity_fields` walks both `cfg.runners` and
 /// `cfg.cache_pools`, so the e2e gate must cover both surfaces.
 #[test]
@@ -1807,18 +1797,18 @@ trust_zone = \"audited\\rsmuggled\"
 }
 
 /// End-to-end happy path: `cmd_status` ACCEPTS a config whose
-/// trust_zone fields are clean (no control chars). Pins the
+/// `trust_zone` fields are clean (no control chars). Pins the
 /// negative — without it, a future regression that always rejects
-/// trust_zone (e.g. validator misuse) would only fail the rejection
+/// `trust_zone` (e.g. validator misuse) would only fail the rejection
 /// tests above as "no error fired", which is symmetric ambiguity.
-/// Asserts cmd_status returns Ok (with --runners-only the D-Bus
-/// path is skipped, so no live systemd is needed) and the trust_zone
-/// values pass through validate_identity_fields unaltered.
+/// Asserts `cmd_status` returns Ok (with --runners-only the D-Bus
+/// path is skipped, so no live systemd is needed) and the `trust_zone`
+/// values pass through `validate_identity_fields` unaltered.
 ///
 /// rc=1 (no preflight check ran the runners-only path through it)
 /// is the expected return when the discovered state has no runners
-/// matching the empty filter; the load_config gate is what we
-/// pin here (Ok return ≡ load_config accepted).
+/// matching the empty filter; the `load_config` gate is what we
+/// pin here (Ok return ≡ `load_config` accepted).
 #[test]
 fn cmd_status_accepts_clean_trust_zone_via_load_config() {
     let tmp = tempfile::tempdir().unwrap();
@@ -1871,9 +1861,9 @@ trust_zone = \"audited\"
 }
 
 /// End-to-end: a `[[runner]] trust_zone` longer than
-/// TRUST_ZONE_MAX_LEN must reject through `cmd_status` because
+/// `TRUST_ZONE_MAX_LEN` must reject through `cmd_status` because
 /// `validate_trust_zone_lengths` is wired into `load_config`.
-/// Pins that the lift covers the trust_zone length surface
+/// Pins that the lift covers the `trust_zone` length surface
 /// end-to-end via the public CLI.
 #[test]
 fn cmd_status_rejects_oversize_runner_trust_zone_via_load_config() {
@@ -1936,7 +1926,7 @@ trust_zone = \"{oversize_tz}\"
 }
 
 /// End-to-end: a `[cache_pools.NAME] trust_zone` longer than
-/// TRUST_ZONE_MAX_LEN must reject through `cmd_status`. Sister
+/// `TRUST_ZONE_MAX_LEN` must reject through `cmd_status`. Sister
 /// to the runner-side e2e test — the validator walks both
 /// surfaces and the cap applies symmetrically.
 #[test]
@@ -1998,9 +1988,9 @@ trust_zone = \"{oversize_tz}\"
 /// must reject through `cmd_status` because `validate_runner_tarballs`
 /// is the 8th post-load validator wired into `load_config`. Symmetric
 /// to the runner-name / cache-pool end-to-end tests above —
-/// proves the lift covers the operator-supplied runner_tarball
-/// surface so cmd_validate / cmd_plan / cmd_apply / cmd_status /
-/// cmd_add all share the same gate.
+/// proves the lift covers the operator-supplied `runner_tarball`
+/// surface so `cmd_validate` / `cmd_plan` / `cmd_apply` / `cmd_status` /
+/// `cmd_add` all share the same gate.
 ///
 /// The validator's lstat path is the gate: a non-existent path
 /// returns `validation()` from `validators::validate_runner_tarball`
@@ -2229,8 +2219,8 @@ runner_tarball = \"{}\"
 /// failure surfaces as an opaque `RTNETLINK answers: Numerical
 /// result out of range` from `ip link add` during apply.
 ///
-/// Uses runners_only=true to skip state.discover (which needs
-/// D-Bus) — load_config is the only code path under test here.
+/// Uses `runners_only=true` to skip state.discover (which needs
+/// D-Bus) — `load_config` is the only code path under test here.
 #[test]
 fn cmd_status_rejects_oversize_netns_runner_name_via_load_config() {
     let tmp = tempfile::tempdir().unwrap();
@@ -2423,15 +2413,14 @@ auth = \"pat\"
     // which needs D-Bus access. This test is about the validators
     // accepting the config, not about cmd_status's full flow.
     let cfg_path = config_path;
-    load_config(&cfg_path).expect(
-        "8-char runner name in Open mode must pass all validators (no IFNAMSIZ exposure)",
-    );
+    load_config(&cfg_path)
+        .expect("8-char runner name in Open mode must pass all validators (no IFNAMSIZ exposure)");
 }
 
 /// Contract pin: the netns gate (= 7) is ADDITIONAL only for
 /// Netns-mode runners — it MUST NOT retroactively tighten the
 /// global runner-name cap on Open mode. A regression that
-/// applied `NETNS_RUNNER_NAME_MAX_LEN` in load_config's
+/// applied `NETNS_RUNNER_NAME_MAX_LEN` in `load_config`'s
 /// runner-name check (instead of the surface-bound
 /// `IDENTIFIER_MAX_LEN`) would silently break every operator on
 /// Open mode.
@@ -2476,7 +2465,7 @@ auth = \"pat\"
 /// expanded instance name exceeds `NETNS_RUNNER_NAME_MAX_LEN` MUST
 /// reject. The expanded shape is `{prefix}-{i}` for `i in 1..=N`,
 /// so the worst case is `prefix.len() + 1 + count.to_string().len()`.
-/// With NETNS_RUNNER_NAME_MAX_LEN = 7, prefix len 5 + count digits
+/// With `NETNS_RUNNER_NAME_MAX_LEN` = 7, prefix len 5 + count digits
 /// 2 + the literal '-' = 8 chars, one over the cap.
 #[test]
 fn cmd_status_rejects_netns_count_block_with_expanded_oversize() {
@@ -2793,8 +2782,7 @@ fn cmd_status_health_only_still_loads_config() {
 
 #[test]
 fn argv_init_takes_optional_output_override() {
-    let cli =
-        Cli::try_parse_from(["ghars", "init", "--output", "/etc/ghars/foo.toml"]).unwrap();
+    let cli = Cli::try_parse_from(["ghars", "init", "--output", "/etc/ghars/foo.toml"]).unwrap();
     match cli.command {
         Command::Init(args) => {
             assert_eq!(
@@ -2903,8 +2891,8 @@ fn argv_metrics_defaults() {
 
 #[test]
 fn argv_metrics_json_no_total_with_names() {
-    let cli = Cli::try_parse_from(["ghars", "metrics", "buckos,ktstr", "--json", "--no-total"])
-        .unwrap();
+    let cli =
+        Cli::try_parse_from(["ghars", "metrics", "buckos,ktstr", "--json", "--no-total"]).unwrap();
     match cli.command {
         Command::Metrics(args) => {
             assert_eq!(args.names, vec!["buckos".to_owned(), "ktstr".to_owned()]);
@@ -2961,9 +2949,8 @@ fn argv_hidden_netns_teardown_requires_instance() {
 fn argv_hidden_netns_veth_passes_program_args_through() {
     // trailing_var_arg + allow_hyphen_values is the contract for
     // `ghars _netns-veth INST -- /usr/sbin/ip -4 addr`.
-    let cli =
-        Cli::try_parse_from(["ghars", "_netns-veth", "ci-1", "/usr/sbin/ip", "-4", "addr"])
-            .unwrap();
+    let cli = Cli::try_parse_from(["ghars", "_netns-veth", "ci-1", "/usr/sbin/ip", "-4", "addr"])
+        .unwrap();
     match cli.command {
         Command::NetnsVeth { instance, program } => {
             assert_eq!(instance, "ci-1");
@@ -3036,7 +3023,7 @@ fn argv_global_verbose_count_three_v_flags() {
 /// changed the clap action from `Count` to `SetTrue` would still
 /// pass the -vv/-vvv tests (clap-derive's `Count` collapses
 /// repeated short flags) but silently break the single-flag case
-/// because SetTrue stores 1 only on first occurrence.
+/// because `SetTrue` stores 1 only on first occurrence.
 #[test]
 fn argv_global_verbose_count_single_v_flag() {
     let cli = Cli::try_parse_from(["ghars", "-v", "plan"]).unwrap();
@@ -3114,9 +3101,8 @@ fn verbose_to_filter_level_high_verbose_counts_saturate_at_trace() {
 
 // ---------- render_plan + render_action_line all variants ---------
 
-
 /// Build a recreate-class `RunnerDelta` with the given name +
-/// recreate_reasons. All other fields default to the same values
+/// `recreate_reasons`. All other fields default to the same values
 /// callers would otherwise inline. Use for any recreate-class
 /// `UpdateRunner` test fixture where only name + reasons matter.
 

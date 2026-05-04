@@ -465,7 +465,7 @@ impl DbusSystemd {
     /// Construct the Properties proxy for `unit`'s object path and
     /// call `Properties.Get(interface, property)`. Used by every typed
     /// accessor so the D-Bus boilerplate (path resolution +
-    /// proxy construction + InvalidArgs error formatting) stays in
+    /// proxy construction + `InvalidArgs` error formatting) stays in
     /// one place.
     fn fetch_property(&self, unit: &str, interface: &str, property: &str) -> Result<OwnedValue> {
         let path = self.unit_path(unit)?;

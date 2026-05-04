@@ -126,7 +126,7 @@ pub(super) fn cfg_source_default() -> String {
 /// fake digest so the rendered 00-ghars.conf carries a
 /// `[Service] X-Ghars-Runsvc-Sha256=` line. This mirrors the
 /// post-install steady state that `discover` would observe in
-/// production (apply.rs::execute_create_runner records the
+/// production (`apply.rs::execute_create_runner` records the
 /// digest after config.sh writes runsvc.sh; subsequent
 /// `discover` reads the annotation back). Without this default,
 /// every fixture-built in-place test would trip the
@@ -134,7 +134,7 @@ pub(super) fn cfg_source_default() -> String {
 /// reason of `runsvc_integrity` rather than the in-place
 /// behavior the test is actually exercising. Tests that
 /// SPECIFICALLY want to exercise the missing-annotation path
-/// (e.g. plan_update_recreate_on_runsvc_integrity_when_annotation_missing)
+/// (e.g. `plan_update_recreate_on_runsvc_integrity_when_annotation_missing`)
 /// build the fixture with a different shape.
 pub(super) fn discovered_for(
     name: &str,
@@ -164,7 +164,7 @@ pub(super) fn discovered_for(
 pub(super) fn anns_with(url: &str, runner_version: Option<&str>) -> DiscoveredAnnotations {
     DiscoveredAnnotations {
         url: Some(url.into()),
-        runner_version: runner_version.map(|v| v.into()),
+        runner_version: runner_version.map(std::convert::Into::into),
         ..DiscoveredAnnotations::default()
     }
 }

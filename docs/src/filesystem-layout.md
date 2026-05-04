@@ -47,7 +47,7 @@ Helpers on `Paths` (every helper here is `#[must_use]`):
 The runner template (`ghars-runner@.service`) is canonical and
 shared. Per-runner variation lives in
 `<unit_dir>/ghars-runner@NAME.service.d/*.conf`. The renderer
-(`render_runner_unit` in `systemd.rs`) emits these basenames in
+(`render_runner_unit` in `systemd/units.rs`) emits these basenames in
 order, each behind a "is the operator using this feature?" gate:
 
 | basename                | always emitted?                          | content                                                              |
@@ -105,7 +105,7 @@ runner home as a regular file (not a symlink — the trampoline
 opens the path with `O_NOFOLLOW`, which would `ELOOP` on a
 symlink):
 
-```
+```text
 /var/lib/ghars/default/ghars-build-1/
 ├── bin.2.334.0/                 # current version's extracted tree
 │   ├── config.sh

@@ -19,9 +19,9 @@
 //!    the `requires_recreate` policy (Part 3).
 //!
 //! Per Part 8, `apply::sort_into_phases` re-orders the emitted actions
-//! into the canonical execution order (CreateCachePool → UpdateCachePool
-//! → RemoveRunner → UpdateRunner-inplace → UpdateRunner-recreate →
-//! CreateRunner → RemoveCachePool → NoOp). plan_from itself emits in
+//! into the canonical execution order (`CreateCachePool` → `UpdateCachePool`
+//! → `RemoveRunner` → UpdateRunner-inplace → UpdateRunner-recreate →
+//! `CreateRunner` → `RemoveCachePool` → `NoOp`). `plan_from` itself emits in
 //! alphabetical name order — apply owns phase ordering, plan owns
 //! per-name determinism.
 

@@ -32,7 +32,7 @@ pub struct ApplyOptions {
 }
 
 /// What happened when a single action ran. Lifted out of [`super::orchestrator::apply`]
-/// so cmd_apply can render a per-action
+/// so `cmd_apply` can render a per-action
 /// `ok: LABEL [disruption] (detail)` line for every successful or
 /// skipped action, AND a per-action
 /// `fail: LABEL [disruption] (error)` line for every failed action.
@@ -44,7 +44,7 @@ pub struct ApplyOptions {
 /// [`crate::plan::Action::disruption`]):
 /// - [`Self::InPlaceSkipped`]      → [`crate::plan::Disruption::None`]
 ///   at apply time. Plan reports `Restart` (cannot predict the
-///   byte-equality short-circuit at apply.rs::execute_update_runner).
+///   byte-equality short-circuit at `apply.rs::execute_update_runner`).
 /// - [`Self::InPlaceRestarted`]    → [`crate::plan::Disruption::Restart`]
 /// - [`Self::Recreated`]           → [`crate::plan::Disruption::Recreate`]
 ///   (single combined outcome — the inner `execute_remove_runner` +
@@ -56,7 +56,7 @@ pub struct ApplyOptions {
 /// - [`Self::PoolUpdated`]         → [`crate::plan::Disruption::Restart`]
 /// - [`Self::PoolSkipped`]         → [`crate::plan::Disruption::None`]
 ///   at apply time. Plan reports `Restart` (cannot predict the
-///   byte-equality short-circuit at apply.rs::execute_update_cache_pool).
+///   byte-equality short-circuit at `apply.rs::execute_update_cache_pool`).
 ///   Symmetric with [`Self::InPlaceSkipped`] for the runner-side path
 ///   but applies to `UpdateCachePool`.
 /// - [`Self::PoolRemoved`]         → [`crate::plan::Disruption::Recreate`]
@@ -169,7 +169,7 @@ pub enum ApplyOutcome {
     PoolRemoved,
     /// `Action::NoOp` — the planner emitted "in sync" for this
     /// runner / pool; no host mutation scheduled. Carried into
-    /// `details` so cmd_apply can render every action with a row,
+    /// `details` so `cmd_apply` can render every action with a row,
     /// even no-ops.
     NoOp,
     /// `apply` was invoked with `ApplyOptions::dry_run = true`. The
@@ -183,7 +183,7 @@ pub enum ApplyOutcome {
     /// Vec. The full [`GharsError`] chain for the same action is
     /// preserved on [`ApplyResult::failed`] for callers that need
     /// the typed error (programmatic consumers, exit-code mapping,
-    /// rollback advisories). cmd_apply renders the row to stderr
+    /// rollback advisories). `cmd_apply` renders the row to stderr
     /// to keep the stdout/stderr split.
     Failed {
         /// Display string of the underlying [`GharsError`] (the
@@ -199,7 +199,7 @@ pub enum ApplyOutcome {
         /// or other C0/DEL bytes inside `GharsError::to_string()`
         /// can never reach the operator's terminal raw — see the
         /// two construction sites in `apply()` (per-action loop and
-        /// post-loop daemon_reload synthesis). For the unsanitized
+        /// post-loop `daemon_reload` synthesis). For the unsanitized
         /// original bytes (typed [`GharsError`] chain), consult the
         /// corresponding [`ApplyResult::failed`] entry — `failed[i]`
         /// and the i-th `Failed` row in `details` carry the same
@@ -226,7 +226,7 @@ pub enum ApplyOutcome {
 }
 
 impl ApplyOutcome {
-    /// Compact human-readable detail string for cmd_apply's per-action
+    /// Compact human-readable detail string for `cmd_apply`'s per-action
     /// `ok: LABEL (...)` line. The label vocabulary is stable —
     /// downstream operators may grep on these tokens. Mirrors the
     /// per-variant doc-comments above.
@@ -286,10 +286,10 @@ impl ApplyOutcome {
     /// on these tokens. Vocabulary is closed:
     ///
     /// - `"success"` for any successful execution variant
-    ///   (Created, Removed, Recreated, PoolCreated, PoolUpdated,
-    ///   PoolRemoved, InPlaceRestarted)
+    ///   (Created, Removed, Recreated, `PoolCreated`, `PoolUpdated`,
+    ///   `PoolRemoved`, `InPlaceRestarted`)
     /// - `"in-sync"` for byte-equality short-circuits
-    ///   (InPlaceSkipped, PoolSkipped)
+    ///   (`InPlaceSkipped`, `PoolSkipped`)
     /// - `"noop"` for [`Self::NoOp`] (planner emitted in-sync rows)
     /// - `"dry-run"` for [`Self::DryRunSkipped`]
     /// - The full sanitized error string for [`Self::Failed`]
@@ -317,7 +317,7 @@ impl ApplyOutcome {
 
     /// Worst-case [`crate::plan::Disruption`] this outcome inflicts.
     /// Mirrors the plan-time mapping at
-    /// [`crate::plan::Action::disruption`] so cmd_apply can render
+    /// [`crate::plan::Action::disruption`] so `cmd_apply` can render
     /// the same `[restart]` / `[recreate]` / `[none]` bracket tag
     /// the plan output uses. Operator grep on
     /// `[recreate]` in apply output now matches the same vocabulary
@@ -383,18 +383,18 @@ pub struct ApplyResult {
     /// programmatic consumers.
     pub failed: Vec<(String, GharsError)>,
     /// Action labels that were not executed (e.g. `Action::NoOp`
-    /// variants and dry-run-skipped actions; fail_fast short-circuit
+    /// variants and dry-run-skipped actions; `fail_fast` short-circuit
     /// leaves later actions absent from ALL Vecs — they were never
     /// processed). See [`Self::details`] for the unified per-action
     /// rendering source.
     pub skipped: Vec<String>,
     /// `(label, outcome)` rows in execution order — one entry per
-    /// action processed by the apply loop (including NoOp,
+    /// action processed by the apply loop (including `NoOp`,
     /// dry-run-skipped, AND failed). "Execution order" because the
     /// loop walks the post-`sort_into_phases` slice (Part 8 phase
-    /// order: CreateCachePool → UpdateCachePool → RemoveRunner →
-    /// UpdateRunner → CreateRunner → RemoveCachePool), NOT plan-emit
-    /// order. Actions that the loop never reached (fail_fast
+    /// order: `CreateCachePool` → `UpdateCachePool` → `RemoveRunner` →
+    /// `UpdateRunner` → `CreateRunner` → `RemoveCachePool`), NOT plan-emit
+    /// order. Actions that the loop never reached (`fail_fast`
     /// short-circuit) are absent from this Vec — they were not
     /// processed.
     ///
@@ -403,11 +403,11 @@ pub struct ApplyResult {
     /// rows alongside their successful / skipped peers that were
     /// processed. The full [`GharsError`] chain for the same
     /// action is also preserved on [`Self::failed`] for programmatic
-    /// consumers (typed-error access, exit-code mapping). cmd_apply
+    /// consumers (typed-error access, exit-code mapping). `cmd_apply`
     /// walks `details` to render every processed action's row
     /// uniformly; success rows go to stdout (`ok: LABEL ...`),
     /// failure rows go to stderr (`fail: LABEL ...`) so the
-    /// stdout/stderr grep split is preserved. NoOp actions render as
+    /// stdout/stderr grep split is preserved. `NoOp` actions render as
     /// `noop: REASON [none]` on stdout (not `ok: LABEL`) — the
     /// label already carries `NoOp(REASON)`, so the verbose form
     /// would double-tag the reason. Additive alongside the existing
@@ -415,19 +415,19 @@ pub struct ApplyResult {
     pub details: Vec<(String, ApplyOutcome)>,
     /// `(label, recorded_steps)` rows — one entry per failed action,
     /// carrying the [`super::undo::UndoLog`]'s recorded mutations in insertion
-    /// order (the per-action mutation manifest). cmd_apply walks
+    /// order (the per-action mutation manifest). `cmd_apply` walks
     /// these to render the rollback-state advisory on stderr,
     /// telling the operator what happened on disk before the action
     /// errored. Empty Vec for actions that errored before recording
     /// any step — and for the synthetic `daemon_reload` post-loop
-    /// failure, which has no per-action UndoLog (the error is
-    /// emitted after every action's UndoLog is dropped).
+    /// failure, which has no per-action `UndoLog` (the error is
+    /// emitted after every action's `UndoLog` is dropped).
     ///
     /// Additive alongside [`Self::failed`] so older consumers
     /// compile unchanged. The ordering invariant is preserved:
     /// `failed[i].0 == failed_undo_logs[i].0` for every `i`. The
     /// advisory rendering is policy-only — apply layer is data-only,
-    /// rendering lives in cli.rs cmd_apply per layering.
+    /// rendering lives in cli.rs `cmd_apply` per layering.
     pub failed_undo_logs: Vec<(String, Vec<UndoStep>)>,
 }
 

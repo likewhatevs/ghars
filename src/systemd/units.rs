@@ -9,7 +9,7 @@
 //! - Defense-in-depth identity field validator:
 //!   [`check_identity_field`].
 //! - Internal `HardeningProfile` and `render_*` helpers
-//!   (memory, hardening, cache_pool, resolv_bind, network, numa,
+//!   (memory, hardening, `cache_pool`, `resolv_bind`, network, numa,
 //!   proxy, hooks, lognamespace).
 //!
 //! All renderers are pure functions: no D-Bus, no filesystem.
@@ -564,12 +564,12 @@ pub fn render_runner_unit(spec: &EffectiveRunnerSpec) -> Result<RenderedUnit> {
 ///   `config_source` value.
 ///
 /// The error message itself is bare (no caller-site prefix). The
-/// render_identity caller (this file, just below) wraps with
+/// `render_identity` caller (this file, just below) wraps with
 /// `"render_identity:"` so plan-time render errors name the
 /// rejecting function. The cli.rs caller wraps with the offending
 /// block name (`runner "NAME":` / `cache_pool "NAME":`); the
-/// plan.rs caller propagates the bare error (config_source is
-/// composed from paths.config_dir, no operator-meaningful scope to
+/// plan.rs caller propagates the bare error (`config_source` is
+/// composed from `paths.config_dir`, no operator-meaningful scope to
 /// prepend). Hardcoding `"render_identity:"` here would mislead
 /// operators when the rejection actually fires at config-load time.
 pub(crate) fn check_identity_field(field: &str, value: &str) -> Result<()> {
@@ -986,20 +986,20 @@ fn render_hardening(
     // who want to *narrow* the bind-readonly set must use a
     // 99-*.conf operator drop-in (which the validator does NOT
     // police).
-    if let Some(paths) = &h.bind_readonly_paths {
-        if !paths.is_empty() {
-            // Emit the operator's chosen entries on one
-            // BindReadOnlyPaths= line. Multiple assignments would
-            // also append; one line is the deterministic form. The
-            // generator's branch above filters out the empty case,
-            // so the reset-on-empty rule is never violated here.
-            let joined = paths
-                .iter()
-                .map(|p| p.as_str())
-                .collect::<Vec<_>>()
-                .join(" ");
-            let _ = writeln!(s, "BindReadOnlyPaths={joined}");
-        }
+    if let Some(paths) = &h.bind_readonly_paths
+        && !paths.is_empty()
+    {
+        // Emit the operator's chosen entries on one
+        // BindReadOnlyPaths= line. Multiple assignments would
+        // also append; one line is the deterministic form. The
+        // generator's branch above filters out the empty case,
+        // so the reset-on-empty rule is never violated here.
+        let joined = paths
+            .iter()
+            .map(|p| p.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let _ = writeln!(s, "BindReadOnlyPaths={joined}");
     }
     if !h.extra_bind_paths.is_empty() {
         let joined = h
@@ -1329,7 +1329,8 @@ fn render_hooks(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
                          BindReadOnlyPaths=/ would expose the entire host"
                     ),
                     "place the hook under a dedicated subdirectory \
-                     (e.g. /usr/local/lib/ghars-hooks/<name>.sh)".into(),
+                     (e.g. /usr/local/lib/ghars-hooks/<name>.sh)"
+                        .into(),
                 ));
             }
             if !parents.contains(&parent_str) {
@@ -1561,13 +1562,9 @@ mod tests {
         // and a missing drop-in is a fail-fast condition at unit-start
         // rather than ENOENT inside the trampoline.
         let t = runner_template_text();
-        assert!(t.contains(
-            "\nBindReadOnlyPaths=/etc/systemd/system/ghars-runner@%i.service.d\n"
-        ));
+        assert!(t.contains("\nBindReadOnlyPaths=/etc/systemd/system/ghars-runner@%i.service.d\n"));
         // Defense in depth: ensure no `-` prefix accidentally landed.
-        assert!(!t.contains(
-            "BindReadOnlyPaths=-/etc/systemd/system/ghars-runner@%i.service.d"
-        ));
+        assert!(!t.contains("BindReadOnlyPaths=-/etc/systemd/system/ghars-runner@%i.service.d"));
     }
 
     #[test]
@@ -1715,8 +1712,8 @@ mod tests {
         assert_render_identity_rejects(&spec, "caches[].name", "newline", '\n');
     }
 
-    /// Positive path: a clean minimal_spec MUST render without error.
-    /// Without this pin, a buggy check_identity_field that rejects
+    /// Positive path: a clean `minimal_spec` MUST render without error.
+    /// Without this pin, a buggy `check_identity_field` that rejects
     /// every input (e.g. inverted condition) would only show up on
     /// the rejection tests — and they'd all pass, masking the bug.
     #[test]
@@ -1735,7 +1732,7 @@ mod tests {
     /// Empty `caches` MUST emit `X-Ghars-Caches=` with
     /// an empty value, NOT skip the line. The classifier
     /// distinguishes `Some(vec![])` (line present, empty value) from
-    /// `None` (line absent) — see DiscoveredAnnotations docstring.
+    /// `None` (line absent) — see `DiscoveredAnnotations` docstring.
     /// Without an unconditional emit, a runner whose caches list
     /// shrinks from `["pool-a"]` → `[]` would have no on-disk record
     /// of the prior membership, so `apply.rs` could not compute a
@@ -1794,10 +1791,10 @@ mod tests {
         );
     }
 
-    /// Propagation: render_runner_unit must surface the
+    /// Propagation: `render_runner_unit` must surface the
     /// `check_identity_field` error verbatim (it's not swallowed
     /// or wrapped with a layer that obscures the offending field).
-    /// The error must still name "render_identity" so an operator
+    /// The error must still name "`render_identity`" so an operator
     /// reading stderr can pinpoint the rejecting function.
     #[test]
     fn render_runner_unit_propagates_check_identity_field_error() {
@@ -1813,8 +1810,8 @@ mod tests {
     }
 
     /// Fail-fast ordering: when MULTIPLE fields are bad, the
-    /// FIRST validated field surfaces — render_identity validates
-    /// in order (spec_hash, name, url, auth_name, ...) and the `?`
+    /// FIRST validated field surfaces — `render_identity` validates
+    /// in order (`spec_hash`, name, url, `auth_name`, ...) and the `?`
     /// short-circuits on the first failure. Pin that order: a bad
     /// `url` AND bad `name` MUST report `url` (validated earlier),
     /// not `name`.
@@ -2015,7 +2012,7 @@ mod tests {
     /// (`Utf8PathBuf` is a UTF-8 wrapper, not a control-char filter)
     /// interpolated into `Environment=ACTIONS_RUNNER_HOOK_JOB_STARTED=`
     /// and `BindReadOnlyPaths=` lines. A newline would split the env
-    /// value or escape into a separate BindReadOnlyPaths directive.
+    /// value or escape into a separate `BindReadOnlyPaths` directive.
     #[test]
     fn render_hooks_rejects_newline_in_pre_job_path() {
         let mut spec = minimal_spec();

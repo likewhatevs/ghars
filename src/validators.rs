@@ -40,12 +40,12 @@ pub(crate) const RUNNER_USER_PREFIX: &str = "ghars-";
 pub(crate) const SYSTEMD_USER_GROUP_NAME_MAX: usize = 31;
 
 /// Prefix that systemd's `User=` directive carries for every ghars
-/// runner / cache-server unit under the DynamicUser model:
+/// runner / cache-server unit under the `DynamicUser` model:
 /// `User=ghars-tz-<TRUST_ZONE>`. Centralized so [`TRUST_ZONE_MAX_LEN`]
 /// derives from `prefix.len()` rather than a hand-counted constant.
 pub(crate) const TRUST_ZONE_USER_PREFIX: &str = "ghars-tz-";
 
-/// Largest `trust_zone` whose rendered DynamicUser identity
+/// Largest `trust_zone` whose rendered `DynamicUser` identity
 /// `ghars-tz-<TRUST_ZONE>` still fits
 /// [`SYSTEMD_USER_GROUP_NAME_MAX`].
 ///
@@ -53,8 +53,7 @@ pub(crate) const TRUST_ZONE_USER_PREFIX: &str = "ghars-tz-";
 /// surfaces a scoped error (`runner "NAME":` / `cache_pool "NAME":`)
 /// before any unit starts, instead of an opaque systemd
 /// `valid_user_group_name` failure during apply.
-pub const TRUST_ZONE_MAX_LEN: usize =
-    SYSTEMD_USER_GROUP_NAME_MAX - TRUST_ZONE_USER_PREFIX.len();
+pub const TRUST_ZONE_MAX_LEN: usize = SYSTEMD_USER_GROUP_NAME_MAX - TRUST_ZONE_USER_PREFIX.len();
 
 // Compile-time underflow guard: if a future edit ever made
 // `TRUST_ZONE_USER_PREFIX.len() >= SYSTEMD_USER_GROUP_NAME_MAX`, the
@@ -68,7 +67,7 @@ const _: () = assert!(SYSTEMD_USER_GROUP_NAME_MAX > TRUST_ZONE_USER_PREFIX.len()
 /// stores network device names in a fixed-width array of this size,
 /// where the last byte is reserved for the trailing NUL — so a NAME's
 /// usable byte length is `IFNAMSIZ - 1` (15 chars). `dev_valid_name`
-/// in `net/core/dev.c` enforces this on every netlink RTM_NEWLINK.
+/// in `net/core/dev.c` enforces this on every netlink `RTM_NEWLINK`.
 /// ghars's per-runner veth interface naming inherits this hard cap.
 pub const IFNAMSIZ: usize = 16;
 
@@ -197,10 +196,10 @@ pub fn validate_identifier(s: &str) -> Result<()> {
 ///
 /// Wrapper over [`validate_identifier`]. The pre-DynamicUser-era
 /// tighter cap that used to layer on top of the identifier check has
-/// been retired: under the current DynamicUser model the per-runner
-/// User= is `ghars-tz-<TRUST_ZONE>` (bounded by trust_zone length, not
+/// been retired: under the current `DynamicUser` model the per-runner
+/// User= is `ghars-tz-<TRUST_ZONE>` (bounded by `trust_zone` length, not
 /// runner name) and the synthesized identifiers that DO embed the
-/// runner name (LogNamespace, StateDirectory, WorkingDirectory) are
+/// runner name (`LogNamespace`, `StateDirectory`, `WorkingDirectory`) are
 /// each bounded well above `IDENTIFIER_MAX_LEN`. Netns-mode runners
 /// face a tighter cap [`NETNS_RUNNER_NAME_MAX_LEN`] enforced separately
 /// by `cli::validate_netns_runner_name_lengths`.
@@ -216,7 +215,7 @@ pub fn validate_runner_name(name: &str) -> Result<()> {
 ///
 /// Wrapper over [`validate_identifier`]. The pre-DynamicUser-era
 /// tighter cap that used to layer on top of the identifier check has
-/// been retired: no per-pool group is created under DynamicUser (see
+/// been retired: no per-pool group is created under `DynamicUser` (see
 /// `apply.rs::execute_create_cache_pool` "No groupadd" comment), and
 /// the surfaces where the pool name appears (the systemd unit instance
 /// `ghars-cache@<pool>.service`, the UDS path
@@ -232,7 +231,7 @@ pub fn validate_cache_pool_name(name: &str) -> Result<()> {
 
 /// Validate a `trust_zone` value's shape and length.
 ///
-/// The rendered DynamicUser identity for every ghars runner /
+/// The rendered `DynamicUser` identity for every ghars runner /
 /// cache-server unit is `User=ghars-tz-<TRUST_ZONE>`. systemd's
 /// strict-mode `valid_user_group_name` rejects any User= name longer
 /// than [`SYSTEMD_USER_GROUP_NAME_MAX`] (31 chars) AND any name
@@ -254,7 +253,7 @@ pub fn validate_cache_pool_name(name: &str) -> Result<()> {
 /// Catching at config-load surfaces a structured error before any
 /// unit starts, instead of an opaque systemd
 /// `valid_user_group_name` failure during apply. Control-char
-/// rejection in the trust_zone string proper is also covered here
+/// rejection in the `trust_zone` string proper is also covered here
 /// (via the identifier shape gate); `check_identity_field` /
 /// `validate_identity_fields` still runs as defense-in-depth at
 /// render time so any future operator-controlled field that flows
@@ -277,9 +276,7 @@ pub fn validate_trust_zone(tz: &str) -> Result<()> {
                  {SYSTEMD_USER_GROUP_NAME_MAX}-char user-name ceiling)",
                 tz.len(),
             ),
-            format!(
-                "shorten the trust_zone to ≤{TRUST_ZONE_MAX_LEN} characters",
-            ),
+            format!("shorten the trust_zone to ≤{TRUST_ZONE_MAX_LEN} characters",),
         ));
     }
     Ok(())
@@ -839,7 +836,7 @@ pub fn normalize_prefix(p: &str) -> String {
 /// the runner's default bounding set, defeats the runner-isolation
 /// invariant the systemd hardening profile is enforcing:
 /// - `CAP_SYS_ADMIN` — superuser-equivalent in practice (mount,
-///   pivot_root, ptrace any task, ioctl on block devices, set hostname,
+///   `pivot_root`, ptrace any task, ioctl on block devices, set hostname,
 ///   ...).
 /// - `CAP_SYS_PTRACE` — ptrace any process the runner UID can reach,
 ///   undermining cross-runner isolation (SEC-28) and per-runner UID
@@ -871,7 +868,7 @@ const DENY_EXTRA_CAPABILITIES: &[&str] = &[
 ///   fingerprinting; a future regression that grew a `read_write`
 ///   bool on the binding would be one config edit from re-enabling
 ///   write access.
-/// - `/sys/kernel/security` — securityfs (SELinux, AppArmor, IMA).
+/// - `/sys/kernel/security` — securityfs (`SELinux`, `AppArmor`, IMA).
 /// - `/proc/sysrq-trigger` — even read-only mount makes the file
 ///   path present, and a misconfigured drop-in could escalate the
 ///   binding to writable.
@@ -1124,18 +1121,18 @@ pub fn validate_hook_script(path: &Utf8Path) -> Result<()> {
     // place hooks under a dedicated subdirectory (e.g.
     // `/usr/local/lib/ghars-hooks/foo.sh`) so the bind targets a
     // narrow tree.
-    if let Some(parent) = path.parent() {
-        if parent.as_str() == "/" || parent.as_str().is_empty() {
-            return Err(validation(
-                format!(
-                    "hook script {path}: parent directory is `/` (SEC-12); \
+    if let Some(parent) = path.parent()
+        && (parent.as_str() == "/" || parent.as_str().is_empty())
+    {
+        return Err(validation(
+            format!(
+                "hook script {path}: parent directory is `/` (SEC-12); \
                      BindReadOnlyPaths=/ would expose the entire host to the runner"
-                ),
-                "place the hook under a dedicated subdirectory \
+            ),
+            "place the hook under a dedicated subdirectory \
                  (e.g. /usr/local/lib/ghars-hooks/<name>.sh) so the \
                  BindReadOnlyPaths bind targets a narrow tree",
-            ));
-        }
+        ));
     }
     let std_path: &Path = path.as_std_path();
     let (_file, meta) = open_no_follow_with_meta(std_path).map_err(|e| {
@@ -1192,9 +1189,7 @@ pub fn validate_hook_script(path: &Utf8Path) -> Result<()> {
     // regardless of file-mode bits, so set[ug]id has no effect.
     if mode & 0o022 != 0 {
         return Err(validation(
-            format!(
-                "hook script {path}: mode {mode:o} has group/world-writable bits set (SEC-12)",
-            ),
+            format!("hook script {path}: mode {mode:o} has group/world-writable bits set (SEC-12)",),
             "chmod go-w <path> so only root can modify the script",
         ));
     }
@@ -1282,12 +1277,12 @@ mod tests {
     /// Pre-WO-S25N, `validate_runner_name` rejected names longer than
     /// the legacy 25-char `RUNNER_NAME_MAX_LEN` holdover cap. The cap
     /// was retired because no synthesized identifier embedding the
-    /// runner name is bounded by it under the current DynamicUser
+    /// runner name is bounded by it under the current `DynamicUser`
     /// model. This test pins that names in the newly-accepted range
     /// (26..=63 chars) PASS — a regression that re-introduced the
     /// 25-char cap (or any sub-IDENTIFIER_MAX_LEN cap) would surface
     /// here. 30 chars is comfortably above the legacy cap and
-    /// comfortably below IDENTIFIER_MAX_LEN.
+    /// comfortably below `IDENTIFIER_MAX_LEN`.
     #[test]
     fn runner_name_accepts_above_legacy_cap() {
         let s = "a".repeat(30);
@@ -1312,7 +1307,8 @@ mod tests {
     #[test]
     fn cache_pool_name_rejects_one_past_identifier_max_len() {
         let s = "a".repeat(IDENTIFIER_MAX_LEN + 1);
-        let err = validate_cache_pool_name(&s).expect_err("must reject one past IDENTIFIER_MAX_LEN");
+        let err =
+            validate_cache_pool_name(&s).expect_err("must reject one past IDENTIFIER_MAX_LEN");
         match err {
             GharsError::Validation(msg, _) => {
                 assert!(
@@ -1343,14 +1339,14 @@ mod tests {
     /// Pre-WO-S25N, `validate_cache_pool_name` rejected pool names
     /// longer than the legacy 19-char `CACHE_POOL_NAME_MAX_LEN`
     /// holdover cap. The cap was retired because no per-pool group is
-    /// created under DynamicUser and the surfaces where the pool name
+    /// created under `DynamicUser` and the surfaces where the pool name
     /// appears (systemd unit instance, UDS path, drop-in dir) are each
     /// bounded well above `IDENTIFIER_MAX_LEN`. This test pins that
     /// pool names in the newly-accepted range (20..=63 chars) PASS — a
     /// regression that re-introduced the 19-char cap (or any
     /// sub-IDENTIFIER_MAX_LEN cap) would surface here. 30 chars is
     /// comfortably above the legacy cap and comfortably below
-    /// IDENTIFIER_MAX_LEN.
+    /// `IDENTIFIER_MAX_LEN`.
     #[test]
     fn cache_pool_name_accepts_above_legacy_cap() {
         let s = "a".repeat(30);
@@ -1360,7 +1356,7 @@ mod tests {
 
     // ---- trust_zone --------------------------------------------------
 
-    /// Single-char trust_zone must pass — exercises the lower
+    /// Single-char `trust_zone` must pass — exercises the lower
     /// boundary. The validator caps length only (control-char
     /// rejection lives in `check_identity_field`), so any 1-char
     /// string is accepted.
@@ -1369,7 +1365,7 @@ mod tests {
         validate_trust_zone("a").expect("single-char trust_zone must pass");
     }
 
-    /// A trust_zone of exactly TRUST_ZONE_MAX_LEN chars MUST pass —
+    /// A `trust_zone` of exactly `TRUST_ZONE_MAX_LEN` chars MUST pass —
     /// the cap is inclusive (the longest accepted, not exclusive).
     /// Pins `>` not `>=` at the comparison site.
     #[test]
@@ -1378,16 +1374,15 @@ mod tests {
         validate_trust_zone(&s).expect("must accept exactly TRUST_ZONE_MAX_LEN");
     }
 
-    /// A trust_zone one char past TRUST_ZONE_MAX_LEN MUST reject.
+    /// A `trust_zone` one char past `TRUST_ZONE_MAX_LEN` MUST reject.
     /// Error message must (a) echo the offending value, (b) contain
-    /// "too long" and the cap class, (c) cite SYSTEMD_USER_GROUP_NAME_MAX
+    /// "too long" and the cap class, (c) cite `SYSTEMD_USER_GROUP_NAME_MAX`
     /// or the User=ghars-tz- prefix so the operator understands the
     /// derivation, and (d) the hint must restate the cap.
     #[test]
     fn trust_zone_rejects_one_past_trust_zone_max_len() {
         let s = "a".repeat(TRUST_ZONE_MAX_LEN + 1);
-        let err = validate_trust_zone(&s)
-            .expect_err("must reject one past TRUST_ZONE_MAX_LEN");
+        let err = validate_trust_zone(&s).expect_err("must reject one past TRUST_ZONE_MAX_LEN");
         match err {
             GharsError::Validation(msg, hint) => {
                 assert!(
@@ -1395,8 +1390,7 @@ mod tests {
                     "msg must echo the offending trust_zone; got: {msg}"
                 );
                 assert!(
-                    msg.contains("too long")
-                        && msg.contains(&TRUST_ZONE_MAX_LEN.to_string()),
+                    msg.contains("too long") && msg.contains(&TRUST_ZONE_MAX_LEN.to_string()),
                     "msg must name the cap class and value; got: {msg}"
                 );
                 assert!(
@@ -1415,13 +1409,12 @@ mod tests {
     }
 
     /// Uppercase chars MUST reject through the identifier-shape gate
-    /// BEFORE the trust_zone length check. The rejection message
+    /// BEFORE the `trust_zone` length check. The rejection message
     /// must come from `validate_identifier` ("identifier invalid")
     /// rather than the length-cap "too long" arm.
     #[test]
     fn trust_zone_rejects_uppercase() {
-        let err = validate_trust_zone("Audited")
-            .expect_err("uppercase trust_zone must reject");
+        let err = validate_trust_zone("Audited").expect_err("uppercase trust_zone must reject");
         match err {
             GharsError::Validation(msg, _) => {
                 assert!(
@@ -1440,8 +1433,8 @@ mod tests {
     /// narrower.
     #[test]
     fn trust_zone_rejects_underscore() {
-        let err = validate_trust_zone("audited_zone")
-            .expect_err("underscore trust_zone must reject");
+        let err =
+            validate_trust_zone("audited_zone").expect_err("underscore trust_zone must reject");
         match err {
             GharsError::Validation(msg, _) => {
                 assert!(
@@ -1458,8 +1451,8 @@ mod tests {
     /// charset and would also break systemd's user-name parser.
     #[test]
     fn trust_zone_rejects_space() {
-        let err = validate_trust_zone("audited zone")
-            .expect_err("space-bearing trust_zone must reject");
+        let err =
+            validate_trust_zone("audited zone").expect_err("space-bearing trust_zone must reject");
         match err {
             GharsError::Validation(msg, _) => {
                 assert!(
@@ -1479,8 +1472,8 @@ mod tests {
     /// pool names, trust zones).
     #[test]
     fn trust_zone_rejects_dot() {
-        let err = validate_trust_zone("audited.zone")
-            .expect_err("dot-bearing trust_zone must reject");
+        let err =
+            validate_trust_zone("audited.zone").expect_err("dot-bearing trust_zone must reject");
         match err {
             GharsError::Validation(msg, _) => {
                 assert!(
@@ -1560,7 +1553,7 @@ mod tests {
 
     /// Plant real directories under a `TempDir` so each case opens
     /// a real inode and traverses the `Ok((_file, meta))` arm —
-    /// proving that validate_prefix accepts existing directories,
+    /// proving that `validate_prefix` accepts existing directories,
     /// not merely missing paths. The varied child names (`gha`,
     /// `my_runner`, `runners-1`, `nested/leaf`) cover the
     /// underscore-bearing, hyphen-bearing, and deep-nested shapes
@@ -1635,7 +1628,7 @@ mod tests {
 
     /// FIFO at the prefix path. The shared `open_no_follow_with_meta`
     /// helper sets `O_NONBLOCK`, so opening the FIFO returns an fd
-    /// without blocking on a writer; the fstat-based file_type gate
+    /// without blocking on a writer; the fstat-based `file_type` gate
     /// then rejects it as a non-directory. Without the directory
     /// gate, apply would proceed to mkdir-and-chown under the FIFO
     /// path and either silently corrupt unrelated state or fail with
@@ -1647,8 +1640,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let fifo_path = dir.path().join("fifo-prefix");
         mkfifo(&fifo_path, Mode::S_IRUSR | Mode::S_IWUSR).unwrap();
-        let err = validate_prefix(fifo_path.to_str().unwrap())
-            .expect_err("FIFO must reject");
+        let err = validate_prefix(fifo_path.to_str().unwrap()).expect_err("FIFO must reject");
         let msg = format!("{err}");
         assert!(
             msg.contains("is not a directory"),
@@ -1679,8 +1671,8 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let file_path = dir.path().join("regular-prefix");
         std::fs::write(&file_path, b"").unwrap();
-        let err = validate_prefix(file_path.to_str().unwrap())
-            .expect_err("regular file must reject");
+        let err =
+            validate_prefix(file_path.to_str().unwrap()).expect_err("regular file must reject");
         let msg = format!("{err}");
         assert!(
             msg.contains("is not a directory"),
@@ -1728,7 +1720,7 @@ mod tests {
 
     /// First-time-install workflow: operator runs `ghars validate` on a
     /// brand-new prefix path that does not exist yet (apply will create
-    /// it). The O_NOFOLLOW open returns ENOENT, which validate_prefix
+    /// it). The `O_NOFOLLOW` open returns ENOENT, which `validate_prefix`
     /// must tolerate silently and return Ok. Without this pin, a future
     /// regression that surfaced ENOENT as a validation error would
     /// break the very-first-apply flow without breaking any other test.
@@ -1923,7 +1915,7 @@ mod tests {
     /// `open(O_RDONLY|O_NOFOLLOW)` with `EACCES` (not ELOOP, not
     /// ENOENT). The validator must classify this through the catch-
     /// all arm at validators.rs (the third match branch in the
-    /// `open_no_follow_with_meta` map_err) rather than misreporting
+    /// `open_no_follow_with_meta` `map_err`) rather than misreporting
     /// it as missing or as a symlink. Without this pin, a future
     /// regression that collapsed the catch-all into the ENOENT arm
     /// would tell an operator their readable-but-mode-zero file is
@@ -1951,8 +1943,8 @@ mod tests {
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
             return;
         }
-        let err = validate_runner_tarball(p.to_str().unwrap())
-            .expect_err("unreadable file must error");
+        let err =
+            validate_runner_tarball(p.to_str().unwrap()).expect_err("unreadable file must error");
         let msg = format!("{err}");
         // Restore readable permissions BEFORE assertions so a panic
         // still allows TempDir's Drop to clean up the tree.
@@ -2116,8 +2108,8 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let fifo_path = dir.path().join("pipe.tar.gz");
         mkfifo(&fifo_path, Mode::S_IRUSR | Mode::S_IWUSR).unwrap();
-        let err = validate_runner_tarball(fifo_path.to_str().unwrap())
-            .expect_err("FIFO must reject");
+        let err =
+            validate_runner_tarball(fifo_path.to_str().unwrap()).expect_err("FIFO must reject");
         let msg = format!("{err}");
         assert!(
             msg.contains("regular file"),
@@ -2802,8 +2794,8 @@ mod tests {
         }
         let dir = TempDir::new().unwrap();
         let p = mk_hook(&dir, "ww.sh", b"#!/bin/sh\nexit 0\n", 0o707);
-        let err = validate_hook_script(&p)
-            .expect_err("world-writable hook script must be rejected");
+        let err =
+            validate_hook_script(&p).expect_err("world-writable hook script must be rejected");
         let msg = format!("{err}");
         assert!(
             msg.contains("group/world-writable") && msg.contains("SEC-12"),
@@ -2821,8 +2813,8 @@ mod tests {
         }
         let dir = TempDir::new().unwrap();
         let p = mk_hook(&dir, "gw.sh", b"#!/bin/sh\nexit 0\n", 0o770);
-        let err = validate_hook_script(&p)
-            .expect_err("group-writable hook script must be rejected");
+        let err =
+            validate_hook_script(&p).expect_err("group-writable hook script must be rejected");
         let msg = format!("{err}");
         assert!(
             msg.contains("group/world-writable"),
@@ -2840,8 +2832,7 @@ mod tests {
         }
         let dir = TempDir::new().unwrap();
         let p = mk_hook(&dir, "777.sh", b"#!/bin/sh\nexit 0\n", 0o777);
-        let err = validate_hook_script(&p)
-            .expect_err("mode 0777 hook script must be rejected");
+        let err = validate_hook_script(&p).expect_err("mode 0777 hook script must be rejected");
         let msg = format!("{err}");
         assert!(msg.contains("group/world-writable"), "{msg}");
     }
@@ -2857,8 +2848,7 @@ mod tests {
         }
         let dir = TempDir::new().unwrap();
         let p = mk_hook(&dir, "ok.sh", b"#!/bin/sh\nexit 0\n", 0o755);
-        validate_hook_script(&p)
-            .expect("0755 (g/w readable + executable, NOT writable) must pass");
+        validate_hook_script(&p).expect("0755 (g/w readable + executable, NOT writable) must pass");
     }
 
     #[test]
@@ -2872,8 +2862,7 @@ mod tests {
         // file-existence checks don't reject it before we get to
         // the parent-check, then re-route via a /-parent string.
         let path = camino::Utf8PathBuf::from("/foo.sh");
-        let err = validate_hook_script(&path)
-            .expect_err("hook with parent=`/` must be rejected");
+        let err = validate_hook_script(&path).expect_err("hook with parent=`/` must be rejected");
         let msg = format!("{err}");
         assert!(
             msg.contains("parent directory is `/`") && msg.contains("SEC-12"),

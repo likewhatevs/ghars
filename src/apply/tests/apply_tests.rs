@@ -609,7 +609,7 @@ fn fail_fast_short_circuits_on_first_failure() {
 /// system does not encode the parallel-Vec invariant — a future
 /// refactor that decouples the pushes (e.g. derives `details` from a
 /// separate iteration) could silently drop or duplicate a row,
-/// leaving cmd_apply's `fail:` rendering loop out of sync with the
+/// leaving `cmd_apply`'s `fail:` rendering loop out of sync with the
 /// rollback advisory.
 ///
 /// Synthesizes a 3-failure `ApplyResult` (`fail_fast = false` semantic
@@ -621,7 +621,7 @@ fn fail_fast_short_circuits_on_first_failure() {
 /// Asserts:
 /// 1. Length parity — `failed.len() == details(Failed-filtered).len()`.
 /// 2. Positional alignment — `failed[i].0 == details(Failed-filtered)[i].0`
-///    for every i. cmd_apply's renderer walks `details` in execution
+///    for every i. `cmd_apply`'s renderer walks `details` in execution
 ///    order, so positional equality (NOT just set equality) is
 ///    load-bearing.
 #[test]
@@ -776,7 +776,7 @@ fn cli_apply_args_rollback_on_failure_default_off() {
 /// Pin that `apply()` pushes a `(label, NoOp)` row into
 /// `details` for `Action::NoOp` actions, NOT a Created or other
 /// real-action variant. Defends against a future refactor that
-/// drops the NoOp short-circuit and routes through `execute()`.
+/// drops the `NoOp` short-circuit and routes through `execute()`.
 #[test]
 fn apply_records_noop_action_with_noop_outcome() {
     let tmp = tempfile::tempdir().unwrap();
@@ -815,7 +815,7 @@ fn apply_records_noop_action_with_noop_outcome() {
 /// per-action escape pin at
 /// `apply_failed_error_summary_escapes_hostile_inner_error` —
 /// together they cover the two construction sites in `apply()`
-/// (per-action loop arm + post-loop daemon_reload arm).
+/// (per-action loop arm + post-loop `daemon_reload` arm).
 ///
 /// Drives `apply()` with an EMPTY plan so the per-action loop is a
 /// no-op and `daemon_reload` is the only mutation. `MockSystemd`'s
@@ -912,4 +912,3 @@ fn apply_daemon_reload_error_summary_escapes_hostile_message() {
         "non-control surrounding text must pass through; got: {error_summary}"
     );
 }
-

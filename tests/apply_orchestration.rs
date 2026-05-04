@@ -1,40 +1,42 @@
 //! apply.rs integration tests.
 //!
 //! Coverage focus (paths exercisable from integration-test layer with
-//! the public traits Tarball / ConfigShell + a public Systemd
+//! the public traits Tarball / `ConfigShell` + a public Systemd
 //! mock):
 //!
 //! `execute_create_runner` branch coverage:
 //!   - local tarball path: `spec.runner_tarball.is_some()` skips
-//!     fetch_or_verify, calls `verify_local`.
+//!     `fetch_or_verify`, calls `verify_local`.
 //!   - no-release error: `runner_tarball.is_none()` and
 //!     `resolved_release.is_none()` errors with Validation referencing
-//!     "no runner_tarball and no resolved release".
+//!     "no `runner_tarball` and no resolved release".
 //!   - mint failure: auth registry missing key → `mint_token` errors.
-//!   - config_shell failure: `run_register` fails → propagated.
+//!   - `config_shell` failure: `run_register` fails → propagated.
 //!
 //! `apply()` result accumulation:
 //!   - `fail_fast=false` with multi-failure plan: every failure lands
 //!     in `result.failed`; `result.ok()` is false.
-//!   - `dry_run` skips daemon_reload (already covered in-tree via
+//!   - `dry_run` skips `daemon_reload` (already covered in-tree via
 //!     `dry_run_skips_actions_but_holds_lock`; we add coverage of
-//!     dry_run with non-NoOp actions).
-//!   - daemon_reload failure: appended to `result.failed` with label
-//!     "daemon_reload" and is NOT short-circuited by `fail_fast`.
+//!     `dry_run` with non-NoOp actions).
+//!   - `daemon_reload` failure: appended to `result.failed` with label
+//!     "`daemon_reload`" and is NOT short-circuited by `fail_fast`.
 //!
 //! Note on integration-test reachability: the production
 //! `write_root_owned` calls `fchown(fd, root:root)`. Integration tests
 //! run unprivileged, so any branch that lands on `write_root_owned`
 //! will EPERM at the fchown step. We exercise paths that DO NOT hit
-//! `write_root_owned` (validation errors, mint errors, config_shell
+//! `write_root_owned` (validation errors, mint errors, `config_shell`
 //! errors before the unit-text write) PLUS apply-orchestration paths
-//! whose execute_* errors before write_root_owned (cache pool create
-//! with a systemd that fails on enable_unit, etc.).
+//! whose execute_* errors before `write_root_owned` (cache pool create
+//! with a systemd that fails on `enable_unit`, etc.).
 //!
 //! The in-tree #[cfg(test)] mod tests block in apply.rs covers the
 //! happy paths via `chown_to_root` cfg(test) no-op. These integration
-//! tests cover branches that error BEFORE write_root_owned, which is
+//! tests cover branches that error BEFORE `write_root_owned`, which is
 //! orthogonal coverage.
+
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use camino::{Utf8Path, Utf8PathBuf};
 use chrono::Utc;
@@ -156,6 +158,7 @@ impl Systemd for TestSystemd {
 }
 
 #[derive(Default)]
+#[allow(clippy::struct_field_names)]
 struct TestTarball {
     fail_fetch: Mutex<bool>,
     fail_verify_local: Mutex<bool>,
@@ -401,8 +404,8 @@ fn create_runner_errors_when_auth_registry_missing_key() {
     let config_shell = TestConfigShell::default();
     let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let action = Action::CreateRunner(plan);
-    let err =
-        execute(&action, &d, &paths, &mut UndoLog::new(), 2).expect_err("must error on missing auth");
+    let err = execute(&action, &d, &paths, &mut UndoLog::new(), 2)
+        .expect_err("must error on missing auth");
     let msg = format!("{err}");
     assert!(msg.contains("auth") && msg.contains("pat"), "{msg}");
 }
@@ -428,8 +431,8 @@ fn create_runner_errors_when_token_mint_fails() {
     let config_shell = TestConfigShell::default();
     let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let action = Action::CreateRunner(plan);
-    let err =
-        execute(&action, &d, &paths, &mut UndoLog::new(), 2).expect_err("must error on mint failure");
+    let err = execute(&action, &d, &paths, &mut UndoLog::new(), 2)
+        .expect_err("must error on mint failure");
     assert!(format!("{err}").contains("mint failed"));
 }
 
@@ -971,14 +974,14 @@ fn apply_fail_fast_pushes_failed_and_undo_logs_in_lockstep() {
 /// Directed sibling: post-loop synthetic `daemon_reload` failure
 /// path. All real actions succeed; the tail call to
 /// `deps.systemd.daemon_reload()` errors. apply.rs's synthetic arm
-/// (apply.rs: post-loop) pushes label="daemon_reload" to BOTH
+/// (apply.rs: post-loop) pushes `label="daemon_reload`" to BOTH
 /// `failed` and `failed_undo_logs` — the latter with an empty
 /// `Vec<UndoStep>` because the synthetic step has no per-action
-/// UndoLog (every per-action log was consumed at action-end above).
+/// `UndoLog` (every per-action log was consumed at action-end above).
 /// Pins:
 /// (a) lengths still agree post-synthetic-push;
 /// (b) pair-ordering invariant holds (label strings match);
-/// (c) the synthetic UndoLog Vec is empty (not absent) — load-bearing
+/// (c) the synthetic `UndoLog` Vec is empty (not absent) — load-bearing
 ///     for the advisory's empty-body filter (`failed_undo_logs.iter()
 ///     .filter(|(_, s)| !s.is_empty())`) which strips the synthetic
 ///     row from the rendered cleanup checklist.

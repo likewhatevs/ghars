@@ -1,8 +1,8 @@
-//! Test split part 2: covers merge_defaults bind_readonly_paths
-//! Some(empty) semantics, ParsedUnit comprehensive parser tests, spec_hash
-//! cross-construction / TOML-source / order tests, runsvc_sha256 preservation,
-//! cache pool diff branches + drift_cause + recreate-empties-drop-in-changes,
-//! auth_name in-place contract, caches in-place contract, and hardening Vec
+//! Test split part 2: covers `merge_defaults` `bind_readonly_paths`
+//! Some(empty) semantics, `ParsedUnit` comprehensive parser tests, `spec_hash`
+//! cross-construction / TOML-source / order tests, `runsvc_sha256` preservation,
+//! cache pool diff branches + `drift_cause` + recreate-empties-drop-in-changes,
+//! `auth_name` in-place contract, caches in-place contract, and hardening Vec
 //! canonicalization (3 set-semantic fields). Migrated verbatim from plan.rs.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -106,7 +106,7 @@ fn merge_defaults_bind_readonly_paths_runner_none_inherits_defaults() {
 /// of by value alone. The two paths used here:
 ///   - one with explicit empty-vec defaults
 ///   - one with the same field set on the runner side
-/// Both produce identical `EffectiveRunnerSpec` values; spec_hash
+/// Both produce identical `EffectiveRunnerSpec` values; `spec_hash`
 /// must agree.
 #[test]
 fn spec_hash_path_independent_when_logical_value_matches() {
@@ -296,16 +296,16 @@ labels  = ["alpha", "beta"]
 /// recorded into 00-ghars.conf at apply-time must survive a
 /// subsequent in-place plan/apply cycle. Otherwise the next runner
 /// restart would observe a 00-ghars.conf without the digest, the
-/// runsvc-wrapper trampoline would exit ANNOTATION_MISSING, and
+/// runsvc-wrapper trampoline would exit `ANNOTATION_MISSING`, and
 /// the runner would never start.
 ///
-/// Setup: discovered runner has spec.runsvc_sha256 populated, so
+/// Setup: discovered runner has `spec.runsvc_sha256` populated, so
 /// `discovered_for` renders 00-ghars.conf carrying
 /// `X-Ghars-Runsvc-Sha256=sha256:...`. Desired spec is identical
-/// except memory_max changes (drives an in-place UpdateRunner).
-/// plan_from re-renders the desired drop-ins; the runsvc_sha256
+/// except `memory_max` changes (drives an in-place `UpdateRunner`).
+/// `plan_from` re-renders the desired drop-ins; the `runsvc_sha256`
 /// recovery block in `plan_from`'s (true, true) match arm must
-/// thread the discovered digest into after_spec.runsvc_sha256
+/// thread the discovered digest into `after_spec.runsvc_sha256`
 /// BEFORE re-render (via `extract_runsvc_sha256` +
 /// `with_hash(strip_hash(...))`) so the freshly-emitted
 /// 00-ghars.conf preserves the annotation.
@@ -344,8 +344,7 @@ fn plan_in_place_preserves_runsvc_sha256_in_drop_in() {
         discovered
             .drop_ins
             .get("00-ghars.conf")
-            .map(|b| b.contains(&format!("X-Ghars-Runsvc-Sha256={recorded_digest}")))
-            .unwrap_or(false),
+            .is_some_and(|b| b.contains(&format!("X-Ghars-Runsvc-Sha256={recorded_digest}"))),
         "fixture invariant: discovered 00-ghars.conf must already carry the digest; \
          got body: {:?}",
         discovered.drop_ins.get("00-ghars.conf")
@@ -409,15 +408,11 @@ fn cfg_with_pool(name: &str, kinds: Vec<crate::config::CacheKind>) -> Config {
     cfg
 }
 
-/// Helper: build a DiscoveredCachePool with the given spec_hash +
+/// Helper: build a `DiscoveredCachePool` with the given `spec_hash` +
 /// drop-in body content, and the requested Drift. Matches the
 /// shape produced by `state::discover` for cache-pool drop-in
 /// dirs.
-fn discovered_pool(
-    name: &str,
-    spec_hash: &str,
-    drift: Drift,
-) -> crate::state::DiscoveredCachePool {
+fn discovered_pool(name: &str, spec_hash: &str, drift: Drift) -> crate::state::DiscoveredCachePool {
     let mut drop_ins: BTreeMap<String, String> = BTreeMap::new();
     drop_ins.insert(
         "00-ghars.conf".into(),
@@ -438,9 +433,9 @@ fn discovered_pool(
     }
 }
 
-/// Branch 1: spec_hash matches AND drift InSync ⇒ no
-/// UpdateCachePool / RemoveCachePool emitted (NoOp on the pool
-/// side — plan_from emits no action when both signals are clean).
+/// Branch 1: `spec_hash` matches AND drift `InSync` ⇒ no
+/// `UpdateCachePool` / `RemoveCachePool` emitted (`NoOp` on the pool
+/// side — `plan_from` emits no action when both signals are clean).
 #[test]
 fn plan_cache_pool_in_sync_emits_no_pool_action() {
     let cfg = cfg_with_pool("build", vec![CacheKind::Ccache]);
@@ -476,8 +471,8 @@ fn plan_cache_pool_in_sync_emits_no_pool_action() {
     );
 }
 
-/// Branch 2: spec_hash differs ⇒ UpdateCachePool. Pool drift
-/// stays InSync; the spec_hash mismatch alone drives the action.
+/// Branch 2: `spec_hash` differs ⇒ `UpdateCachePool`. Pool drift
+/// stays `InSync`; the `spec_hash` mismatch alone drives the action.
 #[test]
 fn plan_cache_pool_update_on_spec_hash_change() {
     let cfg = cfg_with_pool("build", vec![CacheKind::Ccache]);
@@ -499,8 +494,8 @@ fn plan_cache_pool_update_on_spec_hash_change() {
     assert_eq!(updates[0].binding.name, "build");
 }
 
-/// Branch 3: spec_hash matches but drift signals DropInsModified
-/// ⇒ UpdateCachePool (the gate is
+/// Branch 3: `spec_hash` matches but drift signals `DropInsModified`
+/// ⇒ `UpdateCachePool` (the gate is
 /// `spec_hash != actual || !pool_in_sync`).
 #[test]
 fn plan_cache_pool_update_on_drift_only() {
@@ -536,7 +531,7 @@ fn plan_cache_pool_update_on_drift_only() {
 }
 
 /// Branch 4: pool present in actual but NOT referenced by any
-/// desired runner ⇒ RemoveCachePool. Pinned by the
+/// desired runner ⇒ `RemoveCachePool`. Pinned by the
 /// `actual.cache_pools` − `desired_pool_names` set difference in
 /// `plan_from`'s cache-pool diffing block.
 #[test]
@@ -562,11 +557,11 @@ fn plan_cache_pool_remove_when_orphan() {
     }
 }
 
-/// drift_cause on UpdateRunner: SpecChanged when hashes differ but
-/// discovered Drift is InSync. Pins the
+/// `drift_cause` on `UpdateRunner`: `SpecChanged` when hashes differ but
+/// discovered Drift is `InSync`. Pins the
 /// `(!hashes_equal, !in_sync)` match arms in `plan_from`'s
 /// intersection branch (the block that emits
-/// `Action::UpdateRunner` after the NoOp short-circuit).
+/// `Action::UpdateRunner` after the `NoOp` short-circuit).
 #[test]
 fn plan_update_runner_drift_cause_spec_changed() {
     let cfg = config_with_runners(vec![{
@@ -604,7 +599,7 @@ fn plan_update_runner_drift_cause_spec_changed() {
     assert_eq!(upd.drift_cause, DriftCause::SpecChanged);
 }
 
-/// drift_cause: DriftDetected when spec_hash matches but discovered
+/// `drift_cause`: `DriftDetected` when `spec_hash` matches but discovered
 /// Drift is non-InSync. Hash equality means no config change;
 /// drift means out-of-band edit. Confirms the `(false, true)`
 /// arm of the `drift_cause` match in `plan_from`.
@@ -647,7 +642,7 @@ fn plan_update_runner_drift_cause_drift_detected() {
     assert_eq!(upd.drift_cause, DriftCause::DriftDetected);
 }
 
-/// drift_cause: SpecChangedAndDriftDetected when BOTH hashes differ
+/// `drift_cause`: `SpecChangedAndDriftDetected` when BOTH hashes differ
 /// AND on-disk drift is non-InSync. Confirms the `(true, true)`
 /// arm of the `drift_cause` match in `plan_from`.
 #[test]
@@ -755,9 +750,9 @@ fn plan_update_runner_recreate_empties_drop_in_changes() {
 /// labels.
 ///
 /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`
-/// (recreate_reasons empty, requires_recreate=false, single
-/// auth_name field_change with expected before/after,
-/// drift_cause=SpecChanged, no auth_kind leakage, Modified
+/// (`recreate_reasons` empty, `requires_recreate=false`, single
+/// `auth_name` `field_change` with expected before/after,
+/// `drift_cause=SpecChanged`, no `auth_kind` leakage, Modified
 /// 00-ghars.conf drop-in entry). See the helper docstring for
 /// the contract.
 #[test]
@@ -786,7 +781,7 @@ fn plan_update_in_place_on_auth_name_change_pat_old_to_pat_new_has_empty_recreat
 /// Same-discriminant pin: both `[auth.NAME]` blocks are
 /// `AuthSpec::Interactive` — the unit variant carries no payload,
 /// so the two blocks are bytewise identical except for their
-/// IndexMap key. The classifier must still treat the auth-name
+/// `IndexMap` key. The classifier must still treat the auth-name
 /// string change as in-place: `merge_defaults` lowers each block
 /// to a bare `EffectiveRunnerSpec.auth_name` string regardless
 /// of discriminant or payload, so the discovered/desired diff is
@@ -798,15 +793,11 @@ fn plan_update_in_place_on_auth_name_change_pat_old_to_pat_new_has_empty_recreat
 /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`.
 #[test]
 fn plan_update_in_place_on_auth_name_change_interactive_old_to_interactive_new_has_empty_recreate_reasons()
-{
+ {
     let mut auth_blocks = IndexMap::new();
     auth_blocks.insert("interactive-old".into(), AuthSpec::Interactive);
     auth_blocks.insert("interactive-new".into(), AuthSpec::Interactive);
-    assert_auth_name_change_is_in_place(
-        auth_blocks,
-        "interactive-old",
-        "interactive-new",
-    );
+    assert_auth_name_change_is_in_place(auth_blocks, "interactive-old", "interactive-new");
 }
 
 /// Same-discriminant pin: both `[auth.NAME]` blocks are
@@ -823,7 +814,7 @@ fn plan_update_in_place_on_auth_name_change_interactive_old_to_interactive_new_h
 /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`.
 #[test]
 fn plan_update_in_place_on_auth_name_change_token_file_old_to_token_file_new_has_empty_recreate_reasons()
-{
+ {
     let mut auth_blocks = IndexMap::new();
     auth_blocks.insert(
         "token-file-old".into(),
@@ -837,11 +828,7 @@ fn plan_update_in_place_on_auth_name_change_token_file_old_to_token_file_new_has
             path: Utf8PathBuf::from("/etc/ghars/reg2.token"),
         },
     );
-    assert_auth_name_change_is_in_place(
-        auth_blocks,
-        "token-file-old",
-        "token-file-new",
-    );
+    assert_auth_name_change_is_in_place(auth_blocks, "token-file-old", "token-file-new");
 }
 
 /// Same-discriminant pin: both `[auth.NAME]` blocks are
@@ -857,7 +844,7 @@ fn plan_update_in_place_on_auth_name_change_token_file_old_to_token_file_new_has
 /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`.
 #[test]
 fn plan_update_in_place_on_auth_name_change_github_app_old_to_github_app_new_has_empty_recreate_reasons()
-{
+ {
     let mut auth_blocks = IndexMap::new();
     auth_blocks.insert(
         "github-app-old".into(),
@@ -875,11 +862,7 @@ fn plan_update_in_place_on_auth_name_change_github_app_old_to_github_app_new_has
             private_key_path: Utf8PathBuf::from("/etc/ghars/app-new.pem"),
         },
     );
-    assert_auth_name_change_is_in_place(
-        auth_blocks,
-        "github-app-old",
-        "github-app-new",
-    );
+    assert_auth_name_change_is_in_place(auth_blocks, "github-app-old", "github-app-new");
 }
 
 /// Shared scaffold for the auth-name in-place sibling tests
@@ -905,17 +888,17 @@ fn plan_update_in_place_on_auth_name_change_github_app_old_to_github_app_new_has
 /// 4. `field_changes` contains an `auth_name` `FieldChange` whose
 ///    `before` matches `FieldValue::String(discovered_auth_name)`
 ///    and `after` matches `FieldValue::String(desired_auth_name)`.
-/// 5. `drift_cause == DriftCause::SpecChanged` — the auth_name
-///    string diff drives a spec_hash mismatch with no on-disk
+/// 5. `drift_cause == DriftCause::SpecChanged` — the `auth_name`
+///    string diff drives a `spec_hash` mismatch with no on-disk
 ///    drift (the discovered drop-in is freshly rendered by
-///    `discovered_for`, so DriftDetected cannot fire).
+///    `discovered_for`, so `DriftDetected` cannot fire).
 /// 6. `auth_kind` does NOT appear in `field_changes` —
-///    `merge_defaults` strips the AuthSpec discriminant when
+///    `merge_defaults` strips the `AuthSpec` discriminant when
 ///    lowering to `EffectiveRunnerSpec.auth_name`, so the
 ///    classifier never observes an `auth_kind` surface and must
 ///    not synthesize one.
 /// 7. `drop_in_changes` contains a `Modified` entry for
-///    `00-ghars.conf` — `render_identity` emits the auth_name
+///    `00-ghars.conf` — `render_identity` emits the `auth_name`
 ///    string into the `X-Ghars-Auth-Name` annotation, so an
 ///    auth-name change always produces an observable drop-in
 ///    diff. A regression that classifies as in-place but skips
@@ -1036,8 +1019,7 @@ fn assert_auth_name_change_is_in_place(
     // 7. 00-ghars.conf drop-in is Modified (X-Ghars-Auth-Name rewrite).
     assert!(
         upd.drop_in_changes.iter().any(|dc| {
-            dc.basename == "00-ghars.conf"
-                && matches!(dc.change, DropInChangeKind::Modified { .. })
+            dc.basename == "00-ghars.conf" && matches!(dc.change, DropInChangeKind::Modified { .. })
         }),
         "auth-name change ({discovered_auth_name} → {desired_auth_name}) must \
          produce Modified 00-ghars.conf drop-in change; got: {:?}",
@@ -1054,7 +1036,7 @@ fn assert_auth_name_change_is_in_place(
 /// name appears on the discovered vs desired side.
 ///
 /// Centralizing the construction keeps the two siblings in lock-
-/// step: if the GithubApp content changes (e.g. private_key_path
+/// step: if the `GithubApp` content changes (e.g. `private_key_path`
 /// moves to a different convention), both directions re-derive
 /// from a single source.
 fn auth_blocks_with_pat_and_github_app() -> IndexMap<String, AuthSpec> {
@@ -1088,9 +1070,9 @@ fn auth_blocks_with_pat_and_github_app() -> IndexMap<String, AuthSpec> {
 /// `AuthSpec` variant.
 ///
 /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`
-/// (recreate_reasons empty, requires_recreate=false, single
-/// auth_name field_change with expected before/after,
-/// drift_cause=SpecChanged, no auth_kind leakage, Modified
+/// (`recreate_reasons` empty, `requires_recreate=false`, single
+/// `auth_name` `field_change` with expected before/after,
+/// `drift_cause=SpecChanged`, no `auth_kind` leakage, Modified
 /// 00-ghars.conf drop-in entry). See the helper docstring for
 /// the contract; this test contributes the same-discriminant
 /// fixture.
@@ -1124,7 +1106,7 @@ fn plan_update_in_place_on_auth_name_change_has_empty_recreate_reasons() {
 /// (the common operator transition: PAT for personal automation
 /// → GitHub App for org-scale rollout). `merge_defaults` lowers
 /// the `[auth.NAME]` block to a bare `auth_name` string, so the
-/// classifier sees a pure auth_name string diff regardless of
+/// classifier sees a pure `auth_name` string diff regardless of
 /// which discriminants the two blocks carry. The same-discriminant
 /// sibling test
 /// `plan_update_in_place_on_auth_name_change_has_empty_recreate_reasons`
@@ -1132,9 +1114,9 @@ fn plan_update_in_place_on_auth_name_change_has_empty_recreate_reasons() {
 /// `github_app → pat` sibling pins the inverse direction.
 ///
 /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`
-/// (recreate_reasons empty, requires_recreate=false, single
-/// auth_name field_change with expected before/after,
-/// drift_cause=SpecChanged, no auth_kind leakage, Modified
+/// (`recreate_reasons` empty, `requires_recreate=false`, single
+/// `auth_name` `field_change` with expected before/after,
+/// `drift_cause=SpecChanged`, no `auth_kind` leakage, Modified
 /// 00-ghars.conf drop-in entry). See the helper docstring for
 /// the contract.
 #[test]
@@ -1143,11 +1125,7 @@ fn plan_update_in_place_on_auth_name_change_pat_to_github_app_has_empty_recreate
     // the inverse-direction sibling test. The runner.auth ref
     // switches from "pat" (discovered side) to "github_app"
     // (desired side).
-    assert_auth_name_change_is_in_place(
-        auth_blocks_with_pat_and_github_app(),
-        "pat",
-        "github_app",
-    );
+    assert_auth_name_change_is_in_place(auth_blocks_with_pat_and_github_app(), "pat", "github_app");
 }
 
 /// Inverse-direction cross-discriminant pin: discovered side
@@ -1164,9 +1142,9 @@ fn plan_update_in_place_on_auth_name_change_pat_to_github_app_has_empty_recreate
 /// regardless of `AuthSpec` variant.
 ///
 /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`
-/// (recreate_reasons empty, requires_recreate=false, single
-/// auth_name field_change with expected before/after,
-/// drift_cause=SpecChanged, no auth_kind leakage, Modified
+/// (`recreate_reasons` empty, `requires_recreate=false`, single
+/// `auth_name` `field_change` with expected before/after,
+/// `drift_cause=SpecChanged`, no `auth_kind` leakage, Modified
 /// 00-ghars.conf drop-in entry). See the helper docstring for
 /// the contract.
 #[test]
@@ -1175,11 +1153,7 @@ fn plan_update_in_place_on_auth_name_change_github_app_to_pat_has_empty_recreate
     // the forward-direction sibling test. The runner.auth ref
     // switches in the OPPOSITE direction: from "github_app"
     // (discovered side) to "pat" (desired side).
-    assert_auth_name_change_is_in_place(
-        auth_blocks_with_pat_and_github_app(),
-        "github_app",
-        "pat",
-    );
+    assert_auth_name_change_is_in_place(auth_blocks_with_pat_and_github_app(), "github_app", "pat");
 }
 
 /// Cross-discriminant fixture: a `pat` block (`AuthSpec::Pat`)
@@ -1284,16 +1258,16 @@ fn auth_blocks_with_interactive_and_token_file() -> IndexMap<String, AuthSpec> {
 /// auth-name-in-place contract still holds because
 /// `merge_defaults` strips the discriminant when lowering
 /// to `EffectiveRunnerSpec.auth_name` (a bare String); the
-/// classifier sees a pure auth_name string diff regardless of
+/// classifier sees a pure `auth_name` string diff regardless of
 /// whether either side has a payload. This test pins that the
 /// payload-free Interactive variant participates in the
 /// auth-name in-place contract identically to the
-/// payload-bearing Pat / GithubApp / TokenFile variants.
+/// payload-bearing Pat / `GithubApp` / `TokenFile` variants.
 ///
 /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`
-/// (recreate_reasons empty, requires_recreate=false, single
-/// auth_name field_change with expected before/after,
-/// drift_cause=SpecChanged, no auth_kind leakage, Modified
+/// (`recreate_reasons` empty, `requires_recreate=false`, single
+/// `auth_name` `field_change` with expected before/after,
+/// `drift_cause=SpecChanged`, no `auth_kind` leakage, Modified
 /// 00-ghars.conf drop-in entry). See the helper docstring for
 /// the contract.
 #[test]
@@ -1326,17 +1300,13 @@ fn plan_update_in_place_on_auth_name_change_interactive_to_pat_has_empty_recreat
 /// `pat → token_file` — the operator-rare but
 /// classifier-important transition (long-lived PAT
 /// → short-lived pre-minted registration token). The
-/// classifier must treat this as a pure auth_name string diff
+/// classifier must treat this as a pure `auth_name` string diff
 /// despite the upstream discriminant flip.
 ///
 /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`.
 #[test]
 fn plan_update_in_place_on_auth_name_change_pat_to_token_file_has_empty_recreate_reasons() {
-    assert_auth_name_change_is_in_place(
-        auth_blocks_with_pat_and_token_file(),
-        "pat",
-        "token_file",
-    );
+    assert_auth_name_change_is_in_place(auth_blocks_with_pat_and_token_file(), "pat", "token_file");
 }
 
 /// Inverse-direction pin of `pat_to_token_file`: discovered
@@ -1346,11 +1316,7 @@ fn plan_update_in_place_on_auth_name_change_pat_to_token_file_has_empty_recreate
 /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`.
 #[test]
 fn plan_update_in_place_on_auth_name_change_token_file_to_pat_has_empty_recreate_reasons() {
-    assert_auth_name_change_is_in_place(
-        auth_blocks_with_pat_and_token_file(),
-        "token_file",
-        "pat",
-    );
+    assert_auth_name_change_is_in_place(auth_blocks_with_pat_and_token_file(), "token_file", "pat");
 }
 
 /// Cross-discriminant pin: discovered side
@@ -1360,8 +1326,7 @@ fn plan_update_in_place_on_auth_name_change_token_file_to_pat_has_empty_recreate
 ///
 /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`.
 #[test]
-fn plan_update_in_place_on_auth_name_change_github_app_to_interactive_has_empty_recreate_reasons()
-{
+fn plan_update_in_place_on_auth_name_change_github_app_to_interactive_has_empty_recreate_reasons() {
     assert_auth_name_change_is_in_place(
         auth_blocks_with_github_app_and_interactive(),
         "github_app",
@@ -1377,8 +1342,7 @@ fn plan_update_in_place_on_auth_name_change_github_app_to_interactive_has_empty_
 ///
 /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`.
 #[test]
-fn plan_update_in_place_on_auth_name_change_interactive_to_github_app_has_empty_recreate_reasons()
-{
+fn plan_update_in_place_on_auth_name_change_interactive_to_github_app_has_empty_recreate_reasons() {
     assert_auth_name_change_is_in_place(
         auth_blocks_with_github_app_and_interactive(),
         "interactive",
@@ -1392,8 +1356,7 @@ fn plan_update_in_place_on_auth_name_change_interactive_to_github_app_has_empty_
 ///
 /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`.
 #[test]
-fn plan_update_in_place_on_auth_name_change_github_app_to_token_file_has_empty_recreate_reasons()
-{
+fn plan_update_in_place_on_auth_name_change_github_app_to_token_file_has_empty_recreate_reasons() {
     assert_auth_name_change_is_in_place(
         auth_blocks_with_github_app_and_token_file(),
         "github_app",
@@ -1407,8 +1370,7 @@ fn plan_update_in_place_on_auth_name_change_github_app_to_token_file_has_empty_r
 ///
 /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`.
 #[test]
-fn plan_update_in_place_on_auth_name_change_token_file_to_github_app_has_empty_recreate_reasons()
-{
+fn plan_update_in_place_on_auth_name_change_token_file_to_github_app_has_empty_recreate_reasons() {
     assert_auth_name_change_is_in_place(
         auth_blocks_with_github_app_and_token_file(),
         "token_file",
@@ -1423,8 +1385,7 @@ fn plan_update_in_place_on_auth_name_change_token_file_to_github_app_has_empty_r
 ///
 /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`.
 #[test]
-fn plan_update_in_place_on_auth_name_change_interactive_to_token_file_has_empty_recreate_reasons()
-{
+fn plan_update_in_place_on_auth_name_change_interactive_to_token_file_has_empty_recreate_reasons() {
     assert_auth_name_change_is_in_place(
         auth_blocks_with_interactive_and_token_file(),
         "interactive",
@@ -1438,8 +1399,7 @@ fn plan_update_in_place_on_auth_name_change_interactive_to_token_file_has_empty_
 ///
 /// Satisfies invariants 1-7 of `assert_auth_name_change_is_in_place`.
 #[test]
-fn plan_update_in_place_on_auth_name_change_token_file_to_interactive_has_empty_recreate_reasons()
-{
+fn plan_update_in_place_on_auth_name_change_token_file_to_interactive_has_empty_recreate_reasons() {
     assert_auth_name_change_is_in_place(
         auth_blocks_with_interactive_and_token_file(),
         "token_file",
@@ -1451,14 +1411,14 @@ fn plan_update_in_place_on_auth_name_change_token_file_to_interactive_has_empty_
 
 /// caches change is in-place per design Part 3. The
 /// caches in-place classifier branch must:
-///   - record a FieldChange { path: "caches", before, after };
-///   - NOT push to recreate_reasons;
+///   - record a `FieldChange` { path: "caches", before, after };
+///   - NOT push to `recreate_reasons`;
 ///   - NOT trip the `uncovered` fallback (gated on
-///     `field_changes.is_empty()` at the spec_hash mismatch
+///     `field_changes.is_empty()` at the `spec_hash` mismatch
 ///     check in `plan_from`).
-/// apply.rs's in-place execute_update_runner rewrites the
+/// apply.rs's in-place `execute_update_runner` rewrites the
 /// 30-cache-pool.conf drop-in body and cycles the unit so the
-/// post-update BindPaths take effect; no host-state migration
+/// post-update `BindPaths` take effect; no host-state migration
 /// requires the recreate path.
 #[test]
 fn plan_update_runner_caches_change_is_in_place_with_field_change() {
@@ -1554,21 +1514,21 @@ fn plan_update_runner_caches_change_is_in_place_with_field_change() {
 /// `caches = ["pool-b", "pool-a"]` as `caches = ["pool-a", "pool-b"]`
 /// in TOML, no membership change) MUST end-to-end produce a
 /// `NoOp`, not an `UpdateRunner`. Without `lower_to_effective`
-/// sorting the caches Vec by name, the spec_hash flips on reorder
+/// sorting the caches Vec by name, the `spec_hash` flips on reorder
 /// (Vec preserves source order in canonical JSON); after the sort,
-/// both orderings produce the same spec, the same spec_hash, and
+/// both orderings produce the same spec, the same `spec_hash`, and
 /// the same rendered drop-in bytes (X-Ghars-Caches=, the
 /// 30-cache-pool.conf body) — so plan diff sees nothing to do.
 ///
 /// Built end-to-end through `plan_from` so this test exercises
-/// the full pipeline — `lower_to_effective` sort → spec_hash
+/// the full pipeline — `lower_to_effective` sort → `spec_hash`
 /// canonical-JSON → `render_identity` X-Ghars-Caches → `render_cache_pool`
 /// 30-cache-pool.conf body. A regression that dropped the sort
 /// from `lower_to_effective` would trip the Stage 2 body diff
 /// (the `30-cache-pool.conf` rendered for the second config would
 /// iterate `spec.caches` in operator-supplied order, differing
 /// from what `discovered_for` wrote for the first config) and
-/// surface as an UpdateRunner with `any_drop_in_modified=true`.
+/// surface as an `UpdateRunner` with `any_drop_in_modified=true`.
 #[test]
 fn plan_noop_when_caches_reorder_only() {
     // Build a config with two cache pools in the same trust_zone
@@ -1604,8 +1564,8 @@ fn plan_noop_when_caches_reorder_only() {
     // plan_from once with empty actual state — produces a
     // CreateRunner whose spec carries the canonical sorted spec.
     let cfg_first = make_cfg(vec!["pool-b", "pool-a"]);
-    let plan_first = plan_from(&cfg_first, &empty_actual(), &empty_paths())
-        .expect("first plan must succeed");
+    let plan_first =
+        plan_from(&cfg_first, &empty_actual(), &empty_paths()).expect("first plan must succeed");
     let first_spec = plan_first
         .actions
         .iter()
@@ -1663,7 +1623,7 @@ fn plan_noop_when_caches_reorder_only() {
 /// for the caches treatment. Labels are set-semantic for GitHub
 /// Actions runner registration — workflow `runs-on:` matches
 /// against the registered label set order-independently — so a
-/// cosmetic reorder must NOT drive a recreate-class UpdateRunner.
+/// cosmetic reorder must NOT drive a recreate-class `UpdateRunner`.
 ///
 /// Without `merge_defaults` sorting `labels` by name, the
 /// `spec_hash` flips on reorder (Vec preserves source order in
@@ -1678,8 +1638,8 @@ fn plan_noop_when_caches_reorder_only() {
 /// the full pipeline — `lower_to_effective` (calls `merge_defaults`)
 /// → `spec_hash` canonical-JSON → `render_identity` X-Ghars-Labels.
 /// A regression that dropped the sort from `merge_defaults` would
-/// trip the Stage 1 classifier or the spec_hash mismatch and
-/// surface as an UpdateRunner with the `labels` recreate reason.
+/// trip the Stage 1 classifier or the `spec_hash` mismatch and
+/// surface as an `UpdateRunner` with the `labels` recreate reason.
 #[test]
 fn plan_noop_when_labels_reorder_only() {
     let make_cfg = |order: Vec<&str>| -> Config {
@@ -1694,8 +1654,8 @@ fn plan_noop_when_labels_reorder_only() {
     // once with empty actual state — produces a CreateRunner
     // whose spec carries the canonical sorted spec.
     let cfg_first = make_cfg(vec!["beta", "alpha"]);
-    let plan_first = plan_from(&cfg_first, &empty_actual(), &empty_paths())
-        .expect("first plan must succeed");
+    let plan_first =
+        plan_from(&cfg_first, &empty_actual(), &empty_paths()).expect("first plan must succeed");
     let first_spec = plan_first
         .actions
         .iter()
@@ -1763,12 +1723,12 @@ fn plan_noop_when_labels_reorder_only() {
 /// reason on the first plan run after the upgrade. This is the
 /// expected one-time recreate when a runner crosses the
 /// canonicalization boundary; the apply path then re-renders the
-/// canonical spec onto disk and the next plan returns to NoOp
+/// canonical spec onto disk and the next plan returns to `NoOp`
 /// (the steady-state pinned by `plan_noop_when_labels_reorder_only`
 /// above).
 ///
 /// Mirrors the caches-canonicalization class but exercises the
-/// HASH-MISMATCH gate rather than the steady-state NoOp gate.
+/// HASH-MISMATCH gate rather than the steady-state `NoOp` gate.
 /// Routes specifically through the `uncovered` arm at the
 /// `recreate_reasons.push("uncovered")` site in `plan_from`'s
 /// intersection branch:
@@ -1778,7 +1738,7 @@ fn plan_noop_when_labels_reorder_only() {
 ///   - `recreate_reasons.is_empty()`: Stage 1 labels classifier
 ///     sorts BOTH sides via `sorted_set_field_diff` so the set-
 ///     equal labels produce no `labels` recreate reason.
-///   - `field_changes.is_empty()`: same path, no FieldChange
+///   - `field_changes.is_empty()`: same path, no `FieldChange`
 ///     emitted for set-equal sorted comparison.
 ///   - `!any_drop_in_modified`: the only Modified drop-in is
 ///     `00-ghars.conf` (carries `X-Ghars-Spec-Hash`), which is
@@ -1804,7 +1764,7 @@ fn plan_noop_when_labels_reorder_only() {
 /// hash (no recreate fires) and the canonicalization promise
 /// (steady-state byte-identical X-Ghars-Labels) would silently
 /// erode. A regression that REMOVED the `uncovered` fallback
-/// would land the hash mismatch in NoOp territory and the on-
+/// would land the hash mismatch in `NoOp` territory and the on-
 /// disk `X-Ghars-Spec-Hash` would never re-sync to NEW.
 #[test]
 fn plan_first_post_upgrade_labels_canonicalization_emits_uncovered_recreate() {
@@ -1962,24 +1922,24 @@ fn plan_first_post_upgrade_labels_canonicalization_emits_uncovered_recreate() {
 ///   - Pure reorder: only `00-ghars.conf` is Modified (carries the
 ///     stale `X-Ghars-Spec-Hash`); basename filter strips it; gate
 ///     fires → `uncovered` recreate.
-///   - Combined (HERE): `10-memory.conf` is Modified (memory_max
+///   - Combined (HERE): `10-memory.conf` is Modified (`memory_max`
 ///     edit) AND survives the basename filter (in
-///     MANAGED_DROP_IN_BASENAMES, not `00-ghars.conf`). Gate sees
+///     `MANAGED_DROP_IN_BASENAMES`, not `00-ghars.conf`). Gate sees
 ///     `any_drop_in_modified=true` and skips the uncovered push.
 ///
 /// The classifier still records NO `labels` recreate reason
-/// (set-equal after sort) and NO labels FieldChange. The detected
-/// change is the memory_max drop-in body, surfaced via the Stage 2
+/// (set-equal after sort) and NO labels `FieldChange`. The detected
+/// change is the `memory_max` drop-in body, surfaced via the Stage 2
 /// drop-in diff. The resulting plan uses the canonical NEW
-/// spec_hash (sorted labels + new memory_max), so apply re-renders
-/// the canonical 00-ghars.conf and the next plan returns to NoOp.
+/// `spec_hash` (sorted labels + new `memory_max`), so apply re-renders
+/// the canonical 00-ghars.conf and the next plan returns to `NoOp`.
 ///
 /// Why this case matters: an operator upgrading ghars across the
 /// canonicalization boundary while ALSO editing an unrelated
 /// in-place field exercises the interaction between the labels-
 /// canonicalization transition and the Stage 2 in-place classifier.
 /// A regression that conflated the two paths — for example, marking
-/// the runner for recreate because the spec_hash flipped without
+/// the runner for recreate because the `spec_hash` flipped without
 /// checking whether Stage 2 found a real in-place edit — would
 /// surface as `requires_recreate=true` here. The combined case is
 /// the narrowest fixture that catches such a regression.
@@ -2119,7 +2079,7 @@ fn plan_combined_labels_canonicalization_with_inplace_edit_is_inplace_update() {
 
 /// `merge_hardening` sorts `restrict_address_families` in place so
 /// a pure operator reorder of the TOML list does not perturb the
-/// rendered drop-in body or the spec_hash. Mirrors the caches
+/// rendered drop-in body or the `spec_hash`. Mirrors the caches
 /// canonicalization in `lower_to_effective`. Built directly on
 /// `merge_hardening` (the only
 /// site that touches the post-sort spec) rather than going through
@@ -2128,11 +2088,7 @@ fn plan_combined_labels_canonicalization_with_inplace_edit_is_inplace_update() {
 #[test]
 fn merge_hardening_sorts_restrict_address_families() {
     let runner = Hardening {
-        restrict_address_families: vec![
-            "AF_UNIX".into(),
-            "AF_NETLINK".into(),
-            "AF_INET".into(),
-        ],
+        restrict_address_families: vec!["AF_UNIX".into(), "AF_NETLINK".into(), "AF_INET".into()],
         ..Hardening::default()
     };
     let merged = merge_hardening(&runner, &Hardening::default());
@@ -2192,7 +2148,7 @@ fn merge_hardening_sorts_extra_capabilities_after_additive_merge() {
 /// `merge_hardening` deduplicates `restrict_address_families` after
 /// sorting. A pick-merge path can carry duplicates from the picked
 /// side (operator-supplied repeat in TOML); dedup-after-sort
-/// collapses adjacent duplicates so the spec_hash + rendered drop-in
+/// collapses adjacent duplicates so the `spec_hash` + rendered drop-in
 /// body do not drift on a pure dup edit.
 #[test]
 fn merge_hardening_dedupes_restrict_address_families() {
@@ -2279,7 +2235,7 @@ fn merge_hardening_preserves_bind_readonly_paths_order() {
 
 /// `extra_bind_paths` is mount-order-sensitive for the same reason
 /// as `bind_readonly_paths`. Pin the non-sort contract here too.
-/// This also covers the additive-merge path for extra_bind_paths
+/// This also covers the additive-merge path for `extra_bind_paths`
 /// (defaults entries land first, then runner entries — the order
 /// inside each contributing list is preserved).
 #[test]
@@ -2313,24 +2269,22 @@ fn merge_hardening_preserves_extra_bind_paths_order() {
 
 /// End-to-end: a runner whose only TOML change is a reorder of a
 /// set-semantic hardening field (`restrict_address_families` here)
-/// must produce a NoOp through `plan_from`, NOT an UpdateRunner.
+/// must produce a `NoOp` through `plan_from`, NOT an `UpdateRunner`.
 /// Mirrors the structure of `plan_noop_when_caches_reorder_only`
 /// — drives the full plan pipeline against an actual state that
 /// reflects a prior apply.
 #[test]
 fn plan_noop_when_restrict_address_families_reorder_only() {
     let make_cfg = |order: Vec<&str>| -> Config {
-        let cfg = config_with_runners(vec![{
+        config_with_runners(vec![{
             let mut r = minimal_runner("a");
-            r.hardening.restrict_address_families =
-                order.into_iter().map(String::from).collect();
+            r.hardening.restrict_address_families = order.into_iter().map(String::from).collect();
             r
-        }]);
-        cfg
+        }])
     };
     let cfg_first = make_cfg(vec!["AF_UNIX", "AF_NETLINK", "AF_INET"]);
-    let plan_first = plan_from(&cfg_first, &empty_actual(), &empty_paths())
-        .expect("first plan must succeed");
+    let plan_first =
+        plan_from(&cfg_first, &empty_actual(), &empty_paths()).expect("first plan must succeed");
     let first_spec = plan_first
         .actions
         .iter()
@@ -2370,16 +2324,15 @@ fn plan_noop_when_restrict_address_families_reorder_only() {
 #[test]
 fn plan_noop_when_extra_syscalls_reorder_only() {
     let make_cfg = |order: Vec<&str>| -> Config {
-        let cfg = config_with_runners(vec![{
+        config_with_runners(vec![{
             let mut r = minimal_runner("a");
             r.hardening.extra_syscalls = order.into_iter().map(String::from).collect();
             r
-        }]);
-        cfg
+        }])
     };
     let cfg_first = make_cfg(vec!["rseq", "clone3", "memfd_create"]);
-    let plan_first = plan_from(&cfg_first, &empty_actual(), &empty_paths())
-        .expect("first plan must succeed");
+    let plan_first =
+        plan_from(&cfg_first, &empty_actual(), &empty_paths()).expect("first plan must succeed");
     let first_spec = plan_first
         .actions
         .iter()
@@ -2413,20 +2366,19 @@ fn plan_noop_when_extra_syscalls_reorder_only() {
 #[test]
 fn plan_noop_when_extra_capabilities_reorder_only() {
     let make_cfg = |order: Vec<&str>| -> Config {
-        let cfg = config_with_runners(vec![{
+        config_with_runners(vec![{
             let mut r = minimal_runner("a");
             r.hardening.extra_capabilities = order.into_iter().map(String::from).collect();
             r
-        }]);
-        cfg
+        }])
     };
     let cfg_first = make_cfg(vec![
         "CAP_NET_BIND_SERVICE",
         "CAP_AUDIT_WRITE",
         "CAP_DAC_OVERRIDE",
     ]);
-    let plan_first = plan_from(&cfg_first, &empty_actual(), &empty_paths())
-        .expect("first plan must succeed");
+    let plan_first =
+        plan_from(&cfg_first, &empty_actual(), &empty_paths()).expect("first plan must succeed");
     let first_spec = plan_first
         .actions
         .iter()
@@ -2459,4 +2411,3 @@ fn plan_noop_when_extra_capabilities_reorder_only() {
         "extra_capabilities reorder must NOT produce UpdateRunner; got: {updates:?}"
     );
 }
-

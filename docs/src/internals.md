@@ -31,7 +31,7 @@ The canonical helper `validators::open_no_follow_with_meta`
 takes a `&std::path::Path`, opens it with the relevant flags,
 and returns the open `File` plus its `Metadata`:
 
-```rust
+```rust,ignore
 pub(crate) fn open_no_follow_with_meta(
     path: &Path,
 ) -> std::io::Result<(File, Metadata)> {
@@ -81,7 +81,7 @@ annotation compare, fexecve, refusal on mismatch) is documented in
 A `rename` from a temp path to the final path is atomic against
 crashes only if both the rename AND the parent directory entry
 are persisted. POSIX makes neither guarantee implicit;
-`apply.rs::write_root_owned` and the extract paths explicitly
+`apply::writes::write_root_owned` and the extract paths explicitly
 `fsync` the parent directory after every rename.
 
 `extract.rs` does the same for the staging tree post-unpack
@@ -100,7 +100,7 @@ file is found, with diagnostic), and acquired via
 `fs2::FileExt::try_lock_exclusive` (POSIX advisory exclusive lock,
 non-blocking).
 
-```rust
+```rust,ignore
 let file = OpenOptions::new()
     .read(true).write(true).create(true)
     .mode(0o600)
@@ -174,17 +174,17 @@ threshold.
 systemd treats certain list-typed directives as RESET on empty
 assignment (per `systemd.exec(5)`):
 
-```
+```text
 SystemCallFilter=
 ```
 
 without a value clears the entire allowlist established by an
 earlier line. A managed drop-in that emits this would silently
 erase the template's hardening. The `validate_drop_in` function
-(`systemd.rs`) refuses any generated drop-in body that contains a
+(`systemd::dbus`) refuses any generated drop-in body that contains a
 bare `=` for any of:
 
-```
+```text
 SystemCallFilter
 CapabilityBoundingSet
 BindReadOnlyPaths
@@ -230,7 +230,7 @@ annotation passes through `check_identity_field`:
 
 Three call sites, all defense-in-depth:
 
-- `render_identity` (in `systemd.rs`) — the LAST gate before
+- `render_identity` (in `systemd::units`) — the LAST gate before
   bytes hit disk. Wraps the result with `render_identity:` so
   plan-time render errors name the rejecting function.
 - `cli::validate_identity_fields` — config-load gate, scoped by
@@ -401,11 +401,11 @@ Each section above maps to a specific module:
 | `O_NOFOLLOW` open patterns     | `validators.rs`, `extract.rs`           |
 | `renameat2` exchange           | `extract.rs`                            |
 | `fexecve` trampoline           | `src/bin/runsvc_wrapper.rs`             |
-| fsync durability               | `apply.rs::write_root_owned`, `extract.rs` |
-| apply lock                     | `apply.rs::acquire_lock`                |
-| GC passes                      | `apply.rs::gc_stale_temp_files`, `apply.rs::gc_stale_staging_dirs` |
-| reset-on-empty validator       | `systemd.rs::validate_drop_in`          |
-| identity field validator       | `systemd.rs::check_identity_field`      |
+| fsync durability               | `apply::writes::write_root_owned`, `extract.rs` |
+| apply lock                     | `apply::lock::acquire_lock`             |
+| GC passes                      | `apply::gc::gc_stale_temp_files`, `apply::gc::gc_stale_staging_dirs` |
+| reset-on-empty validator       | `systemd::dbus::validate_drop_in`       |
+| identity field validator       | `systemd::units::check_identity_field`  |
 | control-char escape            | `lib.rs::escape_control_chars`          |
 | tarball cap                    | `extract.rs::http_download_with_cap`    |
 | safe tar member filter         | `extract.rs::safe_member_filter`        |

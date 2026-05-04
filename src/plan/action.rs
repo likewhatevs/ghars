@@ -72,7 +72,7 @@ pub enum Disruption {
 }
 
 impl Disruption {
-    /// Stable snake_case label for text + JSON rendering. Mirrors
+    /// Stable `snake_case` label for text + JSON rendering. Mirrors
     /// the `DriftCause::label` vocabulary so a single `grep recreate`
     /// finds every action surface.
     #[must_use]
@@ -90,7 +90,7 @@ impl Action {
     /// failures in `GharsError::Apply { action, .. }`.
     ///
     /// Load-bearing for `summary.recreates` JSON output;
-    /// renames require schema_version bump. Format relies on
+    /// renames require `schema_version` bump. Format relies on
     /// entity names being paren-free per `IDENTIFIER_REGEX`
     /// (`^[a-z]([a-z0-9-]*[a-z0-9])?$`).
     #[must_use]
@@ -131,7 +131,7 @@ impl Action {
     ///   and tears down per-runner netns side-units (apply.rs step
     ///   1, 1b), THEN mints a removal token and calls
     ///   `config.sh remove` to deregister with GitHub (step 2),
-    ///   THEN deletes the home directory (step 3+). DynamicUser
+    ///   THEN deletes the home directory (step 3+). `DynamicUser`
     ///   handles the runner's transient UID/GID lifecycle — systemd
     ///   recycles them on unit stop, so there is no system user to
     ///   delete. The GitHub-side mutation is the same disruption

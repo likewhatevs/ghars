@@ -55,7 +55,7 @@ fn acquire_lock_rejects_concurrent_apply() {
     );
 }
 
-/// Synthetic PermissionDenied io::Error must be wrapped as
+/// Synthetic `PermissionDenied` `io::Error` must be wrapped as
 /// `GharsError::Validation` with the "running as root" hint.
 /// Pinned because EACCES on the lock-file open is the most common
 /// non-root-operator failure mode and the cryptic raw EACCES from
@@ -87,7 +87,7 @@ fn eacces_hint_wraps_permission_denied_as_validation() {
     );
 }
 
-/// Any non-PermissionDenied io::Error must pass through as
+/// Any non-PermissionDenied `io::Error` must pass through as
 /// `GharsError::Io` (no Validation hint), preserving the original
 /// `ErrorKind` so callers can match on it. Pinned so a future
 /// refactor that widens the EACCES branch to "any io error" would
@@ -119,7 +119,7 @@ fn eacces_hint_passes_through_non_eacces_as_io() {
 /// A pre-existing apply.lock at a wider mode (operator
 /// chmod, prior ghars version, umask drift) must be re-tightened
 /// to 0o600 by `acquire_lock`. `OpenOptions::mode(0o600)` only
-/// applies on O_CREAT, so opening an existing 0o644 file would
+/// applies on `O_CREAT`, so opening an existing 0o644 file would
 /// otherwise leave the embedded PID world-readable. Pre-create at
 /// 0o644, acquire, stat post-acquire, assert mode is back to
 /// 0o600.

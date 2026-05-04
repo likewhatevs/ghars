@@ -14,7 +14,7 @@
 //!   trait so tests can inject in-memory mocks.
 //! - [`guard_home_dir_rmrf`] refuses to delete anything outside
 //!   `<state_dir>/<trust_zone>/ghars-<runner-name>` — defends against
-//!   a corrupted trust_zone root (the `prefix` parameter is sourced
+//!   a corrupted `trust_zone` root (the `prefix` parameter is sourced
 //!   from `paths.trust_zone_home(&identity.trust_zone)` at the call
 //!   site) causing apply to recursively remove `/`, the prefix
 //!   itself, or a path outside the prefix.

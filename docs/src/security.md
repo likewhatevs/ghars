@@ -95,7 +95,7 @@ wrapper needs no capabilities.
 
 ## Systemd sandbox hardening
 
-The runner template (`runner_template_text()` in `systemd.rs`)
+The runner template (`runner_template_text()` in `systemd/units.rs`)
 emits these directives unconditionally:
 
 - `NoNewPrivileges=yes`
@@ -181,7 +181,7 @@ re-include those groups.
 When a runner sets `network = "name"` and `[network.NAME].mode =
 "netns"`, the rendered `40-network.conf` drop-in sets:
 
-```
+```text
 NetworkNamespacePath=/var/run/netns/ghars-NAME
 ```
 

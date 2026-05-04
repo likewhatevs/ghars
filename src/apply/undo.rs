@@ -145,7 +145,7 @@ impl UndoStep {
     }
 
     /// One-line operator-readable summary of the recorded mutation,
-    /// suitable for the rollback-state advisory in cmd_apply.
+    /// suitable for the rollback-state advisory in `cmd_apply`.
     /// Names the step's effect in past tense ("wrote …", "started …",
     /// "removed …") so the advisory reads as an audit trail of what
     /// happened on disk before the action errored. Byte-content fields
@@ -263,7 +263,7 @@ impl UndoLog {
     /// Consume the log, returning the recorded steps in insertion order.
     /// Used by [`super::orchestrator::apply`] on the Err path to plumb
     /// the per-action mutation manifest into
-    /// [`super::outcome::ApplyResult::failed_undo_logs`] so cmd_apply's
+    /// [`super::outcome::ApplyResult::failed_undo_logs`] so `cmd_apply`'s
     /// rollback advisory can list what happened on disk before
     /// the action errored.
     #[must_use]
@@ -306,7 +306,7 @@ pub struct Deps<'a> {
 ///
 /// The `auth` registry is required to undo `GitHubRegistration` — we
 /// mint a fresh removal token and call `config_shell.run_remove`. When
-/// the auth_name is missing from the registry we warn and skip
+/// the `auth_name` is missing from the registry we warn and skip
 /// (matches the orphan-removal contract in `execute_remove_runner`).
 ///
 /// # Errors
@@ -370,12 +370,7 @@ fn undo_one(step: &UndoStep, deps: &Deps<'_>) -> Result<()> {
             if path.exists() {
                 match fs::remove_dir(path.as_std_path()) {
                     Ok(()) => Ok(()),
-                    Err(e)
-                        if matches!(
-                            e.raw_os_error(),
-                            Some(libc::ENOTEMPTY) | Some(libc::EEXIST)
-                        ) =>
-                    {
+                    Err(e) if matches!(e.raw_os_error(), Some(libc::ENOTEMPTY | libc::EEXIST)) => {
                         tracing::warn!(
                             path = path.as_str(),
                             "rollback: directory not empty; leaving for next apply"

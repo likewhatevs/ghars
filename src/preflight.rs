@@ -104,7 +104,7 @@ impl CheckResult {
 /// Production callers go through [`preflight_os`] →
 /// [`preflight_os_with_path`] (the test-seam variant), which calls
 /// [`parse_os_release_at`] directly. This helper is retained as the
-/// legacy entry point that pins the canonical path; allow(dead_code)
+/// legacy entry point that pins the canonical path; `allow(dead_code)`
 /// because no caller threads through here once `preflight_os_with_path`
 /// is the single source of truth.
 #[allow(dead_code)]
@@ -244,12 +244,11 @@ fn which(bin: &str) -> bool {
 /// Look up a group by name. Tries `getent group NAME` first; falls back
 /// to scanning `/etc/group` if `getent` is missing or fails.
 fn group_exists(name: &str) -> bool {
-    if which("getent") {
-        if let Some(out) = capture_stdout("getent", ["group", name]) {
-            if !out.trim().is_empty() {
-                return true;
-            }
-        }
+    if which("getent")
+        && let Some(out) = capture_stdout("getent", ["group", name])
+        && !out.trim().is_empty()
+    {
+        return true;
     }
     let needle = format!("{name}:");
     match fs::read_to_string("/etc/group") {
@@ -382,7 +381,7 @@ pub fn preflight_systemd() -> CheckResult {
 /// Retained as a path-pinned entry point parallel to [`read_os_release`];
 /// `preflight_root` now delegates through `preflight_root_with_status_path`
 /// → `read_euid_at`, so this helper is unused outside any future caller
-/// that wants the canonical path baked in. allow(dead_code) keeps the
+/// that wants the canonical path baked in. `allow(dead_code)` keeps the
 /// build clean.
 #[allow(dead_code)]
 fn read_euid() -> Option<u32> {
@@ -400,10 +399,10 @@ fn read_euid_at(path: &Path) -> Option<u32> {
         };
         let mut cols = rest.split_ascii_whitespace();
         let _real = cols.next();
-        if let Some(eff) = cols.next() {
-            if let Ok(n) = eff.parse::<u32>() {
-                return Some(n);
-            }
+        if let Some(eff) = cols.next()
+            && let Ok(n) = eff.parse::<u32>()
+        {
+            return Some(n);
         }
     }
     None
@@ -465,12 +464,12 @@ pub fn required_tools() -> &'static [&'static str] {
 /// dirs), `getent`/`runuser` (operator-shell-out diagnostics + runuser
 /// for the runsvc launch sequence), `nft`/`ip`/`sysctl` for netns mode,
 /// `systemd-analyze` for the plan-time verify gate, and `unshare` for
-/// the empirical NET_NS probe.
+/// the empirical `NET_NS` probe.
 ///
 /// Pre-DynamicUser the list also included `useradd`/`usermod`/`gpasswd`
 /// — those are now obsolete: runner identity is provisioned by
 /// systemd's `DynamicUser=yes` (transient UID/GID allocated on unit
-/// start, recycled on stop) and cache reach is socket-DAC + BindPaths
+/// start, recycled on stop) and cache reach is socket-DAC + `BindPaths`
 /// rather than supplementary-group membership, so no `useradd` /
 /// `gpasswd` step runs at apply time.
 #[must_use]
@@ -697,6 +696,7 @@ pub fn run_preflight(dry_run: bool) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -814,7 +814,7 @@ mod tests {
     }
 
     /// Accepted OS: Fedora 40 (also at floor). Bare unquoted
-    /// VERSION_ID confirms the os-release parser strips quotes
+    /// `VERSION_ID` confirms the os-release parser strips quotes
     /// uniformly.
     #[test]
     fn preflight_os_with_path_accepts_fedora_40() {
@@ -894,7 +894,7 @@ mod tests {
     /// Missing file: `parse_os_release_at` propagates the I/O error
     /// and `preflight_os_with_path` wraps it with an actionable hint.
     /// Path is constructed under a tempdir but never created so the
-    /// open() call fails with NotFound deterministically.
+    /// `open()` call fails with `NotFound` deterministically.
     #[test]
     fn preflight_os_with_path_fails_on_missing_file() {
         let tmp = tempfile::tempdir().unwrap();
@@ -917,9 +917,9 @@ mod tests {
         );
     }
 
-    /// Missing VERSION_ID field: the `parse_version_major` helper
+    /// Missing `VERSION_ID` field: the `parse_version_major` helper
     /// returns None for empty / non-numeric input; the caller emits
-    /// a "cannot parse VERSION_ID" failure with the supported-set
+    /// a "cannot parse `VERSION_ID`" failure with the supported-set
     /// hint. Pins the failure path so it stays distinguishable from
     /// "unsupported distro".
     #[test]

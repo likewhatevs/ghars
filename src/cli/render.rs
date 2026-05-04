@@ -136,7 +136,7 @@ pub(crate) fn recreate_reason_note(reason: &str) -> Option<&'static str> {
 /// - ` ` ⇒ `NoOp`
 ///
 /// `^~ runner` matches Restart-class `UpdateRunner` only — recreate-
-/// class `UpdateRunner` uses `!`. To count "all UpdateRunner" use
+/// class `UpdateRunner` uses `!`. To count "all `UpdateRunner`" use
 /// either `^[~!] runner` (sigil-class union) or `^.* runner .*
 /// update:` (verb-based, sigil-agnostic). For the "all destructive
 /// actions" pipeline, grep `[recreate]` on the trailing bracket tag
@@ -445,10 +445,7 @@ pub(crate) fn render_action_line(action: &Action, color: ColorMode, diff: bool) 
 /// attachments) without redaction. Symmetric with the `# Security`
 /// caveat on `plan_to_json_value`. SEC-NEW: --diff body output may
 /// expose proxy credentials from 60-proxy.conf.
-pub(crate) fn render_drop_in_body_block(
-    kind: &plan::DropInChangeKind,
-    color: ColorMode,
-) -> String {
+pub(crate) fn render_drop_in_body_block(kind: &plan::DropInChangeKind, color: ColorMode) -> String {
     let mut out = String::new();
     match kind {
         plan::DropInChangeKind::Preserved => {
@@ -685,7 +682,7 @@ pub(crate) fn format_disruption_tail(none: u64, restart: u64, recreate: u64) -> 
 /// derived from each outcome's `disruption()` method. Same vocabulary
 /// as the plan footer so operators reading both surfaces get
 /// consistent terminology. Includes BOTH successful and failed rows
-/// (Failed.disruption() returns the action's plan-time worst-case —
+/// (`Failed.disruption()` returns the action's plan-time worst-case —
 /// recreate-class actions stay tagged recreate even when they
 /// errored), so a partially-applied recreate-class action that
 /// errored mid-way still contributes to the `recreate` count.
@@ -699,7 +696,7 @@ pub(crate) fn format_disruption_tail(none: u64, restart: u64, recreate: u64) -> 
 /// Order is restart → recreate → none (most-actionable-first for
 /// operator scanning), matching `render_plan_summary_line`.
 ///
-/// **fail_fast caveat**: under `ApplyOptions::fail_fast`, the loop
+/// **`fail_fast` caveat**: under `ApplyOptions::fail_fast`, the loop
 /// short-circuits on the first action error and unprocessed actions
 /// are absent from `result.details` (see the per-action loop's
 /// `fail_fast` short-circuit in `apply()`). The footer total
@@ -762,10 +759,10 @@ pub(crate) fn render_apply_summary_line(result: &apply::ApplyResult) -> String {
 ///      (noop (in sync))` double-tag — the parenthesized REASON
 ///      inside the label is the operator-facing string).
 ///    - `Failed { .. }` → STDERR: `fail: LABEL [disruption] (error)`.
-///    - all 10 non-NoOp non-Failed ApplyOutcome variants → stdout:
+///    - all 10 non-NoOp non-Failed `ApplyOutcome` variants → stdout:
 ///      `ok: LABEL [disruption] (detail)`. Listed exhaustively in
 ///      the per-action match arm (no wildcard), so adding a new
-///      ApplyOutcome variant is a compile error here.
+///      `ApplyOutcome` variant is a compile error here.
 ///    The `[disruption]` bracket tag (`[none]`/`[restart]`/`[recreate]`)
 ///    reuses the plan-output vocabulary from `render_action_line` so
 ///    a single `grep [recreate]` matches
@@ -780,7 +777,7 @@ pub(crate) fn render_apply_summary_line(result: &apply::ApplyResult) -> String {
 /// 3. **Rollback advisory** ([`render_rollback_advisory`]) → STDERR.
 ///    Gated on the renderer returning `Some(...)` so successful
 ///    applies (and applies whose only failure was a synthetic
-///    daemon_reload with no recorded undo steps) emit no extra noise.
+///    `daemon_reload` with no recorded undo steps) emit no extra noise.
 ///    Belongs with the `fail:` rows on stderr, not the success-path
 ///    summary on stdout.
 ///
@@ -891,11 +888,11 @@ pub(crate) fn render_apply_emission(
 /// with non-empty step lists, so header count == body block count
 /// under the mixed case (some empty + some non-empty); empty-step
 /// failures still surface via the per-action `fail:` lines from the
-/// cmd_apply detail loop.
+/// `cmd_apply` detail loop.
 ///
 /// Invariant: `result.failed.len() == result.failed_undo_logs.len()`.
 /// `apply::apply` pushes both Vecs in lockstep on every Err arm
-/// (per-action arm and synthetic daemon_reload arm in apply.rs).
+/// (per-action arm and synthetic `daemon_reload` arm in apply.rs).
 /// The lengths can only diverge in hand-constructed `ApplyResult`
 /// test fixtures. `debug_assert_eq!` pins the contract in dev/CI
 /// builds; release builds proceed because `n` (the header count)
@@ -909,7 +906,7 @@ pub(crate) fn render_apply_emission(
 /// and the all-empty-steps case (synthetic `daemon_reload` post-loop
 /// failure; actions that errored before recording any side effect ⇒
 /// every entry filtered out ⇒ `n == 0`). Returning `None` keeps
-/// stderr clean — the per-action `fail:` lines from the cmd_apply
+/// stderr clean — the per-action `fail:` lines from the `cmd_apply`
 /// detail loop already communicate the failure count and labels;
 /// the advisory's purpose is "what to clean up", and silence is
 /// more honest than a header rendered by

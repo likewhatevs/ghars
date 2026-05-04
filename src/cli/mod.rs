@@ -27,8 +27,8 @@
 //!   var or unreadable token file)
 //! - 6 config-class rejection — `GharsError::Config` (TOML parse,
 //!   shape mismatch) and `GharsError::Validation` (same
-//!   operator-actionable class — trust_zone charset, duplicate caches,
-//!   render_identity gates). Wrapping scripts can branch on it without
+//!   operator-actionable class — `trust_zone` charset, duplicate caches,
+//!   `render_identity` gates). Wrapping scripts can branch on it without
 //!   parsing stderr.
 //! - 7 interactive prompting required but unavailable —
 //!   `GharsError::Interactive`: emitted when `cmd_apply` reaches
@@ -96,7 +96,7 @@ use crate::paths::Paths;
 /// per-command code-table (preflight = 3, partial apply = 4,
 /// full-failure auth = 5, detailed-exitcode = 2 including the
 /// cancel-with-`--detailed-exitcode` path). Note that 4 wins over 5
-/// when some actions succeeded — see the cmd_apply tail.
+/// when some actions succeeded — see the `cmd_apply` tail.
 pub fn dispatch(cli: Cli) -> Result<i32> {
     let paths = Paths::default();
     let color = ColorMode::from_cli(cli.no_color);

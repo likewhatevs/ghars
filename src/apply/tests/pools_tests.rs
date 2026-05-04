@@ -13,9 +13,7 @@ use super::super::pools::{
     execute_create_cache_pool, execute_remove_cache_pool, execute_update_cache_pool,
 };
 use super::super::undo::{Deps, UndoLog};
-use super::common::{
-    MockConfigShell, MockSystemd, MockTarball, make_paths, make_pool_plan,
-};
+use super::common::{MockConfigShell, MockSystemd, MockTarball, make_paths, make_pool_plan};
 
 #[test]
 fn create_cache_pool_writes_template_drop_in_and_provisions_group() {
@@ -137,16 +135,17 @@ fn remove_cache_pool_rejects_symlink_at_pool_dir() {
     // Plant a real target dir somewhere unrelated, then symlink
     // the expected pool_dir at it. The symlink at pool_dir
     // makes guard_home_dir_rmrf fire its symlink-rejection arm.
-    let real_target = Utf8PathBuf::from_path_buf(tmp.path().join("real-target"))
-        .unwrap();
+    let real_target = Utf8PathBuf::from_path_buf(tmp.path().join("real-target")).unwrap();
     std::fs::create_dir_all(real_target.as_std_path()).unwrap();
-    std::fs::write(real_target.join("important-data.bin").as_std_path(), b"sensitive")
-        .unwrap();
+    std::fs::write(
+        real_target.join("important-data.bin").as_std_path(),
+        b"sensitive",
+    )
+    .unwrap();
     let pool_root = paths.cache_pool_root();
     std::fs::create_dir_all(pool_root.as_std_path()).unwrap();
     let pool_dir = paths.cache_pool_dir("hostile");
-    std::os::unix::fs::symlink(real_target.as_std_path(), pool_dir.as_std_path())
-        .unwrap();
+    std::os::unix::fs::symlink(real_target.as_std_path(), pool_dir.as_std_path()).unwrap();
 
     let systemd = MockSystemd::default();
     let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
@@ -168,7 +167,10 @@ fn remove_cache_pool_rejects_symlink_at_pool_dir() {
     // pre-fix path would have followed the symlink and removed
     // important-data.bin via remove_dir_all.
     assert!(
-        real_target.join("important-data.bin").as_std_path().exists(),
+        real_target
+            .join("important-data.bin")
+            .as_std_path()
+            .exists(),
         "remove_dir_all must NOT follow symlinked pool_dir"
     );
 }
@@ -239,7 +241,7 @@ fn skip_test_cache_delta(name: &str) -> CachePoolDelta {
 
 /// When the 00-ghars.conf drop-in on disk byte-matches what
 /// `execute_update_cache_pool` would render AND the drop-in
-/// directory already existed (CreateDir wouldn't fire), the
+/// directory already existed (`CreateDir` wouldn't fire), the
 /// in-place pool path skips daemon-reload + stop + start entirely
 /// and returns `PoolSkipped`. Symmetric with the runner-side
 /// `execute_update_runner_in_place_skips_restart_when_bytes_match`.
@@ -345,7 +347,7 @@ fn execute_update_cache_pool_restarts_when_drop_in_differs() {
 }
 
 /// First-time pool update where the drop-in directory does
-/// NOT exist beforehand. CreateDir is itself a mutation, so even
+/// NOT exist beforehand. `CreateDir` is itself a mutation, so even
 /// if the (yet-to-be-written) 00-ghars.conf would byte-match a
 /// hypothetical prior body, the skip gate must NOT fire on this
 /// path — daemon-reload + restart still has to run because

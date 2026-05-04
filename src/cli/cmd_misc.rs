@@ -97,8 +97,8 @@ pub(crate) fn cmd_init(config_path: &Utf8Path, args: &InitArgs, quiet: bool) -> 
 /// Used by `cmd_add` to defend the manual `[[runner]]` block-emit
 /// path against operator-supplied strings (label tokens, --name,
 /// --auth, --url) that would otherwise inject TOML keys / break the
-/// quote balance. Validators upstream (validate_runner_name,
-/// validate_url, validate_labels) already reject the offending
+/// quote balance. Validators upstream (`validate_runner_name`,
+/// `validate_url`, `validate_labels`) already reject the offending
 /// characters, but defense-in-depth — a future relaxation of any of
 /// those regexes must not regress into TOML injection here.
 pub(crate) fn toml_basic_string_escape(s: &str) -> String {
@@ -116,10 +116,7 @@ pub(crate) fn toml_basic_string_escape(s: &str) -> String {
             // \uXXXX form for U+0000..U+001F (except the named
             // escapes above) and U+007F.
             c if (c as u32) < 0x20 || c as u32 == 0x7f => {
-                let _ = std::fmt::Write::write_fmt(
-                    &mut out,
-                    format_args!("\\u{:04X}", c as u32),
-                );
+                let _ = std::fmt::Write::write_fmt(&mut out, format_args!("\\u{:04X}", c as u32));
             }
             c => out.push(c),
         }

@@ -1,5 +1,5 @@
 //! Tests for `apply::writes` (atomic file writes + read-then-write
-//! helpers + the TempFileGuard drop guard).
+//! helpers + the `TempFileGuard` drop guard).
 
 use std::os::unix::fs::PermissionsExt;
 

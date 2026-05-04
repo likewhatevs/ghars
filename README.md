@@ -205,8 +205,8 @@ project mdbook under `docs/`.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Build with `cargo build`. Test
-with `cargo nextest run`. Lint with `cargo clippy` and `cargo fmt`.
+Install just (`cargo install just --locked`), run `just setup` once, then
+`just lint` / `just test`. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

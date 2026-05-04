@@ -2,24 +2,26 @@
 //!
 //! The guard has 5 documented failure modes (see the
 //! `guard_home_dir_rmrf` doc-comment in `apply.rs`):
-//! 1. home_dir == "/"
-//! 2. home_dir == prefix
+//! 1. `home_dir` == "/"
+//! 2. `home_dir` == prefix
 //! 3. runner name has `/` or `.`/`..`
-//! 4. home_dir is itself a symlink
-//! 5. canonical(home_dir) != canonical(prefix)/runner_name (parent
+//! 4. `home_dir` is itself a symlink
+//! 5. `canonical(home_dir)` != `canonical(prefix)/runner_name` (parent
 //!    component symlink swap)
 //!
 //! In-tree tests in `apply::tests` cover the string-only branches
 //! (root, prefix-equal, outside, separator-in-name) and one symlink
 //! variant. The integration tests below close the matrix:
-//! - runner_name == "." or ".."
+//! - `runner_name` == "." or ".."
 //! - parent-chain symlink swap (mode 5) with the parent directory
 //!   replaced by a symlink to a different tree
-//! - missing home_dir is a no-op (caller gates on existence)
+//! - missing `home_dir` is a no-op (caller gates on existence)
 //! - cross-prefix home (home below a different prefix entirely)
 //! - canonical equality survives benign symlink alias on the LEAF
 //!   directory of the prefix path (already covered in-tree, rerun via
 //!   public API to pin the integration contract).
+
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use camino::{Utf8Path, Utf8PathBuf};
 use ghars::apply::guard_home_dir_rmrf;
@@ -255,7 +257,7 @@ fn rejects_filesystem_root_independent_of_prefix() {
     // Mode 1: home_dir == "/" rejects regardless of what prefix is.
     let err = guard_home_dir_rmrf(Utf8Path::new("/"), Utf8Path::new("/"), "anything")
         .expect_err("must reject root");
-    assert!(format!("{err}").contains("/"));
+    assert!(format!("{err}").contains('/'));
 }
 
 #[test]
@@ -280,7 +282,7 @@ fn rejects_when_home_under_root_with_non_root_prefix() {
         "buckos",
     )
     .expect_err("must reject root home with non-root prefix");
-    assert!(format!("{err}").contains("/"));
+    assert!(format!("{err}").contains('/'));
 }
 
 #[test]

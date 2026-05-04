@@ -208,7 +208,7 @@ pub(crate) fn validate_hooks_block(h: &HooksSpec) -> Result<()> {
 /// `X-Ghars-Caches=` entries (X-Ghars-Caches is a comma-joined CSV
 /// emitted in `render_identity`) and would trigger an in-place
 /// spec-hash bump every time the apply path canonicalizes the
-/// bindings into a BTreeSet. Catching the duplicate at load time
+/// bindings into a `BTreeSet`. Catching the duplicate at load time
 /// gives the operator a scoped error (`runner "NAME": ...`) instead
 /// of a confusing drift loop.
 ///
@@ -256,7 +256,7 @@ pub(crate) fn validate_no_duplicate_caches(cfg: &Config) -> Result<()> {
 ///
 /// ccache pools are not affected — they use filesystem-mode bindings
 /// keyed on `CCACHE_DIR=%h/.cache/ccache/{pool}` (no per-pool UDS), and
-/// distinct CCACHE_DIR values do compose. Only the sccache UDS is
+/// distinct `CCACHE_DIR` values do compose. Only the sccache UDS is
 /// single-valued.
 ///
 /// # Errors
@@ -268,10 +268,10 @@ pub(crate) fn validate_single_sccache_pool_per_runner(cfg: &Config) -> Result<()
     for runner in &cfg.runners {
         let mut sccache_refs: Vec<&str> = Vec::new();
         for cache_ref in &runner.caches {
-            if let Some(spec) = cfg.cache_pools.get(cache_ref) {
-                if spec.kinds.contains(&CacheKind::Sccache) {
-                    sccache_refs.push(cache_ref.as_str());
-                }
+            if let Some(spec) = cfg.cache_pools.get(cache_ref)
+                && spec.kinds.contains(&CacheKind::Sccache)
+            {
+                sccache_refs.push(cache_ref.as_str());
             }
         }
         if sccache_refs.len() > 1 {
@@ -306,7 +306,7 @@ pub(crate) fn validate_single_sccache_pool_per_runner(cfg: &Config) -> Result<()
 /// in `plan::lower_to_effective` matches the entry against
 /// `cfg.cache_pools.keys()` and rejects unknown names ("unknown
 /// cache pool"). Validating each entry here closes the gap for any
-/// future code path that synthesizes an EffectiveCacheBinding
+/// future code path that synthesizes an `EffectiveCacheBinding`
 /// without that lookup — every config-surface reference still passes
 /// through the identifier shape gate.
 ///
@@ -376,6 +376,7 @@ pub(crate) fn validate_runner_names(cfg: &Config) -> Result<()> {
 /// "env var unset" diagnostic (`std::env::var` returns `NotPresent`)
 /// on inputs like embedded whitespace, dashes, or other punctuation.
 pub(crate) static POSIX_ENV_VAR_NAME_RE: LazyLock<Regex> = LazyLock::new(|| {
+    #[allow(clippy::expect_used)]
     Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*$")
         .expect("POSIX env var name regex is a compile-time constant")
 });
@@ -416,9 +417,9 @@ const TOKEN_FILE_HINT: &str = "set token_file to the absolute path of a 0600 roo
 ///     declared paths/env-var names are operator-authored config
 ///     identifiers, not arbitrary Unix file names. Rejecting all Cc
 ///     chars in both fields closes the gap that an embedded `\n` in
-///     token_file would survive every other shape gate.
+///     `token_file` would survive every other shape gate.
 ///   - ALL Mn-class combining marks: Mn-class combining marks
-///     (Unicode NonspacingMark) are rejected uniformly — they can
+///     (Unicode `NonspacingMark`) are rejected uniformly — they can
 ///     produce visually deceptive paths via combining diacritical
 ///     marks that overlay ASCII characters. Token paths are
 ///     operator-authored config identifiers, not arbitrary file
@@ -433,7 +434,7 @@ const TOKEN_FILE_HINT: &str = "set token_file to the absolute path of a 0600 roo
 /// explicit list adds Cf-class default-ignorables (SHY, ALM, MVS, the
 /// ZWSP/ZWNJ/ZWJ/LRM/RLM/bidi-control blocks, WJ + invisible math
 /// operators, bidi isolates, BOM); the Mn-class arm covers all
-/// combining marks (NonspacingMark) — none of which are in Cc.
+/// combining marks (`NonspacingMark`) — none of which are in Cc.
 pub(crate) fn is_disallowed_hidden_char(c: char) -> bool {
     matches!(
         c,
@@ -472,15 +473,15 @@ pub(crate) fn is_disallowed_hidden_char(c: char) -> bool {
 ///     fails `ghars apply`).
 ///
 /// Wiring at `load_config` means every entry point sees the same
-/// gate uniformly — the gate is load-bearing for cmd_plan /
-/// cmd_status / cmd_add, redundant-but-harmless for cmd_validate /
-/// cmd_apply (the registry construction catches it anyway).
+/// gate uniformly — the gate is load-bearing for `cmd_plan` /
+/// `cmd_status` / `cmd_add`, redundant-but-harmless for `cmd_validate` /
+/// `cmd_apply` (the registry construction catches it anyway).
 ///
 /// This is a SHAPE-ONLY check. It does NOT lstat `token_file` —
 /// `PatToken::new` runs the SEC-25 mode-0600 + owner-root + not-
 /// symlink check at apply time, where the file is actually read.
 /// Splitting the responsibilities: config-load rejects mis-shaped
-/// AuthSpec entries; apply rejects badly-permissioned token files.
+/// `AuthSpec` entries; apply rejects badly-permissioned token files.
 ///
 /// What "mis-shaped" means here:
 ///   - Both `token_env` AND `token_file` set: violates the XOR
@@ -507,7 +508,7 @@ pub(crate) fn is_disallowed_hidden_char(c: char) -> bool {
 ///
 /// Gate ordering for each field (independent — each field walks the
 /// sequence on its own value, with no cross-field interaction):
-///   1. trim().is_empty() — empty / all-whitespace.
+///   1. `trim().is_empty()` — empty / all-whitespace.
 ///   2. hidden-char scan — surface byte offset + codepoint.
 ///      Fires BEFORE the edge-whitespace and shape checks so an
 ///      embedded BOM in a value that would also fail trim-mismatch
@@ -521,10 +522,10 @@ pub(crate) fn is_disallowed_hidden_char(c: char) -> bool {
 ///      the POSIX charset gate so `"X "` / `" X"` surface as
 ///      whitespace-mismatch rather than the less-specific "POSIX env
 ///      var name" diagnostic.
-///   4. POSIX charset — token_env only. Catches dashes, dots,
+///   4. POSIX charset — `token_env` only. Catches dashes, dots,
 ///      embedded whitespace, and other punctuation that pass the
 ///      trim/hidden/edge gates but break env var name shape.
-///      token_file has no analogous step-4 gate; filesystem paths
+///      `token_file` has no analogous step-4 gate; filesystem paths
 ///      accept arbitrary printable bytes so the trim-mismatch step
 ///      is the last domain check.
 /// The XOR tuple-match at the end fires only when BOTH fields'
@@ -533,7 +534,7 @@ pub(crate) fn is_disallowed_hidden_char(c: char) -> bool {
 /// set. A misconfigured per-field value short-circuits before the
 /// tuple-match is reached.
 ///
-/// Other AuthSpec variants (`GithubApp`, `Interactive`, `TokenFile`)
+/// Other `AuthSpec` variants (`GithubApp`, `Interactive`, `TokenFile`)
 /// have no XOR shape to validate; they are accepted without validation.
 ///
 /// # Errors
@@ -739,9 +740,9 @@ pub(crate) fn validate_pat_xor(cfg: &Config) -> Result<()> {
 ///     reference from `[[runner]] auth = "NAME"`.
 ///
 /// Without this gate, `[auth.NAME]` keys could be any TOML bare-key-
-/// or-quoted-string shape — far broader than IDENTIFIER_REGEX. Wiring
-/// at `load_config` means cmd_validate / cmd_plan / cmd_apply /
-/// cmd_status / cmd_add all see the same gate, matching the existing
+/// or-quoted-string shape — far broader than `IDENTIFIER_REGEX`. Wiring
+/// at `load_config` means `cmd_validate` / `cmd_plan` / `cmd_apply` /
+/// `cmd_status` / `cmd_add` all see the same gate, matching the existing
 /// pattern for runner / cache pool / network names.
 ///
 /// # Errors
@@ -763,8 +764,8 @@ pub(crate) fn validate_auth_keys(cfg: &Config) -> Result<()> {
 /// open(2) time, closing the lstat-then-open TOCTOU window) and
 /// rejects non-regular files via fstat on the open fd — the same
 /// shape `extract::install_runner_binary` requires before
-/// extraction. Wiring it into `load_config` means cmd_validate /
-/// cmd_plan / cmd_apply / cmd_status / cmd_add all see the same gate;
+/// extraction. Wiring it into `load_config` means `cmd_validate` /
+/// `cmd_plan` / `cmd_apply` / `cmd_status` / `cmd_add` all see the same gate;
 /// without this wiring the validator would be orphaned (defined
 /// but with no callsite).
 ///
@@ -772,8 +773,8 @@ pub(crate) fn validate_auth_keys(cfg: &Config) -> Result<()> {
 /// `config::Defaults` for the actual default-level fields. Per-runner
 /// is the only surface walked here.
 ///
-/// `runner_tarball` on RunnerSpec is `Option<Utf8PathBuf>`. We forward
-/// the infallible `as_str()` view to the validator — Utf8PathBuf is
+/// `runner_tarball` on `RunnerSpec` is `Option<Utf8PathBuf>`. We forward
+/// the infallible `as_str()` view to the validator — `Utf8PathBuf` is
 /// UTF-8 by construction (the wrapper rejects non-UTF-8 input at
 /// construction time), so the conversion never loses data.
 ///
@@ -921,17 +922,17 @@ pub(crate) fn validate_netns_runner_name_lengths(cfg: &Config) -> Result<()> {
 
 /// Reject control characters in TOML fields that flow into
 /// `render_identity` X-Ghars-* annotations. Today the only operator-
-/// controllable surface that lands in render_identity without
-/// per-character validation upstream is `trust_zone` (RunnerSpec +
-/// CachePoolSpec). `render_identity` itself runs `check_identity_field`
+/// controllable surface that lands in `render_identity` without
+/// per-character validation upstream is `trust_zone` (`RunnerSpec` +
+/// `CachePoolSpec`). `render_identity` itself runs `check_identity_field`
 /// at render time as defense-in-depth, but rejecting at config
 /// load lets the operator see the error WITH the offending block name
 /// (`runner "NAME"` / `cache_pool "NAME"`) instead of an opaque
-/// "field \"trust_zone\" contains forbidden newline" surfacing during
+/// "field \"`trust_zone`\" contains forbidden newline" surfacing during
 /// `plan` or `apply`.
 ///
 /// `config_source` is NOT validated here — it is composed at plan time
-/// from `paths.config_dir` (plan_from's config_source synthesis) and
+/// from `paths.config_dir` (`plan_from`'s `config_source` synthesis) and
 /// is not a TOML field.
 /// That validation lives at the plan-time composition site so it
 /// covers any future caller that synthesizes a `config_source` value
@@ -957,16 +958,16 @@ pub(crate) fn validate_identity_fields(cfg: &Config) -> Result<()> {
 
 // ---------- trust_zone shape + length cap -------------------------------
 
-/// Walk every runner and cache_pool `trust_zone` and gate the value
+/// Walk every runner and `cache_pool` `trust_zone` and gate the value
 /// through `validators::validate_trust_zone`. Same loop-and-scope
 /// pattern as `validate_runner_names` / `validate_cache_pool_names`
 /// — the per-value validator owns the gates and error wording; this
 /// function owns iteration and scope-prefixing.
 ///
 /// `validate_trust_zone` enforces two layers: (1) the shared
-/// IDENTIFIER_REGEX shape (lowercase letters, digits, dashes;
-/// kebab-case only), then (2) the 22-char TRUST_ZONE_MAX_LEN cap so
-/// the rendered DynamicUser identity `User=ghars-tz-<TRUST_ZONE>`
+/// `IDENTIFIER_REGEX` shape (lowercase letters, digits, dashes;
+/// kebab-case only), then (2) the 22-char `TRUST_ZONE_MAX_LEN` cap so
+/// the rendered `DynamicUser` identity `User=ghars-tz-<TRUST_ZONE>`
 /// fits systemd's strict 31-char `valid_user_group_name` ceiling.
 ///
 /// # Errors

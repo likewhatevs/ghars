@@ -15,7 +15,7 @@ use crate::paths::Paths;
 /// eligible for GC by [`gc_stale_temp_files`]. Anything younger could
 /// belong to a `write_root_owned` call still in flight on this thread
 /// (the lock prevents *cross-process* races, but a single
-/// in-process call to write_root_owned briefly creates the temp
+/// in-process call to `write_root_owned` briefly creates the temp
 /// file before the rename publishes it). 60s is well past the
 /// longest expected single-write window.
 pub(super) const STALE_TEMP_AGE_SECS: u64 = 60;
@@ -184,7 +184,7 @@ pub(super) fn gc_stale_temp_files(paths: &Paths) {
 ///   creates real dirs at mode 0700; skipping closes the
 ///   link-traversal door for `remove_dir_all`. `.staging/`'s 0700
 ///   root-only mode makes a symlink there a separate compromise, but
-///   the cost of the check is one stat() and the upside is closing
+///   the cost of the check is one `stat()` and the upside is closing
 ///   the door.
 /// - Embedded PID parses as `i32` (`extract.rs` uses `std::process::id()`,
 ///   a `u32`; we accept the i32 conversion because PIDs in practice
@@ -207,7 +207,7 @@ pub(super) fn gc_stale_temp_files(paths: &Paths) {
 ///
 /// Errors are swallowed and logged at info / warn — `apply()` MUST
 /// run regardless. Best-effort: a missing `.staging/` (the normal
-/// case on a fresh install) is silently ignored at the read_dir
+/// case on a fresh install) is silently ignored at the `read_dir`
 /// level.
 pub(super) fn gc_stale_staging_dirs(paths: &Paths) {
     let staging_root = paths.state_dir.join(".staging");
@@ -295,7 +295,7 @@ pub(super) fn gc_stale_staging_dirs(paths: &Paths) {
 
 /// Parse `{runner_name}-{version}-{pid}` and return the PID. Splits
 /// from the right so a version string containing `-` (e.g. a future
-/// `2.334.0-rc1` build) doesn't confuse the parse. The runner_name
+/// `2.334.0-rc1` build) doesn't confuse the parse. The `runner_name`
 /// and version components are not validated here — the caller's
 /// own-PID + age gates already make non-stale matches safe to skip
 /// even if the head is a directory we don't recognize.

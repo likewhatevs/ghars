@@ -1,4 +1,4 @@
-//! Tests for `apply::undo` (UndoLog + the rollback walker) and the
+//! Tests for `apply::undo` (`UndoLog` + the rollback walker) and the
 //! `apply()` rollback-on-failure orchestration paths.
 
 use std::collections::HashMap;
@@ -40,13 +40,13 @@ fn undo_log_push_extends_and_preserves_order() {
     assert_eq!(log.len(), 3);
     match &log.steps()[0] {
         UndoStep::CreateDir { path } => {
-            assert_eq!(path.as_str(), "/tmp/ghars-test")
+            assert_eq!(path.as_str(), "/tmp/ghars-test");
         }
         other => panic!("expected CreateDir, got {other:?}"),
     }
     match &log.steps()[2] {
         UndoStep::StartUnit { name } => {
-            assert_eq!(name, "ghars-runner@a.service")
+            assert_eq!(name, "ghars-runner@a.service");
         }
         other => panic!("expected StartUnit, got {other:?}"),
     }
@@ -101,7 +101,7 @@ fn is_reverse_direction_classifies_remove_side_steps() {
 
 /// Build a minimal `Deps` for unit tests of the `undo` function. No
 /// auth registry entry, no tarball calls — undo only touches
-/// systemd / config_shell / filesystem.
+/// systemd / `config_shell` / filesystem.
 fn rollback_deps<'a>(
     systemd: &'a MockSystemd,
     config_shell: &'a MockConfigShell,
@@ -546,9 +546,7 @@ fn apply_with_rollback_on_does_not_undo_already_succeeded_actions() {
     // pool's drop-in file should still exist on disk after the
     // mixed-success apply — assert that as the per-action-scope
     // signal that doesn't depend on the deleted trait.
-    let pool_drop_in = paths
-        .cache_drop_in_dir("build")
-        .join("00-ghars.conf");
+    let pool_drop_in = paths.cache_drop_in_dir("build").join("00-ghars.conf");
     assert!(
         pool_drop_in.exists(),
         "cache pool drop-in must persist on disk despite runner failure; \

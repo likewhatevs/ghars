@@ -45,7 +45,7 @@ system changes.
 
 Output shape (text mode, no `--diff`):
 
-```
+```text
 + runner build-1 (create) [recreate]
 ~ runner ci-3 (spec_changed; update: in-place) [restart]
     labels: self-hosted,linux → self-hosted,linux,x64
@@ -105,7 +105,7 @@ and on confirmation dispatches each action through its
 
 Output during the apply loop is one row per action:
 
-```
+```text
 ok: CreateRunner(build-1) [recreate] (created)
 ok: UpdateRunner(ci-3) [restart] (in-place: 1 file(s) changed)
 fail: CreateRunner(build-2) [recreate] (github: 401 unauthorized)
@@ -184,7 +184,7 @@ bundled in v0.1):
     notifempty
     create 0600 root root
     postrotate
-        # No service reload — apply.rs reopens via append-mode each time.
+        # No service reload — apply/audit.rs reopens via append-mode each time.
     endscript
 }
 ```
@@ -330,7 +330,7 @@ above 5 keep more rollback targets.
 
 ### "another apply is running"
 
-```
+```text
 GharsError::ApplyLocked { pid: 12345, path: "/run/ghars/apply.lock", stale: false }
 ```
 
@@ -348,7 +348,7 @@ removal.
 
 ### "preflight failed"
 
-```
+```text
 exit code 3
 ```
 
@@ -358,7 +358,7 @@ remediation.
 
 ### "config is broken"
 
-```
+```text
 exit code 6
 ```
 
@@ -368,7 +368,7 @@ validate` for the same gate without doing anything else.
 
 ### "apply needs --auto-approve"
 
-```
+```text
 exit code 7
 ```
 
