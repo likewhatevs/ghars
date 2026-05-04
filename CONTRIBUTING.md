@@ -47,7 +47,7 @@ that don't talk to GitHub.
 
 ### 3. zbus blocking-api is never inside an async block
 
-`src/systemd.rs` uses `zbus::blocking::{Connection, Proxy}`. zbus's
+`src/systemd/dbus.rs` uses `zbus::blocking::{Connection, Proxy}`. zbus's
 blocking layer drives its own executor; calling it from inside a
 tokio `async fn` (or from a future polled by the OnceLock runtime)
 deadlocks the executor. Keep all zbus calls in sync functions reached
@@ -73,15 +73,15 @@ Source tree: `src/lib.rs`, `src/main.rs`, the modules listed in
 | `validators.rs` | All regex/range validators ported from the Python tool: identifier, URL, sha256, semver, memory_max, label charset, hook script (lstat-based), CIDR, capability denylist, bind-path denylist. |
 | `config.rs` | Top-level `Config` plus `Defaults`, `RunnerSpec`, `EffectiveRunnerSpec`, `Hardening`, `AuthSpec`, `CachePoolSpec`, `NetworkSpec`, `ProxySpec`, `HooksSpec`, `Arch`. `serde(deny_unknown_fields)` everywhere. |
 | `state.rs` | `discover()` reads systemd's view of the world (managed `ghars-runner@*.service` units, drop-ins, drift status) into `ActualState`. `Drift` tracks whether the unit text or drop-ins were edited out-of-band. |
-| `plan.rs` | `Plan`, `Action` (CreateRunner / UpdateRunner / RemoveRunner / CreateCachePool / UpdateCachePool / RemoveCachePool / NoOp), `RunnerDelta`, `RunnerPlan`, `plan_from()`. Owns count-block expansion, defaults-merge, spec-hash computation, and recreate-vs-in-place classification. |
-| `apply.rs` | Executor. Sorts actions into phases, takes `apply.lock`, runs each `Action` against the `Systemd` / `Tarball` / `ConfigShell` traits plus the auth registry, accumulates results, surfaces `--fail-fast`. |
-| `systemd.rs` | `Systemd` adapter trait + `DbusSystemd` (zbus blocking) impl, plus the unit-text generator (template service file + numbered drop-ins for hardening, network, proxy, hooks, cache, operator overrides) and the nft rule generator for netns. |
+| `plan/` | `Plan`, `Action` (CreateRunner / UpdateRunner / RemoveRunner / CreateCachePool / UpdateCachePool / RemoveCachePool / NoOp), `RunnerDelta`, `RunnerPlan`, `plan_from()`. Owns count-block expansion, defaults-merge, spec-hash computation, and recreate-vs-in-place classification. Submodules: `action`, `types`, `expand`, `merge`, `hash`, `classify`, `compute`. |
+| `apply/` | Executor. Sorts actions into phases, takes `apply.lock`, runs each `Action` against the `Systemd` / `Tarball` / `ConfigShell` traits plus the auth registry, accumulates results, surfaces `--fail-fast`. Submodules: `orchestrator`, `runners`, `pools`, `netns`, `undo`, `lock`, `writes`, `outcome`, `phases`, `gc`, `audit`, `rmrf`, `shell`, `tarball`. |
+| `systemd/` | `Systemd` adapter trait + `DbusSystemd` (zbus blocking) impl, plus the unit-text generator (template service file + numbered drop-ins for hardening, network, proxy, hooks, cache, operator overrides) and the nft rule generator for netns. Submodules: `dbus`, `units`, `nft`. |
 | `github.rs` | Octocrab wrapper: `parse_url` (URL → Scope), release fetching, registration-token minting, sha256 extraction from release notes, blocking reqwest client construction with system trust roots. |
 | `auth.rs` | `TokenSource` trait + `PatToken`, `TokenFileToken`, `GithubAppToken`, `InteractiveToken`. App auth uses `jsonwebtoken::EncodingKey`. Private keys are read with `O_NOFOLLOW` and mode/owner enforcement (SEC-06). |
 | `extract.rs` | Streaming tarball download (sha256 verified during stream), tarball safe-filter (path traversal + symlink escape rejected), runner-binary install with versioned `bin.X.Y.Z` directories and atomic directory swap via `renameat2(RENAME_EXCHANGE)` (with a remove-then-rename fallback when the kernel/FS lacks `RENAME_EXCHANGE`). |
 | `preflight.rs` | OS / kernel / systemd-version / `/dev/kvm` / D-Bus / required-tools / root checks. Returns a `Vec<CheckResult>` for `ghars status`. |
 | `netns.rs` | Network namespace lifecycle: `setup` (create netns, veth, addresses, routes, nft rules), `teardown`, `run_in_netns` (nsenter wrapper for the hidden `_netns-veth` subcommand). |
-| `cli.rs` | `Cli`, `Command`, all `*Args` structs, dispatch logic, color/quiet handling, plan/status/metrics rendering (table + JSON), `init` scaffold contents, `add` TOML appender. |
+| `cli/` | `Cli`, `Command`, all `*Args` structs, dispatch logic, color/quiet handling, plan/status/metrics rendering (table + JSON), `init` scaffold contents, `add` TOML appender. Submodules: `args`, `load`, `render`, `json`, `cmd_apply`, `cmd_plan`, `cmd_status`, `cmd_metrics`, `cmd_misc`, `exit_codes`. |
 | `bin/runsvc_wrapper.rs` | Verify-only trampoline running at the unit's `DynamicUser`-allocated identity. Verifies `runsvc.sh` against the `X-Ghars-Runsvc-Sha256` annotation by file descriptor, then `fexecve`s the verified fd. No `setuid`/`setgid`/`setgroups` — `DynamicUser=yes` establishes runner identity before the wrapper starts. SEC-02. |
 
 ## PR process
