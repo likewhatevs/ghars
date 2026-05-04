@@ -43,6 +43,12 @@ setup:
     cargo install cargo-deny --locked
     git config core.hooksPath .githooks
 
+# Run `systemd-analyze security` against every managed runner +
+# cache-pool unit and print per-unit exposure scores. Wraps
+# `ghars status --score`. Informational only — no pass/fail gate.
+sd-analyze:
+    cargo run -- status --score
+
 # --- CI recipes (called by .github/workflows/ci.yml) ---
 
 # Format check

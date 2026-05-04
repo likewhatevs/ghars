@@ -247,6 +247,16 @@ pub struct StatusArgs {
     /// Show only RUNNERS section.
     #[arg(long, conflicts_with = "health_only")]
     pub runners_only: bool,
+    /// Run `systemd-analyze security` against every managed
+    /// `ghars-runner@*` and `ghars-cache@*` unit and report the
+    /// per-unit exposure score. Informational only — no pass/fail
+    /// gate. Each unit's "Overall exposure level" line is parsed
+    /// out of the systemd-analyze output (format:
+    /// `→ Overall exposure level for <unit>: N.M <label>`); the
+    /// numeric score and label are surfaced in a small table (or
+    /// a JSON array under `--json`).
+    #[arg(long)]
+    pub score: bool,
     /// Filter to specific runner names.
     pub names: Vec<String>,
 }

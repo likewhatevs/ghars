@@ -1416,7 +1416,38 @@ fn argv_status_default_no_filters() {
             assert!(!args.metrics);
             assert!(!args.health_only);
             assert!(!args.runners_only);
+            assert!(!args.score);
             assert!(args.names.is_empty());
+        }
+        _ => panic!("expected Status"),
+    }
+}
+
+#[test]
+fn argv_status_score_flag_parses() {
+    // `--score` is independent of every other status flag — clap
+    // parses it as a bare bool, no conflicts. Pin the default-off
+    // flip so a regression that wires the flag to a different field
+    // (or accidentally enables it by default) surfaces here.
+    let cli = Cli::try_parse_from(["ghars", "status", "--score"]).unwrap();
+    match cli.command {
+        Command::Status(args) => {
+            assert!(args.score);
+        }
+        _ => panic!("expected Status"),
+    }
+}
+
+#[test]
+fn argv_status_score_combines_with_json() {
+    // `--score --json` is the canonical machine-consumable shape;
+    // pin that the two flags compose without conflict so wrapper
+    // scripts can chain them.
+    let cli = Cli::try_parse_from(["ghars", "status", "--score", "--json"]).unwrap();
+    match cli.command {
+        Command::Status(args) => {
+            assert!(args.score);
+            assert!(args.json);
         }
         _ => panic!("expected Status"),
     }
@@ -1492,6 +1523,7 @@ fn cmd_status_runners_only_propagates_config_parse_error() {
         metrics: false,
         health_only: false,
         runners_only: true,
+        score: false,
         names: vec![],
     };
     let err = cmd_status(
@@ -1558,6 +1590,7 @@ size = \"200G\"
         metrics: false,
         health_only: false,
         runners_only: true,
+        score: false,
         names: vec![],
     };
     let err = cmd_status(
@@ -1624,6 +1657,7 @@ auth = \"pat\"
         metrics: false,
         health_only: false,
         runners_only: true,
+        score: false,
         names: vec![],
     };
     let err = cmd_status(
@@ -1700,6 +1734,7 @@ trust_zone = \"audited\\nInjected=stuff\"
         metrics: false,
         health_only: false,
         runners_only: true,
+        score: false,
         names: vec![],
     };
     let err = cmd_status(
@@ -1766,6 +1801,7 @@ trust_zone = \"audited\\rsmuggled\"
         metrics: false,
         health_only: false,
         runners_only: true,
+        score: false,
         names: vec![],
     };
     let err = cmd_status(
@@ -1841,6 +1877,7 @@ trust_zone = \"audited\"
         metrics: false,
         health_only: false,
         runners_only: true,
+        score: false,
         names: vec![],
     };
     // Expect Ok — load_config + validate_identity_fields pass for
@@ -1895,6 +1932,7 @@ trust_zone = \"{oversize_tz}\"
         metrics: false,
         health_only: false,
         runners_only: true,
+        score: false,
         names: vec![],
     };
     let err = cmd_status(
@@ -1958,6 +1996,7 @@ trust_zone = \"{oversize_tz}\"
         metrics: false,
         health_only: false,
         runners_only: true,
+        score: false,
         names: vec![],
     };
     let err = cmd_status(
@@ -2033,6 +2072,7 @@ runner_tarball = \"{nonexistent}\"
         metrics: false,
         health_only: false,
         runners_only: true,
+        score: false,
         names: vec![],
     };
     let err = cmd_status(
@@ -2108,6 +2148,7 @@ runner_tarball = \"{}\"
         metrics: false,
         health_only: false,
         runners_only: true,
+        score: false,
         names: vec![],
     };
     let err = cmd_status(
@@ -2179,6 +2220,7 @@ runner_tarball = \"{}\"
         metrics: false,
         health_only: false,
         runners_only: true,
+        score: false,
         names: vec![],
     };
     let err = cmd_status(
@@ -2258,6 +2300,7 @@ network = \"isolated\"
         metrics: false,
         health_only: false,
         runners_only: true,
+        score: false,
         names: vec![],
     };
     let err = cmd_status(
@@ -2342,6 +2385,7 @@ auth = \"pat\"
         metrics: false,
         health_only: false,
         runners_only: true,
+        score: false,
         names: vec![],
     };
     let err = cmd_status(
@@ -2506,6 +2550,7 @@ network = \"isolated\"
         metrics: false,
         health_only: false,
         runners_only: true,
+        score: false,
         names: vec![],
     };
     let err = cmd_status(
@@ -2764,6 +2809,7 @@ fn cmd_status_health_only_still_loads_config() {
         metrics: false,
         health_only: true,
         runners_only: false,
+        score: false,
         names: vec![],
     };
     let err = cmd_status(

@@ -197,10 +197,11 @@ sudo ghars status --json
 sudo ghars status --metrics
 sudo ghars status --health-only
 sudo ghars status --runners-only
+sudo ghars status --score
 sudo ghars status build-1 ci-3
 ```
 
-Two sections:
+Two sections (plus optional METRICS / SECURITY):
 
 1. **SYSTEM HEALTH** — preflight check rollup.
 2. **RUNNERS** — managed-unit table with drift annotations.
@@ -214,6 +215,15 @@ Flags:
   `--runners-only` and `--metrics`.
 - `--runners-only` — skip the SYSTEM HEALTH section. Conflicts
   with `--health-only`.
+- `--score` — append a SECURITY section listing the
+  `systemd-analyze security` exposure score and label
+  (`SAFE`, `OK`, `MEDIUM`, `EXPOSED`, `UNSAFE`) for every
+  managed `ghars-runner@*` and `ghars-cache@*` unit. Per-unit
+  lookup failures (e.g. unit not loaded after a missed
+  `daemon-reload`) surface as inline `error: ...` rows so one
+  missing unit does not erase the report. Informational only —
+  no pass/fail gate. The `just sd-analyze` recipe is a
+  convenience wrapper.
 - Positional `NAMES` — filter to specific runner names.
 
 ### Preflight

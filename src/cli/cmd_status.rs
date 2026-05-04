@@ -1,6 +1,7 @@
 //! `ghars status` command handler + text/JSON renderers.
 
 use std::io::{self, Write};
+use std::process::Command as ProcCommand;
 
 use camino::Utf8Path;
 
@@ -93,16 +94,31 @@ pub(super) fn cmd_status(
         Vec::new()
     };
 
+    let score_rows = if args.score {
+        // Collect both runner and cache-pool unit names from the
+        // disk-discovery pass so units never installed (or removed
+        // without a daemon-reload) don't silently disappear from the
+        // table. `state::discover` returns them keyed by `%i`; the
+        // score collector wraps each in the canonical
+        // `ghars-runner@<name>.service` / `ghars-cache@<name>.service`
+        // template-instance form expected by `systemd-analyze`.
+        let units = score_unit_names(&runners);
+        collect_score_rows(&units, run_systemd_analyze_security)
+    } else {
+        Vec::new()
+    };
+
     if args.json {
-        return render_status_json(&health, &runners, &metrics_rows);
+        return render_status_json(&health, &runners, &metrics_rows, &score_rows);
     }
-    render_status_text(&health, &runners, &metrics_rows, &args.names)
+    render_status_text(&health, &runners, &metrics_rows, &score_rows, &args.names)
 }
 
 pub(super) fn render_status_text(
     health: &[preflight::CheckResult],
     runners: &state::ActualState,
     metrics: &[MetricRow],
+    scores: &[ScoreRow],
     name_filter: &[String],
 ) -> Result<i32> {
     let mut stdout = io::stdout().lock();
@@ -174,6 +190,13 @@ pub(super) fn render_status_text(
         writeln!(stdout, "METRICS").map_err(GharsError::Io)?;
         render_metrics_text(&mut stdout, metrics, false)?;
     }
+    if !scores.is_empty() {
+        if !metrics.is_empty() {
+            writeln!(stdout).map_err(GharsError::Io)?;
+        }
+        writeln!(stdout, "SECURITY").map_err(GharsError::Io)?;
+        render_score_text(&mut stdout, scores)?;
+    }
     Ok(status_exit_code(health))
 }
 
@@ -181,6 +204,7 @@ pub(super) fn render_status_json(
     health: &[preflight::CheckResult],
     runners: &state::ActualState,
     metrics: &[MetricRow],
+    scores: &[ScoreRow],
 ) -> Result<i32> {
     let health_json: Vec<serde_json::Value> = health
         .iter()
@@ -254,11 +278,33 @@ pub(super) fn render_status_json(
             })
         })
         .collect();
+    let scores_json: Vec<serde_json::Value> = scores
+        .iter()
+        .map(|s| {
+            // `score` and `label` are only present when the parse
+            // succeeded; the lookup-error case carries an `error`
+            // field in their place. Build the object conditionally
+            // so consumers can branch on key presence without
+            // sentinel values.
+            match &s.outcome {
+                ScoreOutcome::Ok { score, label } => serde_json::json!({
+                    "unit": s.unit,
+                    "score": score,
+                    "label": label,
+                }),
+                ScoreOutcome::Error(msg) => serde_json::json!({
+                    "unit": s.unit,
+                    "error": msg,
+                }),
+            }
+        })
+        .collect();
     let body = serde_json::json!({
         "health": health_json,
         "runners": runners_json,
         "external": runners.external,
         "metrics": metrics_json,
+        "security": scores_json,
     });
     let mut stdout = io::stdout().lock();
     // See render_plan_json: encode failures map to Io, not Config.
@@ -266,4 +312,471 @@ pub(super) fn render_status_json(
         .map_err(|e| GharsError::Io(io::Error::other(format!("encode status json: {e}"))))?;
     writeln!(stdout).map_err(GharsError::Io)?;
     Ok(status_exit_code(health))
+}
+
+// --- systemd-analyze security score collection -------------------------
+
+/// One row of `systemd-analyze security` output for a managed unit.
+///
+/// Holds the canonical unit name (`ghars-runner@<name>.service` /
+/// `ghars-cache@<name>.service`) plus the parser outcome — either a
+/// successful score-and-label pair or the lookup/parse error message.
+/// Errors are surfaced as a per-row entry rather than propagated up so
+/// one missing unit (e.g. a daemon-reload skipped after install) does
+/// not erase the report for the rest.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct ScoreRow {
+    pub(super) unit: String,
+    pub(super) outcome: ScoreOutcome,
+}
+
+/// Parse-or-error outcome for a single unit's `systemd-analyze` run.
+///
+/// `Ok { score, label }` carries the parsed numeric score and the
+/// adjacent label token (`SAFE`, `OK`, `MEDIUM`, `EXPOSED`, `UNSAFE`,
+/// etc.) lifted verbatim from the `→ Overall exposure level` line.
+/// `Error(msg)` records the cause of a per-unit failure (spawn
+/// failure, non-zero exit, missing summary line) so the renderer can
+/// surface it inline rather than dropping the row.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum ScoreOutcome {
+    Ok { score: f64, label: String },
+    Error(String),
+}
+
+/// Build the canonical unit-name list from a discovered actual state.
+///
+/// Wraps each runner `%i` in `ghars-runner@<name>.service` and each
+/// cache pool `%i` in `ghars-cache@<name>.service`. External
+/// (operator-managed) runner units are intentionally omitted because
+/// the score report is scoped to ghars-managed units only.
+fn score_unit_names(actual: &state::ActualState) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for name in actual.runners.keys() {
+        names.push(format!("ghars-runner@{name}.service"));
+    }
+    for name in actual.cache_pools.keys() {
+        names.push(format!("ghars-cache@{name}.service"));
+    }
+    names
+}
+
+/// Run `systemd-analyze security` against each unit and parse the
+/// `Overall exposure level` line out of every successful invocation.
+///
+/// `runner` is dependency-injected so tests can substitute a canned
+/// stdout/stderr without invoking the real binary; production passes
+/// [`run_systemd_analyze_security`].
+fn collect_score_rows<R>(units: &[String], runner: R) -> Vec<ScoreRow>
+where
+    R: Fn(&str) -> std::result::Result<String, String>,
+{
+    units
+        .iter()
+        .map(|unit| {
+            let outcome = match runner(unit) {
+                Ok(output) => match parse_overall_exposure(&output) {
+                    Some((score, label)) => ScoreOutcome::Ok { score, label },
+                    None => ScoreOutcome::Error(format!(
+                        "no `Overall exposure level` line in systemd-analyze output for {unit}"
+                    )),
+                },
+                Err(msg) => ScoreOutcome::Error(msg),
+            };
+            ScoreRow {
+                unit: unit.clone(),
+                outcome,
+            }
+        })
+        .collect()
+}
+
+/// Spawn `systemd-analyze security <unit>` and return its captured
+/// stdout. Failures (spawn error, non-zero exit) are returned as
+/// `Err(String)` so the caller can attach the message to the row's
+/// `ScoreOutcome::Error` arm.
+fn run_systemd_analyze_security(unit: &str) -> std::result::Result<String, String> {
+    let output = ProcCommand::new("systemd-analyze")
+        .arg("security")
+        .arg("--no-pager")
+        .arg(unit)
+        .output()
+        .map_err(|e| format!("spawn systemd-analyze: {e}"))?;
+    if !output.status.success() {
+        // Non-zero exit usually means the unit isn't loaded (e.g.
+        // daemon-reload skipped after install) or systemd-analyze
+        // itself rejected the request. Surface stderr so the
+        // operator sees the underlying cause inline rather than
+        // having to re-run the command manually.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let code = output.status.code().unwrap_or(-1);
+        return Err(format!(
+            "systemd-analyze exited {code} for {unit}: {}",
+            stderr.trim()
+        ));
+    }
+    String::from_utf8(output.stdout).map_err(|e| format!("systemd-analyze stdout not utf-8: {e}"))
+}
+
+/// Extract the numeric exposure score and label from the
+/// `→ Overall exposure level` summary line emitted by
+/// `systemd-analyze security`.
+///
+/// systemd-analyze prints (with the actual unicode arrow):
+///   `→ Overall exposure level for <unit>: <N.M> <LABEL> [emoji]`
+///
+/// where LABEL is one of `UNSAFE`, `EXPOSED`, `MEDIUM`, `OK`, `SAFE`.
+/// The label position is fixed (immediately after the score), and
+/// the trailing emoji (if any) is whitespace-separated, so we split
+/// on whitespace and take the next two tokens after the colon. The
+/// arrow byte sequence varies across systemd locales, so we anchor
+/// on the substring `Overall exposure level` rather than the leading
+/// glyph.
+///
+/// Returns `None` when the marker line is absent or the score after
+/// the colon does not parse as `f64` — the caller surfaces this as a
+/// per-row error.
+fn parse_overall_exposure(text: &str) -> Option<(f64, String)> {
+    for line in text.lines() {
+        let Some((_, after)) = line.split_once("Overall exposure level") else {
+            continue;
+        };
+        // Format: `... for <unit>: <score> <label> [emoji]`. The
+        // score is the first whitespace-separated token after the
+        // colon; the label is the second.
+        let after_colon = after.split_once(':').map(|(_, rest)| rest.trim())?;
+        let mut tokens = after_colon.split_whitespace();
+        let score_tok = tokens.next()?;
+        let label_tok = tokens.next()?;
+        let score: f64 = score_tok.parse().ok()?;
+        return Some((score, label_tok.to_owned()));
+    }
+    None
+}
+
+/// Render the SECURITY section as a small fixed-width table. One row
+/// per unit, plus an inline `error: ...` line for failed lookups so
+/// the operator sees the cause without consulting JSON / journald.
+fn render_score_text<W: Write>(stdout: &mut W, scores: &[ScoreRow]) -> Result<()> {
+    let unit_hdr = "unit";
+    let score_hdr = "score";
+    let label_hdr = "label";
+    writeln!(stdout, "  {unit_hdr:<40} {score_hdr:>5}  {label_hdr}").map_err(GharsError::Io)?;
+    for row in scores {
+        match &row.outcome {
+            ScoreOutcome::Ok { score, label } => {
+                writeln!(stdout, "  {:<40} {score:>5.1}  {label}", row.unit)
+                    .map_err(GharsError::Io)?;
+            }
+            ScoreOutcome::Error(msg) => {
+                writeln!(stdout, "  {:<40}    -   error: {msg}", row.unit)
+                    .map_err(GharsError::Io)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod score_tests {
+    //! Parser-only tests for the `--score` surface. These exercise
+    //! `parse_overall_exposure` and `collect_score_rows` directly with
+    //! canned `systemd-analyze` output / synthetic runner closures, so
+    //! none of them invoke the real `systemd-analyze` binary. The
+    //! production wrapper [`run_systemd_analyze_security`] is exercised
+    //! end-to-end by the operator (and by the `just sd-analyze`
+    //! recipe); covering the spawn path here would require a real
+    //! systemd-analyze installation and could not run in CI.
+
+    use super::*;
+
+    /// Canonical happy-path summary line — single-runner unit, score
+    /// 4.9 with the `OK` label and a trailing emoji. Pin the exact
+    /// score float so a regression that drops the decimal portion
+    /// (e.g. parses "4" before the period) surfaces as a value
+    /// mismatch, not just `Some(...)`.
+    #[test]
+    fn parse_overall_exposure_extracts_score_and_label() {
+        let output = "\
+Lots of lines above
+✓ RestrictRealtime=                                           Service realtime scheduling access is restricted
+✗ UMask=                                                      Files created by service are world-readable by default                                                   0.1
+
+→ Overall exposure level for ghars-runner@buckos.service: 4.9 OK 🙂
+";
+        let parsed = parse_overall_exposure(output).expect("must parse");
+        assert!(
+            (parsed.0 - 4.9).abs() < 1e-9,
+            "score must be 4.9, got {}",
+            parsed.0
+        );
+        assert_eq!(parsed.1, "OK");
+    }
+
+    /// systemd-analyze emits the score with a leading integer for
+    /// well-hardened units (e.g. `0.1 SAFE`). Pin that the integer
+    /// portion of "0.1" is preserved through the f64 parse — an
+    /// off-by-one substring slice would lose the leading 0 and
+    /// land on `.1`, which `f64::parse` accepts as 0.1 by accident
+    /// of the relaxed grammar; lock the exact value to 0.1.
+    #[test]
+    fn parse_overall_exposure_safe_label_preserves_decimal() {
+        let output =
+            "→ Overall exposure level for ghars-runner@hardened.service: 0.1 SAFE 😀\n";
+        let (score, label) = parse_overall_exposure(output).expect("must parse");
+        assert!((score - 0.1).abs() < 1e-9, "score must be 0.1; got {score}");
+        assert_eq!(label, "SAFE");
+    }
+
+    /// Multi-line preamble + the summary line at the end — pin that
+    /// the parser anchors on the marker substring rather than line
+    /// position. systemd-analyze appends the summary as the very last
+    /// line in real output; tests simulate that shape.
+    #[test]
+    fn parse_overall_exposure_finds_marker_at_end_of_text() {
+        let mut text = String::new();
+        for i in 0..50 {
+            text.push_str(&format!("preamble line {i}\n"));
+        }
+        text.push_str(
+            "→ Overall exposure level for ghars-cache@build.service: 7.2 EXPOSED 🙁\n",
+        );
+        let (score, label) = parse_overall_exposure(&text).expect("must parse");
+        assert!((score - 7.2).abs() < 1e-9);
+        assert_eq!(label, "EXPOSED");
+    }
+
+    /// No marker line → None. systemd-analyze without the security
+    /// subcommand prints a different summary; ensure the parser
+    /// returns None rather than panicking on `unwrap`.
+    #[test]
+    fn parse_overall_exposure_returns_none_when_marker_absent() {
+        let output = "Some unrelated systemd-analyze output\n  with no marker line\n";
+        assert!(parse_overall_exposure(output).is_none());
+    }
+
+    /// Score token that doesn't parse as f64 → None. Defends
+    /// against future systemd-analyze format changes (e.g. text
+    /// label inserted before the numeric score) without panicking.
+    #[test]
+    fn parse_overall_exposure_returns_none_on_unparseable_score() {
+        let output =
+            "→ Overall exposure level for ghars-runner@x.service: NOT-A-NUMBER OK 🙂\n";
+        assert!(parse_overall_exposure(output).is_none());
+    }
+
+    /// Empty input → None. Trivial but worth pinning so a future
+    /// implementation that defaults to 0.0 / "" doesn't slip through.
+    #[test]
+    fn parse_overall_exposure_returns_none_on_empty_input() {
+        assert!(parse_overall_exposure("").is_none());
+    }
+
+    /// Marker line missing the colon — malformed but possible if a
+    /// future systemd-analyze releases changes the separator.
+    /// Returns None rather than misparsing the unit name as the
+    /// score token.
+    #[test]
+    fn parse_overall_exposure_returns_none_when_colon_absent() {
+        let output = "→ Overall exposure level for ghars-runner@x.service 4.9 OK 🙂\n";
+        assert!(parse_overall_exposure(output).is_none());
+    }
+
+    /// Marker line with trailing label only (no numeric score) →
+    /// None. Defends the f64-parse failure path.
+    #[test]
+    fn parse_overall_exposure_returns_none_when_score_token_missing() {
+        let output = "→ Overall exposure level for ghars-runner@x.service: \n";
+        assert!(parse_overall_exposure(output).is_none());
+    }
+
+    /// Marker line with a score but no label → None. The format pin
+    /// requires both tokens; absent the label, the row is malformed
+    /// and the caller surfaces an error instead of a partial entry.
+    #[test]
+    fn parse_overall_exposure_returns_none_when_label_token_missing() {
+        let output = "→ Overall exposure level for ghars-runner@x.service: 4.9\n";
+        assert!(parse_overall_exposure(output).is_none());
+    }
+
+    /// `collect_score_rows` happy path: every unit returns a parseable
+    /// summary. Returned rows preserve the input order.
+    #[test]
+    fn collect_score_rows_preserves_order_on_success() {
+        let units = vec![
+            "ghars-runner@a.service".to_string(),
+            "ghars-runner@b.service".to_string(),
+            "ghars-cache@build.service".to_string(),
+        ];
+        let runner = |unit: &str| -> std::result::Result<String, String> {
+            Ok(format!(
+                "→ Overall exposure level for {unit}: 5.5 MEDIUM 🙂\n"
+            ))
+        };
+        let rows = collect_score_rows(&units, runner);
+        assert_eq!(rows.len(), 3);
+        for (row, expected_unit) in rows.iter().zip(units.iter()) {
+            assert_eq!(&row.unit, expected_unit);
+            match &row.outcome {
+                ScoreOutcome::Ok { score, label } => {
+                    assert!((score - 5.5).abs() < 1e-9);
+                    assert_eq!(label, "MEDIUM");
+                }
+                ScoreOutcome::Error(msg) => panic!("expected Ok, got Error({msg})"),
+            }
+        }
+    }
+
+    /// Per-unit lookup error → `Error` row, other rows still parse.
+    /// Pins the contract that one missing unit doesn't erase the
+    /// rest of the report.
+    #[test]
+    fn collect_score_rows_surfaces_per_unit_runner_error() {
+        let units = vec![
+            "ghars-runner@ok.service".to_string(),
+            "ghars-runner@missing.service".to_string(),
+        ];
+        let runner = |unit: &str| -> std::result::Result<String, String> {
+            if unit.contains("missing") {
+                Err("not loaded".to_string())
+            } else {
+                Ok(format!("→ Overall exposure level for {unit}: 1.5 OK 🙂\n"))
+            }
+        };
+        let rows = collect_score_rows(&units, runner);
+        assert_eq!(rows.len(), 2);
+        match &rows[0].outcome {
+            ScoreOutcome::Ok { score, label } => {
+                assert!((score - 1.5).abs() < 1e-9);
+                assert_eq!(label, "OK");
+            }
+            ScoreOutcome::Error(msg) => panic!("expected Ok, got Error({msg})"),
+        }
+        match &rows[1].outcome {
+            ScoreOutcome::Error(msg) => assert!(
+                msg.contains("not loaded"),
+                "error msg must propagate runner failure: {msg}"
+            ),
+            ScoreOutcome::Ok { score, label } => {
+                panic!("expected Error, got Ok {{ score: {score}, label: {label:?} }}")
+            }
+        }
+    }
+
+    /// Runner returns successful stdout but the parser cannot find
+    /// a marker line → `Error` row carrying a parser-side message.
+    /// Distinguishes "spawn failed" from "spawn succeeded but
+    /// output was unexpected".
+    #[test]
+    fn collect_score_rows_surfaces_parser_error_on_unrecognized_output() {
+        let units = vec!["ghars-runner@x.service".to_string()];
+        let runner = |_unit: &str| -> std::result::Result<String, String> {
+            Ok("nothing useful here\n".to_string())
+        };
+        let rows = collect_score_rows(&units, runner);
+        assert_eq!(rows.len(), 1);
+        match &rows[0].outcome {
+            ScoreOutcome::Error(msg) => assert!(
+                msg.contains("Overall exposure level"),
+                "parser error must mention the missing marker: {msg}"
+            ),
+            ScoreOutcome::Ok { score, label } => {
+                panic!("expected Error, got Ok {{ score: {score}, label: {label:?} }}")
+            }
+        }
+    }
+
+    /// `score_unit_names` covers both runner and cache pool maps. The
+    /// runner-template prefix is `ghars-runner@`, the cache-template
+    /// prefix is `ghars-cache@`. External (operator-managed) entries
+    /// are intentionally omitted.
+    #[test]
+    fn score_unit_names_wraps_runners_and_cache_pools() {
+        let mut actual = state::ActualState::default();
+        actual.runners.insert(
+            "alpha".into(),
+            state::DiscoveredRunner {
+                name: "alpha".into(),
+                spec_hash: String::new(),
+                on_disk_unit_text: String::new(),
+                drop_ins: std::collections::BTreeMap::new(),
+                running: false,
+                enabled: false,
+                drift: state::Drift::InSync,
+            },
+        );
+        actual.runners.insert(
+            "beta".into(),
+            state::DiscoveredRunner {
+                name: "beta".into(),
+                spec_hash: String::new(),
+                on_disk_unit_text: String::new(),
+                drop_ins: std::collections::BTreeMap::new(),
+                running: false,
+                enabled: false,
+                drift: state::Drift::InSync,
+            },
+        );
+        actual.cache_pools.insert(
+            "build".into(),
+            state::DiscoveredCachePool {
+                name: "build".into(),
+                spec_hash: String::new(),
+                drop_ins: std::collections::BTreeMap::new(),
+                running: false,
+                enabled: false,
+                drift: state::Drift::InSync,
+            },
+        );
+        actual.external.push("external-runner".into());
+
+        let units = score_unit_names(&actual);
+        assert_eq!(
+            units,
+            vec![
+                "ghars-runner@alpha.service".to_string(),
+                "ghars-runner@beta.service".to_string(),
+                "ghars-cache@build.service".to_string(),
+            ],
+            "score_unit_names must wrap runner + cache pool keys with the canonical \
+             template-instance prefixes and omit external operator-managed units"
+        );
+    }
+
+    /// `render_score_text` happy path emits a header + one row per
+    /// unit with the score formatted to one decimal. Pin the exact
+    /// rendered shape so future changes to the column widths surface
+    /// here rather than as a doc/code drift.
+    #[test]
+    fn render_score_text_renders_table_header_and_rows() {
+        let scores = vec![
+            ScoreRow {
+                unit: "ghars-runner@buckos.service".into(),
+                outcome: ScoreOutcome::Ok {
+                    score: 4.9,
+                    label: "OK".into(),
+                },
+            },
+            ScoreRow {
+                unit: "ghars-cache@build.service".into(),
+                outcome: ScoreOutcome::Error("not loaded".into()),
+            },
+        ];
+        let mut buf: Vec<u8> = Vec::new();
+        render_score_text(&mut buf, &scores).expect("render must succeed");
+        let out = String::from_utf8(buf).expect("output must be utf-8");
+        assert!(
+            out.contains("unit") && out.contains("score") && out.contains("label"),
+            "header line must include the column titles; got: {out}"
+        );
+        assert!(
+            out.contains("ghars-runner@buckos.service") && out.contains("4.9") && out.contains("OK"),
+            "Ok row must include the unit name, formatted score, and label; got: {out}"
+        );
+        assert!(
+            out.contains("ghars-cache@build.service") && out.contains("error: not loaded"),
+            "Error row must include the unit name and the error message; got: {out}"
+        );
+    }
 }
