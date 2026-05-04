@@ -16,7 +16,7 @@ use super::cmd_metrics::{MetricRow, collect_metrics, render_metrics_text};
 use super::exit_codes::status_exit_code;
 use super::load::load_config;
 
-pub(crate) fn cmd_status(
+pub(super) fn cmd_status(
     config_path: &Utf8Path,
     paths: &Paths,
     args: &StatusArgs,
@@ -99,7 +99,7 @@ pub(crate) fn cmd_status(
     render_status_text(&health, &runners, &metrics_rows, &args.names)
 }
 
-pub(crate) fn render_status_text(
+pub(super) fn render_status_text(
     health: &[preflight::CheckResult],
     runners: &state::ActualState,
     metrics: &[MetricRow],
@@ -177,7 +177,7 @@ pub(crate) fn render_status_text(
     Ok(status_exit_code(health))
 }
 
-pub(crate) fn render_status_json(
+pub(super) fn render_status_json(
     health: &[preflight::CheckResult],
     runners: &state::ActualState,
     metrics: &[MetricRow],

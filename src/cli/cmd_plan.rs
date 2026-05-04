@@ -18,7 +18,7 @@ use super::exit_codes::dry_run_exit_code;
 use super::load::{build_auth_registry, load_config};
 use super::render::render_plan;
 
-pub(crate) fn cmd_validate(
+pub(super) fn cmd_validate(
     config_path: &Utf8Path,
     args: &ValidateArgs,
     quiet: bool,
@@ -81,7 +81,7 @@ pub(crate) fn cmd_validate(
     Ok(0)
 }
 
-pub(crate) fn cmd_plan(
+pub(super) fn cmd_plan(
     config_path: &Utf8Path,
     paths: &Paths,
     args: &PlanArgs,
@@ -124,7 +124,7 @@ pub(crate) fn cmd_plan(
 /// the hint so `Display` of the resulting `GharsError::Validation`
 /// includes the actionable instruction (run as root or grant a
 /// polkit policy).
-pub(crate) fn open_dbus() -> Result<DbusSystemd> {
+pub(super) fn open_dbus() -> Result<DbusSystemd> {
     DbusSystemd::new().map_err(|e| match e {
         GharsError::Systemd(msg, _) => GharsError::Validation(
             format!("ghars plan / apply requires system D-Bus access: {msg}"),
@@ -137,7 +137,7 @@ pub(crate) fn open_dbus() -> Result<DbusSystemd> {
     })
 }
 
-pub(crate) fn compute_plan(cfg: &Config, paths: &Paths, only: &[String]) -> Result<Plan> {
+pub(super) fn compute_plan(cfg: &Config, paths: &Paths, only: &[String]) -> Result<Plan> {
     let systemd = open_dbus()?;
     let actual = state::discover(&systemd, paths)?;
     let mut plan = plan::plan_from(cfg, &actual, paths)?;
@@ -155,7 +155,7 @@ pub(crate) fn compute_plan(cfg: &Config, paths: &Paths, only: &[String]) -> Resu
     Ok(plan)
 }
 
-pub(crate) fn action_matches_filter(action: &Action, only: &[String]) -> bool {
+pub(super) fn action_matches_filter(action: &Action, only: &[String]) -> bool {
     let label = action.label();
     only.iter().any(|frag| label.contains(frag.as_str()))
 }

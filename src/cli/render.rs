@@ -16,7 +16,7 @@ use crate::plan::{self, Action, Plan};
 use super::args::ColorMode;
 use super::json::render_plan_json;
 
-pub(crate) fn render_plan(
+pub(super) fn render_plan(
     plan: &Plan,
     color: ColorMode,
     json: bool,
@@ -79,7 +79,7 @@ pub(crate) fn render_plan(
 /// contract). `Some(empty_iter)` ⇒ the discovered
 /// drop-in directory was present but empty / fully reused, no
 /// Removed entries.
-pub(crate) fn recreate_removed_basenames(
+pub(super) fn recreate_removed_basenames(
     d: &plan::RunnerDelta,
 ) -> Option<impl Iterator<Item = &String>> {
     d.before_drop_in_basenames.as_ref().map(|before| {
@@ -110,7 +110,7 @@ pub(crate) fn recreate_removed_basenames(
 /// produce noise; named-field tokens stay silent because
 /// `field_changes` already shows the before→after pair on the
 /// preceding line.
-pub(crate) fn recreate_reason_note(reason: &str) -> Option<&'static str> {
+pub(super) fn recreate_reason_note(reason: &str) -> Option<&'static str> {
     match reason {
         "uncovered" => Some(
             "spec hash differs but no field-level change was detected; \
@@ -142,7 +142,7 @@ pub(crate) fn recreate_reason_note(reason: &str) -> Option<&'static str> {
 /// actions" pipeline, grep `[recreate]` on the trailing bracket tag
 /// instead — that matches `+`/`-`/`!` lines plus `[recreate]`-tagged
 /// pool actions in one pass.
-pub(crate) fn render_action_line(action: &Action, color: ColorMode, diff: bool) -> String {
+pub(super) fn render_action_line(action: &Action, color: ColorMode, diff: bool) -> String {
     let (sigil, summary, ansi) = match action {
         Action::CreateRunner(p) => ('+', format!("runner {} (create)", p.spec.name), "\x1b[32m"),
         Action::UpdateRunner(d) => {
@@ -445,7 +445,7 @@ pub(crate) fn render_action_line(action: &Action, color: ColorMode, diff: bool) 
 /// attachments) without redaction. Symmetric with the `# Security`
 /// caveat on `plan_to_json_value`. SEC-NEW: --diff body output may
 /// expose proxy credentials from 60-proxy.conf.
-pub(crate) fn render_drop_in_body_block(kind: &plan::DropInChangeKind, color: ColorMode) -> String {
+pub(super) fn render_drop_in_body_block(kind: &plan::DropInChangeKind, color: ColorMode) -> String {
     let mut out = String::new();
     match kind {
         plan::DropInChangeKind::Preserved => {
@@ -500,7 +500,7 @@ pub(crate) fn render_drop_in_body_block(kind: &plan::DropInChangeKind, color: Co
 /// and the line-terminating `\n` (intentional, structural) intact
 /// — only the line CONTENT is escaped. The body's own newlines
 /// already separate visible lines via the `body.lines()` iterator.
-pub(crate) fn push_indented_body(out: &mut String, body: &str) {
+pub(super) fn push_indented_body(out: &mut String, body: &str) {
     if body.is_empty() {
         return;
     }
@@ -540,7 +540,7 @@ pub(crate) fn push_indented_body(out: &mut String, body: &str) {
 /// bold/cyan headers, not red/green). The branch order below
 /// checks the multi-char `+++`/`---` prefixes BEFORE the
 /// single-char `+`/`-` so headers route correctly.
-pub(crate) fn push_indented_unified_diff(out: &mut String, body: &str, color: ColorMode) {
+pub(super) fn push_indented_unified_diff(out: &mut String, body: &str, color: ColorMode) {
     if body.is_empty() {
         return;
     }
@@ -609,7 +609,7 @@ pub(crate) fn push_indented_unified_diff(out: &mut String, body: &str, color: Co
 /// `format_disruption_tail` — the single source of truth
 /// for the format string shared with `render_apply_summary_line`.
 #[must_use]
-pub(crate) fn render_plan_summary_line(actions: &[Action]) -> String {
+pub(super) fn render_plan_summary_line(actions: &[Action]) -> String {
     let mut none_count: u64 = 0;
     let mut restart_count: u64 = 0;
     let mut recreate_count: u64 = 0;
@@ -639,7 +639,7 @@ pub(crate) fn render_plan_summary_line(actions: &[Action]) -> String {
 /// (most-actionable-first for operator scanning), matching both
 /// callers. `any_recreate` is `true` ⇔ `recreate > 0`.
 #[must_use]
-pub(crate) fn format_disruption_tail(none: u64, restart: u64, recreate: u64) -> String {
+pub(super) fn format_disruption_tail(none: u64, restart: u64, recreate: u64) -> String {
     let any_recreate = recreate > 0;
     format!(
         "({restart} {restart_label}, {recreate} {recreate_label}, \
@@ -703,7 +703,7 @@ pub(crate) fn format_disruption_tail(none: u64, restart: u64, recreate: u64) -> 
 /// (`applied + failed + skipped`) may therefore be less than the
 /// originating plan's action count.
 #[must_use]
-pub(crate) fn render_apply_summary_line(result: &apply::ApplyResult) -> String {
+pub(super) fn render_apply_summary_line(result: &apply::ApplyResult) -> String {
     let mut applied: u64 = 0;
     let mut failed: u64 = 0;
     let mut skipped: u64 = 0;
@@ -790,7 +790,7 @@ pub(crate) fn render_apply_summary_line(result: &apply::ApplyResult) -> String {
 /// programmatic consumers (exit-code mapping, undo log advisory); the
 /// per-action rendering loop reads `result.details` exclusively, per
 /// the contract documented at [`apply::ApplyResult::details`].
-pub(crate) fn render_apply_emission(
+pub(super) fn render_apply_emission(
     result: &apply::ApplyResult,
     stdout: &mut impl std::io::Write,
     stderr: &mut impl std::io::Write,
@@ -989,6 +989,6 @@ pub(crate) fn render_rollback_advisory(result: &apply::ApplyResult) -> Option<St
 /// Naming follows the project's `format_*` precedent for pure
 /// string-building helpers (e.g. `format_disruption_tail` /
 /// peers in `render_plan_summary_line`).
-pub(crate) fn format_rollback_advisory_header(n: usize) -> String {
+pub(super) fn format_rollback_advisory_header(n: usize) -> String {
     format!("Rollback advisory: {n} action(s) failed. Manual cleanup may be required:")
 }

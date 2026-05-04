@@ -101,7 +101,7 @@ pub fn verbose_to_filter_level(quiet: bool, verbose: u8) -> &'static str {
 /// `render_status_text` and `render_status_json` delegate to keep the
 /// same exit-code contract regardless of output format.
 #[must_use]
-pub(crate) fn status_exit_code(health: &[preflight::CheckResult]) -> i32 {
+pub(super) fn status_exit_code(health: &[preflight::CheckResult]) -> i32 {
     if health
         .iter()
         .any(|c| matches!(c.outcome, preflight::Outcome::Fail))
@@ -142,7 +142,7 @@ pub(crate) fn status_exit_code(health: &[preflight::CheckResult]) -> i32 {
 /// `.or_else(|| ...)` with the existing helpers without sprinkling
 /// early returns across the command-dispatch path.
 #[must_use]
-pub(crate) fn recreate_exit_code(detailed_exitcode_recreate: bool, plan: &Plan) -> Option<i32> {
+pub(super) fn recreate_exit_code(detailed_exitcode_recreate: bool, plan: &Plan) -> Option<i32> {
     if detailed_exitcode_recreate && plan.has_recreate() {
         Some(8)
     } else {
@@ -169,7 +169,7 @@ pub(crate) fn recreate_exit_code(detailed_exitcode_recreate: bool, plan: &Plan) 
 /// strictly more informative than 2 (recreate implies pending
 /// changes, but pending changes do not imply recreate).
 #[must_use]
-pub(crate) fn cancel_exit_code(
+pub(super) fn cancel_exit_code(
     detailed_exitcode: bool,
     detailed_exitcode_recreate: bool,
     plan: &Plan,
@@ -194,7 +194,7 @@ pub(crate) fn cancel_exit_code(
 /// - else `detailed_exitcode = true`, plan all-NoOp                  → 0
 /// - else `detailed_exitcode = true`, plan has any non-NoOp action   → 2
 #[must_use]
-pub(crate) fn dry_run_exit_code(
+pub(super) fn dry_run_exit_code(
     detailed_exitcode: bool,
     detailed_exitcode_recreate: bool,
     plan: &Plan,
@@ -250,7 +250,7 @@ pub(crate) fn dry_run_exit_code(
 /// call sites aligned with the underlying state-machine reading order
 /// ("which gates are armed?" → "what does the data say?").
 #[must_use]
-pub(crate) fn apply_exit_code(
+pub(super) fn apply_exit_code(
     detailed_exitcode: bool,
     detailed_exitcode_recreate: bool,
     result: &apply::ApplyResult,

@@ -318,7 +318,7 @@ pub struct ColorMode {
 }
 
 impl ColorMode {
-    pub(crate) fn from_cli(no_color_flag: bool) -> Self {
+    pub(super) fn from_cli(no_color_flag: bool) -> Self {
         let no_color_env = std::env::var_os("NO_COLOR").is_some();
         let stdout_tty = io::stdout().is_terminal();
         Self {

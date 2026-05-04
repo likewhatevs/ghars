@@ -17,7 +17,7 @@ use super::exit_codes::{apply_exit_code, cancel_exit_code, dry_run_exit_code, re
 use super::load::{build_auth_registry, load_config};
 use super::render::{render_apply_emission, render_plan};
 
-pub(crate) fn cmd_apply(
+pub(super) fn cmd_apply(
     config_path: &Utf8Path,
     paths: &Paths,
     args: &ApplyArgs,
@@ -134,7 +134,7 @@ pub(crate) fn cmd_apply(
     ))
 }
 
-pub(crate) fn confirm_apply() -> Result<bool> {
+pub(super) fn confirm_apply() -> Result<bool> {
     // Detect a non-TTY stdin BEFORE blocking on read_line. When
     // ghars apply is launched from a script / cron / systemd one-shot
     // without --auto-approve, stdin is typically /dev/null or a pipe;

@@ -44,7 +44,7 @@ token_env = \"GHARS_PAT\"
 # labels = [\"x64\"]
 ";
 
-pub(crate) fn cmd_init(config_path: &Utf8Path, args: &InitArgs, quiet: bool) -> Result<i32> {
+pub(super) fn cmd_init(config_path: &Utf8Path, args: &InitArgs, quiet: bool) -> Result<i32> {
     let dest = args
         .output
         .clone()
@@ -101,7 +101,7 @@ pub(crate) fn cmd_init(config_path: &Utf8Path, args: &InitArgs, quiet: bool) -> 
 /// `validate_url`, `validate_labels`) already reject the offending
 /// characters, but defense-in-depth — a future relaxation of any of
 /// those regexes must not regress into TOML injection here.
-pub(crate) fn toml_basic_string_escape(s: &str) -> String {
+pub(super) fn toml_basic_string_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
@@ -124,7 +124,7 @@ pub(crate) fn toml_basic_string_escape(s: &str) -> String {
     out
 }
 
-pub(crate) fn cmd_add(
+pub(super) fn cmd_add(
     config_path: &Utf8Path,
     paths: &Paths,
     args: &AddArgs,
@@ -248,7 +248,7 @@ pub(crate) fn cmd_add(
 
 // ---------- logs --------------------------------------------------------
 
-pub(crate) fn cmd_logs(paths: &Paths, args: &LogsArgs) -> Result<i32> {
+pub(super) fn cmd_logs(paths: &Paths, args: &LogsArgs) -> Result<i32> {
     let names = if args.names.is_empty() {
         match DbusSystemd::new() {
             Ok(s) => state::discover(&s, paths)?
@@ -319,7 +319,7 @@ pub(crate) fn cmd_logs(paths: &Paths, args: &LogsArgs) -> Result<i32> {
 
 // ---------- completions / manpages --------------------------------------
 
-pub(crate) fn cmd_completions(shell: clap_complete::Shell) {
+pub(super) fn cmd_completions(shell: clap_complete::Shell) {
     cmd_completions_to(shell, &mut io::stdout());
 }
 
@@ -327,13 +327,13 @@ pub(crate) fn cmd_completions(shell: clap_complete::Shell) {
 /// pass a `Vec<u8>` to capture the generated shell-completion script
 /// and assert the per-shell preamble lands as expected. Production
 /// always passes `io::stdout()`.
-pub(crate) fn cmd_completions_to<W: io::Write>(shell: clap_complete::Shell, w: &mut W) {
+pub(super) fn cmd_completions_to<W: io::Write>(shell: clap_complete::Shell, w: &mut W) {
     let mut cmd = Cli::command();
     let bin_name = cmd.get_name().to_owned();
     clap_complete::generate(shell, &mut cmd, bin_name, w);
 }
 
-pub(crate) fn cmd_manpages(output: &Utf8Path) -> Result<i32> {
+pub(super) fn cmd_manpages(output: &Utf8Path) -> Result<i32> {
     fs::create_dir_all(output.as_std_path())?;
     let cmd = Cli::command();
     let man = clap_mangen::Man::new(cmd.clone());

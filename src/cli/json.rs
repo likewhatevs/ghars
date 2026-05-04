@@ -75,7 +75,7 @@ use super::render::recreate_removed_basenames;
 /// }
 /// ```
 #[must_use]
-pub(crate) fn plan_to_json_value(plan: &Plan, diff: bool) -> serde_json::Value {
+pub(super) fn plan_to_json_value(plan: &Plan, diff: bool) -> serde_json::Value {
     let actions: Vec<serde_json::Value> = plan
         .actions
         .iter()
@@ -342,7 +342,7 @@ pub(crate) fn plan_to_json_value(plan: &Plan, diff: bool) -> serde_json::Value {
 /// derives from `!recreates.is_empty()`. The for-variant loop
 /// only counts the two non-recreate variants, removing a redundant
 /// filter pass and a `mut` bool.
-pub(crate) fn plan_summary_value(actions: &[Action]) -> serde_json::Value {
+pub(super) fn plan_summary_value(actions: &[Action]) -> serde_json::Value {
     let mut recreates: Vec<String> = actions
         .iter()
         .filter(|a| a.disruption() == plan::Disruption::Recreate)
@@ -372,7 +372,7 @@ pub(crate) fn plan_summary_value(actions: &[Action]) -> serde_json::Value {
 /// outside the enum's own match arms — used by `plan_summary_value`
 /// for JSON keys, `render_plan` for the text-mode footer, and
 /// future code that needs the same ordering.
-pub(crate) fn disruption_summary_variants() -> [plan::Disruption; 3] {
+pub(super) fn disruption_summary_variants() -> [plan::Disruption; 3] {
     [
         plan::Disruption::None,
         plan::Disruption::Restart,
@@ -386,7 +386,7 @@ pub(crate) fn disruption_summary_variants() -> [plan::Disruption; 3] {
 /// variant: `after` for Created, `before` for Removed,
 /// `unified_diff` for Modified. Preserved adds nothing — the
 /// basename + `"preserved"` `change_kind` is the entire payload.
-pub(crate) fn drop_in_change_to_json(dc: &plan::DropInChange, diff: bool) -> serde_json::Value {
+pub(super) fn drop_in_change_to_json(dc: &plan::DropInChange, diff: bool) -> serde_json::Value {
     let change_kind = match dc.change {
         plan::DropInChangeKind::Created { .. } => "created",
         plan::DropInChangeKind::Modified { .. } => "modified",
@@ -443,7 +443,7 @@ pub(crate) fn drop_in_change_to_json(dc: &plan::DropInChange, diff: bool) -> ser
     serde_json::Value::Object(obj)
 }
 
-pub(crate) fn render_plan_json(plan: &Plan, diff: bool) -> Result<()> {
+pub(super) fn render_plan_json(plan: &Plan, diff: bool) -> Result<()> {
     let body = plan_to_json_value(plan, diff);
     let mut stdout = io::stdout().lock();
     // serde_json encode failures here are internal encoder failures

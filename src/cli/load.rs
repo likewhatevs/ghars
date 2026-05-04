@@ -22,7 +22,7 @@ use crate::validators;
 /// Load config.toml from `path` using `toml::from_str` +
 /// `std::fs::read_to_string`. The library `config::load` is still a
 /// stub; the CLI does the IO.
-pub(crate) fn load_config(path: &Utf8Path) -> Result<Config> {
+pub(super) fn load_config(path: &Utf8Path) -> Result<Config> {
     let raw = fs::read_to_string(path.as_std_path()).map_err(|e| {
         GharsError::Config(
             format!("read {path}: {e}"),
@@ -126,7 +126,7 @@ pub(crate) fn load_config(path: &Utf8Path) -> Result<Config> {
 /// Build the auth registry — one `TokenSource` per `[auth.NAME]` block.
 /// Each source is constructed eagerly so `validate --deep` and `apply`
 /// surface env / file-mode misconfiguration before any GitHub call.
-pub(crate) fn build_auth_registry(
+pub(super) fn build_auth_registry(
     auth: &indexmap::IndexMap<String, AuthSpec>,
 ) -> Result<HashMap<String, Box<dyn TokenSource>>> {
     let mut out: HashMap<String, Box<dyn TokenSource>> = HashMap::with_capacity(auth.len());
@@ -163,7 +163,7 @@ pub(crate) fn build_auth_registry(
 /// `GharsError::Validation` wrapping the underlying validator error.
 /// The wrapper prepends `"defaults: "` or `"runner NAME: "` so the
 /// operator can locate the offending block in their TOML.
-pub(crate) fn validate_security_overrides(cfg: &Config) -> Result<()> {
+pub(super) fn validate_security_overrides(cfg: &Config) -> Result<()> {
     // [defaults.hardening]
     validate_hardening_block(&cfg.defaults.hardening)
         .map_err(|e| crate::error::prepend_validation_scope("defaults", e))?;
@@ -185,13 +185,13 @@ pub(crate) fn validate_security_overrides(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn validate_hardening_block(h: &Hardening) -> Result<()> {
+pub(super) fn validate_hardening_block(h: &Hardening) -> Result<()> {
     validators::validate_extra_capabilities(&h.extra_capabilities)?;
     validators::validate_extra_bind_paths(&h.extra_bind_paths)?;
     Ok(())
 }
 
-pub(crate) fn validate_hooks_block(h: &HooksSpec) -> Result<()> {
+pub(super) fn validate_hooks_block(h: &HooksSpec) -> Result<()> {
     if let Some(pre) = h.pre_job.as_ref() {
         validators::validate_hook_script(pre.as_path())?;
     }
@@ -222,7 +222,7 @@ pub(crate) fn validate_hooks_block(h: &HooksSpec) -> Result<()> {
 ///
 /// `GharsError::Validation` naming the runner and the duplicated pool
 /// name. The hint tells the operator to remove the duplicate entry.
-pub(crate) fn validate_no_duplicate_caches(cfg: &Config) -> Result<()> {
+pub(super) fn validate_no_duplicate_caches(cfg: &Config) -> Result<()> {
     for runner in &cfg.runners {
         let mut seen: HashSet<&str> = HashSet::with_capacity(runner.caches.len());
         for cache in &runner.caches {
@@ -263,7 +263,7 @@ pub(crate) fn validate_no_duplicate_caches(cfg: &Config) -> Result<()> {
 ///
 /// `GharsError::Validation` naming the runner and the conflicting
 /// sccache pools. The hint tells the operator to merge or drop one.
-pub(crate) fn validate_single_sccache_pool_per_runner(cfg: &Config) -> Result<()> {
+pub(super) fn validate_single_sccache_pool_per_runner(cfg: &Config) -> Result<()> {
     use crate::config::CacheKind;
     for runner in &cfg.runners {
         let mut sccache_refs: Vec<&str> = Vec::new();
@@ -314,7 +314,7 @@ pub(crate) fn validate_single_sccache_pool_per_runner(cfg: &Config) -> Result<()
 ///
 /// `GharsError::Validation` wrapping `validators::validate_cache_pool_name`
 /// with the `cache_pool "NAME":` or `runner "NAME" caches[]:` scope prefix.
-pub(crate) fn validate_cache_pool_names(cfg: &Config) -> Result<()> {
+pub(super) fn validate_cache_pool_names(cfg: &Config) -> Result<()> {
     for name in cfg.cache_pools.keys() {
         let scope = format!("cache_pool {name:?}");
         validators::validate_cache_pool_name(name)
@@ -350,7 +350,7 @@ pub(crate) fn validate_cache_pool_names(cfg: &Config) -> Result<()> {
 ///
 /// `GharsError::Validation` wrapping `validators::validate_runner_name`
 /// with the `runner "NAME":` scope prefix.
-pub(crate) fn validate_runner_names(cfg: &Config) -> Result<()> {
+pub(super) fn validate_runner_names(cfg: &Config) -> Result<()> {
     for runner in &cfg.runners {
         let scope = format!("runner {:?}", runner.name);
         validators::validate_runner_name(&runner.name)
@@ -375,7 +375,7 @@ pub(crate) fn validate_runner_names(cfg: &Config) -> Result<()> {
 /// portable shell exports the name, so apply surfaces a misleading
 /// "env var unset" diagnostic (`std::env::var` returns `NotPresent`)
 /// on inputs like embedded whitespace, dashes, or other punctuation.
-pub(crate) static POSIX_ENV_VAR_NAME_RE: LazyLock<Regex> = LazyLock::new(|| {
+pub(super) static POSIX_ENV_VAR_NAME_RE: LazyLock<Regex> = LazyLock::new(|| {
     #[allow(clippy::expect_used)]
     Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*$")
         .expect("POSIX env var name regex is a compile-time constant")
@@ -435,7 +435,7 @@ const TOKEN_FILE_HINT: &str = "set token_file to the absolute path of a 0600 roo
 /// ZWSP/ZWNJ/ZWJ/LRM/RLM/bidi-control blocks, WJ + invisible math
 /// operators, bidi isolates, BOM); the Mn-class arm covers all
 /// combining marks (`NonspacingMark`) — none of which are in Cc.
-pub(crate) fn is_disallowed_hidden_char(c: char) -> bool {
+pub(super) fn is_disallowed_hidden_char(c: char) -> bool {
     matches!(
         c,
         '\u{0000}'
@@ -542,7 +542,7 @@ pub(crate) fn is_disallowed_hidden_char(c: char) -> bool {
 /// `GharsError::Validation` wrapping a hint specific to the offending
 /// field — empty/whitespace, mutual-exclusivity, or missing-field —
 /// scoped to `[auth.NAME]`.
-pub(crate) fn validate_pat_xor(cfg: &Config) -> Result<()> {
+pub(super) fn validate_pat_xor(cfg: &Config) -> Result<()> {
     for (name, spec) in &cfg.auth {
         if let AuthSpec::Pat {
             token_env,
@@ -749,7 +749,7 @@ pub(crate) fn validate_pat_xor(cfg: &Config) -> Result<()> {
 ///
 /// `GharsError::Validation` wrapping the underlying `validate_identifier`
 /// error with the `auth "NAME"` scope prefix.
-pub(crate) fn validate_auth_keys(cfg: &Config) -> Result<()> {
+pub(super) fn validate_auth_keys(cfg: &Config) -> Result<()> {
     for name in cfg.auth.keys() {
         let scope = format!("auth {name:?}");
         validators::validate_identifier(name)
@@ -782,7 +782,7 @@ pub(crate) fn validate_auth_keys(cfg: &Config) -> Result<()> {
 ///
 /// `GharsError::Validation` wrapping the underlying validator error
 /// with the `runner "NAME"` scope prefix.
-pub(crate) fn validate_runner_tarballs(cfg: &Config) -> Result<()> {
+pub(super) fn validate_runner_tarballs(cfg: &Config) -> Result<()> {
     for runner in &cfg.runners {
         if let Some(p) = runner.runner_tarball.as_ref() {
             let scope = format!("runner {:?}", runner.name);
@@ -833,7 +833,7 @@ pub(crate) fn validate_runner_tarballs(cfg: &Config) -> Result<()> {
 /// `GharsError::Validation` wrapping a message naming both the
 /// `IFNAMSIZ` source and the actual oversize length, with the
 /// `runner "NAME":` scope prefix.
-pub(crate) fn validate_netns_runner_name_lengths(cfg: &Config) -> Result<()> {
+pub(super) fn validate_netns_runner_name_lengths(cfg: &Config) -> Result<()> {
     use crate::config::NetworkMode;
     for runner in &cfg.runners {
         // Resolve effective network reference: per-runner override
@@ -942,7 +942,7 @@ pub(crate) fn validate_netns_runner_name_lengths(cfg: &Config) -> Result<()> {
 ///
 /// `GharsError::Validation` wrapping the underlying `check_identity_field`
 /// error with the scope prefix (`runner "NAME":` / `cache_pool "NAME":`).
-pub(crate) fn validate_identity_fields(cfg: &Config) -> Result<()> {
+pub(super) fn validate_identity_fields(cfg: &Config) -> Result<()> {
     for runner in &cfg.runners {
         let scope = format!("runner {:?}", runner.name);
         crate::systemd::check_identity_field("trust_zone", &runner.trust_zone)
@@ -974,7 +974,7 @@ pub(crate) fn validate_identity_fields(cfg: &Config) -> Result<()> {
 ///
 /// `GharsError::Validation` wrapping the underlying validator error
 /// with the `runner "NAME":` / `cache_pool "NAME":` scope prefix.
-pub(crate) fn validate_trust_zone_lengths(cfg: &Config) -> Result<()> {
+pub(super) fn validate_trust_zone_lengths(cfg: &Config) -> Result<()> {
     for runner in &cfg.runners {
         let scope = format!("runner {:?}", runner.name);
         validators::validate_trust_zone(&runner.trust_zone)

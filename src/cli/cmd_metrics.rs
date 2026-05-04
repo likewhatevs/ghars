@@ -19,16 +19,16 @@ use zbus::zvariant::OwnedObjectPath;
 use super::args::MetricsArgs;
 
 #[derive(Debug, Default, Clone)]
-pub(crate) struct MetricRow {
-    pub(crate) name: String,
-    pub(crate) memory_bytes: u64,
-    pub(crate) cpu_nsec: u64,
-    pub(crate) io_read_bytes: u64,
-    pub(crate) io_write_bytes: u64,
-    pub(crate) tasks: u64,
+pub(super) struct MetricRow {
+    pub(super) name: String,
+    pub(super) memory_bytes: u64,
+    pub(super) cpu_nsec: u64,
+    pub(super) io_read_bytes: u64,
+    pub(super) io_write_bytes: u64,
+    pub(super) tasks: u64,
 }
 
-pub(crate) fn cmd_metrics(paths: &Paths, args: &MetricsArgs) -> Result<i32> {
+pub(super) fn cmd_metrics(paths: &Paths, args: &MetricsArgs) -> Result<i32> {
     let names = if args.names.is_empty() {
         match DbusSystemd::new() {
             Ok(s) => state::discover(&s, paths)?
@@ -74,7 +74,7 @@ pub(crate) fn cmd_metrics(paths: &Paths, args: &MetricsArgs) -> Result<i32> {
     Ok(0)
 }
 
-pub(crate) fn collect_metrics(names: &[String]) -> Result<Vec<MetricRow>> {
+pub(super) fn collect_metrics(names: &[String]) -> Result<Vec<MetricRow>> {
     let connection = Connection::system().map_err(|e| {
         GharsError::Systemd(
             format!("system D-Bus connect failed: {e}"),
@@ -116,7 +116,7 @@ pub(crate) fn collect_metrics(names: &[String]) -> Result<Vec<MetricRow>> {
     Ok(rows)
 }
 
-pub(crate) fn read_metrics(
+pub(super) fn read_metrics(
     connection: &Connection,
     manager: &Proxy<'_>,
     unit: &str,
@@ -157,7 +157,7 @@ pub(crate) fn read_metrics(
     })
 }
 
-pub(crate) fn render_metrics_text<W: Write>(
+pub(super) fn render_metrics_text<W: Write>(
     stdout: &mut W,
     rows: &[MetricRow],
     no_total: bool,
@@ -206,7 +206,7 @@ pub(crate) fn render_metrics_text<W: Write>(
     Ok(())
 }
 
-pub(crate) fn render_metrics_json(rows: &[MetricRow], no_total: bool) -> Result<i32> {
+pub(super) fn render_metrics_json(rows: &[MetricRow], no_total: bool) -> Result<i32> {
     let runners: Vec<serde_json::Value> = rows
         .iter()
         .map(|r| {
@@ -260,6 +260,6 @@ pub(crate) fn render_metrics_json(rows: &[MetricRow], no_total: bool) -> Result<
     Ok(0)
 }
 
-pub(crate) fn human_bytes(n: u64) -> String {
+pub(super) fn human_bytes(n: u64) -> String {
     bytesize::ByteSize::b(n).to_string()
 }
