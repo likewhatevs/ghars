@@ -98,6 +98,37 @@ pub fn render_nft_rules(runner_name: &str, binding: &EffectiveNetworkBinding) ->
             ),
         ));
     }
+    // nft rules are Netns-mode-only — Open mode runners share the
+    // host netns and have no per-runner veth or table. Delegate to
+    // `EffectiveNetworkBinding::netns_subnet` for the typed
+    // mode⇒subnet contract check; the helper returns a typed
+    // `NetnsSubnetError` enum which we wrap into a
+    // `GharsError::Validation` with a renderer-specific message
+    // here. The caller in `apply::netns::provision_netns_artifacts`
+    // already gates Open mode at its own entry; this defense-in-
+    // depth check catches direct callers (snapshot tests, future
+    // programmatic spec builders) that bypass the apply-side gate.
+    let subnet = binding.netns_subnet().map_err(|e| match e {
+        crate::config::NetnsSubnetError::NetnsMissingSubnet => GharsError::Validation(
+            format!(
+                "render_nft_rules refused netns binding for runner {runner_name:?}: \
+                 subnet is None despite mode = Netns; \
+                 this is a ghars bug — lower_to_effective and render_nft_rules \
+                 disagree on the mode⇒subnet contract",
+            ),
+            "report this as a ghars issue with the failing config".into(),
+        ),
+        crate::config::NetnsSubnetError::OpenMode => GharsError::Validation(
+            format!(
+                "render_nft_rules refused Open-mode binding for runner {runner_name:?}: \
+                 nft rules apply only to Netns-mode runners",
+            ),
+            "Open-mode bindings have no per-runner veth or netns; \
+             use IPAddressAllow / IPAddressDeny / RestrictAddressFamilies \
+             in the [network.NAME] block instead"
+                .into(),
+        ),
+    })?;
     // DNS auto-allow destinations (Part 9c — Forward / Static).
     // Design: Forward mode emits implicit udp+tcp/53 to the runner's
     // host-side veth IP (systemd-resolved DNSStubListenerExtra binds
@@ -105,8 +136,8 @@ pub fn render_nft_rules(runner_name: &str, binding: &EffectiveNetworkBinding) ->
     // operator-supplied server IP. Operators NEVER need a manual
     // `port = 53` egress rule for DNS — the renderer derives the
     // destination(s) from the resolved DnsMode + subnet.
-    let dns_dests = dns_auto_allow_destinations(binding)?;
-    let host = render_nft_host(runner_name, binding, &dns_dests);
+    let dns_dests = dns_auto_allow_destinations(&binding.spec.dns, subnet)?;
+    let host = render_nft_host(runner_name, binding, subnet, &dns_dests);
     let ns = render_nft_ns(runner_name, binding, &dns_dests);
     Ok(NftRules {
         host_rules: host,
@@ -114,25 +145,33 @@ pub fn render_nft_rules(runner_name: &str, binding: &EffectiveNetworkBinding) ->
     })
 }
 
-/// Resolve the DNS auto-allow destinations for an
-/// `EffectiveNetworkBinding`. Returns the list of `IpAddr`s the
-/// generator must emit udp+tcp/53 accept rules for.
+/// Resolve the DNS auto-allow destinations from a `DnsMode` and
+/// the netns binding's `/30` subnet. Returns the list of `IpAddr`s
+/// the generator must emit udp+tcp/53 accept rules for.
 ///
 /// - `DnsMode::Forward` → the runner's host-side veth IP (single
-///   address derived from the /30 subnet).
+///   address derived from the `/30` subnet).
 /// - `DnsMode::Static { servers }` → every operator-supplied server.
 ///   Validator (`validate_dns_mode`) gates non-empty at config-load,
 ///   so this path returns at least one address.
+///
+/// Caller (`render_nft_rules`) extracts the subnet from the binding
+/// AFTER asserting `mode == Netns`, so the value passed in is
+/// always the resolved /30 (the field is `Option<IpNet>` on the
+/// binding to reflect that Open-mode bindings own no subnet).
 ///
 /// Errors only when `subnet_addresses` rejects the subnet (non-`/30`
 /// or non-IPv4); apply.rs's preflight + the netns subnet allocator
 /// guarantee a `/30` IPv4 binding, so this is a defense-in-depth
 /// gate that surfaces a structured `Validation` over an opaque nft
 /// rule failure.
-fn dns_auto_allow_destinations(binding: &EffectiveNetworkBinding) -> Result<Vec<IpAddr>> {
-    match &binding.spec.dns {
+fn dns_auto_allow_destinations(
+    dns: &crate::config::DnsMode,
+    subnet: ipnet::IpNet,
+) -> Result<Vec<IpAddr>> {
+    match dns {
         crate::config::DnsMode::Forward => {
-            let (host_ip, _runner_ip) = crate::netns::subnet_addresses(&binding.subnet)?;
+            let (host_ip, _runner_ip) = crate::netns::subnet_addresses(&subnet)?;
             Ok(vec![host_ip])
         }
         crate::config::DnsMode::Static { servers } => Ok(servers.clone()),
@@ -165,6 +204,7 @@ fn write_dns_auto_allow_lines(s: &mut String, dests: &[IpAddr]) {
 fn render_nft_host(
     runner_name: &str,
     binding: &EffectiveNetworkBinding,
+    subnet: ipnet::IpNet,
     dns_dests: &[IpAddr],
 ) -> String {
     let mut s = String::new();
@@ -173,7 +213,7 @@ fn render_nft_host(
         s,
         "# runner={runner_name} netns=ghars-{runner_name} veth=ghars-{runner_name}-h"
     );
-    let _ = writeln!(s, "# subnet={}", binding.subnet);
+    let _ = writeln!(s, "# subnet={subnet}");
     s.push('\n');
 
     let _ = writeln!(s, "table inet ghars_{runner_name} {{");
@@ -236,8 +276,7 @@ fn render_nft_host(
     // ExecStop, the masquerade rule vanishes with it.
     let _ = writeln!(
         s,
-        "        ip saddr {} oifname != \"ghars-{runner_name}-*\" masquerade",
-        binding.subnet
+        "        ip saddr {subnet} oifname != \"ghars-{runner_name}-*\" masquerade"
     );
     s.push_str("    }\n");
     s.push_str("}\n");
@@ -393,11 +432,11 @@ mod tests {
                 allowed_egress: allowed,
                 ip_allow: vec![],
                 ip_deny: vec![],
-                address_families: vec![],
+                restrict_address_families: vec![],
                 dns: DnsMode::default(),
                 ipv6: Ipv6Mode::default(),
             },
-            subnet: subnet.parse::<IpNet>().unwrap(),
+            subnet: Some(subnet.parse::<IpNet>().unwrap()),
         }
     }
 
@@ -767,6 +806,89 @@ mod tests {
         assert!(
             dq_count.is_multiple_of(2),
             "ns rules have unbalanced quotes"
+        );
+    }
+
+    /// `render_nft_rules` MUST refuse Open-mode bindings: nft
+    /// rules apply only to Netns-mode runners (per-runner veth +
+    /// table). The caller in `apply::netns::provision_netns_artifacts`
+    /// already gates Open-mode at its own entry, but a direct
+    /// caller (snapshot tests, future programmatic spec builders)
+    /// bypasses that gate. The renderer's structured Validation
+    /// rejection beats the alternative (None-deref panic on
+    /// `binding.subnet` later).
+    #[test]
+    fn render_nft_rejects_open_mode_binding() {
+        let binding = EffectiveNetworkBinding {
+            name: "hostnet".into(),
+            spec: NetworkSpec {
+                mode: NetworkMode::Open,
+                allowed_egress: vec![],
+                ip_allow: vec!["10.0.0.0/8".parse::<IpNet>().unwrap()],
+                ip_deny: vec![],
+                restrict_address_families: vec![],
+                dns: DnsMode::default(),
+                ipv6: Ipv6Mode::default(),
+            },
+            // Open mode binding carries no subnet — the lowering
+            // pipeline guarantees this; the test fixture mirrors
+            // production.
+            subnet: None,
+        };
+        let err = render_nft_rules("hostnet", &binding).expect_err("must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("Open-mode binding"),
+            "msg must name the offending shape: {msg}"
+        );
+        assert!(
+            msg.contains("nft rules apply only to Netns-mode runners"),
+            "msg must explain why: {msg}"
+        );
+        // Helper interpolates the caller label; pin that the
+        // render_nft_rules path is named so the operator can locate
+        // the rejecting site.
+        assert!(
+            msg.contains("render_nft_rules"),
+            "msg must name the calling renderer: {msg}"
+        );
+    }
+
+    /// Defense-in-depth gate against a code-bug shape: a Netns-mode
+    /// binding reaching `render_nft_rules` with `subnet = None`
+    /// would mean `lower_to_effective` and `render_nft_rules`
+    /// disagree on the mode⇒subnet contract. The renderer surfaces
+    /// a structured Validation error rather than panicking on the
+    /// downstream subnet usage.
+    #[test]
+    fn render_nft_rejects_netns_binding_without_subnet() {
+        let binding = EffectiveNetworkBinding {
+            name: "ci-net".into(),
+            spec: NetworkSpec {
+                mode: NetworkMode::Netns,
+                allowed_egress: vec![EgressRule {
+                    addr: "10.0.0.1".into(),
+                    port: PortSpec::Single(443),
+                    proto: Proto::Tcp,
+                    comment: None,
+                }],
+                ip_allow: vec![],
+                ip_deny: vec![],
+                restrict_address_families: vec![],
+                dns: DnsMode::default(),
+                ipv6: Ipv6Mode::default(),
+            },
+            subnet: None,
+        };
+        let err = render_nft_rules("ci-net", &binding).expect_err("must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("subnet is None despite mode = Netns"),
+            "msg must name the contract violation: {msg}"
+        );
+        assert!(
+            msg.contains("ghars bug"),
+            "msg must flag it as a bug-shaped input: {msg}"
         );
     }
 }

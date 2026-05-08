@@ -37,11 +37,11 @@ fn make_netns_binding(subnet: &str) -> crate::config::EffectiveNetworkBinding {
             }],
             ip_allow: vec![],
             ip_deny: vec![],
-            address_families: vec![],
+            restrict_address_families: vec![],
             dns: DnsMode::default(),
             ipv6: Ipv6Mode::default(),
         },
-        subnet: subnet.parse::<ipnet::IpNet>().unwrap(),
+        subnet: Some(subnet.parse::<ipnet::IpNet>().unwrap()),
     }
 }
 
@@ -166,6 +166,91 @@ fn create_runner_open_mode_writes_no_netns_artifacts() {
         !calls.iter().any(|c| c.contains("ghars-net@")),
         "Open-mode runner must not touch ghars-net@: {calls:?}"
     );
+}
+
+/// Defense-in-depth: a Netns-mode binding reaching
+/// `provision_netns_artifacts` with `subnet = None` would mean
+/// `lower_to_effective` and the apply path disagreed on the
+/// mode⇒subnet contract. Surface as a structured `GharsError::Apply`
+/// rather than panicking on the downstream `binding.subnet.unwrap()`
+/// call. The fixture builds an `EffectiveNetworkBinding` directly
+/// (bypassing `lower_to_effective`) so we can pin the bug-shape
+/// detection without going through the lowering pipeline.
+#[test]
+fn provision_netns_rejects_netns_binding_without_subnet() {
+    use super::super::netns::provision_netns_artifacts;
+    use crate::config::{
+        DnsMode, EffectiveNetworkBinding, EgressRule, Ipv6Mode, NetworkMode, NetworkSpec, PortSpec,
+        Proto,
+    };
+
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = make_paths(&tmp);
+    std::fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
+    let mut plan = make_runner_plan("a", &paths.state_dir);
+    // Bug-shape input: Netns mode, but no subnet allocated. The
+    // production lowering path always pairs Netns with Some(/30);
+    // fixture builds the contradictory shape directly.
+    plan.spec.network = Some(EffectiveNetworkBinding {
+        name: "isolated".into(),
+        spec: NetworkSpec {
+            mode: NetworkMode::Netns,
+            allowed_egress: vec![EgressRule {
+                addr: "10.0.0.1".into(),
+                port: PortSpec::Single(443),
+                proto: Proto::Tcp,
+                comment: None,
+            }],
+            ip_allow: vec![],
+            ip_deny: vec![],
+            restrict_address_families: vec![],
+            dns: DnsMode::default(),
+            ipv6: Ipv6Mode::default(),
+        },
+        subnet: None,
+    });
+    let systemd = MockSystemd::default();
+    let mut auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+    auth_map.insert(
+        "pat".into(),
+        Box::new(MockTokenSource {
+            name: "pat".into(),
+            ..MockTokenSource::default()
+        }),
+    );
+    let tarball = MockTarball::default();
+    let config_shell = MockConfigShell::default();
+    let deps = Deps {
+        systemd: &systemd,
+        auth: &auth_map,
+        tarball: &tarball,
+        config_shell: &config_shell,
+    };
+
+    let err = provision_netns_artifacts(&plan.spec, &deps, &paths, &mut UndoLog::new())
+        .expect_err("must reject Netns binding without subnet");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("netns binding has no subnet despite mode = Netns"),
+        "msg must name the contract violation: {msg}"
+    );
+    assert!(
+        msg.contains("ghars bug"),
+        "msg must flag it as a bug-shaped input: {msg}"
+    );
+    // The Apply error wraps the action label so operators see
+    // which apply path refused the binding.
+    assert!(
+        msg.contains("provision_netns_artifacts(a)"),
+        "msg must name the calling apply path: {msg}"
+    );
+    // Defense-in-depth: nothing should have been written to disk
+    // because the contract violation fires before any side effect.
+    assert!(
+        !NetnsConfig::path_for(&paths, "a").as_std_path().exists(),
+        "no NetnsConfig should have been written"
+    );
+    assert!(!paths.nft_host_rule("a").as_std_path().exists());
 }
 
 #[test]

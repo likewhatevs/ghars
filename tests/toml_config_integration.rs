@@ -39,13 +39,13 @@ auth = "pat"
     assert_eq!(cfg.runners[0].url, "https://github.com/example/buckos");
     assert_eq!(cfg.runners[0].auth.as_deref(), Some("pat"));
     assert_eq!(cfg.auth.len(), 1);
-    matches!(
+    assert!(matches!(
         cfg.auth.get("pat"),
         Some(AuthSpec::Pat {
             token_env: Some(_),
             token_file: None,
         })
-    );
+    ));
 }
 
 #[test]
@@ -80,13 +80,13 @@ token_env = "GHARS_PAT"
 "#;
     let cfg = parse(text).unwrap();
     let auth = cfg.auth.get("pat").unwrap();
-    matches!(
+    assert!(matches!(
         auth,
         AuthSpec::Pat {
             token_env: Some(_),
             token_file: None
         }
-    );
+    ));
 }
 
 #[test]
@@ -98,13 +98,13 @@ token_file = "/etc/ghars/pat.token"
 "#;
     let cfg = parse(text).unwrap();
     let auth = cfg.auth.get("pat").unwrap();
-    matches!(
+    assert!(matches!(
         auth,
         AuthSpec::Pat {
             token_env: None,
             token_file: Some(_)
         }
-    );
+    ));
 }
 
 #[test]
@@ -139,7 +139,7 @@ fn auth_kind_interactive() {
 kind = "interactive"
 "#;
     let cfg = parse(text).unwrap();
-    matches!(cfg.auth.get("tty"), Some(AuthSpec::Interactive));
+    assert!(matches!(cfg.auth.get("tty"), Some(AuthSpec::Interactive)));
 }
 
 #[test]
@@ -207,8 +207,8 @@ allowed_egress = [
     assert_eq!(net.allowed_egress[0].port, PortSpec::Single(3128));
     assert_eq!(net.allowed_egress[0].proto, Proto::Tcp);
     assert_eq!(net.allowed_egress[1].proto, Proto::Udp);
-    matches!(net.allowed_egress[2].port, PortSpec::Range { .. });
-    matches!(net.allowed_egress[3].port, PortSpec::Set(_));
+    assert!(matches!(net.allowed_egress[2].port, PortSpec::Range { .. }));
+    assert!(matches!(net.allowed_egress[3].port, PortSpec::Set(_)));
     assert_eq!(net.allowed_egress[3].proto, Proto::Both);
     assert_eq!(net.allowed_egress[3].comment.as_deref(), Some("google"));
 }
@@ -472,4 +472,226 @@ unknown = true
     let err = parse(text).unwrap_err();
     let msg = format!("{err}");
     assert!(msg.contains("unknown"));
+}
+
+// -- [network.NAME] field parsing + post-load validation -----------------
+//
+// `parse()` only exercises serde's deny_unknown_fields gate. The
+// mode-scoped invariants (Open rejects allowed_egress / non-Forward dns /
+// ipv6=enabled; Netns requires egress-or-ip_allow) live in
+// `validators::validate_network_spec`, which `cli::load_config` runs
+// after parse. The tests below combine `parse() + validate_network_spec`
+// to mirror the load-config gate end-to-end without needing a full
+// CLI invocation.
+
+#[test]
+fn network_block_parses_with_cgroup_bpf_fields() {
+    // Full `[network.NAME]` block with every cgroup-BPF policy field
+    // populated. Round-trips cleanly through serde and validates.
+    let text = r#"
+[network.isolated]
+mode = "netns"
+allowed_egress = [
+    { addr = "10.0.0.1", port = 443, proto = "tcp" },
+]
+ip_allow = ["10.0.0.0/8", "192.0.2.0/24"]
+ip_deny = ["0.0.0.0/0"]
+restrict_address_families = ["AF_UNIX", "AF_INET", "AF_INET6"]
+"#;
+    let cfg = parse(text).unwrap();
+    let spec = cfg
+        .networks
+        .get("isolated")
+        .expect("[network.isolated] must parse");
+    assert!(matches!(spec.mode, NetworkMode::Netns));
+    assert_eq!(spec.ip_allow.len(), 2);
+    assert_eq!(spec.ip_deny.len(), 1);
+    assert_eq!(
+        spec.restrict_address_families,
+        vec!["AF_UNIX", "AF_INET", "AF_INET6"]
+    );
+    // Validates cleanly under the post-load gate.
+    ghars::validators::validate_network_spec(spec).expect("valid network spec must pass");
+}
+
+#[test]
+fn network_open_block_rejects_allowed_egress_at_validate_time() {
+    // serde parse passes (the field exists on `NetworkSpec`), but
+    // post-load validation rejects: nft rules are netns-only, so an
+    // operator who put `allowed_egress` on `mode = "open"` is in a
+    // silent-partial-enforcement shape.
+    let text = r#"
+[network.host-policy]
+mode = "open"
+allowed_egress = [
+    { addr = "10.0.0.1", port = 443, proto = "tcp" },
+]
+"#;
+    let cfg = parse(text).expect("TOML parses (shape is valid)");
+    let spec = cfg
+        .networks
+        .get("host-policy")
+        .expect("[network.host-policy] must parse");
+    let err = ghars::validators::validate_network_spec(spec)
+        .expect_err("Open + allowed_egress must reject");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("allowed_egress requires mode = netns"),
+        "msg must name the rule: {msg}"
+    );
+}
+
+#[test]
+fn network_open_block_with_cgroup_bpf_parses_and_validates() {
+    // The motivating shape for this work: an `[network.NAME]` block
+    // with `mode = "open"` carrying `ip_deny` (and friends) MUST parse
+    // cleanly AND pass validation. The cgroup-BPF directives apply at
+    // the cgroup layer regardless of namespace, so neither the
+    // serde-shape gate nor the mode-scoped post-load gate rejects.
+    let text = r#"
+[network.host-policy]
+mode = "open"
+ip_allow = ["10.0.0.0/8"]
+ip_deny = ["0.0.0.0/0"]
+restrict_address_families = ["AF_INET", "AF_INET6"]
+"#;
+    let cfg = parse(text).unwrap();
+    let spec = cfg
+        .networks
+        .get("host-policy")
+        .expect("[network.host-policy] must parse");
+    assert!(matches!(spec.mode, NetworkMode::Open));
+    assert_eq!(spec.ip_allow.len(), 1);
+    assert_eq!(spec.ip_deny.len(), 1);
+    assert_eq!(spec.restrict_address_families, vec!["AF_INET", "AF_INET6"]);
+    ghars::validators::validate_network_spec(spec).expect("Open + cgroup-BPF policy must validate");
+}
+
+#[test]
+fn network_open_block_rejects_static_dns_at_validate_time() {
+    // `DnsMode::Static` is netns-only — open-mode runners inherit
+    // the host's `/etc/resolv.conf`. The TOML serde encoding for
+    // `DnsMode` is `tag = "mode", content = "servers"`, so the
+    // Rust API path is the cleanest way to construct a Static
+    // variant for this unit-style integration check; the parse
+    // path is exercised separately in the round-trip tests above.
+    use ghars::config::DnsMode;
+    let mut spec = ghars::config::NetworkSpec {
+        mode: NetworkMode::Open,
+        allowed_egress: vec![],
+        ip_allow: vec!["10.0.0.0/8".parse().unwrap()],
+        ip_deny: vec![],
+        restrict_address_families: vec![],
+        dns: DnsMode::default(),
+        ipv6: ghars::config::Ipv6Mode::default(),
+    };
+    spec.dns = DnsMode::Static {
+        servers: vec!["1.1.1.1".parse().unwrap()],
+    };
+    let err =
+        ghars::validators::validate_network_spec(&spec).expect_err("Open + static dns must reject");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("dns requires mode = netns"),
+        "msg must name the rule: {msg}"
+    );
+}
+
+#[test]
+fn network_open_block_rejects_ipv6_enabled_at_validate_time() {
+    // ipv6 = "enabled" is a netns ULA-allocation artifact — open-mode
+    // runners share the host's IPv6 stack.
+    let text = r#"
+[network.host-policy]
+mode = "open"
+ip_allow = ["10.0.0.0/8"]
+ipv6 = "enabled"
+"#;
+    let cfg = parse(text).unwrap();
+    let spec = cfg.networks.get("host-policy").unwrap();
+    let err = ghars::validators::validate_network_spec(spec)
+        .expect_err("Open + ipv6 = enabled must reject");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("ipv6 = enabled requires mode = netns"),
+        "msg must name the rule: {msg}"
+    );
+}
+
+#[test]
+fn network_block_rejects_malformed_af_token_at_validate_time() {
+    // Per-entry AF_* shape gate: lowercase / typos / missing prefix
+    // fail at validate time with a structured "not a valid AF_* token"
+    // message before reaching systemd's opaque unit-load rejection.
+    // Pin both Netns and Open so the shape gate runs in both
+    // mode-scoped paths.
+    let text_netns = r#"
+[network.isolated]
+mode = "netns"
+ip_allow = ["10.0.0.0/8"]
+restrict_address_families = ["AF_UNIX", "af_inet"]
+"#;
+    let cfg = parse(text_netns).unwrap();
+    let spec = cfg.networks.get("isolated").unwrap();
+    let err = ghars::validators::validate_network_spec(spec)
+        .expect_err("malformed AF_* token must reject");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("not a valid AF_* token"),
+        "msg must name the violation: {msg}"
+    );
+    assert!(msg.contains("\"af_inet\""), "msg must quote token: {msg}");
+
+    let text_open = r#"
+[network.host-policy]
+mode = "open"
+restrict_address_families = ["INET6"]
+"#;
+    let cfg = parse(text_open).unwrap();
+    let spec = cfg.networks.get("host-policy").unwrap();
+    let err = ghars::validators::validate_network_spec(spec)
+        .expect_err("malformed AF_* token must reject under Open too");
+    let msg = format!("{err}");
+    assert!(msg.contains("\"INET6\""), "msg must quote token: {msg}");
+}
+
+#[test]
+fn network_open_block_with_empty_policy_parses() {
+    // Empty Open block parses (no shape error). Validation passes
+    // (all fields default-empty). The plan-time collapse to None
+    // happens in `lower_to_effective`, not at TOML parse / validate
+    // time — so this test pins the parse + validate seams ONLY,
+    // mirroring what `load_config` sees.
+    let text = r#"
+[network.empty-open]
+mode = "open"
+"#;
+    let cfg = parse(text).unwrap();
+    let spec = cfg.networks.get("empty-open").unwrap();
+    assert!(matches!(spec.mode, NetworkMode::Open));
+    assert!(spec.allowed_egress.is_empty());
+    assert!(spec.ip_allow.is_empty());
+    assert!(spec.ip_deny.is_empty());
+    assert!(spec.restrict_address_families.is_empty());
+    ghars::validators::validate_network_spec(spec).expect("empty Open block must pass validation");
+}
+
+#[test]
+fn network_block_rejects_address_families_field_renamed() {
+    // After the rename, `address_families` is no longer a known
+    // field; serde's deny_unknown_fields rejects it at parse time.
+    // This pins the rename so a future regression that re-adds the
+    // alias as a serde rename is caught.
+    let text = r#"
+[network.isolated]
+mode = "netns"
+ip_allow = ["10.0.0.0/8"]
+address_families = ["AF_UNIX"]
+"#;
+    let err = parse(text).expect_err("address_families is not a valid field");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("address_families") || msg.contains("unknown"),
+        "msg must name the unknown field: {msg}"
+    );
 }

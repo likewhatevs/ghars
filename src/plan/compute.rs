@@ -162,10 +162,15 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
     //
     // The runner's index in `expanded` is the netns subnet slot
     // (sequential /30 from the 10.200.0.0/24 default pool — Part 9c
-    // "IP allocation"). Open-mode runners still consume an index; the
-    // /30 they would have gotten is simply unused. With 64 slots in
-    // /24 this leaves headroom for typical deployments while keeping
-    // the slot rule trivially deterministic across plan/apply runs.
+    // "IP allocation"). `slot_idx` increments for every runner
+    // regardless of mode, so a runner's slot is stable across mode
+    // changes within the same expanded list (promoting an Open
+    // runner to Netns later does not shift other Netns runners'
+    // subnets). Open-mode runners do NOT consume a /30 — the slot
+    // helper is only called inside `lower_to_effective`'s Netns
+    // arm — so the v0.1 64-slot /24 cap is real headroom for actual
+    // netns runners, not eroded by Open-mode entries that wouldn't
+    // use a subnet.
     let mut desired: BTreeMap<String, EffectiveRunnerSpec> = BTreeMap::new();
     let warnings: Vec<String> = Vec::new();
     for (slot_idx, runner) in expanded.iter().enumerate() {
@@ -964,9 +969,31 @@ pub(super) fn lower_to_effective(
         ));
     }
 
-    // Network resolution. None ⇒ implicit Open. defaults.network is
-    // the fallback; explicit `runner.network = "open"` is rejected by
-    // schema validation upstream — `open` is reserved.
+    // Network resolution. A runner with no `network` reference (and
+    // no `defaults.network`) gets `network_binding = None` — the
+    // implicit-Open path with no defense-in-depth fields.
+    //
+    // For an explicit `[network.NAME]` reference:
+    //   - `mode = "netns"` ALWAYS produces `Some(binding)` with
+    //     `subnet = Some(/30)` — the namespace bind is itself the
+    //     load-bearing artifact, so the binding is required even when
+    //     all the cgroup-BPF policy fields are empty.
+    //   - `mode = "open"` produces `Some(binding)` only when at least
+    //     one of `ip_allow` / `ip_deny` / `restrict_address_families`
+    //     is non-empty. An Open block with all three empty is
+    //     semantically identical to "no network reference" (no
+    //     namespace, no policy directives) and we collapse it back to
+    //     `None`. This keeps `Some(binding)` ⇔ "there are directives
+    //     to render", which matches Stage 1/Stage 2 classifier
+    //     intuition AND avoids spurious spec_hash flips on no-op Open
+    //     blocks.
+    //
+    // The /30 subnet is `Some` ONLY for Netns-mode bindings — Open-
+    // mode runners have no namespace and therefore no /30 to
+    // allocate, so we skip `netns_subnet_for_slot` and leave
+    // `subnet = None`. This both reflects the fact (no subnet
+    // exists) and preserves the v0.1 64-slot pool capacity for
+    // runners that actually need a slot.
     let network_ref = runner
         .network
         .clone()
@@ -984,27 +1011,44 @@ pub(super) fn lower_to_effective(
                     ),
                 )
             })?;
-            // Open mode entries are tolerated but produce no binding —
-            // 40-network.conf is skipped.
-            if matches!(spec.mode, NetworkMode::Open) {
-                None
-            } else {
-                // Sequential /30 from the default 10.200.0.0/24 pool,
-                // indexed by `slot_idx` (the runner's position in the
-                // expanded list). 64 /30 slots in a /24 = 64 max
-                // simultaneous netns runners under v0.1's hardcoded
-                // pool. Open-mode runners still consume an index but
-                // don't get a binding, so the slot is wasted; that
-                // matches the "use the runner's index in the
-                // expanded list" directive. Persistent
-                // [defaults] netns_subnet config is design Part 9c
-                // future scope.
-                let subnet = netns_subnet_for_slot(slot_idx, &runner.name)?;
-                Some(EffectiveNetworkBinding {
-                    name: network_name,
-                    spec: spec.clone(),
-                    subnet,
-                })
+            match spec.mode {
+                NetworkMode::Netns => {
+                    // Sequential /30 from the default 10.200.0.0/24
+                    // pool, indexed by `slot_idx` (the runner's
+                    // position in the expanded list). 64 /30 slots
+                    // in a /24 = 64 max simultaneous netns runners
+                    // under v0.1's hardcoded pool. Persistent
+                    // [defaults] netns_subnet config is design
+                    // Part 9c future scope.
+                    let subnet = netns_subnet_for_slot(slot_idx, &runner.name)?;
+                    Some(EffectiveNetworkBinding {
+                        name: network_name,
+                        spec: spec.clone(),
+                        subnet: Some(subnet),
+                    })
+                }
+                NetworkMode::Open => {
+                    let has_cgroup_bpf_policy = !spec.ip_allow.is_empty()
+                        || !spec.ip_deny.is_empty()
+                        || !spec.restrict_address_families.is_empty();
+                    if has_cgroup_bpf_policy {
+                        // Open with policy: produce a binding so the
+                        // renderer emits the cgroup-BPF directives.
+                        // Subnet stays None (Open mode owns no /30).
+                        Some(EffectiveNetworkBinding {
+                            name: network_name,
+                            spec: spec.clone(),
+                            subnet: None,
+                        })
+                    } else {
+                        // Open with no policy collapses to the
+                        // implicit-Open shape — preserves the v0.1
+                        // spec_hash for no-op Open blocks and keeps
+                        // `Some(binding)` ⇔ "directives to render"
+                        // as the binding semantics.
+                        None
+                    }
+                }
             }
         }
         None => None,

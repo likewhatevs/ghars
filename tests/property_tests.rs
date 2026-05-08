@@ -358,11 +358,11 @@ fn netns_binding(egress: Vec<EgressRule>, subnet: IpNet) -> EffectiveNetworkBind
             allowed_egress: egress,
             ip_allow: vec![],
             ip_deny: vec![],
-            address_families: vec![],
+            restrict_address_families: vec![],
             dns: ghars::config::DnsMode::default(),
             ipv6: ghars::config::Ipv6Mode::default(),
         },
-        subnet,
+        subnet: Some(subnet),
     }
 }
 
@@ -436,7 +436,7 @@ proptest! {
         let out = render_nft_rules(&name, &binding).unwrap();
         let expected_masq = format!(
             "ip saddr {} oifname != \"ghars-{name}-*\" masquerade",
-            binding.subnet
+            binding.subnet.expect("netns_binding always sets subnet"),
         );
         prop_assert!(
             out.host_rules.contains(&expected_masq),

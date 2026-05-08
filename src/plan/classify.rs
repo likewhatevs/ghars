@@ -412,11 +412,20 @@ pub(super) fn classify_recreate_reasons_from_annotations(
     // helpers via execute_remove_runner + execute_create_runner.
     //
     // Within-mode config changes (egress rule edits, DNS mode
-    // toggles inside Netns) do NOT recreate — the 40-network.conf
-    // body diff is in-place safe and Stage 2 picks it up via the
-    // managed-drop-in body diff in plan_from's intersection branch
-    // (the `any_drop_in_modified` check that filters
+    // toggles inside Netns; ip_allow / ip_deny /
+    // restrict_address_families edits inside Open mode) do NOT
+    // recreate — the 40-network.conf body diff is in-place safe
+    // and Stage 2 picks it up via the managed-drop-in body diff
+    // in plan_from's intersection branch (the
+    // `any_drop_in_modified` check that filters
     // MANAGED_DROP_IN_BASENAMES against Created|Modified|Removed).
+    //
+    // Open-mode policy edits land cleanly in Stage 2 because the
+    // cgroup-BPF directives are emitted in the 40-network.conf
+    // body itself (no nft side-files to miss). Toggling
+    // `ip_allow` / `ip_deny` / `restrict_address_families` flips
+    // the rendered drop-in body and Stage 2's body diff records
+    // the in-place change.
     //
     // Caveat: within-Netns egress rule changes are NOT yet
     // detected by Stage 2 — `render_network` (systemd.rs) emits a

@@ -188,6 +188,10 @@ pub(super) fn validate_security_overrides(cfg: &Config) -> Result<()> {
 pub(super) fn validate_hardening_block(h: &Hardening) -> Result<()> {
     validators::validate_extra_capabilities(&h.extra_capabilities)?;
     validators::validate_extra_bind_paths(&h.extra_bind_paths)?;
+    validators::validate_restrict_address_families(
+        "hardening.restrict_address_families",
+        &h.restrict_address_families,
+    )?;
     Ok(())
 }
 

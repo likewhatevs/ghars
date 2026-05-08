@@ -57,7 +57,7 @@ order, each behind a "is the operator using this feature?" gate:
 | `15-resolv.conf`        | yes                                      | binds `/etc/resolv.conf` from the host's file (Open mode) or the netns-private file at `/run/ghars/netns-resolv/<name>` (Netns mode) |
 | `20-hardening.conf`     | when any field overrides default         | per-field `Hardening` → systemd directives                           |
 | `30-cache-pool.conf`    | when `caches` non-empty                  | ccache / sccache pool bindings, `BindPaths=` for shared dirs, env vars |
-| `40-network.conf`       | Netns mode only                          | `NetworkNamespacePath=/var/run/netns/ghars-<name>` + `Requires=ghars-net@%i.service` |
+| `40-network.conf`       | Netns mode, OR Open mode with any of `ip_allow` / `ip_deny` / `restrict_address_families` | Netns: `NetworkNamespacePath=/var/run/netns/ghars-<name>` + `Requires=ghars-net@%i.service` + cgroup-BPF directives. Open: cgroup-BPF directives only (`IPAddressAllow=` / `IPAddressDeny=` / `RestrictAddressFamilies=`), no `[Unit]` section |
 | `50-numa.conf`          | when `allowed_cpus` or `allowed_memory_nodes` set | `AllowedCPUs=` / `AllowedMemoryNodes=`                       |
 | `60-proxy.conf`         | when `[proxy]` resolved                  | dual-case `Environment=HTTP_PROXY=...`/`http_proxy=...`, `HTTPS_PROXY=...`/`https_proxy=...`, `NO_PROXY=...`/`no_proxy=...` + CA-trust env vars |
 | `70-hooks.conf`         | when `[hooks]` resolved                  | `Environment=ACTIONS_RUNNER_HOOK_JOB_STARTED=...` + `BindReadOnlyPaths` for hook script |

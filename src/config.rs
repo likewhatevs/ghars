@@ -50,9 +50,12 @@ pub struct Config {
     #[serde(default)]
     pub cache_pools: IndexMap<String, CachePoolSpec>,
 
-    /// `[network.NAME]` table — keyed by identifier. Open mode is
-    /// implicit (a runner with no `network` reference uses the host
-    /// netns); explicit `[network.NAME]` entries declare Netns mode.
+    /// `[network.NAME]` table — keyed by identifier. Each entry
+    /// declares an explicit network policy with `mode = "netns"`
+    /// (per-runner namespace) or `mode = "open"` (host netns +
+    /// optional cgroup-BPF policy). A runner with no `network`
+    /// reference at all uses the host netns implicitly with no
+    /// cgroup-BPF policy.
     #[serde(default, rename = "network")]
     pub networks: IndexMap<String, NetworkSpec>,
 
@@ -92,7 +95,11 @@ pub struct Defaults {
     /// (dedup, preserve order — see Part 3 merge table).
     #[serde(default)]
     pub labels: Vec<String>,
-    /// Default `[network.NAME]` reference. None ≡ implicit Open mode.
+    /// Default `[network.NAME]` reference. None ≡ host netns with
+    /// no cgroup-BPF policy (the implicit-Open shape). Set to a
+    /// `[network.NAME]` key when every runner without an explicit
+    /// `network` field should resolve through the same network
+    /// policy block (Netns or Open with cgroup-BPF directives).
     pub network: Option<String>,
     /// Default CPU architecture for tarball selection. None ≡ host
     /// arch (uname -m) (#39).
@@ -253,8 +260,13 @@ pub struct EffectiveRunnerSpec {
     pub caches: Vec<EffectiveCacheBinding>,
     /// Cache trust zone (Part 3 / SEC-03).
     pub trust_zone: String,
-    /// Network binding. None ⇒ implicit `Open` (host netns); Some(b) ⇒
-    /// `Netns` mode with the resolved `NetworkSpec` + allocated /30.
+    /// Network binding. None ⇒ implicit `Open` (host netns) with no
+    /// cgroup-BPF policy. Some(b) ⇒ either `Netns` mode (resolved
+    /// `NetworkSpec` + allocated /30 in `b.subnet`) or `Open` mode
+    /// with at least one cgroup-BPF policy field populated
+    /// (`ip_allow` / `ip_deny` / `restrict_address_families`); in the
+    /// Open-mode case `b.subnet` is `None` because no per-runner
+    /// netns is allocated.
     pub network: Option<EffectiveNetworkBinding>,
     /// Resolved proxy spec (None ⇒ no proxy, no 60-proxy drop-in).
     pub proxy: Option<ProxySpec>,
@@ -313,10 +325,28 @@ pub struct EffectiveCacheBinding {
     pub trust_zone: String,
 }
 
-/// One network reference resolved against `[network.NAME]`. Only
-/// rendered when `mode = "netns"` — `Open` mode does not get an
-/// `EffectiveNetworkBinding`, leaving `EffectiveRunnerSpec.network ==
-/// None` so the 40-network drop-in is skipped.
+/// One network reference resolved against `[network.NAME]`.
+/// Produced when there are render-time artifacts to emit:
+///
+/// - `mode = "netns"` references ALWAYS produce a binding — the
+///   namespace bind itself is the load-bearing artifact, so the
+///   binding is required even when every cgroup-BPF policy field
+///   is empty.
+/// - `mode = "open"` references produce a binding ONLY when at
+///   least one of `ip_allow` / `ip_deny` /
+///   `restrict_address_families` is non-empty. An Open block with
+///   all three empty is semantically identical to "no network
+///   reference" (no namespace bind, no policy directives) and
+///   `lower_to_effective` collapses it back to
+///   `EffectiveRunnerSpec.network = None`.
+///
+/// A runner with NO `[network.NAME]` reference at all leaves
+/// `EffectiveRunnerSpec.network == None` directly. The renderer +
+/// classifier branch on `spec.mode` to decide which artifacts to
+/// emit; under this contract `Some(binding)` means "there are
+/// directives to render" uniformly, which keeps Stage 1/Stage 2
+/// classifier intuition aligned and avoids spurious `spec_hash`
+/// flips on no-op Open blocks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EffectiveNetworkBinding {
     /// Network key (matches `[network.NAME]`).
@@ -324,8 +354,68 @@ pub struct EffectiveNetworkBinding {
     /// Resolved spec.
     pub spec: NetworkSpec,
     /// Allocated /30 for this runner (host side `.x+1`, runner side
-    /// `.x+2`). Drives X-Ghars-Netns-Subnet + nft rule generation.
-    pub subnet: IpNet,
+    /// `.x+2`). `Some` only for `mode = "netns"` bindings; Open-mode
+    /// bindings have no namespace and therefore no /30 of their own,
+    /// so the field is `None` and the netns subnet pool is left for
+    /// runners that actually need a slot. Drives
+    /// `X-Ghars-Netns-Subnet=` + nft rule generation, both gated on
+    /// `Some`.
+    pub subnet: Option<IpNet>,
+}
+
+/// Why a call to `EffectiveNetworkBinding::netns_subnet` could not
+/// produce an `IpNet`. Both variants encode code-bug shapes: the
+/// lowering pipeline guarantees `Netns ⇔ Some(subnet)` and
+/// `Open ⇔ None`, so reachable failures here mean a direct-construct
+/// caller (test fixture, future programmatic spec builder) built a
+/// contradictory shape. The enum lets each call site (nft.rs,
+/// apply/netns.rs) wrap the variant into its own error type with a
+/// site-specific message, instead of passing an opaque caller-label
+/// string into the helper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetnsSubnetError {
+    /// The binding's mode is `Open` — there is no per-runner /30 to
+    /// extract. Open-mode runners share the host netns; cgroup-BPF
+    /// directives (`IPAddressAllow=` / `IPAddressDeny=` /
+    /// `RestrictAddressFamilies=`) apply at the cgroup layer
+    /// without a subnet.
+    OpenMode,
+    /// The binding's mode is `Netns` but `subnet` is `None` — the
+    /// mode⇒subnet contract is broken. `lower_to_effective`
+    /// allocates a /30 from the v0.1 64-slot pool whenever it
+    /// constructs a Netns binding; reaching this variant means a
+    /// caller bypassed the lowering pipeline.
+    NetnsMissingSubnet,
+}
+
+impl EffectiveNetworkBinding {
+    /// Extract the netns `/30` subnet from a binding. Returns
+    /// `Ok(/30)` only when the binding is Netns mode AND a subnet
+    /// is present.
+    ///
+    /// Centralizes the mode⇒subnet contract check that nft rule
+    /// generation and apply-side netns provisioning both perform.
+    /// Each call site wraps the returned `NetnsSubnetError` variants
+    /// into the error type it needs (`GharsError::Validation` for
+    /// the renderer, `GharsError::Apply` for the apply path) with a
+    /// site-specific message naming the offending shape and the
+    /// runner. The helper itself does not produce a `GharsError` so
+    /// callers retain control over the error wrapper, the action
+    /// label, and the hint string.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NetnsSubnetError::OpenMode` for Open-mode bindings
+    /// (no namespace, no /30 to extract) and
+    /// `NetnsSubnetError::NetnsMissingSubnet` for Netns bindings
+    /// missing a subnet (mode⇒subnet contract violation, code bug).
+    pub fn netns_subnet(&self) -> std::result::Result<IpNet, NetnsSubnetError> {
+        match (self.spec.mode, self.subnet) {
+            (NetworkMode::Netns, Some(s)) => Ok(s),
+            (NetworkMode::Netns, None) => Err(NetnsSubnetError::NetnsMissingSubnet),
+            (NetworkMode::Open, _) => Err(NetnsSubnetError::OpenMode),
+        }
+    }
 }
 
 /// CPU architecture marker for tarball selection (#39).
@@ -361,7 +451,14 @@ pub struct Hardening {
     /// `PrivateIPC=`. None ≡ true (Python default).
     pub private_ipc: Option<bool>,
     /// `RestrictAddressFamilies=`. Empty Vec ≡ unset; non-empty Vec
-    /// emits the directive with the listed AF_ tokens.
+    /// emits the directive with the listed AF_ tokens. Composes with
+    /// the parallel `NetworkSpec.restrict_address_families` field
+    /// across drop-ins (`20-hardening.conf` + `40-network.conf` both
+    /// emit a `RestrictAddressFamilies=` line; systemd unions them
+    /// at unit-load time per `systemd.exec(5)`). The hardening side
+    /// widens the allowlist for every runner regardless of network
+    /// mode; the network-spec side narrows it per-`[network.NAME]`
+    /// block.
     #[serde(default)]
     pub restrict_address_families: Vec<String>,
     /// Append to the canonical syscall allowlist. Tokens land on the
@@ -545,12 +642,21 @@ pub enum CacheMode {
     Isolated,
 }
 
-/// `[network.NAME]` declaration. Drives nft rule generation for the
-/// netns mode; `Open` is implicit (no `[network.NAME]` entry needed).
+/// `[network.NAME]` declaration. Drives nft rule generation +
+/// per-runner netns artifacts for `mode = "netns"` blocks, and
+/// cgroup-BPF policy directives (`IPAddressAllow=` /
+/// `IPAddressDeny=` / `RestrictAddressFamilies=`) for either mode
+/// when the corresponding fields are populated. A runner with no
+/// `[network.NAME]` reference at all uses the host netns
+/// implicitly with no extra cgroup-BPF policy; declaring
+/// `mode = "open"` explicitly is only useful when the operator
+/// wants to add cgroup-BPF / address-family restrictions on top of
+/// the host netns.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkSpec {
-    /// Network mode. `Netns` is the only non-Open mode in v0.1.
+    /// Network mode. `Netns` allocates a per-runner network
+    /// namespace; `Open` keeps the runner in the host netns.
     pub mode: NetworkMode,
 
     /// Allowed egress destinations. Each entry: addr (`IpAddr` or
@@ -560,19 +666,32 @@ pub struct NetworkSpec {
     #[serde(default)]
     pub allowed_egress: Vec<EgressRule>,
 
-    /// CIDRs for systemd's `IPAddressAllow=` (cgroup-BPF layer);
-    /// emitted alongside the netns nft rules as defense in depth.
+    /// CIDRs for systemd's `IPAddressAllow=` (cgroup-BPF layer).
+    /// Honored in BOTH modes: under `Netns` emitted alongside the
+    /// nft rules as defense in depth, under `Open` it is the sole
+    /// egress allowlist at the systemd layer (no namespace, no
+    /// nft).
     #[serde(default)]
     pub ip_allow: Vec<IpNet>,
 
-    /// CIDRs for systemd's `IPAddressDeny=`.
+    /// CIDRs for systemd's `IPAddressDeny=` (cgroup-BPF layer).
+    /// Honored in both `Netns` and `Open` modes — the directive
+    /// applies at the cgroup layer regardless of whether the
+    /// runner has its own netns.
     #[serde(default)]
     pub ip_deny: Vec<IpNet>,
 
     /// `AF_*` allowlist for systemd `RestrictAddressFamilies=`. Empty
-    /// Vec ≡ unset.
+    /// Vec ≡ unset. Field name mirrors the systemd directive and the
+    /// parallel `Hardening.restrict_address_families` field so a
+    /// reader of either site sees the same name pointing at the same
+    /// underlying directive — `Hardening` widens the allowlist for
+    /// every runner regardless of network mode, this field narrows
+    /// it per-`[network.NAME]` block (and works in BOTH netns and
+    /// open modes since the directive lives at the cgroup layer, not
+    /// the namespace layer).
     #[serde(default)]
-    pub address_families: Vec<String>,
+    pub restrict_address_families: Vec<String>,
 
     /// DNS resolution policy inside the netns. Default `Forward` (use
     /// the host's systemd-resolved via a `DNSStubListenerExtra=`
@@ -589,15 +708,24 @@ pub struct NetworkSpec {
     pub ipv6: Ipv6Mode,
 }
 
-/// Network mode. `Open` ≡ no isolation (host netns); `Netns` ≡ full
-/// network namespace via `ghars-net@RUNNER.service` + per-runner
-/// veth + nft rules. Only `Open` and `Netns` modes are supported.
+/// Network mode. `Netns` ≡ full per-runner network namespace via
+/// `ghars-net@RUNNER.service` + veth + nft rules; `Open` ≡ runner
+/// shares the host netns (no namespace, no veth, no nft) but may
+/// still carry cgroup-BPF policy (`IPAddressAllow=` /
+/// `IPAddressDeny=` / `RestrictAddressFamilies=`) on the runner
+/// unit. Only `Open` and `Netns` modes are supported.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkMode {
-    /// No isolation; runner shares the host network namespace.
+    /// Runner shares the host network namespace. The
+    /// `[network.NAME]` block may still carry `ip_allow` /
+    /// `ip_deny` / `restrict_address_families` to apply
+    /// cgroup-BPF / address-family restrictions on top of the
+    /// host netns.
     Open,
-    /// Per-runner network namespace via `ghars-net@%i.service`.
+    /// Per-runner network namespace via `ghars-net@%i.service`,
+    /// with veth + nft rules enforcing `allowed_egress`. Cgroup-BPF
+    /// directives layered alongside as defense in depth.
     Netns,
 }
 
@@ -703,11 +831,14 @@ pub fn load(_path: &camino::Utf8Path) -> crate::Result<Config> {
 }
 
 /// Validate every `[network.NAME]` block in `config` using the
-/// validators in `crate::validators` (egress rule address + port
-/// shape, DNS mode, netns-requires-egress-or-ip-allow). Iterates the
-/// `cfg.networks` `IndexMap` in source order and returns on the first
-/// failure — matches `load`'s contract; multi-error reporting is a
-/// separate feature.
+/// validators in `crate::validators`. Each block is checked against
+/// the mode-scoped invariants (Netns requires egress-or-ip_allow;
+/// Open rejects `allowed_egress` / non-Forward `dns` /
+/// `ipv6 = Enabled`) and the per-rule shape validators (egress rule
+/// address + port shape, DNS mode). Iterates the `cfg.networks`
+/// `IndexMap` in source order and returns on the first failure —
+/// matches `load`'s contract; multi-error reporting is a separate
+/// feature.
 ///
 /// Called by `cli::load_config` (alongside the four other post-load
 /// validators that live in `cli.rs`) so every CLI entry point that
@@ -741,7 +872,7 @@ mod tests {
             allowed_egress: allowed,
             ip_allow: vec![],
             ip_deny: vec![],
-            address_families: vec![],
+            restrict_address_families: vec![],
             dns: DnsMode::default(),
             ipv6: Ipv6Mode::default(),
         }
@@ -800,7 +931,7 @@ mod tests {
                 }],
                 ip_allow: vec!["192.168.2.84/32".parse::<IpNet>().unwrap()],
                 ip_deny: vec![],
-                address_families: vec!["AF_UNIX".into(), "AF_INET".into()],
+                restrict_address_families: vec!["AF_UNIX".into(), "AF_INET".into()],
                 dns: DnsMode::Forward,
                 ipv6: Ipv6Mode::Disabled,
             },

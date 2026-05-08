@@ -221,6 +221,27 @@ Egress is enforced at two layers:
 
 Both layers run independently; defense in depth.
 
+## Open mode with cgroup-BPF policy
+
+`[network.NAME] mode = "open"` keeps the runner in the host
+netns (no per-runner namespace, no veth, no nft rules) but still
+honors the cgroup-BPF directives from the same `[network.NAME]`
+block:
+
+- `ip_allow` / `ip_deny` populate `IPAddressAllow=` /
+  `IPAddressDeny=` on the runner unit.
+- `restrict_address_families` populates `RestrictAddressFamilies=`.
+
+These run at the cgroup layer regardless of namespace; the
+runner's traffic is still subject to the cgroup-BPF egress
+filter on the host's netns. Use this when the operator wants
+defense-in-depth IP/family restrictions but cannot afford the
+netns/veth setup (older kernels without `CONFIG_NET_NS`,
+operator policy that requires host-routed connectivity, etc.).
+The `40-network.conf` drop-in emitted in this mode carries ONLY
+the cgroup-BPF directives — no `NetworkNamespacePath=`, no
+`Requires=ghars-net@`, and no nft rule files are generated.
+
 ## TOCTOU-safe file ops
 
 Every operator-supplied path that reaches a privileged operation

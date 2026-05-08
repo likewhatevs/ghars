@@ -60,10 +60,53 @@ pub(super) fn provision_netns_artifacts(
         return Ok(());
     }
 
+    // Netns-mode bindings always carry `subnet = Some(/30)` —
+    // `lower_to_effective` allocates the /30 from the v0.1 64-slot
+    // pool whenever it constructs a Netns binding. Delegate to
+    // `EffectiveNetworkBinding::netns_subnet` for the typed
+    // mode⇒subnet contract check; the helper returns a typed
+    // `NetnsSubnetError` enum which we wrap into a
+    // `GharsError::Apply { action, source: GharsError::Validation }`
+    // so the operator sees the action label
+    // (`provision_netns_artifacts(NAME)`) at the top of the error
+    // alongside the contract-violation diagnostic. The OpenMode
+    // arm is unreachable on this caller path — the
+    // `matches!(binding.spec.mode, NetworkMode::Netns)` gate above
+    // returned early — but we handle it for completeness so a
+    // future caller-flow refactor that bypasses the early return
+    // produces a structured Apply error rather than panicking.
+    let action_label = format!("provision_netns_artifacts({})", spec.name);
+    let subnet = binding.netns_subnet().map_err(|e| {
+        let inner = match e {
+            crate::config::NetnsSubnetError::NetnsMissingSubnet => GharsError::Validation(
+                format!(
+                    "runner {:?} netns binding has no subnet despite mode = Netns; \
+                         this is a ghars bug — lower_to_effective and \
+                         provision_netns_artifacts disagree on the mode⇒subnet contract",
+                    spec.name,
+                ),
+                "report this as a ghars issue with the failing config".into(),
+            ),
+            crate::config::NetnsSubnetError::OpenMode => GharsError::Validation(
+                format!(
+                    "runner {:?} netns provisioning refused Open-mode binding; \
+                         this is a ghars bug — the Netns-mode gate at the top of \
+                         provision_netns_artifacts should have returned Ok early",
+                    spec.name,
+                ),
+                "report this as a ghars issue with the failing config".into(),
+            ),
+        };
+        GharsError::Apply {
+            action: action_label.clone(),
+            source: Box::new(inner),
+        }
+    })?;
+
     // 1) Per-instance netns config (subnet + dns mode) read by
     //    `ghars _netns-setup INSTANCE`.
     let netns_cfg = NetnsConfig {
-        subnet: binding.subnet,
+        subnet,
         dns: binding.spec.dns.clone(),
     };
     let netns_cfg_path = NetnsConfig::path_for(paths, &spec.name);

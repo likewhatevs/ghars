@@ -259,15 +259,43 @@ fn dropin_40_network_netns_snapshot() {
             }],
             ip_allow: vec!["192.168.2.84/32".parse::<IpNet>().unwrap()],
             ip_deny: vec!["0.0.0.0/0".parse::<IpNet>().unwrap()],
-            address_families: vec!["AF_UNIX".into(), "AF_INET".into()],
+            restrict_address_families: vec!["AF_UNIX".into(), "AF_INET".into()],
             dns: DnsMode::Forward,
             ipv6: Ipv6Mode::Disabled,
         },
-        subnet: "10.200.0.0/30".parse::<IpNet>().unwrap(),
+        subnet: Some("10.200.0.0/30".parse::<IpNet>().unwrap()),
     });
     let r = render_runner_unit(&spec).unwrap();
     insta::assert_snapshot!(
         "dropin_40_network_netns",
+        dropin(&r.drop_ins, "40-network.conf")
+    );
+}
+
+#[test]
+fn dropin_40_network_open_snapshot() {
+    // Byte-exact pin for the Open-mode 40-network.conf shape: just
+    // the `[Service]` section with cgroup-BPF directives, NO `[Unit]`
+    // section, NO `NetworkNamespacePath=`, NO `Requires=ghars-net@`.
+    // A regression that mistakenly emits any of the namespace-bound
+    // scaffolding under Open mode would fail the snapshot diff.
+    let mut spec = base_spec();
+    spec.network = Some(EffectiveNetworkBinding {
+        name: "hostnet".into(),
+        spec: NetworkSpec {
+            mode: NetworkMode::Open,
+            allowed_egress: vec![],
+            ip_allow: vec!["10.0.0.0/8".parse::<IpNet>().unwrap()],
+            ip_deny: vec!["0.0.0.0/0".parse::<IpNet>().unwrap()],
+            restrict_address_families: vec!["AF_UNIX".into(), "AF_INET".into()],
+            dns: DnsMode::Forward,
+            ipv6: Ipv6Mode::Disabled,
+        },
+        subnet: None,
+    });
+    let r = render_runner_unit(&spec).unwrap();
+    insta::assert_snapshot!(
+        "dropin_40_network_open",
         dropin(&r.drop_ins, "40-network.conf")
     );
 }
@@ -406,11 +434,11 @@ fn nft_rules_minimal_snapshot() {
             }],
             ip_allow: vec![],
             ip_deny: vec![],
-            address_families: vec![],
+            restrict_address_families: vec![],
             dns: DnsMode::Forward,
             ipv6: Ipv6Mode::Disabled,
         },
-        subnet: "10.200.0.0/30".parse::<IpNet>().unwrap(),
+        subnet: Some("10.200.0.0/30".parse::<IpNet>().unwrap()),
     };
     let rules = render_nft_rules("buckos", &binding).unwrap();
     insta::assert_snapshot!("nft_rules_minimal_host", rules.host_rules);
@@ -459,11 +487,11 @@ fn nft_rules_full_snapshot() {
             ],
             ip_allow: vec![],
             ip_deny: vec![],
-            address_families: vec![],
+            restrict_address_families: vec![],
             dns: DnsMode::Forward,
             ipv6: Ipv6Mode::Disabled,
         },
-        subnet: "10.200.0.0/30".parse::<IpNet>().unwrap(),
+        subnet: Some("10.200.0.0/30".parse::<IpNet>().unwrap()),
     };
     let rules = render_nft_rules("buckos", &binding).unwrap();
     insta::assert_snapshot!("nft_rules_full_host", rules.host_rules);

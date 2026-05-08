@@ -15,15 +15,26 @@ tolerating unknown keys.
 [defaults]                # global defaults, inherited by every [[runner]]
 [auth.NAME]               # one auth source per block, keyed by identifier
 [cache_pools.NAME]        # ccache and/or sccache pool, keyed by identifier
-[network.NAME]            # netns network, keyed by identifier
+[network.NAME]            # network policy (netns or open mode), keyed by identifier
 [proxy]                   # singleton — applies to every runner unless overridden
 [hooks]                   # singleton — pre/post-job hook scripts
 [[runner]]                # one block per runner (or count = N for prefix expansion)
 ```
 
-`[network.NAME]` blocks declare explicit netns mode. A runner with
-no `network` reference uses the host netns implicitly; there is no
-`mode = "open"` block to declare.
+`[network.NAME]` blocks declare a network policy. `mode` is
+required and is one of:
+
+- `mode = "netns"` — allocates a per-runner network namespace via
+  `ghars-net@RUNNER.service` (veth pair, nft rules, optional DNS
+  forwarding).
+- `mode = "open"` — keeps the runner in the host netns but lets
+  the operator pin systemd's cgroup-BPF egress filter
+  (`IPAddressAllow=` / `IPAddressDeny=`) and the syscall
+  address-family allowlist (`RestrictAddressFamilies=`) per
+  runner.
+
+A runner with no `network` reference at all uses the host netns
+implicitly with no extra cgroup-BPF policy.
 
 ## Identifiers
 
@@ -172,44 +183,138 @@ semantics).
 
 ```toml
 [network.isolated]
-mode             = "netns"
-allowed_egress   = [
+mode                      = "netns"
+allowed_egress            = [
   { addr = "proxy.example", port = 3128, proto = "tcp", comment = "outbound proxy" },
   { addr = "192.0.2.0/24",  port = { start = 1024, end = 65535 } },
 ]
-ip_allow         = ["192.0.2.10/32"]    # IPAddressAllow (cgroup-BPF)
-ip_deny          = ["0.0.0.0/0"]        # IPAddressDeny
-address_families = ["AF_UNIX", "AF_INET"]
-dns              = "forward"            # default; or { mode = "static", servers = [...] }
-ipv6             = "disabled"           # default; "enabled" reserved for v0.2
+ip_allow                  = ["192.0.2.10/32"]    # IPAddressAllow (cgroup-BPF)
+ip_deny                   = ["0.0.0.0/0"]        # IPAddressDeny
+restrict_address_families = ["AF_UNIX", "AF_INET"]
+dns                       = "forward"            # default; or { mode = "static", servers = [...] }
+ipv6                      = "disabled"           # default; "enabled" reserved for v0.2
+
+# Open mode example — host netns, but with cgroup-BPF egress filter
+# and an address-family allowlist applied at the cgroup layer.
+[network.host-with-policy]
+mode                      = "open"
+ip_allow                  = ["10.0.0.0/8"]
+ip_deny                   = ["0.0.0.0/0"]
+restrict_address_families = ["AF_INET"]
 ```
 
 Fields:
 
-- `mode` (`NetworkMode`) — `open` (host netns; rarely declared
-  explicitly — operators usually omit `network` to get Open) or
-  `netns` (per-runner network namespace via
-  `ghars-net@RUNNER.service`).
+- `mode` (`NetworkMode`) — `netns` (per-runner network namespace
+  via `ghars-net@RUNNER.service`) or `open` (host netns; declared
+  explicitly when the operator wants to add cgroup-BPF or
+  address-family restrictions on top of the host netns without
+  the namespace overhead). Operators who want plain host
+  networking with no extra policy omit the `network` field
+  entirely.
 - `allowed_egress` (`Vec<EgressRule>`) — each entry: `addr`
   (IPv4/IPv6 or CIDR), `port` (single, set, or range), `proto`
   (`tcp`, `udp`, or `both` — `both` emits two nft rules),
-  optional `comment` (sanitized at generate time).
+  optional `comment` (sanitized at generate time). **Netns mode
+  only** — `mode = "open"` REJECTS this field at validate time
+  (no namespace, no nft, the rules would be silently dropped).
 - `ip_allow` / `ip_deny` (`Vec<IpNet>`) — feed systemd's
-  `IPAddressAllow=` / `IPAddressDeny=` (cgroup-BPF layer);
-  emitted alongside the netns nft rules as defense in depth.
-- `address_families` (`Vec<String>`) — `AF_*` allowlist for
-  systemd `RestrictAddressFamilies=`. Empty Vec ≡ unset.
+  `IPAddressAllow=` / `IPAddressDeny=` (cgroup-BPF layer).
+  Honored in BOTH modes: under `netns` they're emitted alongside
+  the nft rules as defense in depth, under `open` they are the
+  sole egress gate at the systemd layer.
+- `restrict_address_families` (`Vec<String>`) — `AF_*` allowlist
+  for systemd `RestrictAddressFamilies=`. Empty Vec ≡ unset.
+  Honored in both `netns` and `open` modes — the directive lives
+  in the per-runner cgroup, not the namespace, so it applies
+  regardless of whether the runner has its own netns. Field name
+  mirrors the systemd directive and the parallel
+  `Hardening.restrict_address_families` field.
 - `dns` (`DnsMode`) — default `forward` (use the host's
   systemd-resolved via the veth IP). `{ mode = "static", servers
   = [...] }` lists explicit upstream nameservers and bypasses
-  systemd-resolved. No no-DNS mode.
+  systemd-resolved. No no-DNS mode. **Netns mode only** —
+  `mode = "open"` REJECTS any non-Forward `dns` setting at
+  validate time (the per-runner DNS policy is a netns artifact;
+  Open-mode runners inherit the host's `/etc/resolv.conf`).
 - `ipv6` (`Ipv6Mode`) — default `disabled`. v0.2 will allocate a
   /64 from a configurable ULA pool when set to `enabled`; v0.1
-  apply errors with that explanation.
+  apply errors with that explanation. **Netns mode only** —
+  `mode = "open"` REJECTS `ipv6 = "enabled"` at validate time
+  (Open-mode runners share the host's IPv6 stack).
 
 A `mode = "netns"` block with empty `allowed_egress` AND empty
 `ip_allow` is rejected at validate time — a netns runner with no
 egress is almost certainly a misconfiguration.
+
+A `mode = "open"` block carrying any netns-only field is rejected
+at validate time too, because the silent-partial-enforcement
+shape (operator writes the field, the renderer ignores it) is
+worse than a structured error pointing at the misconfiguration.
+Three rejection rules:
+
+- `mode = "open"` + non-empty `allowed_egress` →
+  "allowed_egress requires mode = netns; nft rules are not
+  generated for open mode"
+- `mode = "open"` + non-Forward `dns` →
+  "dns requires mode = netns; open-mode runners inherit the
+  host's /etc/resolv.conf"
+- `mode = "open"` + `ipv6 = "enabled"` →
+  "ipv6 = enabled requires mode = netns; open-mode runners share
+  the host's IPv6 stack"
+
+`mode = "open"` blocks have no analogous gate for empty cgroup-BPF
+policy: an Open block with all defense-in-depth fields empty is
+tolerated AND collapses at plan time to the same shape an operator
+gets by omitting `network` entirely — no `40-network.conf`
+drop-in, no `spec_hash` flip from the no-op block. So
+`[network.foo] mode = "open"` with no policy fields and
+`network = "foo"` on a runner is a no-op, exactly as if the
+runner had `network` unset.
+
+### Common mistake: cgroup-BPF fields under `[defaults.hardening]`
+
+`ip_deny` and `ip_allow` live ONLY under `[network.NAME]`, never
+under `[defaults.hardening]` or `[[runner]].hardening`. Putting
+them under `[hardening]` fails at config load with serde's
+`unknown field` error:
+
+```toml
+# WRONG — fails to parse with `unknown field "ip_deny"`
+[defaults.hardening]
+ip_deny = ["0.0.0.0/0"]
+
+# RIGHT — declare an [network.NAME] block and reference it
+[network.host-policy]
+mode    = "open"
+ip_deny = ["0.0.0.0/0"]
+
+[[runner]]
+name    = "build"
+url     = "https://github.com/example/build"
+auth    = "pat"
+network = "host-policy"
+```
+
+`restrict_address_families` is the only field name that exists in
+BOTH structs:
+
+- `[defaults.hardening].restrict_address_families` (or
+  `[[runner]].hardening.restrict_address_families`) — widens the
+  systemd `RestrictAddressFamilies=` allowlist for every runner
+  regardless of network mode. Emits to `20-hardening.conf`.
+- `[network.NAME].restrict_address_families` — narrows the
+  allowlist per-`[network.NAME]` block via the resolved network
+  binding. Emits to `40-network.conf` (in either Netns or Open
+  mode, since the directive lives at the cgroup layer). Composes
+  with the hardening field across drop-ins (systemd unions both
+  lines at unit-load time).
+
+The fields are NOT interchangeable. There is NO way to attach
+`ip_deny` / `ip_allow` to a runner via `[hardening]` — that's by
+design (cgroup-BPF egress policy is per-runner network policy,
+while hardening is the systemd sandbox shape applied uniformly
+across the runner unit).
 
 `PortSpec` is an untagged serde enum:
 
@@ -380,7 +485,13 @@ List-typed fields:
 
 - `restrict_address_families` (`Vec<String>`) — empty ≡ unset; non-
   empty emits `RestrictAddressFamilies=` with the listed AF_*
-  tokens.
+  tokens. Composes with the parallel
+  `[network.NAME].restrict_address_families` field — `20-hardening.conf`
+  and `40-network.conf` both emit a `RestrictAddressFamilies=` line
+  and systemd unions them at unit-load time. The hardening field
+  widens the allowlist globally; the network-spec field narrows it
+  per-`[network.NAME]` block (and applies in either Netns or Open
+  mode, since the directive lives at the cgroup layer).
 - `extra_syscalls` (`Vec<String>`) — APPENDED to the canonical
   syscall allowlist (`SystemCallFilter=@system-service ...`).
 - `etc_bind_style` (`EtcBindStyle`) — `curated` (default; narrow
@@ -401,12 +512,25 @@ because that would silently erase the template's allowlist. See
 
 ## Defaults merge rules
 
-| field family              | merge rule                                          |
-|---------------------------|-----------------------------------------------------|
-| scalar                    | runner overrides default; missing runner ⇒ default |
-| `labels`                  | `concat(defaults.labels, runner.labels)` then dedup, preserve order |
-| `caches`                  | runner-only (defaults has no caches list)           |
-| `hardening` (per field)   | runner field wins iff `Some`; otherwise default field |
+| field family                  | merge rule                                          |
+|-------------------------------|-----------------------------------------------------|
+| scalar                        | runner overrides default; missing runner ⇒ default |
+| `labels`                      | `concat(defaults.labels, runner.labels)` then dedup, preserve order |
+| `caches`                      | runner-only (defaults has no caches list)           |
+| `hardening` (per field)       | runner field wins iff `Some`; otherwise default field |
+| `network` (reference)         | runner overrides default; missing runner ⇒ `defaults.network`; both unset ⇒ `None` (implicit Open) |
+| `network` (resolution)†       | resolved `[network.NAME]` block collapses to `None` at plan time when `mode = "open"` AND every cgroup-BPF policy field (`ip_allow` / `ip_deny` / `restrict_address_families`) is empty — same shape as no `network` reference |
+
+† **Footnote on `network` resolution**: This collapse is NOT a
+defaults merge per se — it happens later in
+`lower_to_effective` (see `src/plan/compute.rs`), after the
+reference has resolved through the merge. The table groups it
+here because operators looking up "what does my `network` field
+do" find it in one place. The mechanical effect: a no-op
+`[network.foo] mode = "open"` block referenced by a runner does
+NOT flip the runner's `spec_hash` or emit a `40-network.conf`
+drop-in — plan-time-equivalent to the runner having no
+`network` field at all.
 
 After merge, an `EffectiveRunnerSpec` carries the resolved bindings
 (`auth_name`, `caches`, `network`) inline so downstream code never
@@ -418,7 +542,12 @@ Run by `cli::load_config` in this order; first failure short-
 circuits:
 
 1. `validate_networks` — egress rule address + port shape, DNS
-   mode, netns-requires-egress-or-ip-allow.
+   mode, mode-scoped invariants:
+   - `mode = "netns"` requires at least one of `allowed_egress` /
+     `ip_allow`.
+   - `mode = "open"` rejects `allowed_egress`, non-Forward `dns`,
+     and `ipv6 = "enabled"` (these are netns-only artifacts that
+     would be silently ignored under Open mode).
 2. `validate_security_overrides` — `Hardening.extra_capabilities` /
    `extra_bind_paths` deny-list; hooks scripts via
    `validate_hook_script` (`O_NOFOLLOW` open with the seven SEC-12
@@ -486,13 +615,23 @@ size  = "200G"
 mode  = "shared"
 
 [network.isolated]
-mode             = "netns"
-allowed_egress   = [
+mode                      = "netns"
+allowed_egress            = [
   { addr = "proxy.example", port = 3128, proto = "tcp", comment = "outbound proxy" },
 ]
-ip_allow         = ["192.0.2.10/32"]
-ip_deny          = ["0.0.0.0/0"]
-address_families = ["AF_UNIX", "AF_INET"]
+ip_allow                  = ["192.0.2.10/32"]
+ip_deny                   = ["0.0.0.0/0"]
+restrict_address_families = ["AF_UNIX", "AF_INET"]
+
+# Open-mode policy block: host netns + cgroup-BPF egress filter.
+# Useful when the operator needs IP/family restrictions but cannot
+# afford the netns/veth setup (older kernels without
+# CONFIG_NET_NS, host-routed connectivity policies, etc.).
+[network.host-policy]
+mode                      = "open"
+ip_allow                  = ["10.0.0.0/8", "192.0.2.10/32"]
+ip_deny                   = ["0.0.0.0/0"]
+restrict_address_families = ["AF_INET", "AF_INET6"]
 
 [[runner]]
 name   = "build-1"
@@ -513,4 +652,13 @@ url        = "https://github.com/example/repo"
 labels     = ["ci", "big-mem"]
 memory_max = "16G"
 caches     = ["build"]
+
+# Runner using the open-mode policy block — host netns, but with
+# cgroup-BPF egress filter and address-family allowlist applied at
+# the cgroup layer. No per-runner namespace, no veth, no nft.
+[[runner]]
+name    = "host-net"
+url     = "https://github.com/example/legacy"
+labels  = ["legacy"]
+network = "host-policy"
 ```

@@ -468,7 +468,12 @@ WantedBy=multi-user.target
 ///   `/run/ghars/netns-resolv/<name>` based on the runner's network mode)
 /// - `20-hardening.conf` — per-field hardening overrides
 /// - `30-cache-pool.conf` — ccache/sccache pool bindings (when caches non-empty)
-/// - `40-network.conf` — netns binding (Netns mode only)
+/// - `40-network.conf` — netns binding + cgroup-BPF directives in
+///   Netns mode; cgroup-BPF directives only (no `NetworkNamespacePath=`,
+///   no `Requires=ghars-net@`) in Open mode when any of
+///   `ip_allow` / `ip_deny` / `restrict_address_families` is
+///   non-empty; skipped entirely when Open mode has none of those
+///   set
 /// - `50-numa.conf` — `AllowedCPUs=` / `AllowedMemoryNodes=` (when set)
 /// - `60-proxy.conf` — proxy env + CA-trust env (when proxy resolved)
 /// - `70-hooks.conf` — pre/post-job hook env + `BindReadOnlyPaths` (when hooks resolved)
@@ -746,8 +751,17 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
         Some(crate::config::NetworkMode::Open) | None => "open",
     };
     let _ = writeln!(s, "X-Ghars-Network-Mode={net_mode}");
-    if let Some(net) = &spec.network {
-        let _ = writeln!(s, "X-Ghars-Netns-Subnet={}", net.subnet);
+    // X-Ghars-Netns-Subnet is Netns-only (the documented
+    // "filesystem-layout" annotation table flags it that way). The
+    // binding's `subnet` field is `Some` exactly when
+    // `lower_to_effective` allocated a /30, which it does only for
+    // Netns mode — so gating on `subnet.is_some()` is equivalent to
+    // gating on `mode == Netns`, expressed as a presence check
+    // against the field that actually carries the value.
+    if let Some(net) = &spec.network
+        && let Some(subnet) = net.subnet
+    {
+        let _ = writeln!(s, "X-Ghars-Netns-Subnet={subnet}");
     }
     // [Service] is always emitted: User=ghars-tz-<TRUST_ZONE> binds
     // the runner unit to the trust_zone's DynamicUser allocation
@@ -1140,46 +1154,73 @@ fn render_network(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
     let Some(net) = spec.network.as_ref() else {
         return Ok(None);
     };
-    if !matches!(net.spec.mode, NetworkMode::Netns) {
+    let netns_mode = matches!(net.spec.mode, NetworkMode::Netns);
+    let has_cgroup_bpf_directives = !net.spec.ip_allow.is_empty()
+        || !net.spec.ip_deny.is_empty()
+        || !net.spec.restrict_address_families.is_empty();
+    // Defense in depth against direct-construct callers (test
+    // fixtures, future programmatic spec builders) that bypass
+    // `lower_to_effective`. The lowering pipeline already collapses
+    // Open + all-empty policy to `spec.network = None`, so this
+    // branch is unreachable on the production path; an Open binding
+    // with no directives reaching `render_network` is therefore a
+    // bug-shaped input we'd rather render as "no drop-in" than
+    // emit an empty `[Service]` section. Netns mode always emits
+    // because the namespace bind itself is the load-bearing
+    // contribution regardless of cgroup-BPF policy.
+    if !netns_mode && !has_cgroup_bpf_directives {
         return Ok(None);
     }
-    // Defense-in-depth: `address_families[]` is the only operator-
-    // supplied free-form String surface in this renderer's body. It is
-    // joined with `" "` and emitted on a `RestrictAddressFamilies=` line,
-    // so a newline anywhere in an entry would inject a new directive.
-    // `ip_allow` / `ip_deny` are typed (`Vec<IpNet>`) so they cannot
-    // carry control chars; `spec.name` is gated by `validate_runner_name`
-    // upstream.
-    for entry in &net.spec.address_families {
-        check_identity_field("network.address_families[]", entry)?;
+    // Defense-in-depth: `restrict_address_families[]` is the only
+    // operator-supplied free-form String surface in this renderer's
+    // body. It is joined with `" "` and emitted on a
+    // `RestrictAddressFamilies=` line, so a newline anywhere in an
+    // entry would inject a new directive. `ip_allow` / `ip_deny` are
+    // typed (`Vec<IpNet>`) so they cannot carry control chars;
+    // `spec.name` is gated by `validate_runner_name` upstream.
+    for entry in &net.spec.restrict_address_families {
+        check_identity_field("network.restrict_address_families[]", entry)?;
     }
     let mut s = String::new();
-    s.push_str("[Unit]\n");
-    let _ = writeln!(s, "Requires=ghars-net@{}.service", spec.name);
-    let _ = writeln!(s, "BindsTo=ghars-net@{}.service", spec.name);
-    let _ = writeln!(s, "After=ghars-net@{}.service", spec.name);
-    s.push('\n');
+    if netns_mode {
+        // Netns mode: pull in the per-runner `ghars-net@` side-unit so
+        // the namespace bind-mount exists before the runner unit's
+        // `NetworkNamespacePath=` join. `BindsTo` couples the
+        // lifecycle so a failed netns side-unit also stops the runner.
+        s.push_str("[Unit]\n");
+        let _ = writeln!(s, "Requires=ghars-net@{}.service", spec.name);
+        let _ = writeln!(s, "BindsTo=ghars-net@{}.service", spec.name);
+        let _ = writeln!(s, "After=ghars-net@{}.service", spec.name);
+        s.push('\n');
+    }
     s.push_str("[Service]\n");
 
-    // Fail-closed: NetworkNamespacePath= refuses to start when the
-    // bind-mount path is missing or unjoinable. systemd's
-    // exec_invoke() opens the path via `open_shareable_ns_path` and
-    // returns EXIT_NETWORK on failure (see the `network_namespace_path`
-    // branch in `src/core/exec-invoke.c::exec_invoke`).
-    let _ = writeln!(s, "NetworkNamespacePath=/var/run/netns/ghars-{}", spec.name);
+    if netns_mode {
+        // Fail-closed: NetworkNamespacePath= refuses to start when the
+        // bind-mount path is missing or unjoinable. systemd's
+        // exec_invoke() opens the path via `open_shareable_ns_path`
+        // and returns EXIT_NETWORK on failure (see the
+        // `network_namespace_path` branch in
+        // `src/core/exec-invoke.c::exec_invoke`).
+        let _ = writeln!(s, "NetworkNamespacePath=/var/run/netns/ghars-{}", spec.name);
+    }
 
-    // Defense in depth at the cgroup-BPF layer.
+    // Cgroup-BPF defense in depth. Emitted in BOTH modes when the
+    // operator populates the corresponding NetworkSpec field — Netns
+    // pairs them with the nft layer for belt-and-suspenders, Open
+    // mode relies on them as the sole egress / family gate at the
+    // systemd layer (no namespace, no nft).
     for cidr in &net.spec.ip_allow {
         let _ = writeln!(s, "IPAddressAllow={cidr}");
     }
     for cidr in &net.spec.ip_deny {
         let _ = writeln!(s, "IPAddressDeny={cidr}");
     }
-    if !net.spec.address_families.is_empty() {
+    if !net.spec.restrict_address_families.is_empty() {
         let _ = writeln!(
             s,
             "RestrictAddressFamilies={}",
-            net.spec.address_families.join(" ")
+            net.spec.restrict_address_families.join(" ")
         );
     }
 
@@ -1943,12 +1984,12 @@ mod tests {
         assert!(msg.contains("newline"), "msg must name class: {msg}");
     }
 
-    /// `render_network`: `network.address_families[]` is an operator-
-    /// supplied free-form String entry joined with `" "` and emitted on
-    /// a `RestrictAddressFamilies=` line. A newline anywhere in an
-    /// entry would inject a new directive line.
+    /// `render_network`: `network.restrict_address_families[]` is an
+    /// operator-supplied free-form String entry joined with `" "` and
+    /// emitted on a `RestrictAddressFamilies=` line. A newline
+    /// anywhere in an entry would inject a new directive line.
     #[test]
-    fn render_network_rejects_newline_in_address_families_entry() {
+    fn render_network_rejects_newline_in_restrict_address_families_entry() {
         let mut spec = minimal_spec();
         spec.network = Some(EffectiveNetworkBinding {
             name: "buck2-isolated".into(),
@@ -1957,11 +1998,11 @@ mod tests {
                 allowed_egress: vec![],
                 ip_allow: vec![],
                 ip_deny: vec![],
-                address_families: vec!["AF_UNIX\nINJECTED=1".into()],
+                restrict_address_families: vec!["AF_UNIX\nINJECTED=1".into()],
                 dns: DnsMode::default(),
                 ipv6: Ipv6Mode::default(),
             },
-            subnet: "10.200.0.0/30".parse::<IpNet>().unwrap(),
+            subnet: Some("10.200.0.0/30".parse::<IpNet>().unwrap()),
         });
         let err = render_runner_unit(&spec).unwrap_err();
         assert!(
@@ -1970,7 +2011,43 @@ mod tests {
         );
         let msg = format!("{err}");
         assert!(
-            msg.contains("network.address_families[]"),
+            msg.contains("network.restrict_address_families[]"),
+            "msg must name field: {msg}"
+        );
+        assert!(msg.contains("newline"), "msg must name class: {msg}");
+    }
+
+    /// Defense-in-depth parity: `restrict_address_families[]` newline
+    /// rejection MUST fire under Open mode too. The renderer body
+    /// runs the same `check_identity_field` loop in both modes — the
+    /// gate is mode-independent because the directive lives at the
+    /// cgroup layer regardless of whether a netns is allocated.
+    /// Pin Open mode separately so a future regression that scopes
+    /// the check to only `if netns_mode { ... }` surfaces here.
+    #[test]
+    fn render_network_open_rejects_newline_in_restrict_address_families_entry() {
+        let mut spec = minimal_spec();
+        spec.network = Some(EffectiveNetworkBinding {
+            name: "hostnet".into(),
+            spec: NetworkSpec {
+                mode: NetworkMode::Open,
+                allowed_egress: vec![],
+                ip_allow: vec![],
+                ip_deny: vec![],
+                restrict_address_families: vec!["AF_UNIX\nINJECTED=1".into()],
+                dns: DnsMode::default(),
+                ipv6: Ipv6Mode::default(),
+            },
+            subnet: None,
+        });
+        let err = render_runner_unit(&spec).unwrap_err();
+        assert!(
+            matches!(err, GharsError::Validation(_, _)),
+            "expected Validation, got {err:?}"
+        );
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("network.restrict_address_families[]"),
             "msg must name field: {msg}"
         );
         assert!(msg.contains("newline"), "msg must name class: {msg}");
@@ -2132,11 +2209,11 @@ mod tests {
                 }],
                 ip_allow: vec![],
                 ip_deny: vec![],
-                address_families: vec![],
+                restrict_address_families: vec![],
                 dns: DnsMode::default(),
                 ipv6: Ipv6Mode::default(),
             },
-            subnet: "10.200.0.0/30".parse::<IpNet>().unwrap(),
+            subnet: Some("10.200.0.0/30".parse::<IpNet>().unwrap()),
         });
         let r = render_runner_unit(&spec).unwrap();
         let body = r.drop_ins.get("15-resolv.conf").unwrap();
@@ -2294,14 +2371,14 @@ mod tests {
             allowed_egress: vec![],
             ip_allow: vec!["192.168.2.84/32".parse::<IpNet>().unwrap()],
             ip_deny: vec!["0.0.0.0/0".parse::<IpNet>().unwrap()],
-            address_families: vec!["AF_UNIX".into(), "AF_INET".into()],
+            restrict_address_families: vec!["AF_UNIX".into(), "AF_INET".into()],
             dns: DnsMode::default(),
             ipv6: Ipv6Mode::default(),
         };
         spec.network = Some(EffectiveNetworkBinding {
             name: "buck2-isolated".into(),
             spec: net_spec,
-            subnet: "10.200.0.0/30".parse::<IpNet>().unwrap(),
+            subnet: Some("10.200.0.0/30".parse::<IpNet>().unwrap()),
         });
         let r = render_runner_unit(&spec).unwrap();
         let n = r.drop_ins.get("40-network.conf").unwrap();
@@ -2316,25 +2393,221 @@ mod tests {
         assert!(id.contains("X-Ghars-Netns-Subnet=10.200.0.0/30"));
     }
 
+    /// Defense-in-depth gate: an Open-mode binding with no
+    /// cgroup-BPF policy fields reaching `render_network` is a
+    /// bug-shape input (the production lowering path collapses such
+    /// bindings to `spec.network = None` before the renderer runs).
+    /// The renderer returns `Ok(None)` rather than emitting an
+    /// empty `[Service]` section, so test fixtures that bypass
+    /// `lower_to_effective` (this one) still produce no drop-in.
     #[test]
-    fn render_skips_network_for_open_mode() {
+    fn render_skips_network_for_open_mode_with_empty_cgroup_bpf() {
         let mut spec = minimal_spec();
         let net_spec = NetworkSpec {
             mode: NetworkMode::Open,
             allowed_egress: vec![],
             ip_allow: vec![],
             ip_deny: vec![],
-            address_families: vec![],
+            restrict_address_families: vec![],
             dns: DnsMode::default(),
             ipv6: Ipv6Mode::default(),
         };
         spec.network = Some(EffectiveNetworkBinding {
             name: "open".into(),
             spec: net_spec,
-            subnet: "0.0.0.0/32".parse::<IpNet>().unwrap(),
+            subnet: None,
         });
         let r = render_runner_unit(&spec).unwrap();
         assert!(!r.drop_ins.contains_key("40-network.conf"));
+    }
+
+    /// Open-mode binding carrying ALL THREE of `ip_deny` / `ip_allow`
+    /// / `restrict_address_families` MUST emit a `40-network.conf`
+    /// with the cgroup-BPF directives but WITHOUT the
+    /// namespace-bound scaffolding
+    /// (`Requires=`/`BindsTo=`/`After=ghars-net@…`,
+    /// `NetworkNamespacePath=`). Open mode has no per-runner netns,
+    /// so the side-unit dependencies and the bind-mount path do not
+    /// apply; emitting them would force the unit to fail-closed
+    /// against a non-existent ghars-net@ side-unit.
+    #[test]
+    fn render_emits_cgroup_bpf_only_for_open_mode_with_all_fields() {
+        let mut spec = minimal_spec();
+        let net_spec = NetworkSpec {
+            mode: NetworkMode::Open,
+            allowed_egress: vec![],
+            ip_allow: vec!["10.0.0.0/8".parse::<IpNet>().unwrap()],
+            ip_deny: vec!["0.0.0.0/0".parse::<IpNet>().unwrap()],
+            restrict_address_families: vec!["AF_UNIX".into(), "AF_INET".into()],
+            dns: DnsMode::default(),
+            ipv6: Ipv6Mode::default(),
+        };
+        spec.network = Some(EffectiveNetworkBinding {
+            name: "hostnet".into(),
+            spec: net_spec,
+            subnet: None,
+        });
+        let r = render_runner_unit(&spec).unwrap();
+        let n = r
+            .drop_ins
+            .get("40-network.conf")
+            .expect("open mode with cgroup-BPF directives must emit 40-network.conf");
+        // Cgroup-BPF directives present.
+        assert!(n.contains("IPAddressAllow=10.0.0.0/8"));
+        assert!(n.contains("IPAddressDeny=0.0.0.0/0"));
+        assert!(n.contains("RestrictAddressFamilies=AF_UNIX AF_INET"));
+        // Namespace-scoped scaffolding absent.
+        assert!(
+            !n.contains("Requires=ghars-net@"),
+            "open mode must not Require ghars-net@: {n}"
+        );
+        assert!(
+            !n.contains("BindsTo=ghars-net@"),
+            "open mode must not BindsTo ghars-net@: {n}"
+        );
+        assert!(
+            !n.contains("After=ghars-net@"),
+            "open mode must not order After= ghars-net@: {n}"
+        );
+        assert!(
+            !n.contains("NetworkNamespacePath="),
+            "open mode must not bind a netns path: {n}"
+        );
+        // No [Unit] section header at all (the netns scaffolding is
+        // the only [Unit] contributor in this drop-in).
+        assert!(
+            !n.contains("[Unit]"),
+            "open mode 40-network.conf must not carry a [Unit] section: {n}"
+        );
+    }
+
+    /// Open-mode runs with ONLY `ip_deny` set MUST still emit the
+    /// drop-in. Mirrors the `ip_allow_only` and
+    /// `restrict_address_families_only` shape tests: each cgroup-BPF
+    /// field on its own must trigger emission. Together with the
+    /// other two single-field tests, this pins each field as an
+    /// independent emission trigger so a future regression that
+    /// gates emission on (e.g.) "`ip_allow` OR
+    /// `restrict_address_families`" (omitting `ip_deny`) surfaces
+    /// here.
+    #[test]
+    fn render_emits_cgroup_bpf_for_open_mode_with_ip_deny_only() {
+        let mut spec = minimal_spec();
+        spec.network = Some(EffectiveNetworkBinding {
+            name: "hostnet".into(),
+            spec: NetworkSpec {
+                mode: NetworkMode::Open,
+                allowed_egress: vec![],
+                ip_allow: vec![],
+                ip_deny: vec!["0.0.0.0/0".parse::<IpNet>().unwrap()],
+                restrict_address_families: vec![],
+                dns: DnsMode::default(),
+                ipv6: Ipv6Mode::default(),
+            },
+            subnet: None,
+        });
+        let r = render_runner_unit(&spec).unwrap();
+        let n = r
+            .drop_ins
+            .get("40-network.conf")
+            .expect("ip_deny alone in open mode must emit 40-network.conf");
+        assert!(n.contains("IPAddressDeny=0.0.0.0/0"));
+        assert!(!n.contains("IPAddressAllow="));
+        assert!(!n.contains("RestrictAddressFamilies="));
+        assert!(!n.contains("NetworkNamespacePath="));
+    }
+
+    /// Open-mode runs with only one of the cgroup-BPF fields set
+    /// MUST still emit the drop-in. Pin every single-field shape so a
+    /// future regression that gates emission on (e.g.) `ip_deny`
+    /// alone surfaces here.
+    #[test]
+    fn render_emits_cgroup_bpf_for_open_mode_with_ip_allow_only() {
+        let mut spec = minimal_spec();
+        spec.network = Some(EffectiveNetworkBinding {
+            name: "hostnet".into(),
+            spec: NetworkSpec {
+                mode: NetworkMode::Open,
+                allowed_egress: vec![],
+                ip_allow: vec!["192.0.2.0/24".parse::<IpNet>().unwrap()],
+                ip_deny: vec![],
+                restrict_address_families: vec![],
+                dns: DnsMode::default(),
+                ipv6: Ipv6Mode::default(),
+            },
+            subnet: None,
+        });
+        let r = render_runner_unit(&spec).unwrap();
+        let n = r
+            .drop_ins
+            .get("40-network.conf")
+            .expect("ip_allow alone in open mode must emit 40-network.conf");
+        assert!(n.contains("IPAddressAllow=192.0.2.0/24"));
+        assert!(!n.contains("IPAddressDeny="));
+        assert!(!n.contains("RestrictAddressFamilies="));
+        assert!(!n.contains("NetworkNamespacePath="));
+    }
+
+    #[test]
+    fn render_emits_cgroup_bpf_for_open_mode_with_restrict_address_families_only() {
+        let mut spec = minimal_spec();
+        spec.network = Some(EffectiveNetworkBinding {
+            name: "hostnet".into(),
+            spec: NetworkSpec {
+                mode: NetworkMode::Open,
+                allowed_egress: vec![],
+                ip_allow: vec![],
+                ip_deny: vec![],
+                restrict_address_families: vec!["AF_INET".into()],
+                dns: DnsMode::default(),
+                ipv6: Ipv6Mode::default(),
+            },
+            subnet: None,
+        });
+        let r = render_runner_unit(&spec).unwrap();
+        let n = r
+            .drop_ins
+            .get("40-network.conf")
+            .expect("restrict_address_families alone in open mode must emit 40-network.conf");
+        assert!(n.contains("RestrictAddressFamilies=AF_INET"));
+        assert!(!n.contains("IPAddressAllow="));
+        assert!(!n.contains("IPAddressDeny="));
+        assert!(!n.contains("NetworkNamespacePath="));
+    }
+
+    /// `X-Ghars-Netns-Subnet=` is Netns-scoped per the
+    /// `filesystem-layout` annotation table. An Open-mode binding
+    /// has `subnet = None` (no /30 allocated), so the renderer's
+    /// `if let Some(subnet) = net.subnet` gate suppresses the
+    /// annotation; otherwise an operator reading `00-ghars.conf`
+    /// would conclude a netns had been allocated.
+    #[test]
+    fn render_identity_omits_netns_subnet_annotation_for_open_mode() {
+        let mut spec = minimal_spec();
+        spec.network = Some(EffectiveNetworkBinding {
+            name: "hostnet".into(),
+            spec: NetworkSpec {
+                mode: NetworkMode::Open,
+                allowed_egress: vec![],
+                ip_allow: vec!["10.0.0.0/8".parse::<IpNet>().unwrap()],
+                ip_deny: vec![],
+                restrict_address_families: vec![],
+                dns: DnsMode::default(),
+                ipv6: Ipv6Mode::default(),
+            },
+            subnet: None,
+        });
+        let r = render_runner_unit(&spec).unwrap();
+        let id = r.drop_ins.get("00-ghars.conf").unwrap();
+        // Network mode is still annotated as "open" so the plan
+        // classifier's Open↔Netns transition detector still works.
+        assert!(id.contains("X-Ghars-Network-Mode=open"));
+        // No subnet line — Open-mode bindings have subnet = None so
+        // the renderer's presence-gate suppresses the annotation.
+        assert!(
+            !id.contains("X-Ghars-Netns-Subnet="),
+            "open-mode binding must not emit X-Ghars-Netns-Subnet, got:\n{id}"
+        );
     }
 
     #[test]
@@ -2413,11 +2686,11 @@ mod tests {
                 }],
                 ip_allow: vec![],
                 ip_deny: vec![],
-                address_families: vec!["AF_UNIX".into(), "AF_INET".into()],
+                restrict_address_families: vec!["AF_UNIX".into(), "AF_INET".into()],
                 dns: DnsMode::default(),
                 ipv6: Ipv6Mode::default(),
             },
-            subnet: "10.200.0.0/30".parse::<IpNet>().unwrap(),
+            subnet: Some("10.200.0.0/30".parse::<IpNet>().unwrap()),
         });
         let r = render_runner_unit(&spec).unwrap();
         let h = r
@@ -2451,6 +2724,72 @@ mod tests {
         }
     }
 
+    /// Same composition contract under Open mode. The Open
+    /// `40-network.conf` drop-in carries cgroup-BPF directives
+    /// only (no namespace bind), but `RestrictAddressFamilies=` is
+    /// one of those directives — it lives at the cgroup layer, not
+    /// the namespace layer, so it composes across drop-ins
+    /// identically in either mode. Pinning Open-mode composition
+    /// here mirrors the existing Netns test so a future regression
+    /// that gates `RestrictAddressFamilies=` emission on Netns mode
+    /// (instead of on the field being non-empty) surfaces.
+    #[test]
+    fn restrict_address_families_composes_across_hardening_and_open_network() {
+        let mut spec = minimal_spec();
+        spec.hardening.restrict_address_families = vec!["AF_UNIX".into(), "AF_NETLINK".into()];
+        spec.network = Some(EffectiveNetworkBinding {
+            name: "hostnet".into(),
+            spec: NetworkSpec {
+                mode: NetworkMode::Open,
+                allowed_egress: vec![],
+                ip_allow: vec![],
+                ip_deny: vec![],
+                restrict_address_families: vec!["AF_UNIX".into(), "AF_INET".into()],
+                dns: DnsMode::default(),
+                ipv6: Ipv6Mode::default(),
+            },
+            subnet: None,
+        });
+        let r = render_runner_unit(&spec).unwrap();
+        let h = r
+            .drop_ins
+            .get("20-hardening.conf")
+            .expect("hardening drop-in present");
+        let n = r
+            .drop_ins
+            .get("40-network.conf")
+            .expect("open-mode network drop-in present (cgroup-BPF directives non-empty)");
+        // Each drop-in carries its OWN RestrictAddressFamilies= line.
+        assert!(
+            h.lines()
+                .any(|l| l == "RestrictAddressFamilies=AF_UNIX AF_NETLINK"),
+            "hardening drop-in missing RestrictAddressFamilies, got:\n{h}"
+        );
+        assert!(
+            n.lines()
+                .any(|l| l == "RestrictAddressFamilies=AF_UNIX AF_INET"),
+            "open network drop-in missing RestrictAddressFamilies, got:\n{n}"
+        );
+        // Neither drop-in emits a bare reset.
+        for body in [h, n] {
+            assert!(
+                !body.lines().any(|l| l.trim() == "RestrictAddressFamilies="),
+                "drop-in must not reset the allowlist, got:\n{body}"
+            );
+        }
+        // Open-mode-specific anti-properties: the network drop-in
+        // must NOT carry the namespace scaffolding even though it
+        // emits `RestrictAddressFamilies=`.
+        assert!(
+            !n.contains("[Unit]"),
+            "open-mode 40-network.conf must not carry [Unit] section, got:\n{n}"
+        );
+        assert!(
+            !n.contains("NetworkNamespacePath="),
+            "open-mode 40-network.conf must not bind a netns path, got:\n{n}"
+        );
+    }
+
     #[test]
     fn restrict_address_families_drop_ins_load_in_numeric_order() {
         // BTreeMap iteration is alphabetic by key, which for the
@@ -2474,11 +2813,11 @@ mod tests {
                 }],
                 ip_allow: vec![],
                 ip_deny: vec![],
-                address_families: vec!["AF_INET".into()],
+                restrict_address_families: vec!["AF_INET".into()],
                 dns: DnsMode::default(),
                 ipv6: Ipv6Mode::default(),
             },
-            subnet: "10.200.0.0/30".parse::<IpNet>().unwrap(),
+            subnet: Some("10.200.0.0/30".parse::<IpNet>().unwrap()),
         });
         let r = render_runner_unit(&spec).unwrap();
         let keys: Vec<&str> = r.drop_ins.keys().map(String::as_str).collect();

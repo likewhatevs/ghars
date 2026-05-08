@@ -636,7 +636,7 @@ fn plan_update_recreate_on_network_mode_open_to_netns() {
             allowed_egress: vec![],
             ip_allow: vec![],
             ip_deny: vec![],
-            address_families: vec![],
+            restrict_address_families: vec![],
             dns: crate::config::DnsMode::Forward,
             ipv6: crate::config::Ipv6Mode::Disabled,
         },
@@ -705,16 +705,16 @@ fn plan_update_recreate_on_network_mode_netns_to_open() {
         allowed_egress: vec![],
         ip_allow: vec![],
         ip_deny: vec![],
-        address_families: vec![],
+        restrict_address_families: vec![],
         dns: crate::config::DnsMode::Forward,
         ipv6: crate::config::Ipv6Mode::Disabled,
     };
     let netns_binding = EffectiveNetworkBinding {
         name: "isolated".into(),
         spec: netns_spec,
-        subnet: ipnet::IpNet::V4(
+        subnet: Some(ipnet::IpNet::V4(
             ipnet::Ipv4Net::new(std::net::Ipv4Addr::new(10, 200, 0, 0), 30).unwrap(),
-        ),
+        )),
     };
     let mut old_spec = merge_defaults(
         &old_runner,
@@ -1386,7 +1386,7 @@ fn plan_invariant_recreate_implies_non_empty_reasons_across_all_field_classes() 
                 allowed_egress: vec![],
                 ip_allow: vec![],
                 ip_deny: vec![],
-                address_families: vec![],
+                restrict_address_families: vec![],
                 dns: crate::config::DnsMode::Forward,
                 ipv6: crate::config::Ipv6Mode::Disabled,
             },

@@ -144,6 +144,44 @@ static MEMORY_MAX_PCT_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^[0-9]+%$").expect("MEMORY_MAX_PCT_REGEX is a compile-time constant")
 });
 
+// systemd `RestrictAddressFamilies=` token shape: `AF_` prefix, then
+// `[A-Z0-9_]+`. Anchored on both ends. Validates entries flowing into
+// either `Hardening.restrict_address_families` (drops into
+// `20-hardening.conf` `RestrictAddressFamilies=` line) or
+// `NetworkSpec.restrict_address_families` (drops into `40-network.conf`
+// `RestrictAddressFamilies=` line). systemd refuses any token outside
+// the AF_* family, but its rejection happens at unit-load time with an
+// opaque message; gating at config load surfaces the typo against the
+// offending operator field with the offending token quoted verbatim.
+static AF_FAMILY_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^AF_[A-Z0-9_]+$").expect("AF_FAMILY_REGEX is a compile-time constant")
+});
+
+/// Hard cap on the byte length of an `AF_*` token. systemd's
+/// `RestrictAddressFamilies=` parser accepts arbitrary identifier
+/// shapes but the kernel's `<bits/socket.h>` family names top out
+/// well under this. Catching at config load surfaces a structured
+/// reject before the unit fails at load time.
+const AF_FAMILY_MAX_LEN: usize = 32;
+
+/// `AF_*` aliases that systemd EXCLUDES from
+/// `RestrictAddressFamilies=` lookup — operators who write these
+/// see opaque "unknown family" errors at unit-load time. Each
+/// alias maps to its canonical Linux `<bits/socket.h>` form via
+/// `<bits/socket-types.h>` `#define`s; the validator rejects with
+/// a "use the canonical X instead" hint so operators converge on
+/// the form systemd's parser actually accepts.
+///
+/// Mirrors `DENY_EXTRA_CAPABILITIES` shape (a static slice of
+/// (offending, replacement) pairs); the slice is small enough that
+/// linear lookup is cheaper than a `HashMap` and keeps the error path
+/// allocation-free.
+const AF_FAMILY_ALIASES: &[(&str, &str)] = &[
+    ("AF_FILE", "AF_UNIX"),
+    ("AF_LOCAL", "AF_UNIX"),
+    ("AF_ROUTE", "AF_NETLINK"),
+];
+
 // GitHub repo URL. Form: https://github.com/OWNER[/REPO][.git][/].
 // OWNER and REPO segments match GitHub's own rules: start with an
 // alphanumeric, continue with alphanumerics, dots, hyphens, or
@@ -787,32 +825,105 @@ pub fn validate_dns_mode(dns: &crate::config::DnsMode) -> Result<()> {
     }
 }
 
-/// Validate every field of a `NetworkSpec`. Aggregates
-/// `validate_egress_rule` over all entries and `validate_dns_mode`
-/// over the resolved DNS policy. Also requires at least one of
-/// `allowed_egress` / `ip_allow` for `NetworkMode::Netns` (a netns
-/// runner with neither is fully isolated and almost certainly a
-/// misconfiguration; mirrors the design's "validation" subsection
-/// in Part 9c).
+/// Validate every field of a `NetworkSpec`. Order is load-bearing:
+/// the mode-scoped gate runs FIRST so an operator who put a
+/// netns-only field on an Open-mode block sees the structured
+/// "this field requires mode = netns" error before any per-rule
+/// validation surfaces. Per-rule validation
+/// (`validate_egress_rule` over each entry, `validate_dns_mode` on
+/// the resolved policy) runs AFTER, so a misconfiguration like
+/// "Open mode + bad egress port" surfaces the mode-scope error
+/// (which the operator must address first) instead of a per-rule
+/// error against rules that wouldn't be applied anyway.
+///
+/// Mode-scoped invariants (the first-class fail-fast gate):
+///
+/// - `mode = "netns"` requires at least one of `allowed_egress` /
+///   `ip_allow` (a fully-isolated netns runner is almost certainly
+///   a misconfiguration — design Part 9c "validation").
+/// - `mode = "open"` rejects `allowed_egress` (no namespace, no nft —
+///   the rules would be silently ignored and the operator would
+///   discover the gap by observing unfiltered egress).
+/// - `mode = "open"` rejects non-default `dns` (the DNS resolution
+///   policy applies inside the netns; Open-mode runners inherit
+///   the host's `/etc/resolv.conf` and the field would be silently
+///   ignored).
+/// - `mode = "open"` rejects `ipv6 = Enabled` (IPv6 ULA allocation is
+///   a Netns-mode artifact; Open-mode runners share the host's
+///   IPv6 stack).
+///
+/// `ip_allow`, `ip_deny`, and `restrict_address_families` are honored
+/// in BOTH modes (cgroup-BPF and `RestrictAddressFamilies=` apply at
+/// the cgroup layer regardless of namespace), so neither mode rejects
+/// them.
 ///
 /// # Errors
 ///
 /// Returns `GharsError::Validation` on the first failing rule.
 pub fn validate_network_spec(spec: &crate::config::NetworkSpec) -> Result<()> {
+    // Stage 1: mode-scoped gate. Runs before per-rule validation so
+    // an Open-mode block carrying netns-only fields produces the
+    // mode-scope error rather than per-rule errors against fields
+    // that wouldn't be applied. Netns mode's "requires egress or
+    // ip_allow" check stays here too — it's a mode-shape invariant,
+    // not a per-rule check.
+    match spec.mode {
+        crate::config::NetworkMode::Netns => {
+            if spec.allowed_egress.is_empty() && spec.ip_allow.is_empty() {
+                return Err(validation(
+                    "netns network has no allowed_egress and no ip_allow",
+                    "a fully-isolated netns runner can't reach the network at all; \
+                    list at least one allowed_egress entry or ip_allow CIDR",
+                ));
+            }
+        }
+        crate::config::NetworkMode::Open => {
+            if !spec.allowed_egress.is_empty() {
+                return Err(validation(
+                    "allowed_egress requires mode = netns; nft rules are not generated for open mode",
+                    "remove the allowed_egress entries, or change mode to \"netns\" \
+                     (Open-mode runners share the host netns; egress filtering at \
+                     the netfilter layer is a netns artifact). Cgroup-BPF gating \
+                     via ip_allow / ip_deny works in either mode.",
+                ));
+            }
+            if !matches!(spec.dns, crate::config::DnsMode::Forward) {
+                return Err(validation(
+                    "dns requires mode = netns; open-mode runners inherit the host's /etc/resolv.conf",
+                    "remove the dns block (it defaults to Forward, the only sensible \
+                     setting for open mode), or change mode to \"netns\" so the per-\
+                     runner resolver policy actually applies",
+                ));
+            }
+            if matches!(spec.ipv6, crate::config::Ipv6Mode::Enabled) {
+                return Err(validation(
+                    "ipv6 = enabled requires mode = netns; open-mode runners share the host's IPv6 stack",
+                    "remove the ipv6 setting (defaults to disabled, which means \"do \
+                     nothing extra in the netns\" and is consistent with sharing the \
+                     host stack), or change mode to \"netns\" so the per-runner ULA \
+                     allocation actually happens",
+                ));
+            }
+        }
+    }
+    // Stage 2: per-rule validation. Reached only when the mode-
+    // scoped invariants pass. Egress rules are guaranteed to apply
+    // (Netns mode) — Open mode short-circuited above with
+    // allowed_egress non-empty, so the loop below runs only for
+    // Netns. DNS mode validation runs in both modes (Open's
+    // restriction to Forward was checked above; this validates
+    // Static's servers list non-empty for Netns).
+    // restrict_address_families validation runs in both modes —
+    // the directive applies at the cgroup layer regardless of
+    // namespace, so the AF_* token shape gate is mode-independent.
     for rule in &spec.allowed_egress {
         validate_egress_rule(rule)?;
     }
     validate_dns_mode(&spec.dns)?;
-    if matches!(spec.mode, crate::config::NetworkMode::Netns)
-        && spec.allowed_egress.is_empty()
-        && spec.ip_allow.is_empty()
-    {
-        return Err(validation(
-            "netns network has no allowed_egress and no ip_allow",
-            "a fully-isolated netns runner can't reach the network at all; \
-            list at least one allowed_egress entry or ip_allow CIDR",
-        ));
-    }
+    validate_restrict_address_families(
+        "restrict_address_families",
+        &spec.restrict_address_families,
+    )?;
     Ok(())
 }
 
@@ -912,6 +1023,100 @@ const DENY_EXTRA_BIND_PATHS: &[&str] = &[
 static PROC_PID_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^/proc/[0-9]+($|/)").expect("PROC_PID_REGEX is a compile-time constant")
 });
+
+/// Validate every entry in a `restrict_address_families` list
+/// (used by both `Hardening.restrict_address_families` and
+/// `NetworkSpec.restrict_address_families`). Each token must:
+///
+/// 1. Be non-empty (a stray comma in TOML produces an empty string
+///    between commas).
+/// 2. Be at most [`AF_FAMILY_MAX_LEN`] = 32 bytes (defense-in-depth
+///    against operator-pasted nonsense; real AF_* tokens are well
+///    under this).
+/// 3. Match the systemd `RestrictAddressFamilies=` shape
+///    `AF_[A-Z0-9_]+`. Case-sensitive: `af_unix` is not equivalent
+///    to `AF_UNIX` for systemd, and accepting the lowercase form
+///    would let an operator's silent-failure-shape typo slip
+///    through (the operator wrote `af_unix`, the unit loaded with
+///    nothing matching, and the workload exhibited unexpected
+///    egress failures at runtime).
+/// 4. Not appear in [`AF_FAMILY_ALIASES`] — systemd EXCLUDES
+///    `AF_FILE`/`AF_LOCAL`/`AF_ROUTE` from its parser; operators
+///    who write these see opaque "unknown family" errors at
+///    unit-load time. The validator rejects with a "use the
+///    canonical X instead" hint so operators converge on the form
+///    systemd's parser actually accepts.
+///
+/// systemd itself refuses any non-`AF_*` token at unit-load time
+/// with an opaque error; gating at config load surfaces the typo
+/// against the offending operator field with the offending token
+/// quoted verbatim.
+///
+/// `field_label` is interpolated into the error message so the
+/// operator sees which field carried the bad token (e.g.
+/// `"hardening.restrict_address_families"` for the hardening site,
+/// or just `"restrict_address_families"` for the per-network site
+/// where the `[network.NAME]:` block scope is prepended by
+/// `validate_networks` upstream).
+///
+/// # Errors
+///
+/// Returns `GharsError::Validation` on the first entry that fails
+/// any of the gates above.
+pub fn validate_restrict_address_families(field_label: &str, families: &[String]) -> Result<()> {
+    for entry in families {
+        if entry.is_empty() {
+            return Err(validation(
+                format!("{field_label} entry is empty"),
+                "remove the empty token; a stray comma in TOML can produce \
+                 an empty string between commas in the resulting Vec",
+            ));
+        }
+        if entry.len() > AF_FAMILY_MAX_LEN {
+            return Err(validation(
+                format!(
+                    "{field_label} entry {entry:?} is {} bytes; \
+                     real AF_* tokens are well under {AF_FAMILY_MAX_LEN}",
+                    entry.len(),
+                ),
+                "shorten or replace the token; if the value really is a \
+                 systemd address-family name longer than 32 bytes, file an \
+                 issue with the systemd reference",
+            ));
+        }
+        if !AF_FAMILY_RE.is_match(entry) {
+            return Err(validation(
+                format!(
+                    "{field_label} entry {entry:?} is not a valid AF_* token; \
+                     systemd RestrictAddressFamilies= rejects any non-AF_* \
+                     family at unit-load time",
+                ),
+                "use systemd address-family tokens like AF_UNIX, AF_INET, \
+                 AF_INET6, AF_NETLINK; see systemd.exec(5) RestrictAddressFamilies= \
+                 for the supported list. Tokens are case-sensitive; lowercase \
+                 forms (e.g. \"af_unix\") are not accepted",
+            ));
+        }
+        for (alias, canonical) in AF_FAMILY_ALIASES {
+            if entry == alias {
+                return Err(validation(
+                    format!(
+                        "{field_label} entry {entry:?} is excluded by systemd's \
+                         RestrictAddressFamilies= parser; use the canonical \
+                         {canonical:?} instead",
+                    ),
+                    format!(
+                        "replace {alias} with {canonical}; \
+                         systemd's <bits/socket-types.h> defines {alias} as an \
+                         alias for {canonical}, but its parser only accepts the \
+                         canonical name",
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Validate `Hardening.extra_capabilities` (SEC-01).
 ///
@@ -2440,7 +2645,7 @@ mod tests {
             allowed_egress,
             ip_allow,
             ip_deny: vec![],
-            address_families: vec![],
+            restrict_address_families: vec![],
             dns: crate::config::DnsMode::default(),
             ipv6: crate::config::Ipv6Mode::default(),
         }
@@ -2499,11 +2704,297 @@ mod tests {
             allowed_egress: vec![],
             ip_allow: vec![],
             ip_deny: vec![],
-            address_families: vec![],
+            restrict_address_families: vec![],
             dns: crate::config::DnsMode::default(),
             ipv6: crate::config::Ipv6Mode::default(),
         };
         validate_network_spec(&spec).unwrap();
+    }
+
+    /// Open-mode `[network.NAME]` rejects `allowed_egress` because
+    /// nft rules are Netns-only — emitting them on Open mode would
+    /// silently fall through (no namespace, no nft rule emission)
+    /// and the operator would discover the gap by observing
+    /// unfiltered egress.
+    #[test]
+    fn network_spec_open_rejects_allowed_egress() {
+        let spec = crate::config::NetworkSpec {
+            mode: crate::config::NetworkMode::Open,
+            allowed_egress: vec![egress("10.0.0.1", crate::config::PortSpec::Single(443))],
+            ip_allow: vec![],
+            ip_deny: vec![],
+            restrict_address_families: vec![],
+            dns: crate::config::DnsMode::default(),
+            ipv6: crate::config::Ipv6Mode::default(),
+        };
+        let err = validate_network_spec(&spec).expect_err("must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("allowed_egress requires mode = netns"),
+            "msg must name the rule: {msg}"
+        );
+    }
+
+    /// Open-mode `[network.NAME]` rejects non-Forward `dns` because
+    /// the per-runner DNS policy applies inside the netns; Open-mode
+    /// runners inherit the host's `/etc/resolv.conf` and the field
+    /// would be silently ignored.
+    #[test]
+    fn network_spec_open_rejects_static_dns() {
+        let spec = crate::config::NetworkSpec {
+            mode: crate::config::NetworkMode::Open,
+            allowed_egress: vec![],
+            ip_allow: vec![],
+            ip_deny: vec![],
+            restrict_address_families: vec![],
+            dns: crate::config::DnsMode::Static {
+                servers: vec!["1.1.1.1".parse().unwrap()],
+            },
+            ipv6: crate::config::Ipv6Mode::default(),
+        };
+        let err = validate_network_spec(&spec).expect_err("must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("dns requires mode = netns"),
+            "msg must name the rule: {msg}"
+        );
+    }
+
+    /// Open-mode `[network.NAME]` rejects `ipv6 = Enabled` because
+    /// IPv6 ULA allocation is a Netns-mode artifact; Open-mode
+    /// runners share the host's IPv6 stack and no allocation
+    /// happens.
+    #[test]
+    fn network_spec_open_rejects_ipv6_enabled() {
+        let spec = crate::config::NetworkSpec {
+            mode: crate::config::NetworkMode::Open,
+            allowed_egress: vec![],
+            ip_allow: vec![],
+            ip_deny: vec![],
+            restrict_address_families: vec![],
+            dns: crate::config::DnsMode::default(),
+            ipv6: crate::config::Ipv6Mode::Enabled,
+        };
+        let err = validate_network_spec(&spec).expect_err("must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ipv6 = enabled requires mode = netns"),
+            "msg must name the rule: {msg}"
+        );
+    }
+
+    /// Positive companion: Open-mode block with cgroup-BPF fields
+    /// (`ip_allow` / `ip_deny` / `restrict_address_families`) MUST
+    /// pass validation. These fields apply at the cgroup layer
+    /// regardless of namespace, so neither mode rejects them.
+    #[test]
+    fn network_spec_open_accepts_cgroup_bpf_fields() {
+        let spec = crate::config::NetworkSpec {
+            mode: crate::config::NetworkMode::Open,
+            allowed_egress: vec![],
+            ip_allow: vec!["10.0.0.0/8".parse::<IpNet>().unwrap()],
+            ip_deny: vec!["0.0.0.0/0".parse::<IpNet>().unwrap()],
+            restrict_address_families: vec!["AF_INET".into()],
+            dns: crate::config::DnsMode::default(),
+            ipv6: crate::config::Ipv6Mode::default(),
+        };
+        validate_network_spec(&spec).unwrap();
+    }
+
+    // ---- validate_restrict_address_families ---------------------------
+
+    /// AF_* tokens that systemd accepts must pass through. Pin
+    /// every common family to catch a regression that accidentally
+    /// rejects a legit token.
+    #[rstest]
+    #[case::unix("AF_UNIX")]
+    #[case::inet("AF_INET")]
+    #[case::inet6("AF_INET6")]
+    #[case::netlink("AF_NETLINK")]
+    #[case::packet("AF_PACKET")]
+    #[case::with_digit("AF_INET6")]
+    #[case::ieee802154("AF_IEEE802154")]
+    fn validate_restrict_address_families_accepts_valid(#[case] family: &str) {
+        validate_restrict_address_families("network.restrict_address_families", &[family.into()])
+            .expect("valid AF_* token must pass");
+    }
+
+    /// Tokens that don't match the AF_[A-Z0-9_]+ shape MUST reject:
+    /// lowercase forms (systemd is case-sensitive), missing prefix,
+    /// typos, and stray punctuation.
+    #[rstest]
+    #[case::lowercase("af_unix")]
+    #[case::mixed_case("Af_Unix")]
+    #[case::missing_prefix("INET")]
+    #[case::typo("AF_BOGUS TYPO")]
+    #[case::with_dash("AF-UNIX")]
+    #[case::with_dot("AF_UNIX.0")]
+    #[case::trailing_space("AF_UNIX ")]
+    #[case::leading_space(" AF_UNIX")]
+    fn validate_restrict_address_families_rejects_malformed(#[case] family: &str) {
+        let err = validate_restrict_address_families(
+            "network.restrict_address_families",
+            &[family.into()],
+        )
+        .expect_err("malformed token must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("not a valid AF_* token"),
+            "msg must name the violation: {msg}"
+        );
+        assert!(
+            msg.contains("network.restrict_address_families"),
+            "msg must name the offending field: {msg}"
+        );
+        // Defense-in-depth: the offending token is quoted so the
+        // operator can find it in their TOML.
+        assert!(
+            msg.contains(&format!("{family:?}")),
+            "msg must quote the offending token verbatim: {msg}"
+        );
+    }
+
+    /// Empty entries are also rejected (a stray comma in TOML can
+    /// produce an empty string between commas).
+    #[test]
+    fn validate_restrict_address_families_rejects_empty_entry() {
+        let err = validate_restrict_address_families(
+            "hardening.restrict_address_families",
+            &[String::new()],
+        )
+        .expect_err("empty entry must reject");
+        let msg = format!("{err}");
+        assert!(msg.contains("entry is empty"), "msg: {msg}");
+        assert!(
+            msg.contains("hardening.restrict_address_families"),
+            "msg must name the field: {msg}"
+        );
+    }
+
+    /// Empty list passes (Vec<String> default is empty; that's "no
+    /// restriction").
+    #[test]
+    fn validate_restrict_address_families_accepts_empty_list() {
+        validate_restrict_address_families("hardening.restrict_address_families", &[]).unwrap();
+    }
+
+    /// Tokens longer than `AF_FAMILY_MAX_LEN` (32 bytes) reject,
+    /// even if the shape regex would otherwise accept them. Defense-
+    /// in-depth against operator-pasted nonsense; real AF_* tokens
+    /// are well under 32 bytes.
+    #[test]
+    fn validate_restrict_address_families_rejects_overlong() {
+        // 33 bytes total: "AF_" + 30 'X' chars.
+        let overlong = format!("AF_{}", "X".repeat(30));
+        assert_eq!(overlong.len(), 33);
+        let err = validate_restrict_address_families(
+            "hardening.restrict_address_families",
+            std::slice::from_ref(&overlong),
+        )
+        .expect_err("overlong token must reject");
+        let msg = format!("{err}");
+        assert!(msg.contains("33 bytes"), "msg must name length: {msg}");
+        assert!(
+            msg.contains(&format!("{overlong:?}")),
+            "msg must quote bad token: {msg}"
+        );
+    }
+
+    /// systemd EXCLUDES `AF_FILE`, `AF_LOCAL`, `AF_ROUTE` from its
+    /// `RestrictAddressFamilies=` parser. Operators who write these
+    /// see opaque "unknown family" errors at unit-load time. The
+    /// validator rejects with a "use the canonical X instead"
+    /// hint — pin each alias and the canonical replacement it points
+    /// at.
+    #[rstest]
+    #[case::af_file("AF_FILE", "AF_UNIX")]
+    #[case::af_local("AF_LOCAL", "AF_UNIX")]
+    #[case::af_route("AF_ROUTE", "AF_NETLINK")]
+    fn validate_restrict_address_families_rejects_systemd_excluded_alias(
+        #[case] alias: &str,
+        #[case] canonical: &str,
+    ) {
+        let err = validate_restrict_address_families(
+            "hardening.restrict_address_families",
+            &[alias.into()],
+        )
+        .expect_err("systemd-excluded alias must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("excluded by systemd"),
+            "msg must name the systemd exclusion: {msg}"
+        );
+        assert!(
+            msg.contains(&format!("{alias:?}")),
+            "msg must quote the alias: {msg}"
+        );
+        assert!(
+            msg.contains(&format!("{canonical:?}")),
+            "msg must point at the canonical replacement: {msg}"
+        );
+    }
+
+    /// Multi-entry list with one bad token rejects on the bad
+    /// token, naming it.
+    #[test]
+    fn validate_restrict_address_families_rejects_first_bad_entry() {
+        let err = validate_restrict_address_families(
+            "network.restrict_address_families",
+            &["AF_UNIX".into(), "BOGUS".into(), "AF_INET".into()],
+        )
+        .expect_err("must reject");
+        let msg = format!("{err}");
+        assert!(msg.contains("\"BOGUS\""), "msg must name bad token: {msg}");
+    }
+
+    /// `network_spec_validates_restrict_address_families`: end-to-
+    /// end pin that `validate_network_spec` wires the AF_* check
+    /// through for both Netns and Open mode.
+    #[test]
+    fn network_spec_rejects_malformed_restrict_address_families() {
+        // Netns mode + bad family entry.
+        let spec = crate::config::NetworkSpec {
+            mode: crate::config::NetworkMode::Netns,
+            allowed_egress: vec![],
+            ip_allow: vec!["10.0.0.0/8".parse::<IpNet>().unwrap()],
+            ip_deny: vec![],
+            restrict_address_families: vec!["AF_UNIX".into(), "af_bogus".into()],
+            dns: crate::config::DnsMode::default(),
+            ipv6: crate::config::Ipv6Mode::default(),
+        };
+        let err = validate_network_spec(&spec).expect_err("must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("not a valid AF_* token"),
+            "Netns: msg must name violation: {msg}"
+        );
+        assert!(
+            msg.contains("\"af_bogus\""),
+            "Netns: msg must quote bad token: {msg}"
+        );
+
+        // Open mode + bad family entry. The mode-scoped gate lets
+        // restrict_address_families through to Stage 2 per-rule
+        // validation, where the AF_* check runs.
+        let spec_open = crate::config::NetworkSpec {
+            mode: crate::config::NetworkMode::Open,
+            allowed_egress: vec![],
+            ip_allow: vec![],
+            ip_deny: vec![],
+            restrict_address_families: vec!["AF_INET".into(), "INET6".into()],
+            dns: crate::config::DnsMode::default(),
+            ipv6: crate::config::Ipv6Mode::default(),
+        };
+        let err = validate_network_spec(&spec_open).expect_err("must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("not a valid AF_* token"),
+            "Open: msg must name violation: {msg}"
+        );
+        assert!(
+            msg.contains("\"INET6\""),
+            "Open: msg must quote bad token: {msg}"
+        );
     }
 
     // ---- extra_capabilities (SEC-01) ---------------------------------

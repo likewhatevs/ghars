@@ -1496,8 +1496,16 @@ fn plan_validates_unknown_network() {
     assert!(msg.contains("ghost"), "got: {msg}");
 }
 
+/// An explicit `[network.NAME]` reference whose mode is Open and
+/// whose defense-in-depth fields are all empty COLLAPSES to
+/// `spec.network = None` — semantically identical to "no network
+/// reference at all". This refinement (over the early shape that
+/// kept a `Some(binding)` with empty policy) keeps the binding
+/// invariant clean: `Some` ⇔ "directives to render". Without this
+/// collapse, a no-op Open block would flip `spec_hash` on every
+/// referencing runner without producing any rendered output.
 #[test]
-fn plan_resolves_open_network_to_no_binding() {
+fn plan_open_network_with_empty_policy_collapses_to_no_binding() {
     let mut cfg = config_with_runners(vec![{
         let mut r = minimal_runner("a");
         r.network = Some("hostnet".into());
@@ -1511,7 +1519,7 @@ fn plan_resolves_open_network_to_no_binding() {
             allowed_egress: vec![],
             ip_allow: vec![],
             ip_deny: vec![],
-            address_families: vec![],
+            restrict_address_families: vec![],
             dns: crate::config::DnsMode::Forward,
             ipv6: crate::config::Ipv6Mode::Disabled,
         },
@@ -1526,8 +1534,108 @@ fn plan_resolves_open_network_to_no_binding() {
         })
         .collect();
     assert_eq!(creates.len(), 1);
-    // Open mode → no 40-network drop-in.
+    assert!(
+        creates[0].spec.network.is_none(),
+        "Open + all-empty policy must collapse to spec.network = None; \
+         got {:?}",
+        creates[0].spec.network
+    );
+    // No 40-network drop-in either.
+    assert!(!creates[0].drop_ins.contains_key("40-network.conf"));
+    // Identity drop-in still annotates network mode "open" via the
+    // `Open|None ⇒ "open"` collapse in render_identity, and does NOT
+    // emit a netns subnet line.
+    let id = creates[0].drop_ins.get("00-ghars.conf").unwrap();
+    assert!(!id.contains("X-Ghars-Netns-Subnet="));
+    assert!(id.contains("X-Ghars-Network-Mode=open"));
+}
+
+/// A runner with NO `network` ref (and no `defaults.network`) gets
+/// `spec.network = None` — the implicit-Open path. Distinct from the
+/// explicit-Open binding above.
+#[test]
+fn plan_implicit_open_leaves_spec_network_none() {
+    let mut cfg = config_with_runners(vec![{
+        let mut r = minimal_runner("a");
+        r.network = None;
+        r
+    }]);
+    cfg.auth = pat_auth();
+    let plan = plan_from(&cfg, &empty_actual(), &empty_paths()).unwrap();
+    let creates: Vec<&RunnerPlan> = plan
+        .actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::CreateRunner(rp) => Some(rp),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(creates.len(), 1);
     assert!(creates[0].spec.network.is_none());
+    assert!(!creates[0].drop_ins.contains_key("40-network.conf"));
+}
+
+/// Open-mode `[network.NAME]` carrying `ip_deny` / `ip_allow` /
+/// `restrict_address_families` MUST produce a `40-network.conf`
+/// drop-in with JUST the cgroup-BPF directives — no
+/// `NetworkNamespacePath=`, no `Requires=ghars-net@`, no nft rule
+/// files.
+#[test]
+fn plan_open_network_with_cgroup_bpf_emits_drop_in() {
+    let mut cfg = config_with_runners(vec![{
+        let mut r = minimal_runner("a");
+        r.network = Some("hostnet".into());
+        r
+    }]);
+    cfg.auth = pat_auth();
+    cfg.networks.insert(
+        "hostnet".into(),
+        NetworkSpec {
+            mode: NetworkMode::Open,
+            allowed_egress: vec![],
+            ip_allow: vec!["10.0.0.0/8".parse::<ipnet::IpNet>().unwrap()],
+            ip_deny: vec!["0.0.0.0/0".parse::<ipnet::IpNet>().unwrap()],
+            restrict_address_families: vec!["AF_INET".into()],
+            dns: crate::config::DnsMode::Forward,
+            ipv6: crate::config::Ipv6Mode::Disabled,
+        },
+    );
+    let plan = plan_from(&cfg, &empty_actual(), &empty_paths()).unwrap();
+    let creates: Vec<&RunnerPlan> = plan
+        .actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::CreateRunner(rp) => Some(rp),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(creates.len(), 1);
+    // Open + non-empty policy ⇒ binding present; subnet is None
+    // (Open mode owns no /30).
+    let binding = creates[0]
+        .spec
+        .network
+        .as_ref()
+        .expect("Open + non-empty policy must produce a binding");
+    assert!(matches!(binding.spec.mode, NetworkMode::Open));
+    assert!(
+        binding.subnet.is_none(),
+        "Open-mode binding must have subnet = None even when policy non-empty; \
+         got {:?}",
+        binding.subnet
+    );
+    let body = creates[0]
+        .drop_ins
+        .get("40-network.conf")
+        .expect("open mode with cgroup-BPF directives must emit 40-network.conf");
+    // cgroup-BPF directives present.
+    assert!(body.contains("IPAddressAllow=10.0.0.0/8"));
+    assert!(body.contains("IPAddressDeny=0.0.0.0/0"));
+    assert!(body.contains("RestrictAddressFamilies=AF_INET"));
+    // Namespace-scoped scaffolding absent.
+    assert!(!body.contains("NetworkNamespacePath="));
+    assert!(!body.contains("Requires=ghars-net@"));
+    assert!(!body.contains("BindsTo=ghars-net@"));
 }
 
 #[test]
@@ -1545,7 +1653,7 @@ fn plan_resolves_netns_network_to_binding() {
             allowed_egress: vec![],
             ip_allow: vec![],
             ip_deny: vec![],
-            address_families: vec![],
+            restrict_address_families: vec![],
             dns: crate::config::DnsMode::Forward,
             ipv6: crate::config::Ipv6Mode::Disabled,
         },
