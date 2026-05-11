@@ -233,6 +233,8 @@ fn skip_test_cache_delta(name: &str) -> CachePoolDelta {
             size: "100G".into(),
             mode: crate::config::CacheMode::Shared,
             trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
         },
         drop_in_body: "[Service]\nEnvironment=GHARS_TEST=1\n".into(),
         spec_hash: "sha256:cafe".into(),

@@ -7,10 +7,13 @@
 //! orphan handling.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::path::Path;
+
+use camino::Utf8PathBuf;
 
 use crate::Result;
 use crate::config::{
-    Arch, CachePoolSpec, Config, EffectiveCacheBinding, EffectiveNetworkBinding,
+    Arch, CacheKind, CachePoolSpec, Config, EffectiveCacheBinding, EffectiveNetworkBinding,
     EffectiveRunnerSpec, NetworkMode, RunnerSpec,
 };
 use crate::error::GharsError;
@@ -789,12 +792,15 @@ pub(super) fn into_cache_pool_plan(
     pool: &CachePoolSpec,
     config_source: &str,
 ) -> Result<CachePoolPlan> {
+    let (sccache_path, sleep_path) = resolve_cache_pool_paths(&name, pool)?;
     let binding = EffectiveCacheBinding {
         name,
         kinds: pool.kinds.clone(),
         size: pool.size.clone(),
         mode: pool.mode,
         trust_zone: pool.trust_zone.clone(),
+        sccache_path,
+        sleep_path,
     };
     let spec_hash = cache_pool_hash(&binding);
     let drop_in_body = crate::systemd::render_cache_drop_in(&binding, config_source, &spec_hash)?;
@@ -803,6 +809,105 @@ pub(super) fn into_cache_pool_plan(
         drop_in_body,
         spec_hash,
     })
+}
+
+/// Resolve the sccache + sleep binary paths for a cache pool. Returns
+/// `(sccache_path, sleep_path)` where each entry is:
+/// - `Some(absolute path)` when the binary is needed for this pool's
+///   `kinds` AND either the operator pinned it on the [`CachePoolSpec`]
+///   OR plan-time auto-detection found it on the canonical search
+///   list. Auto-detect order:
+///     - sccache: `/usr/local/bin/sccache` then `/usr/bin/sccache`
+///       (the `cargo install` landing then the distro-packaging
+///       landing — first hit wins).
+///     - sleep: `/usr/bin/sleep` then `/bin/sleep` (sleep ships in
+///       coreutils which most distros place at `/usr/bin/`, with
+///       `/bin/sleep` covering legacy non-merged-usr layouts).
+/// - `None` when the kind is not served by this pool. The renderer
+///   reads `sccache_path` only when `kinds.contains(Sccache)` and
+///   `sleep_path` only when the pool is ccache-only, so leaving the
+///   unused slot as `None` mirrors the renderer's branching exactly.
+///
+/// # Errors
+///
+/// Returns `GharsError::Validation` when the binary is needed
+/// (kind served) and neither the operator-pinned path nor the
+/// auto-detect candidates exist on disk. The error names the pool
+/// and the missing binary so the operator can pick between
+/// installing the package and pinning an explicit path in TOML.
+fn resolve_cache_pool_paths(
+    pool_name: &str,
+    pool: &CachePoolSpec,
+) -> Result<(Option<Utf8PathBuf>, Option<Utf8PathBuf>)> {
+    let serves_sccache = pool.kinds.contains(&CacheKind::Sccache);
+    // sleep is only used as the ExecStart on ccache-only pools.
+    // sccache-serving pools (whether or not they also serve ccache)
+    // put the sccache server on ExecStart and never invoke sleep.
+    let needs_sleep = !serves_sccache;
+    let sccache_path = if serves_sccache {
+        Some(resolve_one_binary(
+            pool_name,
+            "sccache_path",
+            "sccache",
+            pool.sccache_path.as_deref(),
+            &["/usr/local/bin/sccache", "/usr/bin/sccache"],
+        )?)
+    } else {
+        None
+    };
+    let sleep_path = if needs_sleep {
+        Some(resolve_one_binary(
+            pool_name,
+            "sleep_path",
+            "sleep",
+            pool.sleep_path.as_deref(),
+            &["/usr/bin/sleep", "/bin/sleep"],
+        )?)
+    } else {
+        None
+    };
+    Ok((sccache_path, sleep_path))
+}
+
+/// Resolve a single binary path: honor the operator-pinned value when
+/// set, else probe the canonical search list in order. Validates the
+/// operator pin is absolute (defense-in-depth — the config-load
+/// validator owns the primary gate, this catches any caller that
+/// bypasses it).
+fn resolve_one_binary(
+    pool_name: &str,
+    field: &str,
+    bin: &str,
+    pinned: Option<&camino::Utf8Path>,
+    candidates: &[&str],
+) -> Result<Utf8PathBuf> {
+    if let Some(p) = pinned {
+        if !p.is_absolute() {
+            return Err(GharsError::Validation(
+                format!("cache_pool '{pool_name}' {field} must be absolute, got: {p}"),
+                "relative paths resolve against process CWD which varies between \
+                 invocations (operator shell vs. root apply); use an absolute path"
+                    .into(),
+            ));
+        }
+        return Ok(p.to_owned());
+    }
+    for candidate in candidates {
+        if Path::new(candidate).exists() {
+            return Ok(Utf8PathBuf::from(*candidate));
+        }
+    }
+    Err(GharsError::Validation(
+        format!(
+            "cache_pool '{pool_name}': {bin} not found on canonical search path ({})",
+            candidates.join(", ")
+        ),
+        format!(
+            "install {bin} (e.g. `cargo install sccache` lands at /usr/local/bin; \
+             distro packages land at /usr/bin) OR pin an explicit \
+             absolute path with `{field} = \"/path/to/{bin}\"` in [cache_pools.{pool_name}]"
+        ),
+    ))
 }
 
 pub(super) fn collect_referenced_cache_pools(
@@ -819,7 +924,14 @@ pub(super) fn collect_referenced_cache_pools(
                 continue;
             }
             // Reconstruct CachePoolSpec from the binding (lossless —
-            // every field round-trips).
+            // every field round-trips). The path fields carry through
+            // as the already-resolved absolute paths from
+            // `resolve_cache_pool_paths` at lower_to_effective time
+            // so the downstream `into_cache_pool_plan` consumer sees
+            // the same Some-value the operator's binding does (no
+            // double resolution, no chance of host state drifting
+            // between the runner-side and pool-side binding
+            // constructions).
             out.insert(
                 binding.name.clone(),
                 CachePoolSpec {
@@ -827,6 +939,8 @@ pub(super) fn collect_referenced_cache_pools(
                     size: binding.size.clone(),
                     mode: binding.mode,
                     trust_zone: binding.trust_zone.clone(),
+                    sccache_path: binding.sccache_path.clone(),
+                    sleep_path: binding.sleep_path.clone(),
                 },
             );
         }
@@ -916,12 +1030,15 @@ pub(super) fn lower_to_effective(
                 "split into separate pools or align trust_zones (SEC-03)".into(),
             ));
         }
+        let (sccache_path, sleep_path) = resolve_cache_pool_paths(cache_name, pool)?;
         caches.push(EffectiveCacheBinding {
             name: cache_name.clone(),
             kinds: pool.kinds.clone(),
             size: pool.size.clone(),
             mode: pool.mode,
             trust_zone: pool.trust_zone.clone(),
+            sccache_path,
+            sleep_path,
         });
     }
     // Caches form an unordered set (group memberships are

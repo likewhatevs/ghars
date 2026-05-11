@@ -83,6 +83,9 @@ token_env = "GHARS_PAT"
 [cache_pools.build]
 kinds = ["ccache", "sccache"]
 size = "200G"
+# Pin sccache_path so the test does not depend on a real
+# /usr/local/bin or /usr/bin install of the sccache binary.
+sccache_path = "/usr/bin/sccache"
 
 [[runner]]
 name = "buckos"
@@ -389,6 +392,7 @@ token_env = "GHARS_PAT"
 [cache_pools.build]
 kinds = ["ccache", "sccache"]
 size = "200G"
+sccache_path = "/usr/bin/sccache"
 
 [network.isolated]
 mode = "netns"
@@ -536,10 +540,12 @@ token_env = "GHARS_PAT"
 [cache_pools.build]
 kinds = ["sccache"]
 size = "200G"
+sccache_path = "/usr/bin/sccache"
 
 [cache_pools.test]
 kinds = ["sccache"]
 size = "100G"
+sccache_path = "/usr/bin/sccache"
 
 [[runner]]
 name = "multi"
@@ -580,6 +586,7 @@ token_env = "GHARS_PAT"
 [cache_pools.unified]
 kinds = ["sccache", "ccache"]
 size = "200G"
+sccache_path = "/usr/bin/sccache"
 
 [cache_pools.fsonly]
 kinds = ["ccache"]
@@ -642,6 +649,7 @@ size = "200G"
 [cache_pools.test]
 kinds = ["sccache"]
 size = "100G"
+sccache_path = "/usr/bin/sccache"
 
 [[runner]]
 name = "alpha"

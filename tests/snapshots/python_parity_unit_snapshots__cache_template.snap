@@ -65,8 +65,13 @@ RuntimeDirectoryMode=0700
 
 # Per-kinds env + ExecStart land in the per-pool 00-ghars.conf drop-in
 # (sccache server launches there when kinds includes sccache;
-# ccache-only pools render ExecStart=/usr/bin/sleep infinity to keep
-# the unit active so its CacheDirectory stays mounted).
+# ccache-only pools render ExecStart=<sleep_path> infinity to keep
+# the unit active so its CacheDirectory stays mounted). Both
+# binary paths are resolved at plan time — either pinned via
+# [cache_pools.NAME].sccache_path / sleep_path or auto-detected
+# from a canonical search list per binary:
+#   sccache: /usr/local/bin/sccache then /usr/bin/sccache
+#   sleep:   /usr/bin/sleep        then /bin/sleep
 
 KillMode=control-group
 KillSignal=SIGTERM

@@ -56,11 +56,18 @@ pub struct RealVerifier;
 impl UnitVerifier for RealVerifier {
     fn verify(&self, unit_path: &Path) -> std::result::Result<(), String> {
         // `--no-pager` keeps output unbuffered + line-oriented for
-        // direct stderr capture. `verify <path>` accepts an absolute
-        // path; systemd-analyze resolves drop-ins from `<path>.d/`
-        // automatically when the file lives in a directory that
-        // contains the drop-in subtree.
+        // direct stderr capture.
+        // Set SYSTEMD_UNIT_PATH to the staging directory so
+        // systemd-analyze resolves drop-ins from the staged
+        // `<unit>.service.d/` trees, not from the host's
+        // /etc/systemd/system. Without this, drop-ins are invisible
+        // and template-instanced units fail with "Service has no
+        // ExecStart=" even when the drop-in supplies one.
+        let staging_dir = unit_path
+            .parent()
+            .ok_or_else(|| format!("unit_path {unit_path:?} has no parent"))?;
         let output = Command::new("/usr/bin/systemd-analyze")
+            .env("SYSTEMD_UNIT_PATH", format!("{}:", staging_dir.display()))
             .args([
                 "--no-pager",
                 "verify",
@@ -192,17 +199,44 @@ fn verify_plan_inner(plan: &Plan, staging: &Path, verifier: &dyn UnitVerifier) -
         cache_template.as_bytes(),
     )?;
 
-    let mut errors: Vec<String> = Vec::new();
+    // Two-pass staging: write ALL files first, THEN verify. Runner
+    // units Requires= cache units, so systemd-analyze needs every
+    // dependency file to exist in the staging dir before any verify
+    // call. A single interleaved write-then-verify loop fails when
+    // plan.actions orders CreateRunner before CreateCachePool.
     for u in &units {
-        // Per-unit drop-in directory.
         let dropin_dir = staging.join(format!("{}.d", u.unit_filename));
         fs::create_dir_all(&dropin_dir)?;
         for (basename, body) in &u.drop_ins {
             fs::write(dropin_dir.join(basename), body.as_bytes())?;
         }
-        // Pass the instantiated unit name as a relative path inside
-        // staging; systemd-analyze handles `<template>@<instance>.service`
-        // resolution against the staging dir.
+        let unit_path = staging.join(&u.unit_filename);
+        if let Some(ref merged) = u.merged_body {
+            // Cache units: pre-merged template+drop-in body written
+            // directly as the instance file.
+            fs::write(&unit_path, merged.as_bytes())?;
+        } else if let Some(template_path) = template_path_for(&u.unit_filename)
+            && !unit_path.exists()
+        {
+            // Runner units: copy template body to instance path so
+            // drop-ins resolve against a real file.
+            let template_abs = staging.join(template_path);
+            std::fs::copy(&template_abs, &unit_path).map_err(|e| {
+                GharsError::Io(std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "unit_verify: copy {} -> {} failed: {e}",
+                        template_abs.display(),
+                        unit_path.display()
+                    ),
+                ))
+            })?;
+        }
+    }
+
+    // Pass 2: verify every unit now that all files are staged.
+    let mut errors: Vec<String> = Vec::new();
+    for u in &units {
         let unit_path = staging.join(&u.unit_filename);
         if let Err(diag) = verifier.verify(&unit_path) {
             errors.push(format!("{}: {diag}", u.unit_filename));
@@ -228,6 +262,11 @@ struct RenderedUnit {
     unit_filename: String,
     /// Drop-in basename → body (e.g. `00-ghars.conf` → "...").
     drop_ins: BTreeMap<String, String>,
+    /// When set, this body is written directly as the instance file
+    /// instead of copying the template. Used for cache units where
+    /// template + drop-in are pre-merged so systemd-analyze doesn't
+    /// need to resolve drop-ins (which fails in staging dirs).
+    merged_body: Option<String>,
 }
 
 fn rendered_runner_unit(
@@ -236,24 +275,68 @@ fn rendered_runner_unit(
     drop_ins: &BTreeMap<String, String>,
 ) -> RenderedUnit {
     // The runner unit is template-instanced as
-    // `ghars-runner@<name>.service`. systemd-analyze resolves the
-    // template body from the same directory's `ghars-runner@.service`
-    // file (staged once by the caller) and applies the drop-ins from
-    // `ghars-runner@<name>.service.d/`. The per-instance unit file
-    // itself is NOT written; systemd treats `@<instance>.service` as
-    // a virtual instantiation of the template.
+    // `ghars-runner@<name>.service`. The caller stages the template
+    // body once at `ghars-runner@.service`, then `verify_plan_inner`
+    // copies those bytes to `ghars-runner@<name>.service` as a
+    // regular file so the per-instance pathname systemd-analyze
+    // receives resolves to a real file with directive bytes (without
+    // the copy, systemd-analyze invoked on the instance path reports
+    // "Service has no ExecStart=" because it does NOT auto-synthesize
+    // a template body from `<prefix>@.service` for direct-path
+    // invocations). A symlink was tried first but failed empirically
+    // on deploy hosts; a regular file with the instance name keeps
+    // the unit-loader's drop-in resolution direct. Drop-ins from
+    // `ghars-runner@<name>.service.d/` apply against the copied
+    // instance file.
     RenderedUnit {
         unit_filename: format!("ghars-runner@{name}.service"),
         drop_ins: drop_ins.clone(),
+        merged_body: None,
     }
 }
 
 fn rendered_cache_unit(name: &str, drop_in_body: &str) -> RenderedUnit {
-    let mut drop_ins = BTreeMap::new();
-    drop_ins.insert("00-ghars.conf".to_owned(), drop_in_body.to_owned());
+    // Cache units carry ExecStart= in the per-pool drop-in, not in the
+    // template body. systemd-analyze verify cannot reliably resolve
+    // template-instance drop-ins in a staging directory (it loads the
+    // template body but misses the per-instance .d/ overrides). To work
+    // around this, we bake the drop-in content into the instance file
+    // body alongside the template text, producing a self-contained unit
+    // that passes verification without depending on drop-in resolution.
+    // The on-host systemd runtime uses the real template + drop-in
+    // layout; this merged form is verify-only.
+    let mut merged = crate::systemd::cache_template_text();
+    merged.push('\n');
+    merged.push_str(drop_in_body);
     RenderedUnit {
         unit_filename: format!("ghars-cache@{name}.service"),
-        drop_ins,
+        drop_ins: BTreeMap::new(),
+        merged_body: Some(merged),
+    }
+}
+
+/// Return the template filename that backs a template-instanced unit
+/// filename (e.g. `ghars-cache@build.service` → `ghars-cache@.service`).
+/// Returns `None` for non-template names (no `@` between prefix and
+/// `.service`), signalling no symlink is needed.
+///
+/// The split point is the first `@` followed by anything up to
+/// `.service`. Everything from that `@` through the instance segment
+/// is dropped, leaving `<prefix>@.service`. We DO NOT support `@.`
+/// inside the instance name — the validators upstream reject `@` in
+/// runner/pool names, so a `@@`-shaped filename never reaches here.
+fn template_path_for(unit_filename: &str) -> Option<String> {
+    let at = unit_filename.find('@')?;
+    let suffix_start = unit_filename[at + 1..].find(".service")?;
+    let template = format!(
+        "{prefix_at}{suffix}",
+        prefix_at = &unit_filename[..=at],
+        suffix = &unit_filename[at + 1 + suffix_start..],
+    );
+    if template == unit_filename {
+        None
+    } else {
+        Some(template)
     }
 }
 
@@ -484,6 +567,91 @@ mod tests {
         );
     }
 
+    #[test]
+    fn verify_copies_template_body_to_instance_path() {
+        // systemd-analyze invoked on `staging/ghars-cache@build.service`
+        // (a template-instanced filename) needs the path to resolve to
+        // a file with [Service] body bytes — otherwise it reports
+        // "Service has no ExecStart=" even when the drop-in under
+        // <unit>.d/ supplies one, because direct-path invocations skip
+        // the in-host template synthesis.
+        //
+        // A symlink (instance → template) would resolve the unit body
+        // but systemd's unit-loader treats the symlink as an ALIAS,
+        // attaching drop-ins to the template's name rather than the
+        // instance's. verify_plan_inner must copy the template bytes
+        // to the instance path so the file is a regular file with
+        // the instance name, keeping drop-ins under
+        // <instance>.service.d/ correctly associated.
+        let tmp = tempfile::tempdir().unwrap();
+        let runtime = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        struct InspectingVerifier {
+            saw_regular_file: Mutex<Option<bool>>,
+            saw_template_bytes: Mutex<Option<bool>>,
+        }
+        impl UnitVerifier for InspectingVerifier {
+            fn verify(&self, unit_path: &Path) -> std::result::Result<(), String> {
+                let meta = std::fs::symlink_metadata(unit_path).unwrap();
+                let ft = meta.file_type();
+                // Must be a regular file (NOT a symlink) so systemd's
+                // unit-loader treats it as the per-instance unit, not
+                // as an alias of the template.
+                *self.saw_regular_file.lock().unwrap() = Some(ft.is_file() && !ft.is_symlink());
+                let body = std::fs::read_to_string(unit_path).unwrap();
+                *self.saw_template_bytes.lock().unwrap() =
+                    Some(body.contains("Description=ghars cache service"));
+                Ok(())
+            }
+        }
+        let verifier = InspectingVerifier {
+            saw_regular_file: Mutex::new(None),
+            saw_template_bytes: Mutex::new(None),
+        };
+        let plan = Plan {
+            actions: vec![Action::CreateCachePool(crate::plan::CachePoolPlan {
+                binding: minimal_cache_binding("build"),
+                drop_in_body: "[Service]\n".into(),
+                spec_hash: "sha256:abcd".into(),
+            })],
+            warnings: vec![],
+            keep_versions: 2,
+        };
+        verify_plan(&plan, runtime, &verifier).unwrap();
+        assert_eq!(
+            *verifier.saw_regular_file.lock().unwrap(),
+            Some(true),
+            "instance unit file must be a regular file (not a symlink); \
+             systemd treats symlinks as aliases and attaches drop-ins to \
+             the symlink target's name"
+        );
+        assert_eq!(
+            *verifier.saw_template_bytes.lock().unwrap(),
+            Some(true),
+            "instance file must contain the template body bytes"
+        );
+    }
+
+    #[test]
+    fn template_path_for_strips_instance_segment() {
+        assert_eq!(
+            template_path_for("ghars-cache@build.service"),
+            Some("ghars-cache@.service".to_owned())
+        );
+        assert_eq!(
+            template_path_for("ghars-runner@buckos.service"),
+            Some("ghars-runner@.service".to_owned())
+        );
+    }
+
+    #[test]
+    fn template_path_for_returns_none_when_no_instance_segment() {
+        // No `@` means non-template; no symlink should be created.
+        assert_eq!(template_path_for("plain.service"), None);
+        // `@` at the end immediately before `.service` means an empty
+        // instance — already the template name itself.
+        assert_eq!(template_path_for("ghars-cache@.service"), None);
+    }
+
     fn minimal_effective_spec(name: &str) -> crate::config::EffectiveRunnerSpec {
         crate::config::EffectiveRunnerSpec {
             name: name.into(),
@@ -516,6 +684,8 @@ mod tests {
             size: "100G".into(),
             mode: crate::config::CacheMode::Shared,
             trust_zone: "default".into(),
+            sccache_path: Some("/usr/bin/sccache".into()),
+            sleep_path: None,
         }
     }
 }

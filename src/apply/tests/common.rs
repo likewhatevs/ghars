@@ -341,12 +341,20 @@ pub(super) fn running_as_root_apply_test_helper() -> bool {
 }
 
 pub(super) fn make_pool_plan(name: &str, kinds: Vec<crate::config::CacheKind>) -> CachePoolPlan {
+    let serves_sccache = kinds.contains(&crate::config::CacheKind::Sccache);
     let binding = crate::config::EffectiveCacheBinding {
         name: name.into(),
         kinds,
         size: "200G".into(),
         mode: crate::config::CacheMode::Shared,
         trust_zone: "default".into(),
+        // Populate only the path the renderer will actually read for
+        // this kind set (sccache_path for sccache-serving pools,
+        // sleep_path for ccache-only). The renderer returns an error
+        // (GharsError::Validation) if it needs the field and the
+        // binding holds None.
+        sccache_path: serves_sccache.then(|| "/usr/bin/sccache".into()),
+        sleep_path: (!serves_sccache).then(|| "/usr/bin/sleep".into()),
     };
     let body =
         crate::systemd::render_cache_drop_in(&binding, "/etc/ghars/ghars.toml", "sha256:abcd")

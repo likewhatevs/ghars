@@ -115,6 +115,7 @@ pub(super) fn load_config(path: &Utf8Path) -> Result<Config> {
     validate_no_duplicate_caches(&cfg)?;
     validate_single_sccache_pool_per_runner(&cfg)?;
     validate_cache_pool_names(&cfg)?;
+    validate_cache_pool_binary_paths(&cfg)?;
     validate_runner_names(&cfg)?;
     validate_auth_keys(&cfg)?;
     validate_pat_xor(&cfg)?;
@@ -335,6 +336,56 @@ pub(super) fn validate_cache_pool_names(cfg: &Config) -> Result<()> {
             let scope = format!("runner {:?} caches[]", runner.name);
             validators::validate_cache_pool_name(cache)
                 .map_err(|e| crate::error::prepend_validation_scope(&scope, e))?;
+        }
+    }
+    Ok(())
+}
+
+/// Reject non-absolute operator-pinned `sccache_path` / `sleep_path`
+/// values at config load. Relative paths resolve against process CWD
+/// — which differs between operator-shell `ghars plan` and root
+/// `ghars apply` — and would silently flip the rendered `ExecStart=`
+/// between invocations. The plan-time resolver
+/// (`resolve_cache_pool_paths`) carries a fallback gate too, but
+/// surfacing the error at config load gives the operator a single
+/// remediation point with a block-scoped `cache_pool "NAME":` prefix
+/// before `ghars plan` runs filesystem probes for the unpinned-path
+/// case.
+///
+/// # Errors
+///
+/// `GharsError::Validation` wrapping the absolute-path requirement
+/// with the `cache_pool "NAME":` scope prefix.
+pub(super) fn validate_cache_pool_binary_paths(cfg: &Config) -> Result<()> {
+    for (name, pool) in &cfg.cache_pools {
+        let scope = format!("cache_pool {name:?}");
+        if let Some(p) = pool.sccache_path.as_ref()
+            && !p.is_absolute()
+        {
+            return Err(crate::error::prepend_validation_scope(
+                &scope,
+                crate::error::GharsError::Validation(
+                    format!("sccache_path must be absolute, got: {p}"),
+                    "relative paths resolve against process CWD which varies between \
+                     invocations (operator shell vs. root apply); use an absolute path \
+                     (e.g. /usr/local/bin/sccache)"
+                        .into(),
+                ),
+            ));
+        }
+        if let Some(p) = pool.sleep_path.as_ref()
+            && !p.is_absolute()
+        {
+            return Err(crate::error::prepend_validation_scope(
+                &scope,
+                crate::error::GharsError::Validation(
+                    format!("sleep_path must be absolute, got: {p}"),
+                    "relative paths resolve against process CWD which varies between \
+                     invocations (operator shell vs. root apply); use an absolute path \
+                     (e.g. /usr/bin/sleep)"
+                        .into(),
+                ),
+            ));
         }
     }
     Ok(())

@@ -1137,6 +1137,8 @@ mod tests {
                 size: "200G".into(),
                 mode: CacheMode::Shared,
                 trust_zone: "default".into(),
+                sccache_path: Some("/usr/bin/sccache".into()),
+                sleep_path: None,
             }],
             trust_zone: "default".into(),
             network: None,

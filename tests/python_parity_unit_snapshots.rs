@@ -194,6 +194,8 @@ fn dropin_30_cache_pool_ccache_only_snapshot() {
         size: "200G".into(),
         mode: CacheMode::Shared,
         trust_zone: "default".into(),
+        sccache_path: None,
+        sleep_path: Some("/usr/bin/sleep".into()),
     });
     let r = render_runner_unit(&spec).unwrap();
     insta::assert_snapshot!(
@@ -211,6 +213,8 @@ fn dropin_30_cache_pool_sccache_only_snapshot() {
         size: "200G".into(),
         mode: CacheMode::Shared,
         trust_zone: "default".into(),
+        sccache_path: Some("/usr/bin/sccache".into()),
+        sleep_path: None,
     });
     let r = render_runner_unit(&spec).unwrap();
     insta::assert_snapshot!(
@@ -231,6 +235,8 @@ fn dropin_30_cache_pool_unified_snapshot() {
         size: "200G".into(),
         mode: CacheMode::Shared,
         trust_zone: "default".into(),
+        sccache_path: Some("/usr/bin/sccache".into()),
+        sleep_path: None,
     });
     let r = render_runner_unit(&spec).unwrap();
     insta::assert_snapshot!(
@@ -368,6 +374,8 @@ fn cache_drop_in_ccache_only_snapshot() {
         size: "200G".into(),
         mode: CacheMode::Shared,
         trust_zone: "default".into(),
+        sccache_path: None,
+        sleep_path: Some("/usr/bin/sleep".into()),
     };
     let body = render_cache_drop_in(
         &binding,
@@ -386,6 +394,8 @@ fn cache_drop_in_sccache_only_snapshot() {
         size: "200G".into(),
         mode: CacheMode::Shared,
         trust_zone: "default".into(),
+        sccache_path: Some("/usr/bin/sccache".into()),
+        sleep_path: None,
     };
     let body = render_cache_drop_in(
         &binding,
@@ -404,6 +414,8 @@ fn cache_drop_in_unified_snapshot() {
         size: "200G".into(),
         mode: CacheMode::Shared,
         trust_zone: "default".into(),
+        sccache_path: Some("/usr/bin/sccache".into()),
+        sleep_path: None,
     };
     let body = render_cache_drop_in(
         &binding,

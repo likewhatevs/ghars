@@ -403,6 +403,12 @@ fn cfg_with_pool(name: &str, kinds: Vec<crate::config::CacheKind>) -> Config {
             size: "10G".into(),
             mode: CacheMode::Shared,
             trust_zone: "default".into(),
+            // Pin both binaries so the plan-time auto-detect probe
+            // never reads the test host's filesystem — `/usr/bin/sccache`
+            // is not present on every CI image. Pinning both fields
+            // (not just the relevant one) keeps this helper kind-agnostic.
+            sccache_path: Some("/usr/bin/sccache".into()),
+            sleep_path: Some("/usr/bin/sleep".into()),
         },
     );
     cfg
@@ -1437,6 +1443,8 @@ fn plan_update_runner_caches_change_is_in_place_with_field_change() {
             size: "10G".into(),
             mode: CacheMode::Shared,
             trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
         },
     );
     cfg.cache_pools.insert(
@@ -1446,6 +1454,8 @@ fn plan_update_runner_caches_change_is_in_place_with_field_change() {
             size: "10G".into(),
             mode: CacheMode::Shared,
             trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
         },
     );
 
@@ -1458,6 +1468,8 @@ fn plan_update_runner_caches_change_is_in_place_with_field_change() {
         size: "10G".into(),
         mode: CacheMode::Shared,
         trust_zone: "default".into(),
+        sccache_path: None,
+        sleep_path: Some("/usr/bin/sleep".into()),
     };
     let mut old_spec = merge_defaults(
         &old_runner,
@@ -1546,6 +1558,8 @@ fn plan_noop_when_caches_reorder_only() {
                 size: "10G".into(),
                 mode: CacheMode::Shared,
                 trust_zone: "default".into(),
+                sccache_path: None,
+                sleep_path: Some("/usr/bin/sleep".into()),
             },
         );
         cfg.cache_pools.insert(
@@ -1555,6 +1569,8 @@ fn plan_noop_when_caches_reorder_only() {
                 size: "10G".into(),
                 mode: CacheMode::Shared,
                 trust_zone: "default".into(),
+                sccache_path: Some("/usr/bin/sccache".into()),
+                sleep_path: None,
             },
         );
         cfg

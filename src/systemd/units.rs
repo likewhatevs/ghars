@@ -137,6 +137,19 @@ Type=simple
 # /usr/lib/ghars/runsvc-wrapper (root:root mode 0755) — NOT a shell
 # script. With no setuid/setgid step, CapabilityBoundingSet below is
 # empty (no CAP_SETUID, no CAP_SETGID).
+#
+# Path stays absolute (no PATH lookup) because ghars OWNS the install
+# location for this binary: `sudo install -Dm755` deposits it at
+# `/usr/lib/ghars/runsvc-wrapper` regardless of how ghars itself was
+# installed (cargo-install, distro package, sidecar /opt prefix). The
+# path is a packaging-controlled FHS location under /usr/lib/, not a
+# binary on PATH — there is no $PATH directory that should resolve it
+# and no operator-pinnable alternate landing site. Contrast with the
+# cache + netns template binaries, which can land at /usr/local/bin
+# (cargo-install) or /usr/bin (distro packaging) and therefore use
+# plan-time path resolution or PATH lookup. runsvc-wrapper is
+# single-source: ghars writes it during install, ghars reads it from
+# the same place.
 DynamicUser=yes
 ExecStart=/usr/lib/ghars/runsvc-wrapper %i
 # WorkingDirectory + StateDirectory + HOME and the per-runner cache
@@ -317,11 +330,34 @@ After=network.target
 Type=oneshot
 RemainAfterExit=yes
 
+# systemd does NOT consult Environment=PATH= when resolving bare
+# ExecStart= names: systemd-executor calls
+# `find_executable_full(name, root=NULL, exec_search_path,
+# use_path_envvar=false, ...)` from
+# systemd/src/core/exec-invoke.c (the `false` is fixed at the call
+# site), which falls back to `default_PATH()` (the systemd
+# compile-time default — `/usr/local/sbin:/usr/local/bin:/usr/sbin:
+# /usr/bin` and split-bin variants per
+# systemd/src/basic/path-util.{c,h}). Bare `ghars` and `nft` resolve
+# via that compile-time default — `cargo install` lands ghars at
+# /usr/local/bin/ghars, distro packaging at /usr/bin/ghars, and nft
+# at /usr/sbin/nft (split) or /usr/bin/nft (merged); all are
+# covered by every default_PATH() variant.
+#
+# Environment=PATH= IS load-bearing for the `nft` argv handed to
+# `ghars _netns-veth`: `ip netns exec` (invoked internally — see
+# src/netns.rs::run_in_netns) execvp's the program inside the
+# netns'd child, and execvp DOES consult $PATH. The Environment=
+# value here is the systemd unit env that the spawned ghars process
+# inherits and forwards to that execvp, so bare `nft` in the argv
+# resolves the same way bare ExecStart names do.
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
 # `+` prefix runs as root regardless of User= (per systemd.exec.xml).
 # Required for: ip netns add, ip link, sysctl writes, nft -f.
-ExecStart=+/usr/bin/ghars _netns-setup %i
-ExecStart=+/usr/sbin/nft -f /etc/ghars/nft.d/%i-host.nft
-ExecStart=+/usr/bin/ghars _netns-veth %i /usr/sbin/nft -f /etc/ghars/nft.d/%i-ns.nft
+ExecStart=+ghars _netns-setup %i
+ExecStart=+nft -f /etc/ghars/nft.d/%i-host.nft
+ExecStart=+ghars _netns-veth %i nft -f /etc/ghars/nft.d/%i-ns.nft
 
 # LOAD-BEARING: ExecStop= MUST be present. systemd destroys runtime
 # data on SERVICE_EXITED when no ExecStop=, ExecReload=, or
@@ -329,9 +365,9 @@ ExecStart=+/usr/bin/ghars _netns-veth %i /usr/sbin/nft -f /etc/ghars/nft.d/%i-ns
 # netns is its own bind-mount so we don't rely on systemd's runtime
 # data, but having ExecStop= ensures cleanup helpers run on unit
 # deactivation.
-ExecStop=+/usr/sbin/nft destroy table inet ghars_%i
-ExecStop=+/usr/bin/ghars _netns-veth %i /usr/sbin/nft destroy table inet ghars_%i_ns
-ExecStop=+/usr/bin/ghars _netns-teardown %i
+ExecStop=+nft destroy table inet ghars_%i
+ExecStop=+ghars _netns-veth %i nft destroy table inet ghars_%i_ns
+ExecStop=+ghars _netns-teardown %i
 
 User=root
 Slice=system.slice
@@ -414,8 +450,13 @@ RuntimeDirectoryMode=0700
 
 # Per-kinds env + ExecStart land in the per-pool 00-ghars.conf drop-in
 # (sccache server launches there when kinds includes sccache;
-# ccache-only pools render ExecStart=/usr/bin/sleep infinity to keep
-# the unit active so its CacheDirectory stays mounted).
+# ccache-only pools render ExecStart=<sleep_path> infinity to keep
+# the unit active so its CacheDirectory stays mounted). Both
+# binary paths are resolved at plan time — either pinned via
+# [cache_pools.NAME].sccache_path / sleep_path or auto-detected
+# from a canonical search list per binary:
+#   sccache: /usr/local/bin/sccache then /usr/bin/sccache
+#   sleep:   /usr/bin/sleep        then /bin/sleep
 
 KillMode=control-group
 KillSignal=SIGTERM
@@ -1494,7 +1535,34 @@ pub fn render_cache_drop_in(
     }
 
     if serves_sccache {
-        s.push_str("ExecStart=/usr/bin/sccache --start-server\n");
+        // sccache_path is the plan-time resolution of either the
+        // operator pin (`[cache_pools.NAME].sccache_path = "/..."`)
+        // or the canonical-search auto-detect (`/usr/local/bin/sccache`
+        // then `/usr/bin/sccache`). The plan layer guarantees `Some`
+        // here: `resolve_cache_pool_paths` produces `Some(path)`
+        // exactly when `kinds.contains(Sccache)`, which is the
+        // `serves_sccache` branch we're in. None at this site is a
+        // plan-layer invariant violation, not an operator-facing
+        // error, so the renderer treats it as a programmer bug.
+        let sccache_path = binding.sccache_path.as_ref().ok_or_else(|| {
+            GharsError::Validation(
+                format!(
+                    "render_cache_drop_in: binding for pool '{}' serves sccache \
+                     but sccache_path is None; resolve_cache_pool_paths should have populated it",
+                    binding.name
+                ),
+                "this is a ghars bug — the plan layer must resolve sccache_path \
+                 before invoking the renderer for sccache-serving pools"
+                    .into(),
+            )
+        })?;
+        // Defense-in-depth: the operator-pinned path arrives via a
+        // pre-validated absolute Utf8PathBuf, but a future caller that
+        // constructs an EffectiveCacheBinding programmatically could
+        // bypass that gate; check the bytes here too so the rendered
+        // unit cannot smuggle a newline or NUL into ExecStart=.
+        check_identity_field("caches[].sccache_path", sccache_path.as_str())?;
+        let _ = writeln!(s, "ExecStart={sccache_path} --start-server");
         // mode enforcement is in the cache template via UMask=0077,
         // not a per-pool ExecStartPost. Kernel-enforced at vfs_mknod
         // time (Linux net/unix/af_unix.c:unix_bind_bsd:1349) so there
@@ -1506,8 +1574,27 @@ pub fn render_cache_drop_in(
         // ccache-only pool — the unit exists to own the CacheDirectory
         // and act as a Requires= anchor (StopWhenUnneeded handles
         // lifecycle). sleep infinity is the simplest way to keep
-        // Type=simple alive without consuming resources.
-        s.push_str("ExecStart=/usr/bin/sleep infinity\n");
+        // Type=simple alive without consuming resources. sleep_path
+        // is the plan-time resolution of either the operator pin
+        // (`[cache_pools.NAME].sleep_path = "/..."`) or the
+        // canonical-search auto-detect (`/usr/bin/sleep` then
+        // `/bin/sleep`). The plan layer guarantees `Some` for the
+        // ccache-only branch we're in (symmetric with sccache_path
+        // above) — None here is a programmer bug, not operator-facing.
+        let sleep_path = binding.sleep_path.as_ref().ok_or_else(|| {
+            GharsError::Validation(
+                format!(
+                    "render_cache_drop_in: binding for ccache-only pool '{}' \
+                     has sleep_path = None; resolve_cache_pool_paths should have populated it",
+                    binding.name
+                ),
+                "this is a ghars bug — the plan layer must resolve sleep_path \
+                 before invoking the renderer for ccache-only pools"
+                    .into(),
+            )
+        })?;
+        check_identity_field("caches[].sleep_path", sleep_path.as_str())?;
+        let _ = writeln!(s, "ExecStart={sleep_path} infinity");
         let _ = writeln!(s, "ReadWritePaths=%C/ghars/pools/{}", binding.name);
     }
 
@@ -1749,6 +1836,8 @@ mod tests {
             size: "10G".into(),
             mode: CacheMode::Shared,
             trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
         });
         assert_render_identity_rejects(&spec, "caches[].name", "newline", '\n');
     }
@@ -1973,6 +2062,8 @@ mod tests {
             size: "200G\nINJECTED=1".into(),
             mode: CacheMode::Shared,
             trust_zone: "default".into(),
+            sccache_path: Some("/usr/bin/sccache".into()),
+            sleep_path: None,
         }];
         let err = render_runner_unit(&spec).unwrap_err();
         assert!(
@@ -2122,6 +2213,8 @@ mod tests {
             size: "200G\nINJECTED=1".into(),
             mode: CacheMode::Shared,
             trust_zone: "default".into(),
+            sccache_path: Some("/usr/bin/sccache".into()),
+            sleep_path: None,
         };
         let err = render_cache_drop_in(&binding, "/etc/ghars/ghars.toml", "sha256:abcd")
             .expect_err("must reject newline");
@@ -2132,6 +2225,103 @@ mod tests {
         let msg = format!("{err}");
         assert!(msg.contains("caches[].size"), "msg must name field: {msg}");
         assert!(msg.contains("newline"), "msg must name class: {msg}");
+    }
+
+    /// `render_cache_drop_in`: `binding.sccache_path` is interpolated
+    /// into the `ExecStart=` line for sccache-serving pools. A newline
+    /// in the path would split the `ExecStart=` directive and inject a
+    /// follow-up directive at unit-load time. The renderer's
+    /// `check_identity_field("caches[].sccache_path", ...)` gate must
+    /// reject newline before any bytes hit the drop-in body. Mirrors
+    /// `render_cache_drop_in_rejects_newline_in_binding_size`.
+    #[test]
+    fn render_cache_drop_in_rejects_newline_in_sccache_path() {
+        let binding = EffectiveCacheBinding {
+            name: "build".into(),
+            kinds: vec![CacheKind::Sccache],
+            size: "200G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+            sccache_path: Some("/usr/bin/sccache\nINJECTED=1".into()),
+            sleep_path: None,
+        };
+        let err = render_cache_drop_in(&binding, "/etc/ghars/ghars.toml", "sha256:abcd")
+            .expect_err("must reject newline in sccache_path");
+        assert!(
+            matches!(err, GharsError::Validation(_, _)),
+            "expected Validation, got {err:?}"
+        );
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("caches[].sccache_path"),
+            "msg must name field: {msg}"
+        );
+        assert!(msg.contains("newline"), "msg must name class: {msg}");
+    }
+
+    /// `render_cache_drop_in`: `binding.sleep_path` is interpolated
+    /// into the `ExecStart=` line for ccache-only pools. A newline in
+    /// the path would split the `ExecStart=` directive and inject a
+    /// follow-up directive at unit-load time. Mirrors the
+    /// `_in_sccache_path` test above; the gate is symmetric.
+    #[test]
+    fn render_cache_drop_in_rejects_newline_in_sleep_path() {
+        let binding = EffectiveCacheBinding {
+            name: "build".into(),
+            kinds: vec![CacheKind::Ccache],
+            size: "200G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep\nINJECTED=1".into()),
+        };
+        let err = render_cache_drop_in(&binding, "/etc/ghars/ghars.toml", "sha256:abcd")
+            .expect_err("must reject newline in sleep_path");
+        assert!(
+            matches!(err, GharsError::Validation(_, _)),
+            "expected Validation, got {err:?}"
+        );
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("caches[].sleep_path"),
+            "msg must name field: {msg}"
+        );
+        assert!(msg.contains("newline"), "msg must name class: {msg}");
+    }
+
+    /// `render_cache_drop_in`: NUL bytes in `sccache_path` would
+    /// truncate the path at the parser's C-string boundary
+    /// (systemd's conf-parser treats every value as a C-string at
+    /// the libc layer). The renderer's
+    /// `check_identity_field("caches[].sccache_path", ...)` gate
+    /// must reject NUL bytes alongside newlines / carriage returns.
+    /// Mirrors the newline test above; the gate's NUL branch is the
+    /// "NUL byte" class label from `check_identity_field` and tests
+    /// elsewhere pin the same label
+    /// (`render_identity_rejects_nul_in_auth_name`).
+    #[test]
+    fn render_cache_drop_in_rejects_nul_in_sccache_path() {
+        let binding = EffectiveCacheBinding {
+            name: "build".into(),
+            kinds: vec![CacheKind::Sccache],
+            size: "200G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+            sccache_path: Some("/usr/bin/sccache\0attacker".into()),
+            sleep_path: None,
+        };
+        let err = render_cache_drop_in(&binding, "/etc/ghars/ghars.toml", "sha256:abcd")
+            .expect_err("must reject NUL byte in sccache_path");
+        assert!(
+            matches!(err, GharsError::Validation(_, _)),
+            "expected Validation, got {err:?}"
+        );
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("caches[].sccache_path"),
+            "msg must name field: {msg}"
+        );
+        assert!(msg.contains("NUL"), "msg must name class: {msg}");
     }
 
     #[test]
@@ -2331,6 +2521,8 @@ mod tests {
             size: "200G".into(),
             mode: CacheMode::Shared,
             trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
         });
         let r = render_runner_unit(&spec).unwrap();
         let c = r.drop_ins.get("30-cache-pool.conf").unwrap();
@@ -2354,6 +2546,8 @@ mod tests {
             size: "200G".into(),
             mode: CacheMode::Shared,
             trust_zone: "default".into(),
+            sccache_path: Some("/usr/bin/sccache".into()),
+            sleep_path: None,
         });
         let r = render_runner_unit(&spec).unwrap();
         let c = r.drop_ins.get("30-cache-pool.conf").unwrap();
@@ -2951,10 +3145,21 @@ mod tests {
             size: "200G".into(),
             mode: CacheMode::Shared,
             trust_zone: "default".into(),
+            // Pin sccache to /usr/local/bin to verify the renderer
+            // emits the binding's path verbatim (not a hardcoded
+            // /usr/bin/ prefix). The two-path probe in
+            // resolve_cache_pool_paths covers cargo-install layouts;
+            // this assertion guards that the renderer respects the
+            // resolved value rather than re-hardcoding.
+            sccache_path: Some("/usr/local/bin/sccache".into()),
+            sleep_path: None,
         };
         let body = render_cache_drop_in(&binding, "/etc/ghars/ghars.toml", "sha256:abcd").unwrap();
         assert!(body.contains("X-Ghars-Pool-Kinds=sccache"));
-        assert!(body.contains("ExecStart=/usr/bin/sccache --start-server"));
+        assert!(body.contains("\nExecStart=/usr/local/bin/sccache --start-server\n"));
+        // Sanity: the prior hardcoded /usr/bin/sccache path is no
+        // longer emitted when the binding pins a different location.
+        assert!(!body.contains("/usr/bin/sccache"));
         assert!(body.contains("SCCACHE_NO_DAEMON=1"));
         assert!(body.contains("SCCACHE_IDLE_TIMEOUT=0"));
         // ccache-specific env entries are absent. Anchor at line start
@@ -2976,10 +3181,19 @@ mod tests {
             size: "200G".into(),
             mode: CacheMode::Shared,
             trust_zone: "default".into(),
+            // ccache-only pool: sccache_path stays None, sleep_path
+            // pinned to /bin/sleep (the legacy non-merged-usr fallback)
+            // to verify the renderer emits the resolved path verbatim
+            // rather than the previous hardcoded /usr/bin/sleep.
+            sccache_path: None,
+            sleep_path: Some("/bin/sleep".into()),
         };
         let body = render_cache_drop_in(&binding, "/etc/ghars/ghars.toml", "sha256:abcd").unwrap();
         assert!(body.contains("X-Ghars-Pool-Kinds=ccache"));
-        assert!(body.contains("ExecStart=/usr/bin/sleep infinity"));
+        assert!(body.contains("\nExecStart=/bin/sleep infinity\n"));
+        // Sanity: the prior hardcoded /usr/bin/sleep is no longer
+        // emitted when the binding pins a different location.
+        assert!(!body.contains("/usr/bin/sleep"));
         assert!(body.contains("CCACHE_DIR=%C/ghars/pools/build/ccache"));
         assert!(!body.contains("--start-server"));
     }
@@ -2992,12 +3206,17 @@ mod tests {
             size: "200G".into(),
             mode: CacheMode::Shared,
             trust_zone: "default".into(),
+            // Pool serves both kinds — the sccache server takes
+            // ExecStart and sleep_path is None (the renderer never
+            // reads sleep for sccache-serving pools).
+            sccache_path: Some("/usr/bin/sccache".into()),
+            sleep_path: None,
         };
         let body = render_cache_drop_in(&binding, "/etc/ghars/ghars.toml", "sha256:abcd").unwrap();
         // Both env sets emit; the sccache server is the ExecStart.
         assert!(body.contains("CCACHE_DIR"));
         assert!(body.contains("SCCACHE_DIR"));
-        assert!(body.contains("ExecStart=/usr/bin/sccache --start-server"));
+        assert!(body.contains("\nExecStart=/usr/bin/sccache --start-server\n"));
     }
 
     #[test]
@@ -3038,12 +3257,15 @@ mod tests {
             vec![CacheKind::Ccache],
             vec![CacheKind::Sccache, CacheKind::Ccache],
         ] {
+            let serves_sccache = kinds.contains(&CacheKind::Sccache);
             let binding = EffectiveCacheBinding {
                 name: "build".into(),
                 kinds,
                 size: "200G".into(),
                 mode: CacheMode::Shared,
                 trust_zone: "default".into(),
+                sccache_path: serves_sccache.then(|| "/usr/bin/sccache".into()),
+                sleep_path: (!serves_sccache).then(|| "/usr/bin/sleep".into()),
             };
             let body =
                 render_cache_drop_in(&binding, "/etc/ghars/ghars.toml", "sha256:abcd").unwrap();

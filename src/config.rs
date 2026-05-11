@@ -323,6 +323,40 @@ pub struct EffectiveCacheBinding {
     /// Pool trust zone (must match runner's `trust_zone`; validated
     /// upstream).
     pub trust_zone: String,
+    /// Resolved absolute path to the sccache binary. `Some` iff
+    /// `kinds.contains(Sccache)`; `None` for ccache-only pools.
+    /// Populated at plan time from `CachePoolSpec.sccache_path` (when
+    /// the operator pinned it explicitly) or from auto-detection
+    /// (`/usr/local/bin/sccache` then `/usr/bin/sccache`). Renderer
+    /// emits this verbatim as the unit's `ExecStart=` when the pool
+    /// serves sccache.
+    ///
+    /// `#[serde(skip)]` keeps this out of `cache_pool_hash` and
+    /// `spec_hash`: the resolved value depends on host filesystem
+    /// state (which `/usr/{local/,}bin/sccache` is present), not on
+    /// the operator's config. Including it in the canonical-JSON
+    /// hash would flip the X-Ghars-Spec-Hash annotation between
+    /// hosts whose sccache lives at different prefixes, driving
+    /// spurious recreate-class plans. Same pattern as
+    /// `EffectiveRunnerSpec.runsvc_sha256` — host-resolved values
+    /// must not feed the spec hash.
+    #[serde(skip, default)]
+    pub sccache_path: Option<Utf8PathBuf>,
+    /// Resolved absolute path to the sleep binary. `Some` iff the pool
+    /// is ccache-only (`!kinds.contains(Sccache)`); `None` when the
+    /// pool serves sccache (the sccache server takes `ExecStart` and
+    /// sleep is never invoked). Populated at plan time from
+    /// `CachePoolSpec.sleep_path` (when the operator pinned it
+    /// explicitly) or from auto-detection (`/usr/bin/sleep` then
+    /// `/bin/sleep`). Renderer emits this as `ExecStart=PATH infinity`
+    /// for ccache-only pools so the unit stays active and its
+    /// `CacheDirectory=` remains owned.
+    ///
+    /// `#[serde(skip)]` for the same reason as `sccache_path` above:
+    /// host-resolved value must not feed `cache_pool_hash` or
+    /// `spec_hash`.
+    #[serde(skip, default)]
+    pub sleep_path: Option<Utf8PathBuf>,
 }
 
 /// One network reference resolved against `[network.NAME]`.
@@ -611,6 +645,24 @@ pub struct CachePoolSpec {
     /// error.
     #[serde(default = "default_trust_zone")]
     pub trust_zone: String,
+    /// Optional override for the sccache binary path. Must be
+    /// absolute when set (validator-enforced). When omitted, plan-time
+    /// resolution auto-detects by probing `/usr/local/bin/sccache`
+    /// then `/usr/bin/sccache` via `Path::exists`. Only consulted when
+    /// `kinds` contains `Sccache`; ccache-only pools never read this
+    /// field. Hit with `Some` to force a specific install location
+    /// (e.g. a sidecar /opt prefix).
+    #[serde(default)]
+    pub sccache_path: Option<Utf8PathBuf>,
+    /// Optional override for the sleep binary path. Must be absolute
+    /// when set (validator-enforced). When omitted, plan-time
+    /// resolution auto-detects by probing `/usr/bin/sleep` then
+    /// `/bin/sleep` via `Path::exists`. Only consulted when the pool
+    /// is ccache-only (`!kinds.contains(Sccache)`); sccache-serving
+    /// pools use the sccache process as the unit's `ExecStart` so sleep
+    /// is never invoked.
+    #[serde(default)]
+    pub sleep_path: Option<Utf8PathBuf>,
 }
 
 /// Default trust zone — used by both `RunnerSpec.trust_zone` and

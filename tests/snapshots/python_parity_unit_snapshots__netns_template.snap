@@ -18,11 +18,34 @@ After=network.target
 Type=oneshot
 RemainAfterExit=yes
 
+# systemd does NOT consult Environment=PATH= when resolving bare
+# ExecStart= names: systemd-executor calls
+# `find_executable_full(name, root=NULL, exec_search_path,
+# use_path_envvar=false, ...)` from
+# systemd/src/core/exec-invoke.c (the `false` is fixed at the call
+# site), which falls back to `default_PATH()` (the systemd
+# compile-time default — `/usr/local/sbin:/usr/local/bin:/usr/sbin:
+# /usr/bin` and split-bin variants per
+# systemd/src/basic/path-util.{c,h}). Bare `ghars` and `nft` resolve
+# via that compile-time default — `cargo install` lands ghars at
+# /usr/local/bin/ghars, distro packaging at /usr/bin/ghars, and nft
+# at /usr/sbin/nft (split) or /usr/bin/nft (merged); all are
+# covered by every default_PATH() variant.
+#
+# Environment=PATH= IS load-bearing for the `nft` argv handed to
+# `ghars _netns-veth`: `ip netns exec` (invoked internally — see
+# src/netns.rs::run_in_netns) execvp's the program inside the
+# netns'd child, and execvp DOES consult $PATH. The Environment=
+# value here is the systemd unit env that the spawned ghars process
+# inherits and forwards to that execvp, so bare `nft` in the argv
+# resolves the same way bare ExecStart names do.
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
 # `+` prefix runs as root regardless of User= (per systemd.exec.xml).
 # Required for: ip netns add, ip link, sysctl writes, nft -f.
-ExecStart=+/usr/bin/ghars _netns-setup %i
-ExecStart=+/usr/sbin/nft -f /etc/ghars/nft.d/%i-host.nft
-ExecStart=+/usr/bin/ghars _netns-veth %i /usr/sbin/nft -f /etc/ghars/nft.d/%i-ns.nft
+ExecStart=+ghars _netns-setup %i
+ExecStart=+nft -f /etc/ghars/nft.d/%i-host.nft
+ExecStart=+ghars _netns-veth %i nft -f /etc/ghars/nft.d/%i-ns.nft
 
 # LOAD-BEARING: ExecStop= MUST be present. systemd destroys runtime
 # data on SERVICE_EXITED when no ExecStop=, ExecReload=, or
@@ -30,9 +53,9 @@ ExecStart=+/usr/bin/ghars _netns-veth %i /usr/sbin/nft -f /etc/ghars/nft.d/%i-ns
 # netns is its own bind-mount so we don't rely on systemd's runtime
 # data, but having ExecStop= ensures cleanup helpers run on unit
 # deactivation.
-ExecStop=+/usr/sbin/nft destroy table inet ghars_%i
-ExecStop=+/usr/bin/ghars _netns-veth %i /usr/sbin/nft destroy table inet ghars_%i_ns
-ExecStop=+/usr/bin/ghars _netns-teardown %i
+ExecStop=+nft destroy table inet ghars_%i
+ExecStop=+ghars _netns-veth %i nft destroy table inet ghars_%i_ns
+ExecStop=+ghars _netns-teardown %i
 
 User=root
 Slice=system.slice

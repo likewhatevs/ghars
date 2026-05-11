@@ -500,6 +500,8 @@ fn apply_with_rollback_on_does_not_undo_already_succeeded_actions() {
             size: "10G".into(),
             mode: crate::config::CacheMode::Shared,
             trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
         },
         drop_in_body: "[Service]\n".into(),
         spec_hash: "sha256:0".into(),

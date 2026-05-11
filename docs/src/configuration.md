@@ -145,10 +145,12 @@ unwind.
 
 ```toml
 [cache_pools.build]
-kinds      = ["ccache", "sccache"]    # one or both
-size       = "200G"                   # bytesize-parsed
-mode       = "shared"                 # shared | isolated; default shared
-trust_zone = "default"                # default "default"
+kinds        = ["ccache", "sccache"]      # one or both
+size         = "200G"                     # bytesize-parsed
+mode         = "shared"                   # shared | isolated; default shared
+trust_zone   = "default"                  # default "default"
+sccache_path = "/usr/local/bin/sccache"   # optional override
+sleep_path   = "/usr/bin/sleep"           # optional override
 ```
 
 Fields:
@@ -172,6 +174,24 @@ Fields:
   `TRUST_ZONE_MAX_LEN = 22` chars: the rendered DynamicUser identity
   `User=ghars-tz-<TRUST_ZONE>` must fit systemd's strict 31-char
   `valid_user_group_name` ceiling.
+- `sccache_path` (`Option<Utf8PathBuf>`) — optional absolute path to
+  the sccache binary used as the per-pool unit's `ExecStart=`. When
+  omitted (default), plan-time auto-detection probes
+  `/usr/local/bin/sccache` then `/usr/bin/sccache` and uses the
+  first hit. Required only for pools whose `kinds` contains
+  `sccache`; ccache-only pools ignore this field. Validator: the
+  path must be absolute when set; the operator's pin overrides
+  auto-detection without filesystem existence checks at config
+  load (the unit-start gates that as part of normal systemd
+  resolution).
+- `sleep_path` (`Option<Utf8PathBuf>`) — optional absolute path to the
+  sleep binary used as the unit's `ExecStart=` for ccache-only
+  pools (keeping the unit active so the CacheDirectory= mount
+  stays owned; sccache-serving pools put the sccache server on
+  ExecStart and never invoke sleep). When omitted (default),
+  plan-time auto-detection probes `/usr/bin/sleep` then `/bin/sleep`
+  and uses the first hit. Validator: the path must be absolute
+  when set.
 
 A runner that references >1 cache pool with `kinds` containing
 `sccache` is rejected at config load (`SCCACHE_SERVER_UDS` is
@@ -564,16 +584,19 @@ circuits:
    pool per runner.
 7. `validate_cache_pool_names` — identifier-shape gate on pool keys
    and runner `caches` refs.
-8. `validate_runner_names` — identifier-shape gate on every
+8. `validate_cache_pool_binary_paths` — absolute-path gate on the
+   operator-pinned `sccache_path` / `sleep_path` overrides on each
+   `[cache_pools.NAME]` block.
+9. `validate_runner_names` — identifier-shape gate on every
    `[[runner]] name`. Netns-mode runners face an additional
    tighter cap enforced by `validate_netns_runner_name_lengths`
    below.
-9. `validate_auth_keys` — every runner's `auth` resolves.
-10. `validate_pat_xor` — `AuthSpec::Pat` shape-only XOR check on
+10. `validate_auth_keys` — every runner's `auth` resolves.
+11. `validate_pat_xor` — `AuthSpec::Pat` shape-only XOR check on
     `token_env` / `token_file`.
-11. `validate_runner_tarballs` — `O_NOFOLLOW` regular-file gate on
+12. `validate_runner_tarballs` — `O_NOFOLLOW` regular-file gate on
     operator-supplied `runner_tarball` paths.
-12. `validate_netns_runner_name_lengths` — IFNAMSIZ (kernel veth
+13. `validate_netns_runner_name_lengths` — IFNAMSIZ (kernel veth
     name) cap on runners whose effective network mode is Netns.
 
 `validate --deep` round-trips auth tokens against GitHub via

@@ -45,6 +45,8 @@ fn spec_with_cache_names(names: &[&str]) -> EffectiveRunnerSpec {
             size: "10G".into(),
             mode: CacheMode::Shared,
             trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
         })
         .collect();
     spec
@@ -358,6 +360,8 @@ fn delta_before_caches_is_sorted_for_display() {
                 size: "5G".into(),
                 mode: CacheMode::Shared,
                 trust_zone: "default".into(),
+                sccache_path: None,
+                sleep_path: Some("/usr/bin/sleep".into()),
             },
         );
     }
@@ -373,6 +377,8 @@ fn delta_before_caches_is_sorted_for_display() {
             size: "5G".into(),
             mode: CacheMode::Shared,
             trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
         })
         .collect();
     let mut old_spec = merge_defaults(
@@ -604,6 +610,8 @@ fn plan_validates_trust_zone_mismatch_with_referenced_cache_pool() {
             size: "10G".into(),
             mode: CacheMode::Shared,
             trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
         },
     );
     let err = plan_from(&cfg, &empty_actual(), &empty_paths()).unwrap_err();
@@ -902,6 +910,8 @@ fn discovered_annotations_round_trip_for_all_fields() {
             size: "10G".into(),
             mode: CacheMode::Shared,
             trust_zone: "audited".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
         },
         EffectiveCacheBinding {
             name: "rust".into(),
@@ -909,6 +919,8 @@ fn discovered_annotations_round_trip_for_all_fields() {
             size: "5G".into(),
             mode: CacheMode::Shared,
             trust_zone: "audited".into(),
+            sccache_path: Some("/usr/bin/sccache".into()),
+            sleep_path: None,
         },
     ];
     let mut spec = merge_defaults(
@@ -1799,6 +1811,8 @@ fn build_caches_in_place_plan() -> Plan {
             size: "10G".into(),
             mode: CacheMode::Shared,
             trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
         },
     );
     cfg.cache_pools.insert(
@@ -1808,6 +1822,8 @@ fn build_caches_in_place_plan() -> Plan {
             size: "10G".into(),
             mode: CacheMode::Shared,
             trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
         },
     );
     let mut old_runner = cfg.runners[0].clone();
@@ -1818,6 +1834,8 @@ fn build_caches_in_place_plan() -> Plan {
         size: "10G".into(),
         mode: CacheMode::Shared,
         trust_zone: "default".into(),
+        sccache_path: None,
+        sleep_path: Some("/usr/bin/sleep".into()),
     };
     let mut old_spec = merge_defaults(
         &old_runner,

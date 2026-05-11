@@ -86,3 +86,44 @@ pub(super) fn cache_pool_hash(binding: &EffectiveCacheBinding) -> String {
     hasher.update(json.as_bytes());
     format!("sha256:{}", hex::encode(hasher.finalize()))
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::config::{CacheKind, CacheMode};
+
+    /// Cache-pool hash invariance under host-resolved path changes.
+    /// `EffectiveCacheBinding.sccache_path` and `.sleep_path` carry
+    /// host-resolved paths (which `/usr/{local/,}bin/sccache` is
+    /// present on this box), not operator config. Including them in
+    /// `cache_pool_hash` would flip `X-Ghars-Spec-Hash` between hosts
+    /// whose sccache lives at different prefixes, driving spurious
+    /// recreate-class plans. The `#[serde(skip)]` on those fields
+    /// (config.rs `EffectiveCacheBinding`) keeps them out of the
+    /// canonical-JSON input to `cache_pool_hash`. Pin that here so a
+    /// future regression dropping the `serde(skip)` annotation
+    /// surfaces immediately as a hash mismatch.
+    #[test]
+    fn cache_pool_hash_ignores_sccache_path() {
+        let base = EffectiveCacheBinding {
+            name: "build".into(),
+            kinds: vec![CacheKind::Sccache],
+            size: "200G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+            sccache_path: Some("/usr/bin/sccache".into()),
+            sleep_path: None,
+        };
+        let other = EffectiveCacheBinding {
+            sccache_path: Some("/usr/local/bin/sccache".into()),
+            ..base.clone()
+        };
+        assert_eq!(
+            cache_pool_hash(&base),
+            cache_pool_hash(&other),
+            "sccache_path must not feed cache_pool_hash; hash drift on \
+             host-resolved value would flip spec_hash between hosts"
+        );
+    }
+}

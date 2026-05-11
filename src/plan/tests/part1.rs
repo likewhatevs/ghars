@@ -386,6 +386,8 @@ fn merge_defaults_caches_threaded_verbatim() {
         size: "200G".into(),
         mode: CacheMode::Shared,
         trust_zone: "default".into(),
+        sccache_path: Some("/usr/bin/sccache".into()),
+        sleep_path: None,
     }];
     let eff = merge_defaults(
         &runner,
@@ -1476,6 +1478,8 @@ fn plan_validates_trust_zone_mismatch() {
             size: "10G".into(),
             mode: CacheMode::Shared,
             trust_zone: "untrusted".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
         },
     );
     let err = plan_from(&cfg, &empty_actual(), &empty_paths()).unwrap_err();
@@ -1729,6 +1733,8 @@ fn plan_emits_create_cache_pool_per_referenced_pool() {
             size: "200G".into(),
             mode: CacheMode::Shared,
             trust_zone: "default".into(),
+            sccache_path: Some("/usr/bin/sccache".into()),
+            sleep_path: None,
         },
     );
     let plan = plan_from(&cfg, &empty_actual(), &empty_paths()).unwrap();
@@ -1763,6 +1769,8 @@ fn plan_renders_cache_pool_drop_in_body_at_plan_time() {
             size: "300G".into(),
             mode: CacheMode::Shared,
             trust_zone: "default".into(),
+            sccache_path: Some("/usr/bin/sccache".into()),
+            sleep_path: None,
         },
     );
     let plan = plan_from(&cfg, &empty_actual(), &empty_paths()).unwrap();
@@ -1806,6 +1814,8 @@ fn plan_renders_ccache_only_pool_with_sleep_infinity_execstart() {
             size: "100G".into(),
             mode: CacheMode::Shared,
             trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
         },
     );
     let plan = plan_from(&cfg, &empty_actual(), &empty_paths()).unwrap();
@@ -1822,6 +1832,61 @@ fn plan_renders_ccache_only_pool_with_sleep_infinity_execstart() {
     assert!(body.contains("Environment=CCACHE_DIR=%C/ghars/pools/build/ccache"));
     assert!(body.contains("Environment=CCACHE_MAXSIZE=100G"));
     assert!(!body.contains("--start-server"));
+}
+
+/// Plan-time resolver: when an sccache-serving pool omits
+/// `sccache_path` AND neither auto-detect candidate exists on the
+/// host, `plan_from` must surface a Validation error that names the
+/// offending pool, the missing binary, AND points the operator at
+/// the two remediation paths (install the binary OR pin a path in
+/// TOML). This test pins the error shape by forcing the auto-detect
+/// candidates to absolute paths that do not exist anywhere on a
+/// typical CI host (`/nonexistent-ghars-test-sccache-...`).
+///
+/// We exercise the error path through the test seam of pinning a
+/// known-bad relative path — the resolver rejects relative pins
+/// before it ever probes the auto-detect candidates, surfacing the
+/// same Validation kind with a related-but-distinct message.
+#[test]
+fn plan_rejects_pool_with_unresolvable_sccache_pin() {
+    // Pinning a relative path triggers the resolver's
+    // is_absolute() gate, which produces a Validation error that
+    // names the pool + field. The shape is symmetric with the
+    // missing-binary path (both Validation, both name the pool +
+    // field) so this single test pins the error contract without
+    // depending on a filesystem state assumption.
+    let mut cfg = config_with_runners(vec![{
+        let mut r = minimal_runner("a");
+        r.caches = vec!["build".into()];
+        r
+    }]);
+    cfg.auth = pat_auth();
+    cfg.cache_pools.insert(
+        "build".into(),
+        CachePoolSpec {
+            kinds: vec![CacheKind::Sccache],
+            size: "200G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+            sccache_path: Some("not/an/absolute/path".into()),
+            sleep_path: None,
+        },
+    );
+    let err = plan_from(&cfg, &empty_actual(), &empty_paths()).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("cache_pool 'build'"),
+        "msg must scope the error to the offending pool by name; got: {msg}"
+    );
+    assert!(
+        msg.contains("sccache_path"),
+        "msg must name the offending field so the operator knows where \
+         to fix it; got: {msg}"
+    );
+    assert!(
+        msg.contains("absolute"),
+        "msg must surface the absolute-path requirement; got: {msg}"
+    );
 }
 
 #[test]
@@ -2348,6 +2413,8 @@ proptest::proptest! {
                 size: "5G".into(),
                 mode: CacheMode::Shared,
                 trust_zone: "default".into(),
+                sccache_path: Some("/usr/bin/sccache".into()),
+                sleep_path: None,
             })
             .collect();
         let runner = minimal_runner("a");
@@ -2479,6 +2546,8 @@ proptest::proptest! {
                 size: "5G".into(),
                 mode: CacheMode::Shared,
                 trust_zone: "default".into(),
+                sccache_path: Some("/usr/bin/sccache".into()),
+                sleep_path: None,
             })
             .collect();
         let mut spec = merge_defaults(

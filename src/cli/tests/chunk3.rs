@@ -884,11 +884,17 @@ fn dispatch_routing_netns_teardown_hidden() {
 
 #[test]
 fn dispatch_routing_netns_veth_hidden() {
+    // Argv pattern matches what the netns template's ExecStart= emits
+    // (bare `nft`, no absolute path). systemd hands the unit's PATH
+    // to the spawned ghars process, which forwards it through
+    // `ip netns exec`; the netns'd execvp resolves `nft` against
+    // that PATH inside the netns child. See NETNS_TEMPLATE in
+    // src/systemd/units.rs and `run_in_netns` in src/netns.rs.
     let cmd = parse_command(&[
         "ghars",
         "_netns-veth",
         "buckos",
-        "/usr/sbin/nft",
+        "nft",
         "-f",
         "/etc/ghars/nft.d/buckos-ns.nft",
     ]);
@@ -897,7 +903,7 @@ fn dispatch_routing_netns_veth_hidden() {
             assert_eq!(instance, "buckos");
             assert_eq!(
                 program,
-                vec!["/usr/sbin/nft", "-f", "/etc/ghars/nft.d/buckos-ns.nft",]
+                vec!["nft", "-f", "/etc/ghars/nft.d/buckos-ns.nft",]
             );
         }
         other => panic!("expected Command::NetnsVeth, got {other:?}"),
@@ -1108,6 +1114,8 @@ fn validate_identity_fields_rejects_cache_pool_trust_zone_with_newline() {
             size: "200G".into(),
             mode: crate::config::CacheMode::default(),
             trust_zone: "secure\nzone".into(),
+            sccache_path: Some("/usr/bin/sccache".into()),
+            sleep_path: None,
         },
     );
     let err = validate_identity_fields(&cfg).expect_err("must reject newline");
@@ -1208,6 +1216,8 @@ fn validate_trust_zone_lengths_accepts_cache_pool_at_max_len() {
             size: "200G".into(),
             mode: crate::config::CacheMode::default(),
             trust_zone: at_max,
+            sccache_path: Some("/usr/bin/sccache".into()),
+            sleep_path: None,
         },
     );
     validate_trust_zone_lengths(&cfg).unwrap_or_else(|e| {
@@ -1233,6 +1243,8 @@ fn validate_trust_zone_lengths_rejects_cache_pool_one_past_max_len() {
             size: "200G".into(),
             mode: crate::config::CacheMode::default(),
             trust_zone: oversize.clone(),
+            sccache_path: Some("/usr/bin/sccache".into()),
+            sleep_path: None,
         },
     );
     let err = validate_trust_zone_lengths(&cfg).expect_err("must reject");
@@ -3311,6 +3323,8 @@ fn validate_cache_pool_names_rejects_oversize_pool_with_exit_code_six() {
             size: "200G".into(),
             mode: crate::config::CacheMode::default(),
             trust_zone: "default".into(),
+            sccache_path: Some("/usr/bin/sccache".into()),
+            sleep_path: None,
         },
     );
     let err = validate_cache_pool_names(&cfg).expect_err("oversize pool name must reject");
@@ -3355,6 +3369,8 @@ fn validate_cache_pool_names_accepts_runner_caches_at_max_len() {
             size: "200G".into(),
             mode: crate::config::CacheMode::default(),
             trust_zone: "default".into(),
+            sccache_path: Some("/usr/bin/sccache".into()),
+            sleep_path: None,
         },
     );
     cfg.runners[0].caches = vec![at_max.clone()];
@@ -3364,4 +3380,109 @@ fn validate_cache_pool_names_accepts_runner_caches_at_max_len() {
             crate::config::IDENTIFIER_MAX_LEN
         )
     });
+}
+
+// ---- validate_cache_pool_binary_paths -----------------------------------
+
+/// Pins the config-load gate: a relative `sccache_path` must reject
+/// with a Validation error scoped to the offending pool by name.
+/// Without this gate the plan-time resolver still rejects the bad
+/// path, but the operator sees the error one phase later (after
+/// per-pool name + `trust_zone` validations) and without the
+/// `cache_pool "NAME":` scope prefix.
+#[test]
+fn validate_cache_pool_binary_paths_rejects_relative_sccache_path() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.cache_pools.insert(
+        "build".into(),
+        crate::config::CachePoolSpec {
+            kinds: vec![crate::config::CacheKind::Sccache],
+            size: "200G".into(),
+            mode: crate::config::CacheMode::default(),
+            trust_zone: "default".into(),
+            sccache_path: Some("relative/sccache".into()),
+            sleep_path: None,
+        },
+    );
+    let err =
+        validate_cache_pool_binary_paths(&cfg).expect_err("relative sccache_path must reject");
+    match err {
+        GharsError::Validation(msg, _) => {
+            assert!(
+                msg.contains("cache_pool \"build\"") && msg.contains("sccache_path"),
+                "msg must scope to the offending pool by name and field; got: {msg}"
+            );
+            assert!(
+                msg.contains("absolute"),
+                "msg must name the absolute-path requirement; got: {msg}"
+            );
+        }
+        other => panic!("expected GharsError::Validation, got {other:?}"),
+    }
+}
+
+/// Symmetric to the `sccache_path` test: relative `sleep_path` must
+/// reject at config load with the same scope prefix.
+#[test]
+fn validate_cache_pool_binary_paths_rejects_relative_sleep_path() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.cache_pools.insert(
+        "build".into(),
+        crate::config::CachePoolSpec {
+            kinds: vec![crate::config::CacheKind::Ccache],
+            size: "200G".into(),
+            mode: crate::config::CacheMode::default(),
+            trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("relative/sleep".into()),
+        },
+    );
+    let err = validate_cache_pool_binary_paths(&cfg).expect_err("relative sleep_path must reject");
+    match err {
+        GharsError::Validation(msg, _) => {
+            assert!(
+                msg.contains("cache_pool \"build\"") && msg.contains("sleep_path"),
+                "msg must scope to the offending pool by name and field; got: {msg}"
+            );
+            assert!(
+                msg.contains("absolute"),
+                "msg must name the absolute-path requirement; got: {msg}"
+            );
+        }
+        other => panic!("expected GharsError::Validation, got {other:?}"),
+    }
+}
+
+/// Absolute paths must pass — the gate is opt-in (None) and absolute
+/// pins. This pins the accept path so a future tightening (e.g.
+/// rejecting symlinks, or enforcing a `starts_with(/usr)` constraint)
+/// is caught here rather than silently breaking valid configs.
+#[test]
+fn validate_cache_pool_binary_paths_accepts_absolute_pins_and_none() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    // Pool 1: both fields pinned absolutely.
+    cfg.cache_pools.insert(
+        "pinned".into(),
+        crate::config::CachePoolSpec {
+            kinds: vec![crate::config::CacheKind::Sccache],
+            size: "200G".into(),
+            mode: crate::config::CacheMode::default(),
+            trust_zone: "default".into(),
+            sccache_path: Some("/opt/sccache/bin/sccache".into()),
+            sleep_path: Some("/usr/bin/sleep".into()),
+        },
+    );
+    // Pool 2: both fields None (auto-detect at plan time).
+    cfg.cache_pools.insert(
+        "auto".into(),
+        crate::config::CachePoolSpec {
+            kinds: vec![crate::config::CacheKind::Ccache],
+            size: "100G".into(),
+            mode: crate::config::CacheMode::default(),
+            trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: None,
+        },
+    );
+    validate_cache_pool_binary_paths(&cfg).expect("absolute pins + None must pass");
 }

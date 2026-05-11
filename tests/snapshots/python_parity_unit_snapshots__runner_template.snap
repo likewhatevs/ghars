@@ -46,6 +46,19 @@ Type=simple
 # /usr/lib/ghars/runsvc-wrapper (root:root mode 0755) — NOT a shell
 # script. With no setuid/setgid step, CapabilityBoundingSet below is
 # empty (no CAP_SETUID, no CAP_SETGID).
+#
+# Path stays absolute (no PATH lookup) because ghars OWNS the install
+# location for this binary: `sudo install -Dm755` deposits it at
+# `/usr/lib/ghars/runsvc-wrapper` regardless of how ghars itself was
+# installed (cargo-install, distro package, sidecar /opt prefix). The
+# path is a packaging-controlled FHS location under /usr/lib/, not a
+# binary on PATH — there is no $PATH directory that should resolve it
+# and no operator-pinnable alternate landing site. Contrast with the
+# cache + netns template binaries, which can land at /usr/local/bin
+# (cargo-install) or /usr/bin (distro packaging) and therefore use
+# plan-time path resolution or PATH lookup. runsvc-wrapper is
+# single-source: ghars writes it during install, ghars reads it from
+# the same place.
 DynamicUser=yes
 ExecStart=/usr/lib/ghars/runsvc-wrapper %i
 # WorkingDirectory + StateDirectory + HOME and the per-runner cache

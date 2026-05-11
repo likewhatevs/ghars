@@ -178,6 +178,8 @@ fn fake_cache_binding(name: &str) -> crate::config::EffectiveCacheBinding {
         size: "10G".into(),
         mode: crate::config::CacheMode::Shared,
         trust_zone: "default".into(),
+        sccache_path: None,
+        sleep_path: Some("/usr/bin/sleep".into()),
     }
 }
 
@@ -433,6 +435,11 @@ fn insert_cache_pool(cfg: &mut Config, name: &str, kinds: Vec<crate::config::Cac
             size: "200G".into(),
             mode: crate::config::CacheMode::default(),
             trust_zone: "default".into(),
+            // Pin both paths so plan-time auto-detect probes never
+            // touch the test host's filesystem — `/usr/bin/sccache`
+            // is not universally present.
+            sccache_path: Some("/usr/bin/sccache".into()),
+            sleep_path: Some("/usr/bin/sleep".into()),
         },
     );
 }
