@@ -1,5 +1,6 @@
 ---
 source: tests/python_parity_unit_snapshots.rs
+assertion_line: 107
 expression: runner_template_text()
 ---
 [Unit]
@@ -73,9 +74,7 @@ Slice=system.slice
 # CacheDirectory + LogsDirectory + RuntimeDirectory still use the
 # per-runner `%i` form because they are NOT trust_zone-shared (per
 # Part 3 / Part 9). Each runner gets its own per-runner cache /
-# log / runtime subtree under systemd's standard roots; only HOME
-# (StateDirectory) crosses runners within a trust_zone.
-StateDirectoryMode=0700
+# log / runtime subtree under systemd's standard roots.
 CacheDirectory=ghars/%i
 CacheDirectoryMode=0700
 LogsDirectory=ghars/%i
@@ -116,10 +115,10 @@ AmbientCapabilities=
 # Filesystem allowlist. Optional paths use `-` prefix for merged-usr
 # compat.
 TemporaryFileSystem=/:ro
-BindReadOnlyPaths=/usr -/lib -/lib64 -/bin -/sbin
+BindReadOnlyPaths=/usr /bin /sbin -/lib -/lib64
 BindReadOnlyPaths=/etc/hosts /etc/nsswitch.conf
 BindReadOnlyPaths=/etc/passwd /etc/group
-BindReadOnlyPaths=/etc/ssl /etc/ca-certificates -/etc/pki
+BindReadOnlyPaths=-/etc/ssl -/etc/ca-certificates -/etc/pki
 BindReadOnlyPaths=-/etc/locale.conf /etc/localtime
 BindReadOnlyPaths=/etc/ld.so.cache -/etc/ld.so.conf.d
 BindReadOnlyPaths=-/etc/protocols -/etc/services
@@ -143,6 +142,7 @@ UMask=0077
 PrivateDevices=yes
 DevicePolicy=closed
 DeviceAllow=/dev/kvm rw
+BindPaths=/dev/kvm
 
 ProtectProc=invisible
 

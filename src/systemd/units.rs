@@ -232,6 +232,7 @@ UMask=0077
 PrivateDevices=yes
 DevicePolicy=closed
 DeviceAllow=/dev/kvm rw
+BindPaths=/dev/kvm
 
 ProtectProc=invisible
 
