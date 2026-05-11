@@ -836,8 +836,8 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
     // BindPaths= makes the runner home writable inside the sandbox.
     let _ = writeln!(
         s,
-        "BindPaths=/var/lib/ghars/{}/ghars-{}",
-        spec.trust_zone, spec.name
+        "BindPaths=/var/lib/ghars/{}",
+        spec.trust_zone
     );
     // WorkingDirectory points at the versioned bin dir so the runner
     // finds ./externals/, ./bin/Runner.Listener, etc. relative to cwd.
@@ -852,6 +852,35 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
         "Environment=HOME=/var/lib/ghars/{}/ghars-{}",
         spec.trust_zone, spec.name
     );
+    let _ = writeln!(
+        s,
+        "Environment=PATH=/usr/lib64/ccache:/usr/lib/ccache:/var/lib/ghars/{tz}/ghars-{name}/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        tz = spec.trust_zone, name = spec.name
+    );
+    // TMPDIR under the runner home so the sccache server (separate unit
+    // with its own PrivateTmp) can hash input files. Without this, cargo
+    // builds in /tmp which is private to the runner unit and invisible
+    // to ghars-cache@.service.
+    let _ = writeln!(
+        s,
+        "Environment=TMPDIR=/var/lib/ghars/{}/ghars-{}/tmp",
+        spec.trust_zone, spec.name
+    );
+    let _ = writeln!(
+        s,
+        "Environment=KTSTR_LOCK_DIR=/var/lib/ghars/{}/.ktstr",
+        spec.trust_zone
+    );
+    let _ = writeln!(
+        s,
+        "Environment=KTSTR_CACHE_DIR=/var/lib/ghars/{}/.ktstr",
+        spec.trust_zone
+    );
+    // Trust-zone tree permissions: apply creates dirs and runs config.sh
+    // as root, producing root-owned files. The DynamicUser UID is not
+    // resolvable via NSS (systemd-userdb, not /etc/passwd) so chown by
+    // name fails on systemd 252. chmod 0777 at apply time instead;
+    // trust-zone isolation is at the UID/BindPaths layer.
     // ConditionPathExists is a [Unit]-section directive; emit a
     // separate [Unit] section AFTER [Service] (drop-in sections can
     // appear in any order — systemd merges by section name).
@@ -1589,7 +1618,11 @@ pub fn render_cache_drop_in(
         // is no TOCTOU window between bind() and a chmod shim. See the
         // UMask= comment in cache_template_text() for the full
         // mechanism + citations.
-        let _ = writeln!(s, "ReadWritePaths=%C/ghars/pools/{} %t/ghars", binding.name);
+        let _ = writeln!(
+            s,
+            "ReadWritePaths=%C/ghars/pools/{pool} %t/ghars /var/lib/ghars/{tz}",
+            pool = binding.name, tz = binding.trust_zone
+        );
     } else {
         // ccache-only pool — the unit exists to own the CacheDirectory
         // and act as a Requires= anchor (StopWhenUnneeded handles

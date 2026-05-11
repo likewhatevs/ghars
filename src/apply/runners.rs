@@ -1,6 +1,8 @@
 //! Per-runner action handlers: create / remove / update (in-place + recreate).
 
+use std::fmt::Write;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 
 use crate::Result;
 use crate::config::NetworkMode;
@@ -22,6 +24,22 @@ use camino::Utf8PathBuf;
 /// Find runsvc.sh inside the extracted bin directory. The runner
 /// tarball may place it at the root (`bin_dir/runsvc.sh`) or inside
 /// the bin subdirectory (`bin_dir/bin/runsvc.sh`).
+fn set_tree_permissions(root: &std::path::Path, mode: u32) -> crate::Result<()> {
+    let perms = std::fs::Permissions::from_mode(mode);
+    fs::set_permissions(root, perms.clone())?;
+    if root.is_dir() {
+        for entry in fs::read_dir(root)? {
+            let entry = entry?;
+            let path = entry.path();
+            fs::set_permissions(&path, perms.clone())?;
+            if path.is_dir() {
+                set_tree_permissions(&path, mode)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn find_runsvc_sh(bin_dir: &camino::Utf8Path) -> crate::Result<Utf8PathBuf> {
     for candidate in &["runsvc.sh", "bin/runsvc.sh"] {
         let path = bin_dir.join(candidate);
@@ -84,6 +102,24 @@ pub(super) fn execute_create_runner(
         }
     }
     fs::create_dir_all(home_std)?;
+
+    // Per-runner tmp dir so TMPDIR points somewhere the sccache server
+    // can reach (PrivateTmp isolates /tmp per unit).
+    let runner_tmp = runner_home.join("tmp");
+    fs::create_dir_all(runner_tmp.as_std_path())?;
+
+    // Shared .ktstr directory at the trust-zone level. All runners in the
+    // same trust_zone bind this path into their sandbox for KTSTR_LOCK_DIR
+    // and KTSTR_CACHE_DIR. Mode 0777 so the DynamicUser (allocated at
+    // unit-start time, unknown at apply time) can write to it; actual
+    // isolation is at the trust-zone UID layer (different trust zones get
+    // different UIDs).
+    let ktstr_dir = paths.state_dir.join(&spec.trust_zone).join(".ktstr");
+    fs::create_dir_all(ktstr_dir.as_std_path())?;
+    fs::set_permissions(ktstr_dir.as_std_path(), std::fs::Permissions::from_mode(0o777))?;
+    let ccache_dir = paths.state_dir.join(&spec.trust_zone).join(".ccache");
+    fs::create_dir_all(ccache_dir.as_std_path())?;
+    fs::set_permissions(ccache_dir.as_std_path(), std::fs::Permissions::from_mode(0o777))?;
 
     // No useradd / gpasswd step. The runner unit declares
     // DynamicUser=yes with `User=ghars-tz-<TRUST_ZONE>` set in the
@@ -224,6 +260,67 @@ pub(super) fn execute_create_runner(
         }
     }
     let rendered = render_runner_unit(&populated_spec)?;
+
+    // 5c) Write .path so the runner's workflow steps see the correct
+    // PATH (ccache wrappers, $HOME/.cargo/bin). The upstream env.sh
+    // writes .path from the shell's $PATH at startup, which lacks
+    // the ccache and cargo dirs.
+    let dot_path = bin_dir.join(".path");
+    let runner_path = format!(
+        "/usr/lib64/ccache:/usr/lib/ccache:/var/lib/ghars/{tz}/ghars-{name}/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        tz = spec.trust_zone, name = spec.name
+    );
+    fs::write(dot_path.as_std_path(), format!("{runner_path}\n"))?;
+
+    // Write .env with cache env vars so workflow steps (which read .env,
+    // not the systemd Environment= directives) see them. Without this,
+    // ccache wrappers in /usr/lib64/ccache/ fall back to ~/.cache/ccache
+    // which resolves to /root/.cache/ccache (wrong user context).
+    let dot_env = bin_dir.join(".env");
+    let mut env_contents = String::new();
+    env_contents.push_str("LANG=C.UTF-8\n");
+    let _ = writeln!(
+        env_contents,
+        "CCACHE_DIR=/var/lib/ghars/{tz}/.ccache",
+        tz = spec.trust_zone
+    );
+    let _ = writeln!(
+        env_contents,
+        "KTSTR_LOCK_DIR=/var/lib/ghars/{tz}/.ktstr",
+        tz = spec.trust_zone
+    );
+    let _ = writeln!(
+        env_contents,
+        "KTSTR_CACHE_DIR=/var/lib/ghars/{tz}/.ktstr",
+        tz = spec.trust_zone
+    );
+    for binding in &spec.caches {
+        if binding.kinds.contains(&crate::config::CacheKind::Ccache) {
+            let _ = writeln!(env_contents, "CCACHE_MAXSIZE={}", binding.size);
+        }
+        if binding.kinds.contains(&crate::config::CacheKind::Sccache) {
+            let _ = writeln!(
+                env_contents,
+                "SCCACHE_SERVER_UDS=/run/ghars/cache-{}.sock",
+                binding.name
+            );
+            env_contents.push_str("SCCACHE_NO_DAEMON=1\n");
+            let _ = writeln!(env_contents, "SCCACHE_CACHE_SIZE={}", binding.size);
+            let _ = writeln!(
+                env_contents,
+                "SCCACHE_DIR=/var/cache/ghars/pools/{}/sccache",
+                binding.name
+            );
+        }
+    }
+    fs::write(dot_env.as_std_path(), &env_contents)?;
+
+    // 5d) chmod the trust-zone tree so the DynamicUser can write.
+    // apply runs as root; DynamicUser UID is not resolvable via NSS
+    // (systemd-userdb on 252), so chown by name fails. 0777 is safe
+    // because trust-zone isolation is at the UID/BindPaths layer.
+    let tz_dir = paths.state_dir.join(&spec.trust_zone);
+    set_tree_permissions(tz_dir.as_std_path(), 0o777)?;
 
     // 6) Write unit file + drop-ins. The reset-on-empty validation
     //    already ran inside `render_runner_unit`.
