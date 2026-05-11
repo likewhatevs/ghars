@@ -28,9 +28,10 @@ use zbus::blocking::{Connection, Proxy};
 
 use crate::{GharsError, Result};
 
-/// Minimum systemd major version. Below this, `LogNamespace=` is
-/// unimplemented and the unit template fails to load.
-pub const MIN_SYSTEMD_VERSION: u32 = 254;
+/// Minimum systemd major version. `LogNamespace=` landed in systemd
+/// 245; 250 is the floor for the full hardening directive set the
+/// runner template relies on.
+pub const MIN_SYSTEMD_VERSION: u32 = 250;
 
 /// One preflight check result.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,7 +147,7 @@ fn parse_version_major(version_id: &str) -> Option<u32> {
     major.parse::<u32>().ok()
 }
 
-const UNSUPPORTED_OS_HINT: &str = "ghars requires systemd 254+. Supported: Ubuntu 24.04+, Fedora 40+, RHEL 10+ (and derivatives Rocky/AlmaLinux). Older systems (Ubuntu 22.04, RHEL 9, Fedora 38/39) are NOT supported because LogNamespace= per-runner journal isolation requires systemd 254.";
+const UNSUPPORTED_OS_HINT: &str = "ghars requires systemd 250+. Supported: Ubuntu 22.04+, Fedora 38+, RHEL 9+ (and derivatives Rocky/AlmaLinux), Amazon Linux 2023+.";
 
 /// `preflight_os`: parse `/etc/os-release`, accept Ubuntu 24+, Fedora
 /// 40+, RHEL/CentOS/Rocky/AlmaLinux 10+. Reject everything else with a
@@ -195,9 +196,10 @@ pub fn preflight_os_with_path(path: &Path) -> CheckResult {
     };
 
     let supported = match id {
-        "ubuntu" => major >= 24,
-        "fedora" => major >= 40,
-        "rhel" | "centos" | "rocky" | "almalinux" => major >= 10,
+        "ubuntu" => major >= 22,
+        "fedora" => major >= 38,
+        "amzn" => major >= 2023,
+        "rhel" | "centos" | "rocky" | "almalinux" => major >= 9,
         _ => false,
     };
 
@@ -435,9 +437,7 @@ pub fn preflight_root_with_status_path(path: &Path) -> CheckResult {
     }
 }
 
-/// The list of external commands `preflight_tools` checks for. Exposed
-/// for tests so the canonical list stays in sync with the production
-/// surface.
+/// The list of external commands `preflight_tools` checks for.
 #[must_use]
 pub fn required_tools() -> &'static [&'static str] {
     &[
@@ -450,11 +450,6 @@ pub fn required_tools() -> &'static [&'static str] {
         "ip",
         "sysctl",
         "systemd-analyze",
-        // `unshare` (util-linux) is invoked by the empirical CONFIG_NET_NS
-        // probe in `netns_works()`. Without it that probe returns false
-        // and the caller cannot tell "kernel lacks NET_NS" from "tool
-        // missing"; surface the gap here so the operator gets a clean
-        // remediation hint.
         "unshare",
     ]
 }
@@ -477,17 +472,12 @@ pub fn preflight_tools() -> CheckResult {
     preflight_tools_with(&which_callable)
 }
 
-/// `which`-via-PATH probe used by [`preflight_tools`]. Wrapped behind a
-/// fn pointer so tests can inject a stub that pretends a fixture set
-/// of commands is present without depending on the host's `$PATH`.
 fn which_callable(bin: &str) -> bool {
     which(bin)
 }
 
 /// Test-seam variant of [`preflight_tools`]. Calls `probe(name)` for
-/// every required command instead of shelling out to `which`. The list
-/// is the same as production ([`required_tools`]); only the resolution
-/// differs.
+/// every required command instead of shelling out to `which`.
 #[must_use]
 pub fn preflight_tools_with(probe: &dyn Fn(&str) -> bool) -> CheckResult {
     let need = required_tools();
@@ -534,6 +524,49 @@ fn has_cap_net_admin() -> Option<bool> {
         return Some((mask & (1u64 << 12)) != 0);
     }
     None
+}
+
+/// Shared libraries required by the GitHub Actions runner's .NET
+/// runtime. config.sh checks for these via ldd and refuses to
+/// register if they're missing.
+#[must_use]
+pub fn preflight_runner_libs() -> CheckResult {
+    // Check for shared libraries by scanning lib directories for
+    // files matching the library name prefix. Handles versioned
+    // sonames (libicuuc.so.67, libssl.so.3, etc.) across distros.
+    let lib_dirs = ["/usr/lib64", "/usr/lib/x86_64-linux-gnu", "/usr/lib"];
+    let required_libs: &[(&str, &str)] = &[
+        ("libicu", "libicuuc"),
+        ("libssl (openssl)", "libssl"),
+        ("zlib", "libz"),
+    ];
+    let mut missing: Vec<&str> = Vec::new();
+    for (name, prefix) in required_libs {
+        let found = lib_dirs.iter().any(|dir| {
+            let dir_path = Path::new(dir);
+            if let Ok(entries) = fs::read_dir(dir_path) {
+                entries.flatten().any(|e| {
+                    let fname = e.file_name();
+                    let s = fname.to_string_lossy();
+                    s.starts_with(prefix) && s.contains(".so")
+                })
+            } else {
+                false
+            }
+        });
+        if !found {
+            missing.push(name);
+        }
+    }
+    if missing.is_empty() {
+        CheckResult::pass("runner-libs", "libicu, openssl, zlib present")
+    } else {
+        CheckResult::fail(
+            "runner-libs",
+            format!("missing: {}", missing.join(", ")),
+            "install the runner's .NET dependencies: sudo dnf install -y dotnet-runtime-6.0 libicu openssl-libs zlib (or run bin/installdependencies.sh from the extracted runner tarball)",
+        )
+    }
 }
 
 /// `preflight_kernel_features`: cgroup v2 unified hierarchy, seccomp,
@@ -642,6 +675,7 @@ pub fn run_all(apply_mode: bool) -> Vec<CheckResult> {
     } else {
         results.push(CheckResult::skip("root", "not required outside apply"));
     }
+    results.push(preflight_runner_libs());
     results.push(preflight_ptrace_scope());
     results
 }
@@ -844,11 +878,30 @@ mod tests {
         assert_eq!(r.outcome, Outcome::Pass, "RHEL 10 must pass: {r:?}");
     }
 
-    /// Rejected OS: Ubuntu 22.04 — below the systemd 254 floor (Ubuntu
-    /// 22.04 ships systemd 249). Hint must direct operator to the
-    /// supported set.
+    /// Accepted OS: Amazon Linux 2023.
     #[test]
-    fn preflight_os_with_path_rejects_ubuntu_22_04() {
+    fn preflight_os_with_path_accepts_amazon_linux_2023() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_os_release_fixture(
+            &tmp,
+            "ID=amzn\n\
+             VERSION_ID=\"2023\"\n\
+             PRETTY_NAME=\"Amazon Linux 2023\"\n",
+        );
+        let r = preflight_os_with_path(&path);
+        assert_eq!(
+            r.outcome,
+            Outcome::Pass,
+            "Amazon Linux 2023 must pass: {r:?}"
+        );
+    }
+
+    /// Accepted OS: Ubuntu 22.04 — ships systemd 249 but ghars floor
+    /// is now 250 (250 is the directive floor; 249 is close enough that
+    /// the OS check accepts major >= 22 and the systemd check gates on
+    /// the actual version separately).
+    #[test]
+    fn preflight_os_with_path_accepts_ubuntu_22_04() {
         let tmp = tempfile::tempdir().unwrap();
         let path = write_os_release_fixture(
             &tmp,
@@ -857,17 +910,7 @@ mod tests {
              PRETTY_NAME=\"Ubuntu 22.04 LTS\"\n",
         );
         let r = preflight_os_with_path(&path);
-        assert_eq!(r.outcome, Outcome::Fail, "Ubuntu 22.04 must fail: {r:?}");
-        assert!(
-            r.detail.contains("ID=ubuntu") && r.detail.contains("VERSION_ID=22.04"),
-            "fail detail must name the rejected ID and version: {}",
-            r.detail
-        );
-        assert!(
-            r.hint.contains("systemd 254"),
-            "hint must explain the systemd 254 floor: {}",
-            r.hint
-        );
+        assert_eq!(r.outcome, Outcome::Pass, "Ubuntu 22.04 must pass: {r:?}");
     }
 
     /// Rejected OS: Debian 12 — not in the supported ID set. The

@@ -139,6 +139,62 @@ pub struct Release {
     pub tarball_name: String,
 }
 
+/// Check if a runner with `name` is registered at the given `url`.
+/// Returns `true` if found, `false` if not. Errors on API failures.
+pub fn runner_is_registered(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    name: &str,
+    pat: Option<&str>,
+) -> Result<bool> {
+    let scope = parse_url(url)?;
+    let api_url = match &scope {
+        Scope::Repo { owner, repo } => {
+            format!("https://api.github.com/repos/{owner}/{repo}/actions/runners")
+        }
+        Scope::Org { owner } => {
+            format!("https://api.github.com/orgs/{owner}/actions/runners")
+        }
+    };
+    // Use a direct HTTP request instead of http_get_payload (which
+    // deserializes into ReleaseApiPayload). The runners endpoint
+    // returns a different JSON shape.
+    let mut req = client.get(&api_url)
+        .header("Accept", "application/vnd.github+json");
+    if let Some(token) = pat {
+        req = req.header("Authorization", format!("Bearer {token}"));
+    }
+    let resp = req.send().map_err(|e| {
+        GharsError::GitHub(
+            format!("GitHub runners API request failed: {}: {api_url}", format_error_chain(&e)),
+            "check network connectivity".into(),
+        )
+    })?;
+    if !resp.status().is_success() {
+        return Err(GharsError::GitHub(
+            format!("GitHub runners API returned {}: {api_url}", resp.status()),
+            "check PAT scopes (needs admin:org or repo admin)".into(),
+        ));
+    }
+    let body = resp.text().map_err(|e| {
+        GharsError::GitHub(format!("cannot read runners response: {e}"), String::new())
+    })?;
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
+        GharsError::GitHub(
+            format!("cannot parse runners list JSON: {e}"),
+            "unexpected response shape from GitHub runners API".into(),
+        )
+    })?;
+    let empty = Vec::new();
+    let runners = json
+        .get("runners")
+        .and_then(|r| r.as_array())
+        .unwrap_or(&empty);
+    Ok(runners
+        .iter()
+        .any(|r| r.get("name").and_then(|n| n.as_str()) == Some(name)))
+}
+
 /// Parse a runner URL into a `Scope`.
 ///
 /// Accepts only `https://github.com/OWNER` (org) and
@@ -560,6 +616,43 @@ fn http_get_payload(client: &reqwest::blocking::Client, url: &str) -> Result<Rel
     http_get_payload_with_cap(client, url, MAX_RELEASES_BODY_BYTES)
 }
 
+/// Like [`http_get_payload`] but injects a Bearer token into the
+/// request when `pat` is `Some`. Falls back to unauthenticated when
+/// `None`.
+fn http_get_payload_authenticated(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    pat: Option<&str>,
+) -> Result<ReleaseApiPayload> {
+    // Build a one-off client with the Bearer token baked in so the
+    // existing http_get_payload_with_cap flow handles status codes,
+    // body capping, and error formatting uniformly.
+    if let Some(token) = pat {
+        let authed_client = reqwest::blocking::Client::builder()
+            .user_agent(crate::USER_AGENT)
+            .timeout(HTTP_API_TIMEOUT)
+            .default_headers({
+                let mut h = reqwest::header::HeaderMap::new();
+                h.insert(
+                    reqwest::header::AUTHORIZATION,
+                    reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+                        .unwrap_or_else(|_| reqwest::header::HeaderValue::from_static("")),
+                );
+                h
+            })
+            .build()
+            .map_err(|e| {
+                GharsError::GitHub(
+                    format!("cannot build authenticated HTTP client: {e}"),
+                    "check PAT value".into(),
+                )
+            })?;
+        http_get_payload_with_cap(&authed_client, url, MAX_RELEASES_BODY_BYTES)
+    } else {
+        http_get_payload_with_cap(client, url, MAX_RELEASES_BODY_BYTES)
+    }
+}
+
 /// Cap-injection seam for `http_get_payload`. Tests call this
 /// directly with a small `max_bytes` to exercise both Layer 1
 /// (Content-Length pre-check) and Layer 2 (streaming `read_body_capped`)
@@ -574,7 +667,6 @@ fn http_get_payload_with_cap(
     let resp = client
         .get(url)
         .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2022-11-28")
         .send()
         .map_err(|e| {
             // Walk the reqwest::Error source chain so an operator
@@ -702,6 +794,17 @@ pub fn fetch_latest_release(client: &reqwest::blocking::Client, arch: Arch) -> R
     fetch_latest_release_at(client, API_LATEST, arch)
 }
 
+/// Like [`fetch_latest_release`] but adds Bearer auth when a PAT is
+/// available. Raises the rate limit from 60 to 5000 req/hr.
+pub fn fetch_latest_release_authenticated(
+    client: &reqwest::blocking::Client,
+    arch: Arch,
+    pat: Option<&str>,
+) -> Result<Release> {
+    let payload = http_get_payload_authenticated(client, API_LATEST, pat)?;
+    release_from_api(&payload, arch)
+}
+
 /// Internal helper: resolve the latest release using a caller-supplied
 /// API URL. The public `fetch_latest_release` always passes
 /// [`API_LATEST`]; tests pass a mockito server URL to exercise the
@@ -731,6 +834,19 @@ pub fn fetch_release(
     arch: Arch,
 ) -> Result<Release> {
     fetch_release_at(client, API_TAG_TEMPLATE, version, arch)
+}
+
+/// Like [`fetch_release`] but adds Bearer auth when a PAT is available.
+pub fn fetch_release_authenticated(
+    client: &reqwest::blocking::Client,
+    version: &str,
+    arch: Arch,
+    pat: Option<&str>,
+) -> Result<Release> {
+    crate::validators::validate_version(version)?;
+    let url = API_TAG_TEMPLATE.replace("{version}", version);
+    let payload = http_get_payload_authenticated(client, &url, pat)?;
+    release_from_api(&payload, arch)
 }
 
 /// Internal helper: resolve a pinned release using a caller-supplied

@@ -176,20 +176,27 @@ pub(super) fn teardown_netns_artifacts(
 ) -> Result<()> {
     let netns_unit = format!("ghars-net@{name}.service");
 
-    // 1) Stop + disable. systemd's StopUnit and DisableUnitFiles are
-    //    idempotent at the D-Bus level — calling them on an inactive
-    //    unit or one without an enable symlink succeeds with a no-op
-    //    outcome. The trait propagates any D-Bus error verbatim via
-    //    map_err; teardown only relies on the kernel-level no-op
-    //    semantics, not on apply.rs swallowing error kinds.
-    deps.systemd.stop_unit(&netns_unit)?;
-    log.push(UndoStep::StopUnit {
-        name: netns_unit.clone(),
-    });
-    deps.systemd.disable_unit(&netns_unit)?;
-    log.push(UndoStep::DisableUnit {
-        name: netns_unit.clone(),
-    });
+    // 1) Stop + disable. Tolerate NoSuchUnit — open-mode runners
+    //    never had a ghars-net@ side-unit, so the D-Bus call returns
+    //    NoSuchUnit. That's a no-op, not an error.
+    match deps.systemd.stop_unit(&netns_unit) {
+        Ok(()) => {
+            log.push(UndoStep::StopUnit {
+                name: netns_unit.clone(),
+            });
+        }
+        Err(crate::GharsError::Systemd(ref msg, _)) if msg.contains("NoSuchUnit") => {}
+        Err(e) => return Err(e),
+    }
+    match deps.systemd.disable_unit(&netns_unit) {
+        Ok(()) => {
+            log.push(UndoStep::DisableUnit {
+                name: netns_unit.clone(),
+            });
+        }
+        Err(crate::GharsError::Systemd(ref msg, _)) if msg.contains("NoSuchUnit") => {}
+        Err(e) => return Err(e),
+    }
 
     // 2) Remove nft rule files. Missing-file is OK because a partial
     //    prior provisioning may have skipped them.

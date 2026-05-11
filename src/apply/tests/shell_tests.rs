@@ -12,6 +12,7 @@ use super::super::shell::{ConfigShellCtx, RUNNER_TOKEN_ENV, build_register_cmd, 
 fn sec05_ctx<'a>(home: &'a Utf8Path, token: &'a str) -> ConfigShellCtx<'a> {
     ConfigShellCtx {
         runner_home: home,
+        bin_dir: home,
         name: "buckos",
         url: "https://github.com/example/repo",
         labels: &[],

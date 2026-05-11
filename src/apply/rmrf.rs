@@ -91,12 +91,22 @@ pub fn guard_home_dir_rmrf(
         Err(e) => return Err(GharsError::Io(e)),
     };
     if home_lmeta.file_type().is_symlink() {
-        // Std's modern `remove_dir_all` lstats first and unlinks the
-        // symlink rather than following it. We still reject here so
-        // the runner home is replaced from a clean baseline
-        // — a symlink at the home path means the parent directory's
-        // permissions slipped (parent should be root-owned 0755 per
-        // SEC-11) and apply should not silently paper over that.
+        // DynamicUser=yes on systemd < 256 creates state directories
+        // as symlinks: /var/lib/ghars/... → /var/lib/private/ghars/...
+        // This is expected systemd behavior, not an attack. Allow
+        // symlinks whose target is under /var/lib/private/ and remove
+        // both the symlink and its target.
+        let target = fs::read_link(home_std).map_err(GharsError::Io)?;
+        let target_str = target.to_string_lossy();
+        if target_str.starts_with("/var/lib/private/") {
+            // DynamicUser symlink -- remove the target tree first,
+            // then the symlink itself.
+            if target.exists() {
+                fs::remove_dir_all(&target).map_err(GharsError::Io)?;
+            }
+            fs::remove_file(home_std).map_err(GharsError::Io)?;
+            return Ok(());
+        }
         return Err(GharsError::Validation(
             format!(
                 "refusing rmrf: {home_dir} is a symlink (runner {runner_name:?}); \

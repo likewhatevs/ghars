@@ -385,8 +385,19 @@ pub fn safe_member_filter<R: Read>(entry: &tar::Entry<'_, R>) -> Result<FilterDe
         let link_bytes = entry.link_name_bytes().ok_or_else(|| {
             GharsError::Tarball(format!("link entry without target: {name}"), None)
         })?;
-        if !is_safe_relative_path(&link_bytes) {
-            let target = String::from_utf8_lossy(&link_bytes);
+        let target = String::from_utf8_lossy(&link_bytes);
+        // Absolute link targets always escape.
+        if link_bytes.first() == Some(&b'/') {
+            return Err(GharsError::Tarball(
+                format!("tarball contains absolute link target in {name}: {target}"),
+                None,
+            ));
+        }
+        // Relative targets with `..` are allowed if resolving them
+        // from the link's directory stays within the tree. The
+        // actions/runner tarball legitimately uses `../lib/...`
+        // targets for node symlinks.
+        if !is_safe_resolved_link(&path_bytes, &link_bytes) {
             return Err(GharsError::Tarball(
                 format!("tarball contains unsafe link target in {name}: {target}"),
                 None,
@@ -395,6 +406,44 @@ pub fn safe_member_filter<R: Read>(entry: &tar::Entry<'_, R>) -> Result<FilterDe
     }
 
     Ok(FilterDecision::Allow)
+}
+
+/// True if resolving `link_target` from the directory containing
+/// `link_path` stays within the tarball tree (never goes above the
+/// root). Both paths are relative; `link_target` may contain `..`.
+fn is_safe_resolved_link(link_path: &[u8], link_target: &[u8]) -> bool {
+    if link_target.is_empty() {
+        return false;
+    }
+    // Start from the link's parent directory.
+    let link_str = String::from_utf8_lossy(link_path);
+    let target_str = String::from_utf8_lossy(link_target);
+    let mut components: Vec<&str> = Vec::new();
+    // Add link's directory components (everything before the last `/`).
+    if let Some(parent) = std::path::Path::new(link_str.as_ref()).parent() {
+        for c in parent.components() {
+            if let std::path::Component::Normal(s) = c {
+                if let Some(s) = s.to_str() {
+                    components.push(s);
+                }
+            }
+        }
+    }
+    // Resolve the target path against the link's directory.
+    for part in target_str.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                if components.is_empty() {
+                    // Would go above the tarball root -- escape.
+                    return false;
+                }
+                components.pop();
+            }
+            _ => components.push(part),
+        }
+    }
+    true
 }
 
 /// True if `bytes` is a relative path with no `..` components and no
@@ -536,6 +585,16 @@ fn verify_extracted_inside_dest(
     use std::path::{Component, PathBuf};
     let raw_os = std::ffi::OsStr::from_bytes(member_path_bytes);
     let raw = std::path::Path::new(raw_os);
+    // Skip entries that resolve to the extraction root itself (e.g.
+    // `./` or `.`). These are the tarball's root directory entry and
+    // don't extract content outside dest. Their parent is dest's
+    // parent, which would fail the starts_with check.
+    let has_normal = raw
+        .components()
+        .any(|c| matches!(c, Component::Normal(_)));
+    if !has_normal {
+        return Ok(());
+    }
     let mut rendered: PathBuf = dest.as_std_path().to_path_buf();
     for part in raw.components() {
         match part {
@@ -733,6 +792,10 @@ pub fn install_runner_binary(
         let _ = fs::remove_dir_all(&staging);
     }
     outcome?;
+    // DynamicUser runs as a non-root UID. The staging dir was 0700
+    // (root-only during extraction for SEC-09). Open it up so the
+    // runner process can read the binary tree at runtime.
+    set_dir_mode(&final_dir, 0o755)?;
     Ok(final_dir)
 }
 

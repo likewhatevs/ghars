@@ -288,10 +288,20 @@ fn rendered_runner_unit(
     // the unit-loader's drop-in resolution direct. Drop-ins from
     // `ghars-runner@<name>.service.d/` apply against the copied
     // instance file.
+    // Merge template + all drop-ins into a single self-contained unit
+    // file. systemd-analyze verify on systemd 252 cannot reliably
+    // resolve template instances or drop-ins from staging directories
+    // even with SYSTEMD_UNIT_PATH set. The merged file passes
+    // verification as a standalone unit.
+    let mut merged = crate::systemd::runner_template_text();
+    for (_basename, body) in drop_ins {
+        merged.push('\n');
+        merged.push_str(body);
+    }
     RenderedUnit {
         unit_filename: format!("ghars-runner@{name}.service"),
-        drop_ins: drop_ins.clone(),
-        merged_body: None,
+        drop_ins: BTreeMap::new(),
+        merged_body: Some(merged),
     }
 }
 

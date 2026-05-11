@@ -1,6 +1,8 @@
 ---
 source: tests/python_parity_unit_snapshots.rs
+assertion_line: 361
 expression: "dropin(&r.drop_ins, \"80-lognamespace.conf\")"
 ---
 [Service]
+SyslogIdentifier=ghars-buckos
 LogNamespace=ghars-buckos

@@ -17,6 +17,54 @@ use super::shell::ConfigShellCtx;
 use super::tarball::sha256_of_runsvc;
 use super::undo::{Deps, UndoLog, UndoStep};
 use super::writes::{mint_token, read_prior, read_then_write_if_changed, write_record_undo};
+use camino::Utf8PathBuf;
+
+/// Find runsvc.sh inside the extracted bin directory. The runner
+/// tarball may place it at the root (`bin_dir/runsvc.sh`) or inside
+/// the bin subdirectory (`bin_dir/bin/runsvc.sh`).
+fn find_runsvc_sh(bin_dir: &camino::Utf8Path) -> crate::Result<Utf8PathBuf> {
+    for candidate in &["runsvc.sh", "bin/runsvc.sh"] {
+        let path = bin_dir.join(candidate);
+        if path.as_std_path().exists() {
+            return Ok(path);
+        }
+    }
+    Err(GharsError::Apply {
+        action: format!("find runsvc.sh under {bin_dir}"),
+        source: Box::new(GharsError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("no runsvc.sh found under {bin_dir} or {bin_dir}/bin/"),
+        ))),
+    })
+}
+
+/// Find the most recent `bin.X.Y.Z/` directory under runner_home that
+/// contains config.sh. Used by remove/undo paths that need to run
+/// config.sh but don't have the version from a plan.
+pub(super) fn find_active_bin_dir(runner_home: &camino::Utf8Path) -> crate::Result<Utf8PathBuf> {
+    let mut candidates: Vec<Utf8PathBuf> = Vec::new();
+    if let Ok(entries) = fs::read_dir(runner_home.as_std_path()) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with("bin.") && entry.path().join("config.sh").exists() {
+                if let Ok(utf8) = Utf8PathBuf::try_from(entry.path()) {
+                    candidates.push(utf8);
+                }
+            }
+        }
+    }
+    candidates.sort();
+    candidates.pop().ok_or_else(|| {
+        GharsError::Apply {
+            action: format!("find config.sh under {runner_home}"),
+            source: Box::new(GharsError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("no bin.*/config.sh found under {runner_home}"),
+            ))),
+        }
+    })
+}
 
 pub(super) fn execute_create_runner(
     plan: &RunnerPlan,
@@ -27,6 +75,15 @@ pub(super) fn execute_create_runner(
 ) -> Result<ApplyOutcome> {
     let spec = &plan.spec;
     let runner_home = paths.runner_home(&spec.trust_zone, &spec.name);
+
+    // Clean up stale DynamicUser symlinks from previous runs.
+    let home_std = runner_home.as_std_path();
+    if let Ok(meta) = fs::symlink_metadata(home_std) {
+        if meta.file_type().is_symlink() {
+            let _ = fs::remove_file(home_std);
+        }
+    }
+    fs::create_dir_all(home_std)?;
 
     // No useradd / gpasswd step. The runner unit declares
     // DynamicUser=yes with `User=ghars-tz-<TRUST_ZONE>` set in the
@@ -67,7 +124,7 @@ pub(super) fn execute_create_runner(
             .fetch_or_verify(&release.tarball_url, &dest, &release.sha256)?;
         (dest, release.version.clone())
     };
-    let _bin_dir = deps.tarball.install_binary(
+    let bin_dir = deps.tarball.install_binary(
         &tarball_path,
         &paths.state_dir,
         &runner_home,
@@ -106,6 +163,7 @@ pub(super) fn execute_create_runner(
     //    stays owned in this frame and zeroizes on Drop at end of fn.
     deps.config_shell.run_register(&ConfigShellCtx {
         runner_home: &runner_home,
+        bin_dir: &bin_dir,
         name: &spec.name,
         url: &spec.url,
         labels: &spec.labels,
@@ -146,13 +204,25 @@ pub(super) fn execute_create_runner(
     //     placeholders (plan ran before install, so it could not
     //     compute the digest). We re-render here with the populated
     //     spec.
+    // config.sh / the tarball places runsvc.sh somewhere under bin_dir.
+    // Find it, then copy to runner_home/runsvc.sh where the
+    // runsvc-wrapper expects it at runtime (O_NOFOLLOW -- no symlinks).
+    let runsvc_source = find_runsvc_sh(&bin_dir)?;
     let runsvc_path = runner_home.join("runsvc.sh");
+    fs::copy(runsvc_source.as_std_path(), runsvc_path.as_std_path())?;
     let runsvc_sha = sha256_of_runsvc(&runsvc_path).map_err(|e| GharsError::Apply {
         action: format!("CreateRunner({}): hash runsvc.sh", spec.name),
         source: Box::new(e),
     })?;
     let mut populated_spec = spec.clone();
     populated_spec.runsvc_sha256 = runsvc_sha;
+    // Set runner_version from the resolved release so the rendered
+    // WorkingDirectory points at the correct bin.X.Y.Z/ directory.
+    if populated_spec.runner_version.is_none() {
+        if let Some(ref release) = plan.resolved_release {
+            populated_spec.runner_version = Some(release.version.clone());
+        }
+    }
     let rendered = render_runner_unit(&populated_spec)?;
 
     // 6) Write unit file + drop-ins. The reset-on-empty validation
@@ -272,15 +342,37 @@ pub(super) fn execute_remove_runner(
         );
     } else {
         let token = mint_token(deps.auth, &identity.auth_name, &identity.url, true)?;
-        // Pass `&token.value` so `token` stays owned in this
-        // frame and zeroizes on Drop at end of else-branch.
-        deps.config_shell.run_remove(&ConfigShellCtx {
-            runner_home: &runner_home,
-            name: &identity.name,
-            url: &identity.url,
-            labels: &[],
-            token: &token.value,
-        })?;
+        // Best-effort deregister: tolerate missing bin dir (stale
+        // runner from a failed apply) and config.sh remove failure
+        // (runner already deleted from GitHub UI). The host-local
+        // cleanup below runs regardless.
+        match find_active_bin_dir(&runner_home) {
+            Ok(remove_bin_dir) => {
+                if let Err(e) = deps.config_shell.run_remove(&ConfigShellCtx {
+                    runner_home: &runner_home,
+                    bin_dir: &remove_bin_dir,
+                    name: &identity.name,
+                    url: &identity.url,
+                    labels: &[],
+                    token: &token.value,
+                }) {
+                    tracing::warn!(
+                        runner = %identity.name,
+                        error = %e,
+                        "config.sh remove failed; runner may already be \
+                         deregistered on GitHub. Continuing with local cleanup."
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    runner = %identity.name,
+                    error = %e,
+                    "no bin dir with config.sh found; skipping GitHub \
+                     deregister. Runner may still be registered server-side."
+                );
+            }
+        }
         // No UndoStep for run_remove: it is itself the inverse of
         // GitHubRegistration. Recording GitHubRegistration here would
         // attempt to re-register on rollback — wrong semantically and

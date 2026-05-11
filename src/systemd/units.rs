@@ -164,9 +164,7 @@ Slice=system.slice
 # CacheDirectory + LogsDirectory + RuntimeDirectory still use the
 # per-runner `%i` form because they are NOT trust_zone-shared (per
 # Part 3 / Part 9). Each runner gets its own per-runner cache /
-# log / runtime subtree under systemd's standard roots; only HOME
-# (StateDirectory) crosses runners within a trust_zone.
-StateDirectoryMode=0700
+# log / runtime subtree under systemd's standard roots.
 CacheDirectory=ghars/%i
 CacheDirectoryMode=0700
 LogsDirectory=ghars/%i
@@ -207,10 +205,10 @@ AmbientCapabilities=
 # Filesystem allowlist. Optional paths use `-` prefix for merged-usr
 # compat.
 TemporaryFileSystem=/:ro
-BindReadOnlyPaths=/usr -/lib -/lib64 -/bin -/sbin
+BindReadOnlyPaths=/usr /bin /sbin -/lib -/lib64
 BindReadOnlyPaths=/etc/hosts /etc/nsswitch.conf
 BindReadOnlyPaths=/etc/passwd /etc/group
-BindReadOnlyPaths=/etc/ssl /etc/ca-certificates -/etc/pki
+BindReadOnlyPaths=-/etc/ssl -/etc/ca-certificates -/etc/pki
 BindReadOnlyPaths=-/etc/locale.conf /etc/localtime
 BindReadOnlyPaths=/etc/ld.so.cache -/etc/ld.so.conf.d
 BindReadOnlyPaths=-/etc/protocols -/etc/services
@@ -447,6 +445,10 @@ CacheDirectoryMode=0750
 # not require runner-side traversal of the host /run/ghars/ entry.
 RuntimeDirectory=ghars
 RuntimeDirectoryMode=0700
+# HOME is required by sccache (dirs::config_dir() panics without it).
+# DynamicUser + ProtectHome=yes leaves HOME unset; point it at the
+# cache directory so sccache's config lookup succeeds.
+Environment=HOME=%C/ghars/pools/%i
 
 # Per-kinds env + ExecStart land in the per-pool 00-ghars.conf drop-in
 # (sccache server launches there when kinds includes sccache;
@@ -824,20 +826,26 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
     s.push('\n');
     s.push_str("[Service]\n");
     let _ = writeln!(s, "User=ghars-tz-{}", spec.trust_zone);
-    // StateDirectory + WorkingDirectory + HOME stamp the per-runner
-    // home as `<state_dir>/<trust_zone>/ghars-<name>/`. These can't
-    // live in the template body because `%i` expands to the runner
-    // name only; the trust_zone component must be substituted at
-    // render time.
+    // WorkingDirectory + HOME stamp the per-runner home. ghars creates
+    // and manages the runner home during apply. StateDirectory= is NOT
+    // used because DynamicUser=yes on systemd < 256 tries to create a
+    // private dir + symlink at the runner home path, which conflicts
+    // with the regular directory ghars already created. The full
+    // sandbox (TemporaryFileSystem, BindReadOnlyPaths, DynamicUser)
+    // still applies -- only the auto-chown is lost.
+    // BindPaths= makes the runner home writable inside the sandbox.
     let _ = writeln!(
         s,
-        "StateDirectory=ghars/{}/ghars-{}",
+        "BindPaths=/var/lib/ghars/{}/ghars-{}",
         spec.trust_zone, spec.name
     );
+    // WorkingDirectory points at the versioned bin dir so the runner
+    // finds ./externals/, ./bin/Runner.Listener, etc. relative to cwd.
+    let version = spec.runner_version.as_deref().unwrap_or("latest");
     let _ = writeln!(
         s,
-        "WorkingDirectory=/var/lib/ghars/{}/ghars-{}",
-        spec.trust_zone, spec.name
+        "WorkingDirectory=/var/lib/ghars/{}/ghars-{}/bin.{}",
+        spec.trust_zone, spec.name, version
     );
     let _ = writeln!(
         s,
@@ -1427,9 +1435,18 @@ fn render_hooks(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
 }
 
 fn render_lognamespace(spec: &EffectiveRunnerSpec) -> String {
-    // Unconditional. systemd 254+ floor enforced at preflight.
     let mut s = String::new();
     s.push_str("[Service]\n");
+    // SyslogIdentifier gives every runner a clean per-runner tag in
+    // journal output regardless of systemd version.
+    let _ = writeln!(s, "SyslogIdentifier=ghars-{}", spec.name);
+    // LogNamespace= provides full journal isolation (separate journal
+    // files per runner) but requires systemd 254+ with journald
+    // namespace support. On older systemd (250-253) the directive is
+    // silently ignored -- runners still log to the default journal
+    // and ghars logs filters by unit name. No conditional needed:
+    // systemd drops unknown/unsupported directives without failing
+    // the unit.
     let _ = writeln!(s, "LogNamespace=ghars-{}", spec.name);
     s
 }
@@ -1563,6 +1580,9 @@ pub fn render_cache_drop_in(
         // unit cannot smuggle a newline or NUL into ExecStart=.
         check_identity_field("caches[].sccache_path", sccache_path.as_str())?;
         let _ = writeln!(s, "ExecStart={sccache_path} --start-server");
+        // sccache --start-server forks: parent exits, child listens.
+        // Override the template's Type=simple for sccache pools.
+        s.push_str("Type=forking\n");
         // mode enforcement is in the cache template via UMask=0077,
         // not a per-pool ExecStartPost. Kernel-enforced at vfs_mknod
         // time (Linux net/unix/af_unix.c:unix_bind_bsd:1349) so there

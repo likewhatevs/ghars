@@ -59,13 +59,10 @@ fn preflight_os_accepts_ubuntu_25_10() {
 }
 
 #[test]
-fn preflight_os_rejects_ubuntu_22_04() {
+fn preflight_os_accepts_ubuntu_22_04() {
     let tmp = tempfile::tempdir().unwrap();
     let p = write_fixture(&tmp, "os-release", "ID=ubuntu\nVERSION_ID=\"22.04\"\n");
-    let r = preflight_os_with_path(&p);
-    assert_eq!(r.outcome, Outcome::Fail);
-    assert!(r.detail.contains("ubuntu"));
-    assert!(r.hint.contains("Ubuntu 24.04"));
+    assert_eq!(preflight_os_with_path(&p).outcome, Outcome::Pass);
 }
 
 #[test]
@@ -91,12 +88,10 @@ fn preflight_os_accepts_fedora_42() {
 }
 
 #[test]
-fn preflight_os_rejects_fedora_38() {
+fn preflight_os_accepts_fedora_38() {
     let tmp = tempfile::tempdir().unwrap();
     let p = write_fixture(&tmp, "os-release", "ID=fedora\nVERSION_ID=38\n");
-    let r = preflight_os_with_path(&p);
-    assert_eq!(r.outcome, Outcome::Fail);
-    assert!(r.detail.contains("fedora"));
+    assert_eq!(preflight_os_with_path(&p).outcome, Outcome::Pass);
 }
 
 #[test]
@@ -107,21 +102,19 @@ fn preflight_os_accepts_rhel_10() {
 }
 
 #[test]
-fn preflight_os_rejects_rhel_9() {
+fn preflight_os_accepts_rhel_9() {
     let tmp = tempfile::tempdir().unwrap();
     let p = write_fixture(&tmp, "os-release", "ID=rhel\nVERSION_ID=\"9.4\"\n");
-    let r = preflight_os_with_path(&p);
-    assert_eq!(r.outcome, Outcome::Fail);
-    assert!(r.detail.contains("rhel"));
+    assert_eq!(preflight_os_with_path(&p).outcome, Outcome::Pass);
 }
 
 #[test]
 fn preflight_os_accepts_rhel_derivatives_at_floor() {
     for id in ["centos", "rocky", "almalinux"] {
         let tmp = tempfile::tempdir().unwrap();
-        let p = write_fixture(&tmp, "os-release", &format!("ID={id}\nVERSION_ID=10\n"));
+        let p = write_fixture(&tmp, "os-release", &format!("ID={id}\nVERSION_ID=9\n"));
         let r = preflight_os_with_path(&p);
-        assert_eq!(r.outcome, Outcome::Pass, "{id} 10 should pass: {r:?}");
+        assert_eq!(r.outcome, Outcome::Pass, "{id} 9 should pass: {r:?}");
     }
 }
 

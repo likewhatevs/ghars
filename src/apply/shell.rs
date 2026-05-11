@@ -54,7 +54,11 @@ pub trait ConfigShell {
 pub struct ConfigShellCtx<'a> {
     /// Per-runner home
     /// (`/var/lib/ghars/<TRUST_ZONE>/ghars-<NAME>`).
+    /// config.sh writes credentials here (cwd).
     pub runner_home: &'a Utf8Path,
+    /// Versioned binary directory (`runner_home/bin.X.Y.Z/`).
+    /// config.sh lives here.
+    pub bin_dir: &'a Utf8Path,
     /// Runner instance name (the `%i` value).
     pub name: &'a str,
     /// Repo / org URL for `--url`.
@@ -86,7 +90,7 @@ pub(super) const RUNNER_TOKEN_ENV: &str = "ACTIONS_RUNNER_INPUT_TOKEN";
 /// strips the token before exec'ing config.sh.
 pub(super) fn build_register_cmd(ctx: &ConfigShellCtx<'_>) -> Command {
     let labels_csv = ctx.labels.join(",");
-    let mut cmd = Command::new(ctx.runner_home.join("config.sh"));
+    let mut cmd = Command::new(ctx.bin_dir.join("config.sh"));
     // SEC-05: token rides in the env var, not argv. argv contains no
     // secret material; `/proc/PID/cmdline` of the running config.sh
     // subprocess is now safe to read. config.sh runs as root in apply;
@@ -100,24 +104,22 @@ pub(super) fn build_register_cmd(ctx: &ConfigShellCtx<'_>) -> Command {
         ctx.name,
         "--labels",
         &labels_csv,
+        "--no-default-labels",
         "--unattended",
         "--replace",
     ])
     .env(RUNNER_TOKEN_ENV, ctx.token)
+    .env("RUNNER_ALLOW_RUNASROOT", "1")
     .current_dir(ctx.runner_home.as_std_path());
     cmd
 }
 
-/// Build the `config.sh remove` Command. Same SEC-05 contract as
-/// [`build_register_cmd`] — token rides in the env var, never argv.
-/// config.sh's `remove` subcommand consumes the same
-/// `Constants.Runner.CommandLine.Args.Token` field
-/// (`GetRunnerDeletionToken` / `GetArgOrPrompt` in actions/runner),
-/// so the env-var mapping applies identically to register and remove.
+/// Build the `config.sh remove` Command.
 pub(super) fn build_remove_cmd(ctx: &ConfigShellCtx<'_>) -> Command {
-    let mut cmd = Command::new(ctx.runner_home.join("config.sh"));
-    cmd.args(["remove", "--unattended"])
+    let mut cmd = Command::new(ctx.bin_dir.join("config.sh"));
+    cmd.args(["remove"])
         .env(RUNNER_TOKEN_ENV, ctx.token)
+        .env("RUNNER_ALLOW_RUNASROOT", "1")
         .current_dir(ctx.runner_home.as_std_path());
     cmd
 }
@@ -128,9 +130,18 @@ pub struct RealConfigShell;
 
 impl ConfigShell for RealConfigShell {
     fn run_register(&self, ctx: &ConfigShellCtx<'_>) -> Result<()> {
-        let status = build_register_cmd(ctx)
+        let mut cmd = build_register_cmd(ctx);
+        let config_path = ctx.bin_dir.join("config.sh");
+        tracing::info!(
+            config_sh = %config_path,
+            bin_dir = %ctx.bin_dir,
+            runner_home = %ctx.runner_home,
+            exists = config_path.as_std_path().exists(),
+            "spawning config.sh register"
+        );
+        let status = cmd
             .status()
-            .map_err(|e| spawn_err("config.sh register", &e))?;
+            .map_err(|e| spawn_err(&format!("config.sh register (path: {})", config_path), &e))?;
         if status.success() {
             return Ok(());
         }

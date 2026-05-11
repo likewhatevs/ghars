@@ -406,8 +406,10 @@ fn undo_one(step: &UndoStep, deps: &Deps<'_>) -> Result<()> {
                 return Ok(());
             };
             let token = source.mint_removal_token(url)?;
+            let undo_bin_dir = super::runners::find_active_bin_dir(runner_home)?;
             deps.config_shell.run_remove(&ConfigShellCtx {
                 runner_home,
+                bin_dir: &undo_bin_dir,
                 name,
                 url,
                 labels: &[],
