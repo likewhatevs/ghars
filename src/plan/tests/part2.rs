@@ -8,6 +8,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
+use crate::config::{DnsMode, EffectiveNetworkBinding, Ipv6Mode, NetworkMode, NetworkSpec};
 
 // --- merge_defaults: bind_readonly_paths Some(empty) semantics -----
 
@@ -3016,6 +3017,45 @@ fn lower_to_effective_collapses_some_empty_proxy_to_none() {
     );
 }
 
+// ---- dns/ipv6 fixture helper -----
+
+/// Build an `EffectiveRunnerSpec` with a Netns network binding
+/// carrying the given `dns` + `ipv6` modes. Used across the
+/// dns/ipv6 round-trip + classifier tests that follow, which all
+/// pin the binding shape (name=`isolated`, mode=Netns, all
+/// egress/IP/family vecs empty, subnet=None) and vary only the two
+/// annotation fields. Computes and stores `spec_hash` so the
+/// result is render-ready.
+fn spec_with_network(dns: DnsMode, ipv6: Ipv6Mode) -> EffectiveRunnerSpec {
+    let defaults = Defaults::default();
+    let mut spec = merge_defaults(
+        &minimal_runner("a"),
+        &defaults,
+        "pat".into(),
+        vec![],
+        None,
+        None,
+        None,
+        Arch::X86_64,
+        cfg_source_default(),
+    );
+    spec.network = Some(EffectiveNetworkBinding {
+        name: "isolated".into(),
+        spec: NetworkSpec {
+            mode: NetworkMode::Netns,
+            allowed_egress: vec![],
+            ip_allow: vec![],
+            ip_deny: vec![],
+            restrict_address_families: vec![],
+            dns,
+            ipv6,
+        },
+        subnet: None,
+    });
+    spec.spec_hash = spec_hash(&spec);
+    spec
+}
+
 /// End-to-end pin for dns/ipv6 annotation contract: render
 /// emits X-Ghars-Dns + X-Ghars-Ipv6 → DiscoveredAnnotations parser
 /// round-trips them → classifier emits FieldChange (in-place, NOT
@@ -3029,45 +3069,15 @@ fn lower_to_effective_collapses_some_empty_proxy_to_none() {
 /// is the lone change.
 #[test]
 fn dns_ipv6_annotations_round_trip_and_route_in_place() {
-    use crate::config::{
-        DnsMode, EffectiveNetworkBinding, Ipv6Mode, NetworkMode, NetworkSpec,
-    };
     use crate::plan::FieldChange;
 
-    let defaults = Defaults::default();
-    let mk_spec = |dns: DnsMode| -> EffectiveRunnerSpec {
-        let mut spec = merge_defaults(
-            &minimal_runner("a"),
-            &defaults,
-            "pat".into(),
-            vec![],
-            None,
-            None,
-            None,
-            Arch::X86_64,
-            "/etc/ghars/ghars.toml".into(),
-        );
-        spec.network = Some(EffectiveNetworkBinding {
-            name: "isolated".into(),
-            spec: NetworkSpec {
-                mode: NetworkMode::Netns,
-                allowed_egress: vec![],
-                ip_allow: vec![],
-                ip_deny: vec![],
-                restrict_address_families: vec![],
-                dns,
-                ipv6: Ipv6Mode::Disabled,
-            },
-            subnet: None,
-        });
-        spec.spec_hash = spec_hash(&spec);
-        spec
-    };
-
-    let discovered_spec = mk_spec(DnsMode::Forward);
-    let desired_spec = mk_spec(DnsMode::Static {
-        servers: vec!["1.1.1.1".parse().unwrap()],
-    });
+    let discovered_spec = spec_with_network(DnsMode::Forward, Ipv6Mode::Disabled);
+    let desired_spec = spec_with_network(
+        DnsMode::Static {
+            servers: vec!["1.1.1.1".parse().unwrap()],
+        },
+        Ipv6Mode::Disabled,
+    );
 
     let rendered = crate::systemd::render_runner_unit(&discovered_spec).unwrap();
     let body = rendered.drop_ins.get("00-ghars.conf").unwrap();
@@ -3110,40 +3120,7 @@ fn dns_ipv6_annotations_round_trip_and_route_in_place() {
 /// read back the payload vec.
 #[test]
 fn dns_static_with_servers_round_trips_through_render_parse_classify() {
-    use crate::config::{
-        DnsMode, EffectiveNetworkBinding, Ipv6Mode, NetworkMode, NetworkSpec,
-    };
     use crate::plan::FieldChange;
-
-    let defaults = Defaults::default();
-    let mk_spec = |dns: DnsMode| -> EffectiveRunnerSpec {
-        let mut spec = merge_defaults(
-            &minimal_runner("a"),
-            &defaults,
-            "pat".into(),
-            vec![],
-            None,
-            None,
-            None,
-            Arch::X86_64,
-            "/etc/ghars/ghars.toml".into(),
-        );
-        spec.network = Some(EffectiveNetworkBinding {
-            name: "isolated".into(),
-            spec: NetworkSpec {
-                mode: NetworkMode::Netns,
-                allowed_egress: vec![],
-                ip_allow: vec![],
-                ip_deny: vec![],
-                restrict_address_families: vec![],
-                dns,
-                ipv6: Ipv6Mode::Disabled,
-            },
-            subnet: None,
-        });
-        spec.spec_hash = spec_hash(&spec);
-        spec
-    };
 
     let discovered_static = DnsMode::Static {
         servers: vec!["8.8.8.8".parse().unwrap(), "8.8.4.4".parse().unwrap()],
@@ -3151,8 +3128,8 @@ fn dns_static_with_servers_round_trips_through_render_parse_classify() {
     let desired_static = DnsMode::Static {
         servers: vec!["1.1.1.1".parse().unwrap()],
     };
-    let discovered_spec = mk_spec(discovered_static.clone());
-    let desired_spec = mk_spec(desired_static);
+    let discovered_spec = spec_with_network(discovered_static.clone(), Ipv6Mode::Disabled);
+    let desired_spec = spec_with_network(desired_static, Ipv6Mode::Disabled);
 
     let rendered = crate::systemd::render_runner_unit(&discovered_spec).unwrap();
     let body = rendered.drop_ins.get("00-ghars.conf").unwrap();
@@ -3209,43 +3186,10 @@ fn dns_static_with_servers_round_trips_through_render_parse_classify() {
 /// must work in both directions for the v0.2-future case.
 #[test]
 fn ipv6_classifier_arm_routes_in_place_field_change() {
-    use crate::config::{
-        DnsMode, EffectiveNetworkBinding, Ipv6Mode, NetworkMode, NetworkSpec,
-    };
     use crate::plan::FieldChange;
 
-    let defaults = Defaults::default();
-    let mk_spec = |ipv6: Ipv6Mode| -> EffectiveRunnerSpec {
-        let mut spec = merge_defaults(
-            &minimal_runner("a"),
-            &defaults,
-            "pat".into(),
-            vec![],
-            None,
-            None,
-            None,
-            Arch::X86_64,
-            "/etc/ghars/ghars.toml".into(),
-        );
-        spec.network = Some(EffectiveNetworkBinding {
-            name: "isolated".into(),
-            spec: NetworkSpec {
-                mode: NetworkMode::Netns,
-                allowed_egress: vec![],
-                ip_allow: vec![],
-                ip_deny: vec![],
-                restrict_address_families: vec![],
-                dns: DnsMode::Forward,
-                ipv6,
-            },
-            subnet: None,
-        });
-        spec.spec_hash = spec_hash(&spec);
-        spec
-    };
-
-    let discovered_spec = mk_spec(Ipv6Mode::Disabled);
-    let desired_spec = mk_spec(Ipv6Mode::Enabled);
+    let discovered_spec = spec_with_network(DnsMode::Forward, Ipv6Mode::Disabled);
+    let desired_spec = spec_with_network(DnsMode::Forward, Ipv6Mode::Enabled);
 
     let rendered = crate::systemd::render_runner_unit(&discovered_spec).unwrap();
     let body = rendered.drop_ins.get("00-ghars.conf").unwrap();
@@ -3297,9 +3241,6 @@ fn ipv6_classifier_arm_routes_in_place_field_change() {
 /// the second plan classifies cleanly with full annotation coverage.
 #[test]
 fn legacy_runner_without_dns_ipv6_annotations_skips_classifier_arms() {
-    use crate::config::{
-        DnsMode, EffectiveNetworkBinding, Ipv6Mode, NetworkMode, NetworkSpec,
-    };
     use crate::plan::FieldChange;
 
     // Simulate a legacy drop-in body: every annotation the older
@@ -3320,34 +3261,12 @@ X-Ghars-Caches=
     assert_eq!(anns.dns, None, "annotation-absent body must yield dns=None");
     assert_eq!(anns.ipv6, None, "annotation-absent body must yield ipv6=None");
 
-    let defaults = Defaults::default();
-    let mut desired_spec = merge_defaults(
-        &minimal_runner("a"),
-        &defaults,
-        "pat".into(),
-        vec![],
-        None,
-        None,
-        None,
-        Arch::X86_64,
-        "/etc/ghars/ghars.toml".into(),
-    );
-    desired_spec.network = Some(EffectiveNetworkBinding {
-        name: "isolated".into(),
-        spec: NetworkSpec {
-            mode: NetworkMode::Netns,
-            allowed_egress: vec![],
-            ip_allow: vec![],
-            ip_deny: vec![],
-            restrict_address_families: vec![],
-            dns: DnsMode::Static {
-                servers: vec!["1.1.1.1".parse().unwrap()],
-            },
-            ipv6: Ipv6Mode::Enabled,
+    let desired_spec = spec_with_network(
+        DnsMode::Static {
+            servers: vec!["1.1.1.1".parse().unwrap()],
         },
-        subnet: None,
-    });
-    desired_spec.spec_hash = spec_hash(&desired_spec);
+        Ipv6Mode::Enabled,
+    );
 
     let mut out_changes: Vec<FieldChange> = Vec::new();
     let _ = classify_recreate_reasons_from_annotations(&anns, &desired_spec, &mut out_changes);
@@ -3471,7 +3390,6 @@ X-Ghars-Ipv6=
 /// dns/ipv6 are sub-field noise once network is gone.
 #[test]
 fn classifier_skips_dns_ipv6_when_desired_removes_network() {
-    use crate::config::{DnsMode, Ipv6Mode};
     use crate::plan::FieldChange;
 
     let defaults = Defaults::default();
@@ -3484,7 +3402,7 @@ fn classifier_skips_dns_ipv6_when_desired_removes_network() {
         None,
         None,
         Arch::X86_64,
-        "/etc/ghars/ghars.toml".into(),
+        cfg_source_default(),
     );
     assert!(
         desired_spec.network.is_none(),
@@ -3538,45 +3456,18 @@ X-Ghars-Ipv6=enabled
 /// reference) would also slip in here.
 #[test]
 fn identical_dns_ipv6_emit_no_field_change() {
-    use crate::config::{
-        DnsMode, EffectiveNetworkBinding, Ipv6Mode, NetworkMode, NetworkSpec,
-    };
     use crate::plan::FieldChange;
 
-    let defaults = Defaults::default();
-    let mk_spec = || -> EffectiveRunnerSpec {
-        let mut spec = merge_defaults(
-            &minimal_runner("a"),
-            &defaults,
-            "pat".into(),
-            vec![],
-            None,
-            None,
-            None,
-            Arch::X86_64,
-            "/etc/ghars/ghars.toml".into(),
-        );
-        spec.network = Some(EffectiveNetworkBinding {
-            name: "isolated".into(),
-            spec: NetworkSpec {
-                mode: NetworkMode::Netns,
-                allowed_egress: vec![],
-                ip_allow: vec![],
-                ip_deny: vec![],
-                restrict_address_families: vec![],
-                dns: DnsMode::Static {
-                    servers: vec!["1.1.1.1".parse().unwrap()],
-                },
-                ipv6: Ipv6Mode::Disabled,
+    let make_spec = || {
+        spec_with_network(
+            DnsMode::Static {
+                servers: vec!["1.1.1.1".parse().unwrap()],
             },
-            subnet: None,
-        });
-        spec.spec_hash = spec_hash(&spec);
-        spec
+            Ipv6Mode::Disabled,
+        )
     };
-
-    let discovered_spec = mk_spec();
-    let desired_spec = mk_spec();
+    let discovered_spec = make_spec();
+    let desired_spec = make_spec();
 
     let rendered = crate::systemd::render_runner_unit(&discovered_spec).unwrap();
     let body = rendered.drop_ins.get("00-ghars.conf").unwrap();
@@ -3829,45 +3720,15 @@ fn ipv6_case_sensitive_rejects_capitalized() {
 /// the opposite directions to catch a future asymmetric refactor.
 #[test]
 fn classifier_routes_dns_static_to_forward_field_change() {
-    use crate::config::{
-        DnsMode, EffectiveNetworkBinding, Ipv6Mode, NetworkMode, NetworkSpec,
-    };
     use crate::plan::FieldChange;
 
-    let defaults = Defaults::default();
-    let mk_with_dns = |dns: DnsMode| -> EffectiveRunnerSpec {
-        let mut spec = merge_defaults(
-            &minimal_runner("a"),
-            &defaults,
-            "pat".into(),
-            vec![],
-            None,
-            None,
-            None,
-            Arch::X86_64,
-            "/etc/ghars/ghars.toml".into(),
-        );
-        spec.network = Some(EffectiveNetworkBinding {
-            name: "isolated".into(),
-            spec: NetworkSpec {
-                mode: NetworkMode::Netns,
-                allowed_egress: vec![],
-                ip_allow: vec![],
-                ip_deny: vec![],
-                restrict_address_families: vec![],
-                dns,
-                ipv6: Ipv6Mode::Disabled,
-            },
-            subnet: None,
-        });
-        spec.spec_hash = spec_hash(&spec);
-        spec
-    };
-
-    let discovered_spec = mk_with_dns(DnsMode::Static {
-        servers: vec!["8.8.8.8".parse().unwrap()],
-    });
-    let desired_spec = mk_with_dns(DnsMode::Forward);
+    let discovered_spec = spec_with_network(
+        DnsMode::Static {
+            servers: vec!["8.8.8.8".parse().unwrap()],
+        },
+        Ipv6Mode::Disabled,
+    );
+    let desired_spec = spec_with_network(DnsMode::Forward, Ipv6Mode::Disabled);
 
     let rendered = crate::systemd::render_runner_unit(&discovered_spec).unwrap();
     let body = rendered.drop_ins.get("00-ghars.conf").unwrap();
@@ -3891,43 +3752,10 @@ fn classifier_routes_dns_static_to_forward_field_change() {
 
 #[test]
 fn classifier_routes_ipv6_enabled_to_disabled_field_change() {
-    use crate::config::{
-        DnsMode, EffectiveNetworkBinding, Ipv6Mode, NetworkMode, NetworkSpec,
-    };
     use crate::plan::FieldChange;
 
-    let defaults = Defaults::default();
-    let mk_with_ipv6 = |ipv6: Ipv6Mode| -> EffectiveRunnerSpec {
-        let mut spec = merge_defaults(
-            &minimal_runner("a"),
-            &defaults,
-            "pat".into(),
-            vec![],
-            None,
-            None,
-            None,
-            Arch::X86_64,
-            "/etc/ghars/ghars.toml".into(),
-        );
-        spec.network = Some(EffectiveNetworkBinding {
-            name: "isolated".into(),
-            spec: NetworkSpec {
-                mode: NetworkMode::Netns,
-                allowed_egress: vec![],
-                ip_allow: vec![],
-                ip_deny: vec![],
-                restrict_address_families: vec![],
-                dns: DnsMode::Forward,
-                ipv6,
-            },
-            subnet: None,
-        });
-        spec.spec_hash = spec_hash(&spec);
-        spec
-    };
-
-    let discovered_spec = mk_with_ipv6(Ipv6Mode::Enabled);
-    let desired_spec = mk_with_ipv6(Ipv6Mode::Disabled);
+    let discovered_spec = spec_with_network(DnsMode::Forward, Ipv6Mode::Enabled);
+    let desired_spec = spec_with_network(DnsMode::Forward, Ipv6Mode::Disabled);
 
     let rendered = crate::systemd::render_runner_unit(&discovered_spec).unwrap();
     let body = rendered.drop_ins.get("00-ghars.conf").unwrap();
@@ -3983,46 +3811,23 @@ fn dns_static_empty_round_trips_through_render_parse() {
 /// reorder intent and skip the FieldChange.
 #[test]
 fn classifier_routes_dns_static_server_reorder_field_change() {
-    use crate::config::{
-        DnsMode, EffectiveNetworkBinding, Ipv6Mode, NetworkMode, NetworkSpec,
-    };
     use crate::plan::FieldChange;
-
-    let defaults = Defaults::default();
-    let mk_with_servers = |servers: Vec<std::net::IpAddr>| -> EffectiveRunnerSpec {
-        let mut spec = merge_defaults(
-            &minimal_runner("a"),
-            &defaults,
-            "pat".into(),
-            vec![],
-            None,
-            None,
-            None,
-            Arch::X86_64,
-            "/etc/ghars/ghars.toml".into(),
-        );
-        spec.network = Some(EffectiveNetworkBinding {
-            name: "isolated".into(),
-            spec: NetworkSpec {
-                mode: NetworkMode::Netns,
-                allowed_egress: vec![],
-                ip_allow: vec![],
-                ip_deny: vec![],
-                restrict_address_families: vec![],
-                dns: DnsMode::Static { servers },
-                ipv6: Ipv6Mode::Disabled,
-            },
-            subnet: None,
-        });
-        spec.spec_hash = spec_hash(&spec);
-        spec
-    };
 
     let ip_a: std::net::IpAddr = "1.1.1.1".parse().unwrap();
     let ip_b: std::net::IpAddr = "8.8.8.8".parse().unwrap();
 
-    let discovered_spec = mk_with_servers(vec![ip_a, ip_b]);
-    let desired_spec = mk_with_servers(vec![ip_b, ip_a]);
+    let discovered_spec = spec_with_network(
+        DnsMode::Static {
+            servers: vec![ip_a, ip_b],
+        },
+        Ipv6Mode::Disabled,
+    );
+    let desired_spec = spec_with_network(
+        DnsMode::Static {
+            servers: vec![ip_b, ip_a],
+        },
+        Ipv6Mode::Disabled,
+    );
 
     let rendered = crate::systemd::render_runner_unit(&discovered_spec).unwrap();
     let body = rendered.drop_ins.get("00-ghars.conf").unwrap();
