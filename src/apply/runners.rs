@@ -406,6 +406,56 @@ pub(super) fn chown_and_tighten_runner_state(
     Ok(())
 }
 
+/// Write the runner's `bin_dir/.env` and `bin_dir/.path` files in a
+/// single call, returning the number of files whose on-disk bytes
+/// changed (0 or 2 for `conditional = false` since every write counts
+/// as a change vs the pre-write absent state; 0..=2 for `conditional
+/// = true`). Both files always written via the same writer per call.
+///
+/// `conditional = false`: CreateRunner path. Every CreateRunner
+/// writes fresh `.env` / `.path` content; `write_record_undo` snapshots
+/// `prior_content = None` (file doesn't exist yet) and pushes
+/// `UndoStep::WriteFile` so a partial-create rollback unlinks the
+/// file rather than restoring prior content (see the call site
+/// doc-comment for the operator-facing degraded-mode implication).
+///
+/// `conditional = true`: in-place UpdateRunner path.
+/// `read_then_write_if_changed` byte-compares the rendered content
+/// against the on-disk file and writes only when they differ; the
+/// caller uses the returned count to decide whether to trigger
+/// daemon-reload + restart (a no-op rewrite skips the cycle).
+///
+/// Centralizes the `bin_dir.join(".env")` / `bin_dir.join(".path")`
+/// path arithmetic so both code paths can't drift in basename or
+/// directory derivation (the LAYER 1/2 .env/.path content is the
+/// load-bearing channel for workflow-step env per `EnvironmentSpec`
+/// at config.rs; basename drift between paths would invisibly
+/// orphan operator-declared env vars at apply time).
+pub(super) fn write_env_path_files(
+    bin_dir: &camino::Utf8Path,
+    env_file_body: &[u8],
+    path_file_body: &[u8],
+    log: &mut UndoLog,
+    conditional: bool,
+) -> crate::Result<usize> {
+    let env_path = bin_dir.join(".env");
+    let path_path = bin_dir.join(".path");
+    if conditional {
+        let mut changed = 0;
+        if read_then_write_if_changed(&path_path, path_file_body, log)? {
+            changed += 1;
+        }
+        if read_then_write_if_changed(&env_path, env_file_body, log)? {
+            changed += 1;
+        }
+        Ok(changed)
+    } else {
+        write_record_undo(&path_path, path_file_body, log)?;
+        write_record_undo(&env_path, env_file_body, log)?;
+        Ok(2)
+    }
+}
+
 /// Find the most recent `bin.X.Y.Z/` directory under runner_home that
 /// contains config.sh. Used by remove/undo paths that need to run
 /// config.sh but don't have the version from a plan.
@@ -703,8 +753,13 @@ pub(super) fn execute_create_runner(
     // depend on those framework env vars run in degraded mode until
     // the operator re-runs `ghars apply` to restore the ghars-
     // emitted bytes.
-    write_record_undo(&bin_dir.join(".path"), rendered.path_file.as_bytes(), log)?;
-    write_record_undo(&bin_dir.join(".env"), rendered.env_file.as_bytes(), log)?;
+    write_env_path_files(
+        &bin_dir,
+        rendered.env_file.as_bytes(),
+        rendered.path_file.as_bytes(),
+        log,
+        false,
+    )?;
 
     // 5d) Normalize post-config.sh file modes to DynamicUser-READ.
     // Upstream actions/runner writes three files in runner_home:
@@ -1333,20 +1388,13 @@ pub(super) fn execute_update_runner(
         )),
     })?;
     let bin_dir = runner_home.join(format!("bin.{version}"));
-    if read_then_write_if_changed(
-        &bin_dir.join(".path"),
+    files_changed += write_env_path_files(
+        &bin_dir,
+        delta.after.env_file.as_bytes(),
         delta.after.path_file.as_bytes(),
         log,
-    )? {
-        files_changed += 1;
-    }
-    if read_then_write_if_changed(
-        &bin_dir.join(".env"),
-        delta.after.env_file.as_bytes(),
-        log,
-    )? {
-        files_changed += 1;
-    }
+        true,
+    )?;
 
     // Skip daemon-reload + stop + start when nothing on disk
     // changed AND the caches-list diff was empty. A non-empty
