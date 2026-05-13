@@ -19,6 +19,37 @@ use serde::{Deserialize, Serialize};
 
 use crate::Result;
 
+/// Default for the serde `#[serde(default)]` attribute on
+/// `EffectiveRunnerSpec.renderer_schema` and
+/// `EffectiveCacheBinding.renderer_schema`: when the field is absent
+/// from input (e.g. older plan JSON predating the field), substitute
+/// the runtime constant instead of erroring.
+fn default_renderer_schema() -> u32 {
+    crate::systemd::RENDERER_SCHEMA
+}
+
+/// Deserialize-with helper for the renderer_schema fields: consume
+/// the operator-supplied u32 from input, then DROP it and return the
+/// runtime constant. Combined with `#[serde(default)]` this makes the
+/// field's deserialized value ALWAYS equal to
+/// `crate::systemd::RENDERER_SCHEMA` regardless of what arrives in
+/// input. Defense-in-depth against future deserialization sites
+/// (plan-cache sidecar, replay tool, RPC) that would otherwise let
+/// an operator spoof the schema number and bypass the hash-
+/// participation contract.
+///
+/// Consuming the input (rather than `IgnoredAny`) preserves error-on-
+/// malformed-type behavior: a JSON string where a u32 is expected
+/// still fails deserialization at parse, just like the un-hardened
+/// shape. Only the integer value is dropped.
+fn renderer_schema_from_runtime<'de, D>(d: D) -> std::result::Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let _ignored = u32::deserialize(d)?;
+    Ok(crate::systemd::RENDERER_SCHEMA)
+}
+
 /// Identifier regex shared by runner names, auth keys, cache pool keys,
 /// network keys: `^[a-z]([a-z0-9-]*[a-z0-9])?$`. One rule everywhere
 /// (Part 3).
@@ -339,6 +370,19 @@ pub struct EffectiveRunnerSpec {
     /// output). Operators never set this directly. NOT
     /// `#[serde(skip)]` — its participation in the hash domain is
     /// the entire point of the field.
+    ///
+    /// Deserialize-side defense: `#[serde(default)]` provides the
+    /// runtime constant when the field is absent (e.g. older plan
+    /// JSON), and `#[serde(deserialize_with)]` consumes any input
+    /// value but ALWAYS returns the runtime constant. No future
+    /// deserialization site (plan-cache sidecar, replay tool, RPC
+    /// interface) can let an operator spoof the schema number and
+    /// defeat the hash-participation contract. Serialize path is
+    /// unaffected — the runtime value is what `spec_hash` consumes.
+    #[serde(
+        default = "default_renderer_schema",
+        deserialize_with = "renderer_schema_from_runtime"
+    )]
     pub renderer_schema: u32,
 }
 
@@ -407,6 +451,17 @@ pub struct EffectiveCacheBinding {
     /// renderer behavior; those MUST stay `#[serde(skip)]` so the
     /// hash doesn't flip between hosts whose sccache lives at
     /// different prefixes).
+    ///
+    /// Deserialize-side defense: same shape as
+    /// `EffectiveRunnerSpec::renderer_schema` —
+    /// `#[serde(deserialize_with)]` consumes any operator-supplied
+    /// value but always returns the runtime constant, preventing
+    /// future deserialization sites from letting an operator spoof
+    /// the schema number and defeat the hash-participation contract.
+    #[serde(
+        default = "default_renderer_schema",
+        deserialize_with = "renderer_schema_from_runtime"
+    )]
     pub renderer_schema: u32,
 }
 
@@ -1306,6 +1361,69 @@ mod tests {
             environment: EnvironmentSpec::default(),
         });
         validate_runner_versions(&cfg).expect("valid X.Y.Z versions must pass");
+    }
+
+    #[test]
+    fn renderer_schema_deserialize_ignores_spoofed_value_and_returns_runtime_const() {
+        // Defense-in-depth: a future deserialization site (plan-cache
+        // sidecar, replay tool, RPC) consuming JSON that an operator
+        // could craft must NOT be able to spoof the renderer_schema
+        // field to bypass the hash-participation contract. The
+        // `#[serde(deserialize_with)]` shim consumes the operator-
+        // supplied u32 then returns the runtime constant
+        // unconditionally.
+        let runtime = crate::systemd::RENDERER_SCHEMA;
+        // Use a value guaranteed != runtime constant (u32::MAX is
+        // far past any plausible RENDERER_SCHEMA value).
+        let spoofed: u32 = u32::MAX;
+        assert_ne!(
+            spoofed, runtime,
+            "test fixture sanity: spoofed value must differ from runtime constant"
+        );
+
+        // EffectiveCacheBinding has the narrower deserialize surface;
+        // use it for the smoke test rather than EffectiveRunnerSpec
+        // (which has many more required fields).
+        let json = format!(
+            r#"{{
+                "name": "build",
+                "kinds": ["ccache"],
+                "size": "10G",
+                "mode": "shared",
+                "trust_zone": "default",
+                "renderer_schema": {spoofed}
+            }}"#
+        );
+        let binding: EffectiveCacheBinding =
+            serde_json::from_str(&json).expect("must deserialize");
+        assert_eq!(
+            binding.renderer_schema, runtime,
+            "deserialize_with must drop operator-supplied {spoofed} and return runtime constant {runtime}; got {actual}",
+            actual = binding.renderer_schema
+        );
+    }
+
+    #[test]
+    fn renderer_schema_deserialize_fills_runtime_const_when_field_missing() {
+        // The `#[serde(default = "default_renderer_schema")]` shim
+        // covers the case where older plan JSON (or a future replay
+        // tool stripping the field) omits renderer_schema entirely.
+        // Without it, deserialize would error on the missing field;
+        // with it, the runtime constant fills in.
+        let runtime = crate::systemd::RENDERER_SCHEMA;
+        let json = r#"{
+            "name": "build",
+            "kinds": ["ccache"],
+            "size": "10G",
+            "mode": "shared",
+            "trust_zone": "default"
+        }"#;
+        let binding: EffectiveCacheBinding =
+            serde_json::from_str(json).expect("must deserialize with missing renderer_schema");
+        assert_eq!(
+            binding.renderer_schema, runtime,
+            "missing renderer_schema must default to runtime constant"
+        );
     }
 
     #[test]
