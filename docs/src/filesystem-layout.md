@@ -155,11 +155,22 @@ Notes:
   the upstream `canonicalize_network_spec()` sort+dedup in
   `lower_to_effective`. Same 2-site sort pattern as labels /
   caches / pool kinds, applied uniformly across all three
-  set-semantic NetworkSpec Vec fields. The parallel
-  `RestrictAddressFamilies=` line in `20-hardening.conf` (sourced
-  from `Hardening.restrict_address_families`) is canonicalized
-  upstream via `merge_hardening`'s sort+dedup; systemd unions both
-  drop-in lines at unit-load time.
+  set-semantic NetworkSpec Vec fields. The parallel set-semantic
+  Hardening fields in `20-hardening.conf` —
+  `Hardening.restrict_address_families` (→
+  `RestrictAddressFamilies=`),
+  `Hardening.extra_syscalls` (→ `SystemCallFilter=`), and
+  `Hardening.extra_capabilities` (→ `CapabilityBoundingSet=`) —
+  are canonicalized upstream-only via `merge_hardening`'s
+  sort+dedup; the renderer emits them verbatim with no
+  defense-in-depth re-sort. systemd unions consecutive drop-in
+  lines for all three directives at unit-load time, so the
+  Hardening-side drop-in's tokens compose additively with the
+  network-side ones for `RestrictAddressFamilies=`. The
+  mount-order-sensitive Hardening fields
+  (`bind_readonly_paths`, `extra_bind_paths` →
+  `BindReadOnlyPaths=`) are intentionally NOT sorted — operator
+  order is load-bearing for mount-overlay semantics.
 - `X-Ghars-Network-Mode` is always emitted: the renderer collapses
   the no-binding case to `open` rather than omitting the key, so
   operators auditing `systemctl cat` always see the mode explicitly.

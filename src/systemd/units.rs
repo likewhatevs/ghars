@@ -1325,6 +1325,11 @@ fn render_hardening(
     }
 
     if !h.restrict_address_families.is_empty() {
+        // Canonicalization is upstream: `plan::merge_hardening`
+        // sorts AND dedups this Vec before the renderer sees it
+        // (see the `extra_capabilities` block below for the full
+        // contract description). The same upstream contract applies
+        // to `extra_syscalls` (next block) and `extra_capabilities`.
         let _ = writeln!(
             s,
             "RestrictAddressFamilies={}",
@@ -1336,6 +1341,11 @@ fn render_hardening(
         // Append-style — systemd treats consecutive SystemCallFilter=
         // lines as union, so adding new tokens through a drop-in
         // grows the allowlist instead of replacing it.
+        //
+        // Canonicalization is upstream: `plan::merge_hardening`
+        // sorts AND dedups this Vec before the renderer sees it
+        // (see the `extra_capabilities` block below for the full
+        // contract description).
         let _ = writeln!(s, "SystemCallFilter={}", h.extra_syscalls.join(" "));
     }
 
