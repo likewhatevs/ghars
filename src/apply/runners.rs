@@ -116,10 +116,20 @@ pub(super) fn execute_create_runner(
     //        install.
     let (tarball_path, version) = if let Some(local) = &spec.runner_tarball {
         deps.tarball.verify_local(local)?;
+        // spec.runner_version is guaranteed Some by lower_to_effective:
+        // the tarball+no-version gate at compute.rs rejects this
+        // combination at plan time. expect() over unwrap_or_else
+        // makes a regression that re-introduces the silent "local"
+        // fallback surface as a loud panic rather than installing
+        // into bin.local/ while the unit drop-in references
+        // bin.latest/ (the pre-fix broken-from-birth shape).
         let version = spec
             .runner_version
             .clone()
-            .unwrap_or_else(|| "local".into());
+            .expect(
+                "tarball-pinned spec.runner_version: guaranteed Some by \
+                 lower_to_effective's tarball+no-version validation gate",
+            );
         (local.clone(), version)
     } else {
         let release = plan.resolved_release.as_ref().ok_or_else(|| {
@@ -202,19 +212,19 @@ pub(super) fn execute_create_runner(
     // owned by the trust_zone's transient UID and inherits the
     // StateDirectoryMode=0700 from the unit template.
 
-    // 5b) Re-render the unit text with the resolved runner version.
-    // The plan's `drop_ins` carry the pre-resolution spec (plan.rs
-    // doesn't know which Release the tarball install will produce);
-    // re-rendering here pins the version into ExecStart=,
-    // WorkingDirectory=, and ConditionPathExists= for the on-disk
-    // drop-in.
-    let mut populated_spec = spec.clone();
-    if populated_spec.runner_version.is_none() {
-        if let Some(ref release) = plan.resolved_release {
-            populated_spec.runner_version = Some(release.version.clone());
-        }
-    }
-    let rendered = render_runner_unit(&populated_spec)?;
+    // 5b) Re-render the unit text against the resolved spec. The
+    // plan-time render in `into_runner_plan` happened BEFORE
+    // `resolve_plan_releases` populated `spec.runner_version` from
+    // the API for implicit-latest runners, so the plan-time preview
+    // showed a "latest" placeholder in WorkingDirectory= / ExecStart=
+    // / ConditionPathExists=. By apply time, resolve_plan_releases
+    // (cli/cmd_apply.rs) has filled `spec.runner_version` from the
+    // resolved release, so re-rendering here pins the actual version
+    // into the drop-in body that lands on disk. The legacy populate
+    // block that filled `runner_version` from `plan.resolved_release`
+    // here is gone — resolve_plan_releases now owns the spec-level
+    // fill so this site reads the same field uniformly.
+    let rendered = render_runner_unit(spec)?;
 
     // 5c) Write .path and .env into the versioned bin dir.
     //   - `.path`: read once by runsvc.sh (`export PATH=\`cat .path\``)
@@ -647,7 +657,16 @@ pub(super) fn execute_update_runner(
         action: format!("UpdateRunner({}): rewrite .env/.path", delta.identity.name),
         source: Box::new(GharsError::Validation(
             "in-place delta missing runner_version; cannot locate bin dir for .env/.path rewrite".into(),
-            "re-run `ghars plan` to refresh the spec; the runner_version field must be populated for in-place updates".into(),
+            format!(
+                "the runner's 00-ghars.conf is missing the X-Ghars-Effective-Version \
+                 annotation (operator-stripped, pre-annotation legacy runner, or invalid \
+                 value). Fix by: (a) set `runner_version = \"X.Y.Z\"` in ghars.toml to \
+                 match the installed version (check with \
+                 `ls /var/lib/ghars/<TRUST_ZONE>/ghars-{name}/bin.*`), OR (b) remove the \
+                 runner from ghars.toml and re-add it so a fresh CreateRunner re-fetches \
+                 the latest release from the GitHub API",
+                name = delta.identity.name,
+            ),
         )),
     })?;
     let bin_dir = runner_home.join(format!("bin.{version}"));

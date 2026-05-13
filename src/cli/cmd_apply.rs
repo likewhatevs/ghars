@@ -211,6 +211,21 @@ fn resolve_plan_releases(
         } else {
             github::fetch_latest_release_authenticated(&client, runner_plan.spec.arch, pat_token.as_deref())?
         };
+        // Also populate spec.runner_version so the downstream
+        // renderer + execute_create_runner see the resolved version
+        // through the same field that operator-pinned + discovered-
+        // annotation paths populate. Without this fill, the spec
+        // arriving at render_identity would have runner_version=None
+        // for "implicit-latest" runners — render_identity falls back
+        // to literal "latest" silently (units.rs:968), the drop-in
+        // bytes land on disk with bin.latest paths, and the
+        // execute_update_runner in-place arm hard-errors at
+        // runners.rs:646 on the .env/.path rewrite. The "guarantee
+        // Some by render time" invariant is closed jointly by:
+        //   - lower_to_effective rejecting tarball+no-version
+        //   - intersection arm filling from discovered annotation
+        //   - resolve_plan_releases (this loop) filling from the API
+        runner_plan.spec.runner_version = Some(release.version.clone());
         runner_plan.resolved_release = Some(release);
     }
     Ok(())

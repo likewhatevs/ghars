@@ -1240,9 +1240,15 @@ fn plan_update_recreate_on_runner_sha256_change() {
 /// typed `runner_tarball` reason.
 #[test]
 fn plan_update_recreate_on_runner_tarball_change() {
+    // Both old and new specs must carry runner_version because
+    // lower_to_effective rejects tarball-pinned runners that don't
+    // pin a version (validates the broken-from-birth case where
+    // the tarball install would name bin.local but the unit drop-in
+    // would reference bin.latest).
     let cfg = config_with_runners(vec![{
         let mut r = minimal_runner("a");
         r.runner_tarball = Some(Utf8PathBuf::from("/var/lib/ghars/runner-new.tar.gz"));
+        r.runner_version = Some("2.334.0".into());
         r
     }]);
     let mut old_runner = cfg.runners[0].clone();
@@ -1293,6 +1299,170 @@ fn plan_update_recreate_on_runner_tarball_change() {
             .any(|c| c.path == "runner_tarball"),
         "field_changes must include a runner_tarball entry; got: {:?}",
         updates[0].field_changes
+    );
+}
+
+/// `lower_to_effective` MUST reject a runner that sets
+/// `runner_tarball` but no `runner_version` (on the runner AND no
+/// `defaults.runner_version`). The apply path's tarball install
+/// names the on-disk bin dir as `bin.{runner_version}` and the unit
+/// drop-in interpolates the same version into `WorkingDirectory=`,
+/// `ExecStart=`, and `ConditionPathExists=`. Without a runner_version
+/// the install falls back to `bin.local/` while the drop-in falls
+/// back to `bin.latest/`, so systemd's `ConditionPathExists=` fails
+/// and the unit silently refuses to start (broken-from-birth).
+///
+/// The reject happens at plan time so the operator gets an actionable
+/// error before any disk mutation.
+#[test]
+fn plan_rejects_runner_tarball_without_runner_version() {
+    let cfg = config_with_runners(vec![{
+        let mut r = minimal_runner("a");
+        r.runner_tarball = Some(Utf8PathBuf::from("/var/lib/ghars/runner.tar.gz"));
+        // No runner_version on the runner, no defaults.runner_version.
+        r
+    }]);
+    let actual = empty_actual();
+    let err = plan_from(&cfg, &actual, &empty_paths())
+        .expect_err("plan_from must reject tarball-pinned runner without runner_version");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("runner_tarball") && msg.contains("runner_version"),
+        "error must name both runner_tarball and runner_version; got: {msg}"
+    );
+    assert!(
+        msg.contains("'a'"),
+        "error must name the specific runner; got: {msg}"
+    );
+}
+
+/// Sibling to `plan_rejects_runner_tarball_without_runner_version`:
+/// the same tarball-pinned runner WITH `defaults.runner_version`
+/// MUST be accepted. The defaults inheritance at merge.rs:170 fills
+/// the per-runner `runner_version` from `[defaults]`, satisfying
+/// the lower_to_effective validation gate without requiring the
+/// operator to repeat the version on every runner.
+#[test]
+fn plan_accepts_runner_tarball_when_defaults_pin_runner_version() {
+    let mut cfg = config_with_runners(vec![{
+        let mut r = minimal_runner("a");
+        r.runner_tarball = Some(Utf8PathBuf::from("/var/lib/ghars/runner.tar.gz"));
+        r
+    }]);
+    cfg.defaults.runner_version = Some("2.334.0".into());
+    let actual = empty_actual();
+    let plan = plan_from(&cfg, &actual, &empty_paths())
+        .expect("plan_from must accept tarball-pinned runner with defaults.runner_version");
+    // Confirm the CreateRunner was emitted (and not silently
+    // dropped / converted to NoOp).
+    let creates: Vec<_> = plan
+        .actions
+        .iter()
+        .filter(|a| matches!(a, Action::CreateRunner(_)))
+        .collect();
+    assert_eq!(
+        creates.len(),
+        1,
+        "expected one CreateRunner; got actions: {:?}",
+        plan.actions
+    );
+    if let Action::CreateRunner(p) = creates[0] {
+        assert_eq!(
+            p.spec.runner_version.as_deref(),
+            Some("2.334.0"),
+            "merge_defaults must inherit runner_version from defaults"
+        );
+    }
+}
+
+/// In-place UpdateRunner with `runner_version=None` on the desired
+/// spec (operator's implicit-latest pattern) MUST inherit
+/// `runner_version` from the discovered `X-Ghars-Effective-Version`
+/// annotation. Without this, the in-place apply path at
+/// runners.rs:646 hard-errors trying to locate the bin dir for
+/// the .env/.path rewrite — every binary upgrade (which flips
+/// spec_hash via RENDERER_SCHEMA) would then break every
+/// "implicit-latest" runner.
+///
+/// The fill is gated on:
+///   - `candidate.runner_version.is_none()` so operator-pinned
+///     values are NEVER overwritten by the discovered annotation.
+///   - non-empty + `validate_version` so malformed annotations
+///     (whitespace, traversal segments, garbage) don't propagate
+///     into rendered ExecStart paths.
+#[test]
+fn plan_in_place_inherits_runner_version_from_discovered_annotation() {
+    // Desired: implicit-latest runner (no version pinned). Add a
+    // memory_max change to force an in-place UpdateRunner — without
+    // it, post-fill the desired and discovered spec_hashes would
+    // match and the plan would emit NoOp, never exercising the
+    // intersection-arm fill we're trying to test.
+    let cfg = config_with_runners(vec![{
+        let mut r = minimal_runner("a");
+        r.memory_max = Some("16G".into());
+        r
+    }]);
+    let desired_spec = merge_defaults(
+        &cfg.runners[0],
+        &cfg.defaults,
+        "pat".into(),
+        vec![],
+        None,
+        None,
+        None,
+        Arch::X86_64,
+        cfg_source_default(),
+    );
+    // Sanity: the desired spec has runner_version=None — that's what
+    // the in-place fill must fix.
+    assert!(
+        desired_spec.runner_version.is_none(),
+        "fixture precondition: desired runner_version must be None"
+    );
+
+    // Discovered: same runner, applied earlier with runner_version
+    // pinned to 2.334.0 AND no memory_max. The X-Ghars-Effective-
+    // Version annotation captures the runner version; the in-place
+    // fill reads it. The memory_max diff drives the in-place class.
+    let mut discovered_spec = desired_spec.clone();
+    discovered_spec.runner_version = Some("2.334.0".into());
+    discovered_spec.memory_max = None;
+    discovered_spec.spec_hash = spec_hash(&discovered_spec);
+
+    let mut actual = empty_actual();
+    actual.runners.insert(
+        "a".into(),
+        discovered_for("a", &discovered_spec, Drift::InSync),
+    );
+
+    let plan = plan_from(&cfg, &actual, &empty_paths())
+        .expect("plan_from must succeed after in-place version fill");
+    let updates: Vec<&RunnerDelta> = plan
+        .actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::UpdateRunner(d) => Some(d),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        updates.len(),
+        1,
+        "expected one UpdateRunner from the in-place fill; got: {:?}",
+        plan.actions
+    );
+    assert!(
+        !updates[0].requires_recreate,
+        "in-place fill must produce a non-recreate update; got reasons: {:?}",
+        updates[0].recreate_reasons
+    );
+    assert_eq!(
+        updates[0].after.spec.runner_version.as_deref(),
+        Some("2.334.0"),
+        "after.spec.runner_version must be inherited from the discovered \
+         X-Ghars-Effective-Version annotation; without the fill, render \
+         would emit bin.latest paths and apply would hard-error at \
+         runners.rs:646"
     );
 }
 

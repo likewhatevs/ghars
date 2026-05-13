@@ -214,13 +214,68 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                 )));
             }
             (true, true) => {
-                let after_spec = with_hash(
-                    desired
-                        .get(name)
-                        .expect("name was in desired_names")
-                        .clone(),
-                );
                 let discovered = actual.runners.get(name).expect("name was in actual_names");
+                let discovered_annotations = DiscoveredAnnotations::from_discovered(discovered);
+                let mut candidate = desired
+                    .get(name)
+                    .expect("name was in desired_names")
+                    .clone();
+                // In-place version inheritance from the discovered
+                // X-Ghars-Effective-Version annotation. Required for the
+                // post-RENDERER_SCHEMA-bump cascade: every binary upgrade
+                // flips spec_hash for every runner, so the in-place arm
+                // fires on every managed runner. If the operator's TOML
+                // doesn't pin runner_version (the "implicit latest"
+                // pattern), the runner is already installed at a specific
+                // version on disk — the annotation captured that version
+                // at the last apply. Without this fill, the in-place
+                // apply path hard-errors at runners.rs:646 trying to
+                // locate the bin dir for the .env/.path rewrite.
+                //
+                // Gates:
+                //   1. `candidate.runner_version.is_none()` — operator-
+                //      pinned runner_version takes precedence. Without
+                //      this, an operator who deliberately bumped
+                //      runner_version in TOML would have the bump
+                //      silently overwritten by the discovered annotation
+                //      and the recreate-class change wouldn't fire.
+                //   2. `!v.is_empty()` — legacy runners applied with
+                //      runner_version=None emit `X-Ghars-Effective-
+                //      Version=` (empty rvalue per the pre-fix renderer
+                //      fallback) which the classifier parses as
+                //      `Some("")`, NOT `None`. Empty strings would
+                //      propagate into format!("bin.{}") as
+                //      `bin./bin/runsvc.sh` — broken path.
+                //   3. `validate_version(v).is_ok()` — defense against a
+                //      manually-corrupted or attacker-controlled
+                //      annotation value (whitespace, traversal segments,
+                //      garbage). The annotation is operator/root-writable
+                //      via systemctl-edit; an invalid value would
+                //      propagate into rendered ExecStart paths.
+                //
+                // Failure mode when none of the gates open (operator did
+                // not pin AND annotation is absent/empty/invalid): the
+                // candidate stays at runner_version=None. The renderer
+                // emits a "latest" placeholder for the plan-time preview;
+                // the apply path then hard-errors at runners.rs:646
+                // ("in-place delta missing runner_version") with the
+                // actionable remediation (set runner_version in TOML
+                // to match the installed bin.X.Y.Z, OR recreate the
+                // runner by removing it from TOML + apply + re-add).
+                // This is the legacy-edge case captured by task #57;
+                // pre-fix runners that emitted empty Effective-Version
+                // annotations or operator-stripped runners hit this
+                // path until the operator manually corrects the
+                // discovered state.
+                if candidate.runner_version.is_none() {
+                    if let Some(v) = discovered_annotations.runner_version.as_deref()
+                        && !v.is_empty()
+                        && crate::validators::validate_version(v).is_ok()
+                    {
+                        candidate.runner_version = Some(v.to_owned());
+                    }
+                }
+                let after_spec = with_hash(candidate);
                 let hashes_equal = after_spec.spec_hash == discovered.spec_hash
                     && !discovered.spec_hash.is_empty();
                 let in_sync = matches!(discovered.drift, Drift::InSync);
@@ -228,7 +283,10 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                 if hashes_equal && in_sync {
                     actions.push(Action::NoOp(format!("{name}: in sync")));
                 } else {
-                    let annotations = DiscoveredAnnotations::from_discovered(discovered);
+                    // Reuse the annotations extracted at the top of the
+                    // intersection arm for the in-place version-fill;
+                    // avoids a second walk of the same drop-in body.
+                    let annotations = &discovered_annotations;
                     // Re-render the desired spec and diff drop-in
                     // bodies against the discovered drop-ins on disk.
                     // A change confined to drop-in bodies (memory_max,
@@ -1096,6 +1154,48 @@ pub(super) fn lower_to_effective(
     // per-trust_zone identities, so the "shared UID disables
     // cross-runner isolation" failure mode is replaced by the
     // operator-explicit trust_zone declaration.
+
+    // runner_tarball + runner_version coupling: the apply path needs
+    // a version string to name the on-disk bin.X.Y.Z directory + to
+    // populate the systemd ExecStart/WorkingDirectory/ConditionPathExists
+    // paths. For API-driven runners (no runner_tarball), runner_version
+    // is filled at apply time from the release-API lookup (cmd_apply's
+    // resolve_plan_releases). For tarball-pinned runners that lookup
+    // is skipped entirely, so the operator MUST supply runner_version
+    // (on the runner or in [defaults]) — otherwise the apply path
+    // would silently fall back to literal "local" for the bin dir and
+    // "latest" for the unit paths, producing a broken-from-birth unit
+    // that systemd refuses to start (ConditionPathExists fails).
+    //
+    // GATE READS RAW FIELDS PRE-MERGE: this check evaluates
+    // `runner.runner_version` + `config.defaults.runner_version`
+    // BEFORE the merge_defaults call below populates the effective
+    // spec. The disjunction `runner.runner_version.is_none() &&
+    // config.defaults.runner_version.is_none()` captures the
+    // post-merge "still None" condition without needing the merged
+    // value — same semantic as `merged.runner_version.is_none()`
+    // because merge_defaults uses `.or()` precedence (runner-side
+    // wins, then defaults-side). A future refactor that moves the
+    // merge above this gate MUST update the predicate to read the
+    // merged value, or the gate stops firing for the
+    // defaults-inheritance escape hatch.
+    if runner.runner_tarball.is_some()
+        && runner.runner_version.is_none()
+        && config.defaults.runner_version.is_none()
+    {
+        return Err(GharsError::Validation(
+            format!(
+                "runner '{}' sets runner_tarball but no runner_version (on the \
+                 runner or in [defaults]) — the tarball install needs a version \
+                 string to name the on-disk bin.X.Y.Z directory, and ghars cannot \
+                 infer it from the tarball path",
+                runner.name
+            ),
+            "set `runner_version = \"X.Y.Z\"` on the runner or in [defaults] to \
+             match the tarball's actions/runner version"
+                .into(),
+        ));
+    }
 
     Ok(merge_defaults(
         runner,

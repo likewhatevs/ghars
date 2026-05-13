@@ -469,6 +469,53 @@ When to bump `RENDERER_SCHEMA`:
   `runsvc.sh` / `Runner.Listener` reads from the rendered files
   do.
 
+### "Implicit-latest" runners stick to the first-apply version
+
+A runner deployed without a pinned `runner_version` (on the
+runner or in `[defaults]`) takes its version from the release
+API at first apply. That version is captured in the on-disk
+`X-Ghars-Effective-Version` annotation in `00-ghars.conf`.
+The next plan inherits the captured version from that
+annotation so the in-place rewrite path knows where the runner
+is installed — apply rewrites the drop-ins for the SAME
+version, not the latest.
+
+The implication: clearing `runner_version` from the TOML does
+NOT shift the fleet to a newer release. To upgrade an
+implicit-latest runner, either:
+
+- Pin `runner_version = "X.Y.Z"` explicitly on the runner (or
+  in `[defaults]`) to the new version. Plan classifies the change
+  as recreate-class (Stage 1 typed `runner_version` reason);
+  apply unregisters, re-installs the new version, and
+  re-registers with GitHub.
+
+- Recreate the runner by removing it from the TOML, running
+  `ghars apply` to drop it, then re-adding it. The fresh
+  CreateRunner fetches the current latest from the release API.
+
+Tarball-pinned runners (`runner_tarball` set) MUST pin
+`runner_version` — `ghars plan` rejects them at validation time
+otherwise, because the tarball install needs a version string
+to name the on-disk `bin.X.Y.Z` directory and ghars cannot
+infer the version from the tarball filename.
+
+If you see `UpdateRunner(NAME): rewrite .env/.path → in-place
+delta missing runner_version` at apply time, the runner's
+`00-ghars.conf` is missing the `X-Ghars-Effective-Version`
+annotation. This happens for runners deployed by a ghars
+version that predates the annotation, runners whose
+`00-ghars.conf` was operator-stripped, or runners whose
+annotation was manually edited to an invalid value (anything
+that doesn't match `X.Y.Z`). Remediation:
+
+- Pin `runner_version = "X.Y.Z"` in `ghars.toml` to match the
+  installed version (`ls /var/lib/ghars/<TRUST_ZONE>/ghars-<NAME>/bin.*`
+  shows the installed `bin.X.Y.Z/` directory).
+- Or remove the runner from `ghars.toml` and re-add it so a
+  fresh `CreateRunner` re-fetches the latest version from the
+  GitHub API.
+
 ## --diff and credential leakage
 
 Both `ghars plan --diff` and `ghars apply --diff` render full

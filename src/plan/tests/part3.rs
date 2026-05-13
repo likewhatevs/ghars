@@ -1306,9 +1306,16 @@ fn plan_invariant_recreate_implies_non_empty_reasons_across_all_field_classes() 
     }
     fn tarball_new(r: &mut RunnerSpec) {
         r.runner_tarball = Some(Utf8PathBuf::from("/var/lib/ghars/runner-desired.tar.gz"));
+        // lower_to_effective rejects tarball-pinned runners without
+        // runner_version (broken-from-birth: bin dir would be
+        // bin.local, unit drop-in would reference bin.latest, unit
+        // refuses to start). Pin a version so the test exercises the
+        // tarball CHANGE classification, not the no-version reject.
+        r.runner_version = Some("2.334.0".into());
     }
     fn tarball_old(r: &mut RunnerSpec) {
         r.runner_tarball = Some(Utf8PathBuf::from("/var/lib/ghars/runner-discovered.tar.gz"));
+        r.runner_version = Some("2.334.0".into());
     }
     fn network_isolated(r: &mut RunnerSpec) {
         r.network = Some("isolated".into());

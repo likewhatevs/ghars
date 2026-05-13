@@ -243,7 +243,14 @@ pub struct EffectiveRunnerSpec {
     /// Free-form `MemoryMax=` value. None ⇒ no `10-memory.conf` drop-in.
     pub memory_max: Option<String>,
     /// Pinned runner version (e.g. `"2.334.0"`). None ⇒ release-API
-    /// resolved at plan time.
+    /// resolved at apply time (CreateRunner + recreate UpdateRunner
+    /// paths), or inherited from the discovered
+    /// `X-Ghars-Effective-Version` annotation for in-place updates
+    /// of already-installed runners. Tarball-pinned runners
+    /// (`runner_tarball.is_some()`) MUST set this on the runner or
+    /// in `[defaults]` — the release-API lookup is skipped for
+    /// tarball-pinned and the version string is required to name
+    /// the on-disk `bin.X.Y.Z` directory.
     pub runner_version: Option<String>,
     /// Pinned tarball SHA256 (64 hex). Only meaningful with
     /// `runner_version`.

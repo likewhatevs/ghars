@@ -860,6 +860,22 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
     cache_names.sort_unstable();
     let _ = writeln!(s, "X-Ghars-Caches={}", cache_names.join(","));
     let _ = writeln!(s, "X-Ghars-Config-Source={}", spec.config_source);
+    // runner_version is filled by the plan pipeline before APPLY-time
+    // re-render (lower_to_effective rejects tarball+no-version; the
+    // intersection arm fills in-place candidates from the discovered
+    // X-Ghars-Effective-Version annotation; resolve_plan_releases
+    // fills CreateRunner + recreate UpdateRunner from the release-API
+    // lookup before execute_create_runner re-renders). At PLAN time,
+    // however, render_runner_unit is called via into_runner_plan
+    // BEFORE resolve_plan_releases runs, so runner_version may still
+    // be None for "implicit-latest" CreateRunner previews. Emit an
+    // empty rvalue rather than fail — the operator-facing
+    // `ghars plan --diff` shows the placeholder, and the apply path
+    // re-renders with the resolved version before writing to disk.
+    // The discovered annotation can be a Some("") for runners that
+    // were originally applied with the implicit-latest pattern; the
+    // intersection-arm fill skips empty values, leaving them to
+    // re-resolve via the apply-time path.
     let _ = writeln!(
         s,
         "X-Ghars-Effective-Version={}",
@@ -944,6 +960,21 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
     );
     // WorkingDirectory points at the versioned bin dir so the runner
     // finds ./externals/, ./bin/Runner.Listener, etc. relative to cwd.
+    // `version` falls back to "latest" when runner_version is None.
+    // The bytes on disk are pinned for the CreateRunner and
+    // recreate-class UpdateRunner paths (resolve_plan_releases fills
+    // runner_version BEFORE execute_create_runner re-renders).
+    // The in-place UpdateRunner arm has a different ordering: the
+    // intersection-arm fill at compute.rs tries to inherit
+    // runner_version from the discovered X-Ghars-Effective-Version
+    // annotation, but if that annotation is absent/empty/invalid,
+    // the candidate stays None — plan-time-rendered drop-ins (with
+    // literal "latest" in WorkingDirectory) get written to disk via
+    // read_then_write_if_changed BEFORE the .env/.path rewrite at
+    // runners.rs:646 hard-errors. Task #57 tracks moving that
+    // hard-error to plan time so the write-then-error ordering
+    // closes; until then, the legacy-edge case lands broken-from-
+    // birth bytes before failing the apply.
     let version = spec.runner_version.as_deref().unwrap_or("latest");
     let _ = writeln!(
         s,

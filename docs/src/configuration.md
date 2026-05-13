@@ -472,7 +472,12 @@ Selected fields:
 - `runner_tarball` (`Option<Utf8PathBuf>`) — pre-downloaded local
   tarball, bypasses release-API lookup. The path is opened with
   `O_NOFOLLOW` at apply time; symlinks and non-regular files are
-  rejected.
+  rejected. MUST be paired with `runner_version` (on the runner
+  or in `[defaults]`) — the apply path needs the version string
+  to name the on-disk `bin.X.Y.Z` directory, and ghars cannot
+  infer the version from the tarball filename; `ghars plan`
+  rejects unpaired `runner_tarball` declarations at validation
+  time.
 - `hardening` (`Hardening`) — per-field overrides on top of
   `defaults.hardening`.
 - `allowed_cpus` / `allowed_memory_nodes` (`Option<String>`) —
