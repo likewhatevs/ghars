@@ -1,0 +1,10 @@
+---
+source: tests/python_parity_unit_snapshots.rs
+assertion_line: 531
+expression: r.env_file
+---
+LANG=C.UTF-8
+CCACHE_DIR=/var/lib/ghars/buckos-prod/.ccache
+KTSTR_LOCK_DIR=/var/lib/ghars/buckos-prod/.ktstr
+KTSTR_CACHE_DIR=/var/lib/ghars/buckos-prod/.ktstr
+CCACHE_MAXSIZE=50G

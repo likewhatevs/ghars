@@ -1,0 +1,14 @@
+---
+source: tests/python_parity_unit_snapshots.rs
+assertion_line: 484
+expression: r.env_file
+---
+LANG=C.UTF-8
+CCACHE_DIR=/var/lib/ghars/default/.ccache
+KTSTR_LOCK_DIR=/var/lib/ghars/default/.ktstr
+KTSTR_CACHE_DIR=/var/lib/ghars/default/.ktstr
+CCACHE_MAXSIZE=200G
+SCCACHE_SERVER_UDS=/run/ghars/cache-build.sock
+SCCACHE_NO_DAEMON=1
+SCCACHE_CACHE_SIZE=200G
+SCCACHE_DIR=/var/cache/ghars/pools/build/sccache

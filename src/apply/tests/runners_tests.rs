@@ -1720,8 +1720,15 @@ fn update_runner_in_place_treats_already_missing_managed_dropin_as_no_op() {
             resolved_release: None,
             effective_unit_text: crate::systemd::runner_template_text(),
             drop_ins: BTreeMap::new(),
-            env_file: String::new(),
-            path_file: String::new(),
+            // Populate via the real renderers so test inputs match
+            // bytes the apply layer would actually write. The
+            // ENOENT-tolerance assertion below targets drop-in
+            // deletion, not .env/.path bytes — but uniform
+            // renderer-bytes-everywhere across the test suite
+            // prevents future tests that DO read these fields from
+            // tripping on empty-string fixtures.
+            env_file: crate::systemd::render_runner_env_file(&after).unwrap(),
+            path_file: crate::systemd::render_runner_path_file(&after).unwrap(),
             spec_hash: "sha256:after".into(),
         },
         requires_recreate: false,
@@ -1804,8 +1811,12 @@ fn update_runner_in_place_propagates_eacces_on_managed_dropin_remove() {
             resolved_release: None,
             effective_unit_text: crate::systemd::runner_template_text(),
             drop_ins: BTreeMap::new(),
-            env_file: String::new(),
-            path_file: String::new(),
+            // Populate via the real renderers so test inputs match
+            // bytes the apply layer would actually write (#44
+            // uniformity cleanup; the EACCES assertion below
+            // targets drop-in deletion, not .env/.path bytes).
+            env_file: crate::systemd::render_runner_env_file(&after).unwrap(),
+            path_file: crate::systemd::render_runner_path_file(&after).unwrap(),
             spec_hash: "sha256:after".into(),
         },
         requires_recreate: false,

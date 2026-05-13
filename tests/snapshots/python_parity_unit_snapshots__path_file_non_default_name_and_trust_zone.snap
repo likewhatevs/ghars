@@ -1,0 +1,6 @@
+---
+source: tests/python_parity_unit_snapshots.rs
+assertion_line: 572
+expression: r.path_file
+---
+/usr/lib64/ccache:/usr/lib/ccache:/var/lib/ghars/buckos-prod/ghars-ci-worker/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

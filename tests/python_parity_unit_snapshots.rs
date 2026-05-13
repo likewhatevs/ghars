@@ -29,6 +29,17 @@
 //! - `dropin_80_lognamespace`     — `LogNamespace=ghars-NAME` (always).
 //! - `cache_drop_in_*`            — `ghars-cache@NAME.service.d/00-ghars.conf`
 //!   per-pool drop-ins (ccache-only, sccache-only, both).
+//! - `env_file_*`                 — `bin.X.Y.Z/.env` body for the
+//!   canonical operator shapes (no-caches, ccache-only, sccache-only,
+//!   combined-kind, multi-binding direct-construct, operator env vars,
+//!   non-default trust_zone). `env_file_ccache_only_binding` /
+//!   `env_file_non_default_trust_zone` pin the #10 `has_ccache` gate
+//!   on the positive side (CCACHE_DIR line present);
+//!   `env_file_no_caches_no_operator_env` / `env_file_sccache_only_binding`
+//!   pin the negative side (no CCACHE_DIR line).
+//! - `path_file_*`                — `bin.X.Y.Z/.path` body for the
+//!   minimal, operator-augmented, and non-default name+trust_zone
+//!   shapes (#39 PATH composition pipeline).
 //! - `nft_rules_minimal`/`_full`  — nft rule pair (host + ns) per
 //!   Part 9c.
 //!
@@ -430,6 +441,200 @@ fn cache_drop_in_unified_snapshot() {
     )
     .unwrap();
     insta::assert_snapshot!("cache_drop_in_unified", body);
+}
+
+// ---- bin.X.Y.Z/.env + bin.X.Y.Z/.path renderers ------------------------
+//
+// `render_runner_unit` calls the env_file + path_file renderers
+// internally and stores their output on `RenderedUnit.env_file` /
+// `.path_file`. The snapshots below pin byte-exact output for the
+// canonical shapes operators land on (no caches, ccache-bound,
+// sccache-bound, combined-kind-bound, multi-binding direct-construct,
+// operator env vars, non-default trust_zone, minimal PATH,
+// operator-augmented PATH, non-default name+trust_zone PATH).
+//
+// Per #10's gate, `CCACHE_DIR=` emission and `.ccache` dir creation
+// are both gated on at-least-one-ccache-kind-binding. These
+// snapshots are the byte-level pin that guards the renderer side of
+// that symmetry.
+
+#[test]
+fn env_file_no_caches_no_operator_env_snapshot() {
+    let r = render_runner_unit(&base_spec()).unwrap();
+    insta::assert_snapshot!("env_file_no_caches_no_operator_env", r.env_file);
+}
+
+#[test]
+fn env_file_ccache_only_binding_snapshot() {
+    let mut spec = base_spec();
+    spec.caches.push(EffectiveCacheBinding {
+        name: "build".into(),
+        kinds: vec![CacheKind::Ccache],
+        size: "50G".into(),
+        mode: CacheMode::Shared,
+        trust_zone: "default".into(),
+        sccache_path: None,
+        sleep_path: Some("/usr/bin/sleep".into()),
+        renderer_schema: ghars::systemd::RENDERER_SCHEMA,
+    });
+    let r = render_runner_unit(&spec).unwrap();
+    insta::assert_snapshot!("env_file_ccache_only_binding", r.env_file);
+}
+
+#[test]
+fn env_file_combined_kind_binding_snapshot() {
+    let mut spec = base_spec();
+    spec.caches.push(EffectiveCacheBinding {
+        name: "build".into(),
+        kinds: vec![CacheKind::Ccache, CacheKind::Sccache],
+        size: "200G".into(),
+        mode: CacheMode::Shared,
+        trust_zone: "default".into(),
+        sccache_path: Some("/usr/bin/sccache".into()),
+        sleep_path: Some("/usr/bin/sleep".into()),
+        renderer_schema: ghars::systemd::RENDERER_SCHEMA,
+    });
+    let r = render_runner_unit(&spec).unwrap();
+    insta::assert_snapshot!("env_file_combined_kind_binding", r.env_file);
+}
+
+#[test]
+fn env_file_sccache_only_binding_snapshot() {
+    // Pins the sccache-only env_file shape: NO CCACHE_DIR (gated on
+    // Ccache kind per #10), NO CCACHE_MAXSIZE, all 4 SCCACHE_* lines
+    // emitted. The combined-kind snapshot does NOT prove the
+    // CCACHE_DIR gate because that fixture INCLUDES Ccache in kinds
+    // by design — only an sccache-only fixture catches a regression
+    // that gates CCACHE_DIR on "any binding" instead of "Ccache kind".
+    let mut spec = base_spec();
+    spec.caches.push(EffectiveCacheBinding {
+        name: "build".into(),
+        kinds: vec![CacheKind::Sccache],
+        size: "200G".into(),
+        mode: CacheMode::Shared,
+        trust_zone: "default".into(),
+        sccache_path: Some("/usr/bin/sccache".into()),
+        sleep_path: None,
+        renderer_schema: ghars::systemd::RENDERER_SCHEMA,
+    });
+    let r = render_runner_unit(&spec).unwrap();
+    insta::assert_snapshot!("env_file_sccache_only_binding", r.env_file);
+}
+
+#[test]
+fn env_file_non_default_trust_zone_snapshot() {
+    // Pins trust_zone interpolation at 3 sites: CCACHE_DIR,
+    // KTSTR_LOCK_DIR, KTSTR_CACHE_DIR. Every other env_file snapshot
+    // uses trust_zone="default"; a regression that hardcoded the
+    // literal string would pass all of them. Uses a ccache binding
+    // so CCACHE_DIR is emitted and the interpolation at units.rs:673
+    // is observable.
+    let mut spec = base_spec();
+    spec.trust_zone = "buckos-prod".into();
+    spec.caches.push(EffectiveCacheBinding {
+        name: "build".into(),
+        kinds: vec![CacheKind::Ccache],
+        size: "50G".into(),
+        mode: CacheMode::Shared,
+        trust_zone: "buckos-prod".into(),
+        sccache_path: None,
+        sleep_path: Some("/usr/bin/sleep".into()),
+        renderer_schema: ghars::systemd::RENDERER_SCHEMA,
+    });
+    let r = render_runner_unit(&spec).unwrap();
+    insta::assert_snapshot!("env_file_non_default_trust_zone", r.env_file);
+}
+
+#[test]
+fn env_file_multi_binding_direct_construct_snapshot() {
+    // Two ccache bindings on one runner. Post-#38, this is rejected
+    // at config-load + plan-time; direct-construct test paths (this
+    // fixture) bypass both gates so the renderer's per-binding
+    // emission contract is still observable. Byte-level pin of the
+    // existing unit-test `_emits_one_ccache_maxsize_per_binding_in_source_order`
+    // contract — turns the line-level assertion into a full-body
+    // snapshot guard. Catches regressions like `caches.first()`
+    // instead of `caches.iter()` or a missing per-binding loop body.
+    let mut spec = base_spec();
+    spec.caches.push(EffectiveCacheBinding {
+        name: "build".into(),
+        kinds: vec![CacheKind::Ccache],
+        size: "50G".into(),
+        mode: CacheMode::Shared,
+        trust_zone: "default".into(),
+        sccache_path: None,
+        sleep_path: Some("/usr/bin/sleep".into()),
+        renderer_schema: ghars::systemd::RENDERER_SCHEMA,
+    });
+    spec.caches.push(EffectiveCacheBinding {
+        name: "test".into(),
+        kinds: vec![CacheKind::Ccache],
+        size: "100G".into(),
+        mode: CacheMode::Shared,
+        trust_zone: "default".into(),
+        sccache_path: None,
+        sleep_path: Some("/usr/bin/sleep".into()),
+        renderer_schema: ghars::systemd::RENDERER_SCHEMA,
+    });
+    let r = render_runner_unit(&spec).unwrap();
+    insta::assert_snapshot!("env_file_multi_binding_direct_construct", r.env_file);
+}
+
+#[test]
+fn env_file_operator_environment_vars_snapshot() {
+    let mut spec = base_spec();
+    spec.environment.vars.insert("DEPLOY_TARGET".into(), "buckos-ci".into());
+    spec.environment.vars.insert("RUST_LOG".into(), "info".into());
+    spec.caches.push(EffectiveCacheBinding {
+        name: "build".into(),
+        kinds: vec![CacheKind::Ccache],
+        size: "50G".into(),
+        mode: CacheMode::Shared,
+        trust_zone: "default".into(),
+        sccache_path: None,
+        sleep_path: Some("/usr/bin/sleep".into()),
+        renderer_schema: ghars::systemd::RENDERER_SCHEMA,
+    });
+    let r = render_runner_unit(&spec).unwrap();
+    insta::assert_snapshot!("env_file_operator_environment_vars", r.env_file);
+}
+
+#[test]
+fn path_file_minimal_no_operator_path_snapshot() {
+    let r = render_runner_unit(&base_spec()).unwrap();
+    insta::assert_snapshot!("path_file_minimal_no_operator_path", r.path_file);
+}
+
+#[test]
+fn path_file_non_default_name_and_trust_zone_snapshot() {
+    // Pins name + trust_zone interpolation in the per-runner
+    // .cargo/bin segment (`/var/lib/ghars/{trust_zone}/ghars-{name}/
+    // .cargo/bin`). Every other path_file snapshot uses the default
+    // fixture (name="buckos", trust_zone="default"); a regression
+    // that hardcoded either would pass all of them. This snapshot
+    // uses name="ci-worker" + trust_zone="buckos-prod" so both
+    // interpolations are observable byte-for-byte.
+    let mut spec = base_spec();
+    spec.name = "ci-worker".into();
+    spec.trust_zone = "buckos-prod".into();
+    let r = render_runner_unit(&spec).unwrap();
+    insta::assert_snapshot!("path_file_non_default_name_and_trust_zone", r.path_file);
+}
+
+#[test]
+fn path_file_operator_path_prepend_append_snapshot() {
+    let mut spec = base_spec();
+    spec.environment
+        .path_prepend
+        .push(Utf8PathBuf::from("/opt/buckos/bin"));
+    spec.environment
+        .path_prepend
+        .push(Utf8PathBuf::from("/opt/buck2/bin"));
+    spec.environment
+        .path_append
+        .push(Utf8PathBuf::from("/opt/operator-fallback/bin"));
+    let r = render_runner_unit(&spec).unwrap();
+    insta::assert_snapshot!("path_file_operator_path_prepend_append", r.path_file);
 }
 
 // ---- nft rule pairs (Part 9c) ------------------------------------------

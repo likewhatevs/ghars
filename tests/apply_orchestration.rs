@@ -326,13 +326,24 @@ fn make_runner_plan(name: &str, prefix: &Utf8Path) -> RunnerPlan {
         "00-ghars.conf".into(),
         "[Unit]\nX-Ghars-Spec-Hash=sha256:dead\n".into(),
     );
+    // Populate via real renderers (#44 uniformity). The env_file
+    // and path_file pre-renderers are `pub(crate)`; integration
+    // tests reach them via `render_runner_unit` which calls them
+    // internally and exposes the bytes on `RenderedUnit.env_file`
+    // and `.path_file`. Apply-orchestration tests here drive
+    // CreateRunner only — apply reads env/path bytes from
+    // install_binary's rendered output, not from these fields —
+    // so empty strings were functionally harmless. Using the real
+    // renderers anyway keeps test-fixture bytes uniform across the
+    // suite (matches make_runner_plan in src/apply/tests/common.rs).
+    let rendered = ghars::systemd::render_runner_unit(&spec).unwrap();
     RunnerPlan {
         spec,
         resolved_release: None,
         effective_unit_text: "[Unit]\nDescription=test\n".into(),
         drop_ins,
-        env_file: String::new(),
-        path_file: String::new(),
+        env_file: rendered.env_file,
+        path_file: rendered.path_file,
         spec_hash: "sha256:dead".into(),
     }
 }
