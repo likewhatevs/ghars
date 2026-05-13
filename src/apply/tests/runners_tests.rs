@@ -12,6 +12,7 @@ use crate::plan::{DropInChangeKind, RunnerDelta, RunnerIdentity};
 
 use super::super::runners::{
     execute_create_runner, execute_remove_runner, execute_update_runner, poll_dynamic_user_uid,
+    poll_dynamic_user_uid_with_budget,
 };
 use super::super::undo::{Deps, UndoLog, UndoStep};
 use super::common::{
@@ -1172,6 +1173,50 @@ fn poll_dynamic_user_uid_returns_immediately_when_populated() {
     assert_eq!(
         uid, 65532,
         "poll must return the pre-populated UID without waiting"
+    );
+}
+
+/// poll_dynamic_user_uid_with_budget hits the budget-exhaustion
+/// path when the systemd mock unconditionally returns
+/// `Ok(None)` (simulating a DynamicUser name that never gets
+/// realized — e.g. the runner unit failed to start before
+/// ExecStart's dynamic_user_realize ran). The error's action
+/// label must name the trust-zone user the poll was waiting on
+/// so operator triage from `ghars apply` stderr can correlate to
+/// the right systemd unit; the error hint must point at the
+/// systemctl status diagnostic.
+///
+/// Uses the `_with_budget` variant with a 50ms budget so the test
+/// trips the timeout deterministically without stalling the suite
+/// for the production 5s default.
+#[test]
+fn poll_dynamic_user_uid_returns_err_on_budget_exhaustion() {
+    let systemd = MockSystemd::default();
+    systemd.set_force_no_dynamic_user();
+    let started = std::time::Instant::now();
+    let err = poll_dynamic_user_uid_with_budget(
+        &systemd,
+        "ghars-tz-default",
+        std::time::Duration::from_millis(50),
+    )
+    .expect_err("poll must time out and return Err");
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= std::time::Duration::from_millis(50),
+        "poll must wait at least the budget before erroring; got {elapsed:?}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "poll must not stall past 2s on a 50ms budget; got {elapsed:?}"
+    );
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("ghars-tz-default"),
+        "error must name the trust_zone_user being polled; got: {msg}"
+    );
+    assert!(
+        msg.to_lowercase().contains("nosuchdynamicuser"),
+        "error must mention NoSuchDynamicUser (the underlying systemd D-Bus error); got: {msg}"
     );
 }
 

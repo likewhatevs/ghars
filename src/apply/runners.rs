@@ -998,9 +998,26 @@ pub(super) fn poll_dynamic_user_uid(
     systemd: &dyn crate::systemd::Systemd,
     name: &str,
 ) -> crate::Result<u32> {
+    poll_dynamic_user_uid_with_budget(systemd, name, std::time::Duration::from_secs(5))
+}
+
+/// Inner form of [`poll_dynamic_user_uid`] that accepts an explicit
+/// budget. Production callers go through `poll_dynamic_user_uid`
+/// (5s budget); tests use this directly with a small budget
+/// (e.g. 50ms) to cover the timeout-failure error path without
+/// stalling the test suite for the full production budget.
+///
+/// The 5s production default is documented in
+/// `poll_dynamic_user_uid`'s doc-comment + on the static `Duration`
+/// literal at the wrapper above. Don't change one without the
+/// other — the wrapper's literal IS the production budget.
+pub(super) fn poll_dynamic_user_uid_with_budget(
+    systemd: &dyn crate::systemd::Systemd,
+    name: &str,
+    budget: std::time::Duration,
+) -> crate::Result<u32> {
     use std::time::{Duration, Instant};
     let start = Instant::now();
-    let budget = Duration::from_secs(5);
     let mut interval = Duration::from_millis(10);
     let mut iterations: u32 = 0;
     loop {

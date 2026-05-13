@@ -40,6 +40,15 @@ pub(super) struct MockSystemd {
     // Manager.LookupDynamicUserByName behavior — Ok(Some(uid))
     // when the name is allocated, Ok(None) otherwise.
     pub(super) dynamic_user_uids: Mutex<HashMap<String, u32>>,
+    // When `true`, lookup_dynamic_user_by_name returns Ok(None)
+    // unconditionally — simulating systemd's
+    // `BUS_ERROR_NO_SUCH_DYNAMIC_USER` reply for a never-realized
+    // name. Lets tests exercise poll_dynamic_user_uid's
+    // budget-exhaustion error path without stalling for the full
+    // production 5s budget (use the `_with_budget` variant with a
+    // small Duration). Default `false` so existing tests inherit
+    // the test-process-uid fallback at line 174.
+    pub(super) force_no_dynamic_user: Mutex<bool>,
 }
 
 impl MockSystemd {
@@ -65,6 +74,13 @@ impl MockSystemd {
             .lock()
             .unwrap()
             .insert(name.into(), uid);
+    }
+    /// Force `lookup_dynamic_user_by_name` to return `Ok(None)`
+    /// unconditionally (simulating a DynamicUser name that
+    /// systemd never realized). Lets tests exercise
+    /// `poll_dynamic_user_uid`'s budget-exhaustion error path.
+    pub(super) fn set_force_no_dynamic_user(&self) {
+        *self.force_no_dynamic_user.lock().unwrap() = true;
     }
 }
 
@@ -157,6 +173,14 @@ impl Systemd for MockSystemd {
         self.get_unit_property_u64(unit, "org.freedesktop.systemd1.Service", property)
     }
     fn lookup_dynamic_user_by_name(&self, name: &str) -> Result<Option<u32>> {
+        // Forced-not-realized override: when
+        // `set_force_no_dynamic_user()` has fired, return
+        // Ok(None) unconditionally to let the test exercise
+        // `poll_dynamic_user_uid`'s budget-exhaustion error path
+        // without stalling for the production 5s budget.
+        if *self.force_no_dynamic_user.lock().unwrap() {
+            return Ok(None);
+        }
         // Explicit set_dynamic_user_uid override takes precedence.
         // Default: return the TEST PROCESS's own UID so chown-to-this-UID
         // succeeds without CAP_CHOWN (Linux allows chown to your own
