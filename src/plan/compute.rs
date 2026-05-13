@@ -824,51 +824,71 @@ pub(super) fn into_runner_plan(
 }
 
 /// Canonicalize a `NetworkSpec` for storage in `EffectiveNetworkBinding.spec`
-/// by sorting+deduping `restrict_address_families`. Mirror of
+/// by sorting+deduping the three set-semantic Vec fields
+/// (`restrict_address_families`, `ip_allow`, `ip_deny`). Mirror of
 /// `merge_hardening`'s sort+dedup at `merge.rs::merge_hardening`
 /// (applied to `Hardening.restrict_address_families`), applied here
 /// at the lowering boundary so `spec_hash` (which canonical-JSONs
 /// the `EffectiveRunnerSpec`) sees the canonical Vec.
 ///
 /// Without this canonicalization, an operator-cosmetic reorder of
-/// `[network.NAME].restrict_address_families` flips `spec_hash`
-/// even though the rendered drop-in body is identical (the
-/// renderer-side sort at `render_network` already canonicalizes the
-/// rendered bytes). That produces a phantom `UpdateRunner` plan
-/// action with an empty drop-in body diff — the same defect class
-/// closed for `pool.kinds` by [`canonicalize_kinds`] and for
-/// labels/caches by `merge_defaults`.
+/// any of the three TOML fields flips `spec_hash` even though the
+/// rendered drop-in body is identical (the renderer-side sorts at
+/// `render_network` already canonicalize the rendered bytes). That
+/// produces a phantom `UpdateRunner` plan action with an empty
+/// drop-in body diff — the same defect class closed for `pool.kinds`
+/// by [`canonicalize_kinds`] and for labels/caches by
+/// `merge_defaults`.
 ///
-/// Once this upstream sort is in place, the renderer-side sort at
-/// `render_network` becomes pure defense-in-depth for
-/// direct-construct callers (test fixtures bypassing
-/// `lower_to_effective`) — mirror of the labels/caches/pool-kinds
-/// 2-site sort pattern.
+/// With this upstream sort in place, the renderer-side sorts at
+/// `render_network` become pure defense-in-depth for direct-construct
+/// callers (test fixtures bypassing `lower_to_effective`) — mirror
+/// of the labels/caches/pool-kinds 2-site sort pattern.
 ///
-/// Other `NetworkSpec` Vec fields (`ip_allow`, `ip_deny`,
-/// `allowed_egress`) are deliberately NOT touched here — their
-/// canonical-sort semantics are tracked separately as open work
-/// orders.
+/// `allowed_egress` is the only `NetworkSpec` Vec field NOT touched
+/// here — its order is potentially load-bearing at the `nftables`
+/// layer (first-match-wins semantics for the rule emission at
+/// `nft.rs::render_nft_host` / `render_nft_ns`), tracked as a
+/// separate open work order for canonical-sort decisioning.
 ///
-/// SORT SAFETY: systemd's `RestrictAddressFamilies=` parser treats
-/// a `~` prefix on the FIRST TOKEN as an allowlist↔denylist mode
-/// switch. Sorting tokens lexicographically would reorder any
-/// `~`-prefixed token away from the first position, silently
-/// flipping interpretation — but `validate_restrict_address_families`
-/// in `validators.rs` rejects any token that doesn't match
-/// `AF_FAMILY_RE = ^AF_[A-Z0-9_]+$` at config-load (applies to
-/// BOTH `NetworkSpec.restrict_address_families` and
-/// `Hardening.restrict_address_families`), so no `~`-prefix token
-/// can reach this sort. The analogous gate exists for
+/// SORT SAFETY for `restrict_address_families`: systemd's
+/// `RestrictAddressFamilies=` parser treats a `~` prefix on the
+/// FIRST TOKEN as an allowlist↔denylist mode switch. Sorting tokens
+/// lexicographically would reorder any `~`-prefixed token away
+/// from the first position, silently flipping interpretation — but
+/// `validate_restrict_address_families` in `validators.rs` rejects
+/// any token that doesn't match `AF_FAMILY_RE = ^AF_[A-Z0-9_]+$` at
+/// config-load (applies to BOTH `NetworkSpec.restrict_address_families`
+/// and `Hardening.restrict_address_families`), so no `~`-prefix
+/// token can reach this sort. The analogous gate exists for
 /// `Hardening.extra_capabilities` via `CAP_RE`. The same defect
 /// class IS still open at the upstream `merge_hardening` sort for
 /// `Hardening.extra_syscalls` — that field has no token-shape
 /// validator today, and a config-load validator rejecting
 /// `~`-prefix syscall tokens is tracked as a separate work order.
+///
+/// SORT SAFETY for `ip_allow` / `ip_deny`: systemd stores these
+/// into a userspace hash-set at parse time
+/// (`cgroup.h::ip_address_allow` field type `Set *`) and later
+/// populates a kernel BPF map (`BPF_MAP_TYPE_LPM_TRIE` per
+/// `bpf-firewall.c`) for in-kernel lookup. The userspace
+/// `in_addr_prefixes_reduce` (`shared/in-addr-prefix-util.c`)
+/// coalesces overlapping prefixes before the BPF populate; the
+/// in-kernel LPM lookup returns most-specific match regardless of
+/// insertion order. NO order-load-bearing semantics anywhere along
+/// this path. Additionally, `ghars`-side `nft.rs::render_nft_host`
+/// / `render_nft_ns` do NOT consume `ip_allow` / `ip_deny` (those
+/// renderers iterate `allowed_egress` only) so the nft-layer
+/// first-match-wins constraint does not apply to these fields. Per
+/// the typed `Vec<IpNet>` field type, no `~`-prefix gap exists.
 fn canonicalize_network_spec(spec: &NetworkSpec) -> NetworkSpec {
     let mut s = spec.clone();
     s.restrict_address_families.sort();
     s.restrict_address_families.dedup();
+    s.ip_allow.sort();
+    s.ip_allow.dedup();
+    s.ip_deny.sort();
+    s.ip_deny.dedup();
     s
 }
 

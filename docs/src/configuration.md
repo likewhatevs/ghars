@@ -252,7 +252,14 @@ Fields:
   `IPAddressAllow=` / `IPAddressDeny=` (cgroup-BPF layer).
   Honored in BOTH modes: under `netns` they're emitted alongside
   the nft rules as defense in depth, under `open` they are the
-  sole egress gate at the systemd layer.
+  sole egress gate at the systemd layer. Set-semantic at the
+  lowering boundary: both fields are sorted+deduped at
+  `canonicalize_network_spec`, so `["192.168.0.0/16", "10.0.0.0/8"]`
+  and `["10.0.0.0/8", "192.168.0.0/16"]` produce identical rendered
+  output and identical plan output (a cosmetic TOML reorder is a
+  true NoOp at plan time). Operators who want their TOML to match
+  the rendered drop-in byte-for-byte should write CIDRs in
+  canonical order (by network address, then prefix length).
 - `restrict_address_families` (`Vec<String>`) — `AF_*` allowlist
   for systemd `RestrictAddressFamilies=`. Empty Vec ≡ unset.
   Honored in both `netns` and `open` modes — the directive lives

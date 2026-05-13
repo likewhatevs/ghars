@@ -17,6 +17,8 @@
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
+use ipnet::IpNet;
+
 use crate::config::{
     CacheKind, EffectiveCacheBinding, EffectiveRunnerSpec, EtcBindStyle, Hardening, NetworkMode,
 };
@@ -1613,10 +1615,22 @@ fn render_network(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
     // pairs them with the nft layer for belt-and-suspenders, Open
     // mode relies on them as the sole egress / family gate at the
     // systemd layer (no namespace, no nft).
-    for cidr in &net.spec.ip_allow {
+    //
+    // Defense-in-depth canonical-lex sort for direct-construct
+    // callers that bypass `lower_to_effective` (test fixtures). The
+    // production path canonicalizes upstream at
+    // `canonicalize_network_spec` in `compute.rs` (set-semantic for
+    // both fields per systemd's cgroup-BPF Set + LPM-trie data
+    // structures). Mirror of `restrict_address_families` 2-site
+    // pattern below.
+    let mut ip_allow_sorted: Vec<&IpNet> = net.spec.ip_allow.iter().collect();
+    ip_allow_sorted.sort_unstable();
+    for cidr in ip_allow_sorted {
         let _ = writeln!(s, "IPAddressAllow={cidr}");
     }
-    for cidr in &net.spec.ip_deny {
+    let mut ip_deny_sorted: Vec<&IpNet> = net.spec.ip_deny.iter().collect();
+    ip_deny_sorted.sort_unstable();
+    for cidr in ip_deny_sorted {
         let _ = writeln!(s, "IPAddressDeny={cidr}");
     }
     if !net.spec.restrict_address_families.is_empty() {

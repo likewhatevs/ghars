@@ -7,6 +7,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use ipnet::IpNet;
+
 use super::*;
 use crate::config::{DnsMode, EffectiveNetworkBinding, Ipv6Mode, NetworkMode, NetworkSpec};
 
@@ -868,6 +870,232 @@ fn render_unchanged_on_restrict_address_families_reorder_post_merge() {
         "site 2 (render_network defensive sort) regressed: direct-construct \
          bypass with non-canonical Vec produced unsorted directive: \
          {bypass_families_line:?}"
+    );
+}
+
+/// Sister of `render_unchanged_on_restrict_address_families_reorder_post_merge`
+/// for `NetworkSpec.ip_allow` + `NetworkSpec.ip_deny`. Two-block
+/// structure mirrors the sister pattern:
+///
+/// Block 1 (site 1, `canonicalize_network_spec` in
+/// `lower_to_effective`): operator TOML places CIDRs in non-canonical
+/// order; the lowering layer must sort+dedup them. Pins both
+/// `lowered.spec.ip_*` content + `spec_hash` permutation invariance.
+///
+/// Block 2 (site 2, renderer-site sort in `render_network`):
+/// direct-construct bypass — hand-build an `EffectiveNetworkBinding`
+/// with CIDRs in lex-descending order. The renderer must re-sort
+/// before emit. Defense-in-depth gate for callers that bypass
+/// `lower_to_effective`.
+///
+/// `IpNet` implements `Ord` via the `ipnet` crate (sorts by binary
+/// network address then by prefix length), so the canonical-lex
+/// order is well-defined.
+#[test]
+fn render_unchanged_on_ip_allow_ip_deny_reorder_post_merge() {
+    // Block 1: site 1 — operator TOML in non-canonical order.
+    let mut cfg = config_with_runners(vec![minimal_runner("a")]);
+    cfg.networks.insert(
+        "net-a".into(),
+        NetworkSpec {
+            mode: NetworkMode::Netns,
+            allowed_egress: vec![],
+            ip_allow: vec![
+                "192.168.0.0/16".parse::<IpNet>().unwrap(),
+                "10.0.0.0/8".parse::<IpNet>().unwrap(),
+                "172.16.0.0/12".parse::<IpNet>().unwrap(),
+            ],
+            ip_deny: vec![
+                "10.99.0.0/16".parse::<IpNet>().unwrap(),
+                "0.0.0.0/0".parse::<IpNet>().unwrap(),
+            ],
+            restrict_address_families: vec![],
+            dns: DnsMode::default(),
+            ipv6: Ipv6Mode::default(),
+        },
+    );
+    cfg.runners[0].network = Some("net-a".into());
+
+    let expanded = expand_counts(&cfg).expect("count expansion must succeed");
+    let eff_site1 = lower_to_effective(
+        &expanded[0],
+        &cfg,
+        Arch::X86_64,
+        cfg_source_default(),
+        0,
+    )
+    .expect("lower_to_effective must succeed");
+    let net = eff_site1
+        .network
+        .as_ref()
+        .expect("netns binding must be Some");
+    // IpNet Ord: 10.0.0.0/8 < 172.16.0.0/12 < 192.168.0.0/16 by network address.
+    assert_eq!(
+        net.spec
+            .ip_allow
+            .iter()
+            .map(|c| c.to_string())
+            .collect::<Vec<_>>(),
+        vec!["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
+        "site 1 (canonicalize_network_spec) regressed: ip_allow did not sort canonically; \
+         got: {:?}",
+        net.spec.ip_allow
+    );
+    // 0.0.0.0/0 < 10.99.0.0/16 by network address.
+    assert_eq!(
+        net.spec
+            .ip_deny
+            .iter()
+            .map(|c| c.to_string())
+            .collect::<Vec<_>>(),
+        vec!["0.0.0.0/0", "10.99.0.0/16"],
+        "site 1 (canonicalize_network_spec) regressed: ip_deny did not sort canonically; \
+         got: {:?}",
+        net.spec.ip_deny
+    );
+
+    // spec_hash permutation invariance: build a second cfg with
+    // ip_allow + ip_deny in canonical order, assert hashes equal.
+    let mut cfg_canonical = cfg.clone();
+    cfg_canonical.networks.get_mut("net-a").unwrap().ip_allow = vec![
+        "10.0.0.0/8".parse::<IpNet>().unwrap(),
+        "172.16.0.0/12".parse::<IpNet>().unwrap(),
+        "192.168.0.0/16".parse::<IpNet>().unwrap(),
+    ];
+    cfg_canonical.networks.get_mut("net-a").unwrap().ip_deny = vec![
+        "0.0.0.0/0".parse::<IpNet>().unwrap(),
+        "10.99.0.0/16".parse::<IpNet>().unwrap(),
+    ];
+    let expanded_canonical =
+        expand_counts(&cfg_canonical).expect("count expansion must succeed");
+    let eff_canonical = lower_to_effective(
+        &expanded_canonical[0],
+        &cfg_canonical,
+        Arch::X86_64,
+        cfg_source_default(),
+        0,
+    )
+    .expect("lower_to_effective must succeed");
+    assert_eq!(
+        spec_hash(&eff_site1),
+        spec_hash(&eff_canonical),
+        "spec_hash differs across NetworkSpec.ip_allow / ip_deny TOML \
+         permutations — canonicalize_network_spec lost permutation \
+         invariance for these fields"
+    );
+
+    // Dedup behavior: duplicates in operator TOML must collapse.
+    let mut cfg_dup = cfg.clone();
+    cfg_dup.networks.get_mut("net-a").unwrap().ip_allow = vec![
+        "10.0.0.0/8".parse::<IpNet>().unwrap(),
+        "192.168.0.0/16".parse::<IpNet>().unwrap(),
+        "10.0.0.0/8".parse::<IpNet>().unwrap(),
+    ];
+    let expanded_dup = expand_counts(&cfg_dup).expect("count expansion must succeed");
+    let eff_dup = lower_to_effective(
+        &expanded_dup[0],
+        &cfg_dup,
+        Arch::X86_64,
+        cfg_source_default(),
+        0,
+    )
+    .expect("lower_to_effective must succeed");
+    let dedup_allow: Vec<String> = eff_dup
+        .network
+        .as_ref()
+        .unwrap()
+        .spec
+        .ip_allow
+        .iter()
+        .map(|c| c.to_string())
+        .collect();
+    assert_eq!(
+        dedup_allow,
+        vec!["10.0.0.0/8", "192.168.0.0/16"],
+        "canonicalize_network_spec must dedup operator-supplied duplicate CIDRs; \
+         got: {dedup_allow:?}"
+    );
+
+    // Symmetric dedup pin for ip_deny — guards against a regression
+    // that drops `s.ip_deny.dedup();` while keeping ip_allow's.
+    let mut cfg_dup_deny = cfg.clone();
+    cfg_dup_deny.networks.get_mut("net-a").unwrap().ip_deny = vec![
+        "10.99.0.0/16".parse::<IpNet>().unwrap(),
+        "0.0.0.0/0".parse::<IpNet>().unwrap(),
+        "10.99.0.0/16".parse::<IpNet>().unwrap(),
+    ];
+    let expanded_dup_deny =
+        expand_counts(&cfg_dup_deny).expect("count expansion must succeed");
+    let eff_dup_deny = lower_to_effective(
+        &expanded_dup_deny[0],
+        &cfg_dup_deny,
+        Arch::X86_64,
+        cfg_source_default(),
+        0,
+    )
+    .expect("lower_to_effective must succeed");
+    let dedup_deny: Vec<String> = eff_dup_deny
+        .network
+        .as_ref()
+        .unwrap()
+        .spec
+        .ip_deny
+        .iter()
+        .map(|c| c.to_string())
+        .collect();
+    assert_eq!(
+        dedup_deny,
+        vec!["0.0.0.0/0", "10.99.0.0/16"],
+        "canonicalize_network_spec must dedup operator-supplied duplicate \
+         ip_deny CIDRs; got: {dedup_deny:?}"
+    );
+
+    // Block 2: site 2 — direct-construct bypass.
+    let mut bypass = eff_site1.clone();
+    bypass.network.as_mut().unwrap().spec.ip_allow = vec![
+        "192.168.0.0/16".parse::<IpNet>().unwrap(),
+        "172.16.0.0/12".parse::<IpNet>().unwrap(),
+        "10.0.0.0/8".parse::<IpNet>().unwrap(),
+    ];
+    bypass.network.as_mut().unwrap().spec.ip_deny = vec![
+        "10.99.0.0/16".parse::<IpNet>().unwrap(),
+        "0.0.0.0/0".parse::<IpNet>().unwrap(),
+    ];
+    bypass.spec_hash = spec_hash(&bypass);
+
+    let rendered_bypass = crate::systemd::render_runner_unit(&bypass).unwrap();
+    let bypass_body = rendered_bypass
+        .drop_ins
+        .get("40-network.conf")
+        .expect("40-network.conf must emit for netns binding");
+
+    // Renderer must emit IPAddressAllow= lines in canonical CIDR order.
+    let allow_lines: Vec<&str> = bypass_body
+        .lines()
+        .filter(|l| l.starts_with("IPAddressAllow="))
+        .collect();
+    assert_eq!(
+        allow_lines,
+        vec![
+            "IPAddressAllow=10.0.0.0/8",
+            "IPAddressAllow=172.16.0.0/12",
+            "IPAddressAllow=192.168.0.0/16",
+        ],
+        "site 2 (render_network ip_allow defensive sort) regressed: \
+         direct-construct bypass produced unsorted lines: {allow_lines:?}"
+    );
+    let deny_lines: Vec<&str> = bypass_body
+        .lines()
+        .filter(|l| l.starts_with("IPAddressDeny="))
+        .collect();
+    assert_eq!(
+        deny_lines,
+        vec![
+            "IPAddressDeny=0.0.0.0/0",
+            "IPAddressDeny=10.99.0.0/16",
+        ],
+        "site 2 (render_network ip_deny defensive sort) regressed: \
+         direct-construct bypass produced unsorted lines: {deny_lines:?}"
     );
 }
 

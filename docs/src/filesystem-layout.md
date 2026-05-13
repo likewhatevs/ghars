@@ -147,16 +147,19 @@ Notes:
   pool kinds is not parsed at the classifier boundary (cache-pool
   drift detection routes through `cache_pool_hash` rather than
   typed annotation reconstruction).
-- `RestrictAddressFamilies=` in the runner unit's `40-network.conf`
-  drop-in (sourced from `NetworkSpec.restrict_address_families`)
-  is canonical-lex-sorted at the renderer in `render_network` as
-  defense-in-depth on top of the upstream `canonicalize_network_spec()`
-  sort in `lower_to_effective`. Same 2-site sort pattern as labels /
-  caches / pool kinds. The parallel `RestrictAddressFamilies=` line
-  in `20-hardening.conf` (sourced from
-  `Hardening.restrict_address_families`) is canonicalized upstream
-  via `merge_hardening`'s sort+dedup; systemd unions both drop-in
-  lines at unit-load time.
+- `RestrictAddressFamilies=`, `IPAddressAllow=`, and
+  `IPAddressDeny=` in the runner unit's `40-network.conf` drop-in
+  (sourced from `NetworkSpec.restrict_address_families` /
+  `ip_allow` / `ip_deny` respectively) are canonical-lex-sorted at
+  the renderer in `render_network` as defense-in-depth on top of
+  the upstream `canonicalize_network_spec()` sort+dedup in
+  `lower_to_effective`. Same 2-site sort pattern as labels /
+  caches / pool kinds, applied uniformly across all three
+  set-semantic NetworkSpec Vec fields. The parallel
+  `RestrictAddressFamilies=` line in `20-hardening.conf` (sourced
+  from `Hardening.restrict_address_families`) is canonicalized
+  upstream via `merge_hardening`'s sort+dedup; systemd unions both
+  drop-in lines at unit-load time.
 - `X-Ghars-Network-Mode` is always emitted: the renderer collapses
   the no-binding case to `open` rather than omitting the key, so
   operators auditing `systemctl cat` always see the mode explicitly.
