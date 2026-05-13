@@ -1043,6 +1043,16 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
     // rewrite triggers; ipv6 stays Disabled in v0.1 (Enabled
     // hard-errors at apply per config.rs `Ipv6Mode::Enabled`
     // comment), so the annotation is defensive forward-compat.
+    //
+    // Emitted for BOTH Netns and Open NetworkMode (gate is
+    // `spec.network.is_some()`, not `mode == Netns`). Open-mode
+    // values are validator-constrained today (Forward / Disabled
+    // per `validators::validate_network_spec` open-mode branch), so
+    // the emission is trivially-valued — but keeps the annotation
+    // surface consistent across modes, future-proofs against
+    // validator relaxations that allow Open-mode dns/ipv6
+    // customization, and lets `systemctl cat` carry the same
+    // surface for every network-bound runner.
     if let Some(net) = &spec.network {
         let dns_str = crate::config::dns_to_annotation(&net.spec.dns);
         let _ = writeln!(s, "X-Ghars-Dns={dns_str}");
@@ -2567,10 +2577,14 @@ mod tests {
         );
     }
 
-    /// Inverse: when `spec.network` is `None` (Open-mode runner or
-    /// no network ref), the dns/ipv6 annotations MUST NOT be emitted
-    /// — they're NetworkSpec sub-fields and have no meaning without
-    /// a network binding.
+    /// Inverse: when `spec.network` is `None` (operator did not
+    /// reference any `[network.NAME]` block — implicit host-netns),
+    /// the dns/ipv6 annotations MUST NOT be emitted; they're
+    /// NetworkSpec sub-fields and have no meaning without a network
+    /// binding. Open-mode bindings WITH cgroup-BPF policies still
+    /// materialize `spec.network = Some(...)` and DO emit per the
+    /// sibling test
+    /// `render_identity_emits_x_ghars_dns_and_ipv6_for_open_mode_runner`.
     #[test]
     fn render_identity_omits_x_ghars_dns_and_ipv6_when_no_network() {
         let spec = minimal_spec();
@@ -2584,6 +2598,46 @@ mod tests {
         assert!(
             !id.contains("X-Ghars-Ipv6="),
             "00-ghars.conf must NOT contain X-Ghars-Ipv6= when spec.network is None; got drop-in:\n{id}"
+        );
+    }
+
+    /// Pins the Open-mode emission decision: X-Ghars-Dns +
+    /// X-Ghars-Ipv6 ARE emitted for Open-mode network bindings (gate
+    /// is `spec.network.is_some()`, NOT `mode == Netns`). Open-mode
+    /// values are validator-constrained to `forward` + `disabled`
+    /// today (per `validators::validate_network_spec`), so this test
+    /// pins the trivially-valued emission as an intentional contract.
+    /// A future regression that added `if matches!(net.spec.mode,
+    /// NetworkMode::Netns)` gating would silently drop the
+    /// annotations from Open-mode drop-ins — this test would fail.
+    #[test]
+    fn render_identity_emits_x_ghars_dns_and_ipv6_for_open_mode_runner() {
+        use crate::config::{
+            DnsMode, EffectiveNetworkBinding, Ipv6Mode, NetworkMode, NetworkSpec,
+        };
+        let mut spec = minimal_spec();
+        spec.network = Some(EffectiveNetworkBinding {
+            name: "host-policy".into(),
+            spec: NetworkSpec {
+                mode: NetworkMode::Open,
+                allowed_egress: vec![],
+                ip_allow: vec!["10.0.0.0/8".parse().unwrap()],
+                ip_deny: vec![],
+                restrict_address_families: vec![],
+                dns: DnsMode::Forward,
+                ipv6: Ipv6Mode::Disabled,
+            },
+            subnet: None,
+        });
+        let r = render_runner_unit(&spec).expect("clean spec must render");
+        let id = r.drop_ins.get("00-ghars.conf").unwrap();
+        assert!(
+            id.contains("\nX-Ghars-Dns=forward\n"),
+            "00-ghars.conf must contain X-Ghars-Dns=forward for Open-mode binding (validator-fixed value); got drop-in:\n{id}"
+        );
+        assert!(
+            id.contains("\nX-Ghars-Ipv6=disabled\n"),
+            "00-ghars.conf must contain X-Ghars-Ipv6=disabled for Open-mode binding (validator-fixed value); got drop-in:\n{id}"
         );
     }
 
