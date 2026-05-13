@@ -123,7 +123,7 @@ cache pool unit's `00-ghars.conf` drop-in (`ghars-cache@POOL.service.d/`):
 |---|---|---|---|
 | `X-Ghars-Spec-Hash` | `sha256:<hex>` — cache pool's per-pool digest (`cache_pool_hash()` output, same format as runner's spec_hash) | populated by `into_cache_pool_plan` (computes `cache_pool_hash()` over canonical-JSON binding + `RENDERER_SCHEMA`, NOT operator-supplied — value flips on `RENDERER_SCHEMA` bumps) | always |
 | `X-Ghars-Pool-Name` | identifier string | `EffectiveCacheBinding.name` | always |
-| `X-Ghars-Pool-Kinds` | comma-csv of `ccache` / `sccache` enum names | `EffectiveCacheBinding.kinds` | always |
+| `X-Ghars-Pool-Kinds` | comma-csv of `ccache` / `sccache` enum names, sorted alphabetically | `EffectiveCacheBinding.kinds` (sorted at emission) | always |
 | `X-Ghars-Config-Source` | path or identifier string | `config_source` argument threaded from `into_cache_pool_plan` to `render_cache_drop_in` (matches per-runner X-Ghars-Config-Source for the same apply) | always |
 
 Notes:
@@ -132,13 +132,19 @@ Notes:
   defense-in-depth against unit-text injection. The check rejects
   every `char::is_control()` character (covers `\n`, `\r`, `NUL`,
   and the broader Unicode control set per std's classification).
-- Labels and caches are sorted alphabetically via `sort_unstable()`
-  at the emission site as defense-in-depth on top of the upstream
-  source-of-truth sort (`merge_defaults` for labels,
-  `lower_to_effective` for caches). The parse boundary
+- Labels, caches, and pool kinds are sorted alphabetically via
+  `sort_unstable()` at the emission site as defense-in-depth on
+  top of the upstream source-of-truth sort (`merge_defaults` for
+  labels, `lower_to_effective` for caches; pool kinds defensive
+  sort lives at the renderer, pending the lowering-boundary sort
+  that will make `cache_pool_hash` and `render_cache_drop_in`
+  agree on canonical order). The parse boundary
   (`DiscoveredAnnotations::from_drop_in_body` in `plan/classify.rs`)
-  re-sorts as a third defensive layer so any direct consumer of
-  the parsed annotations gets canonical order.
+  re-sorts labels and caches as a third defensive layer so any
+  direct consumer of the parsed annotations gets canonical order;
+  pool kinds is not currently parsed at the classifier boundary
+  (cache-pool drift detection routes through `cache_pool_hash`
+  rather than typed annotation reconstruction).
 - `X-Ghars-Network-Mode` is always emitted: the renderer collapses
   the no-binding case to `open` rather than omitting the key, so
   operators auditing `systemctl cat` always see the mode explicitly.

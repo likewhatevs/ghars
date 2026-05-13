@@ -1850,16 +1850,21 @@ pub fn render_cache_drop_in(
     s.push_str("[Unit]\n");
     let _ = writeln!(s, "X-Ghars-Spec-Hash={spec_hash}");
     let _ = writeln!(s, "X-Ghars-Pool-Name={}", binding.name);
-    let kinds_csv = binding
-        .kinds
-        .iter()
-        .map(|k| match k {
-            CacheKind::Ccache => "ccache",
-            CacheKind::Sccache => "sccache",
-        })
-        .collect::<Vec<_>>()
-        .join(",");
-    let _ = writeln!(s, "X-Ghars-Pool-Kinds={kinds_csv}");
+    // Defense-in-depth sort: render emits kinds in canonical
+    // alphabetical order regardless of operator-supplied
+    // `[cache_pools.NAME].kinds` Vec order. PARTIAL mirror of the
+    // labels + caches defensive sorts at render_identity — labels
+    // (`merge_defaults`) and caches (`lower_to_effective`) are
+    // sorted upstream too, delivering full body-byte invariance;
+    // pool kinds has only the renderer-site sort today, so the
+    // embedded `X-Ghars-Spec-Hash` line still differs across
+    // operator permutations until the upstream sort lands at
+    // `into_cache_pool_plan`. Until then, the
+    // `X-Ghars-Pool-Kinds=` line itself is byte-stable even for
+    // direct-construct callers.
+    let mut pool_kinds: Vec<&str> = binding.kinds.iter().map(|k| k.label()).collect();
+    pool_kinds.sort_unstable();
+    let _ = writeln!(s, "X-Ghars-Pool-Kinds={}", pool_kinds.join(","));
     let _ = writeln!(s, "X-Ghars-Config-Source={config_source}");
     s.push('\n');
 
@@ -4038,6 +4043,81 @@ mod tests {
         assert!(
             body.contains("\nUMask=0077\n"),
             "cache template must set UMask=0077 for sccache UDS mode 0600; got body:\n{body}"
+        );
+    }
+
+    /// Defense-in-depth pin for the `X-Ghars-Pool-Kinds=` CSV
+    /// canonical sort in `render_cache_drop_in`. Operator-supplied
+    /// `[cache_pools.NAME].kinds` Vec is preserved verbatim into
+    /// `EffectiveCacheBinding.kinds`; the renderer must sort the
+    /// CSV emission so `systemctl cat ghars-cache@POOL.service`
+    /// shows byte-identical Pool-Kinds output regardless of
+    /// operator TOML order. Sister of the X-Ghars-Labels= /
+    /// X-Ghars-Caches= defensive sorts at render_identity.
+    ///
+    /// Two direct-construct fixtures with the SAME kind set in
+    /// opposing orders ([Sccache, Ccache] vs [Ccache, Sccache])
+    /// must produce the same X-Ghars-Pool-Kinds=ccache,sccache
+    /// emission. A regression that dropped the renderer-site
+    /// `.sort_unstable()` would emit the operator-supplied order
+    /// — the `\n...\n`-bracketed positive assertions print the
+    /// full body on mismatch so the regression surfaces with the
+    /// concrete miss-rendered line.
+    #[test]
+    fn render_cache_drop_in_emits_canonical_pool_kinds_csv() {
+        let mk_binding = |kinds: Vec<CacheKind>| EffectiveCacheBinding {
+            name: "build".into(),
+            kinds,
+            size: "200G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+            sccache_path: Some("/usr/bin/sccache".into()),
+            sleep_path: None,
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
+        };
+
+        let body_sccache_first = render_cache_drop_in(
+            &mk_binding(vec![CacheKind::Sccache, CacheKind::Ccache]),
+            "/etc/ghars/ghars.toml",
+            "sha256:abcd",
+        )
+        .unwrap();
+        let body_ccache_first = render_cache_drop_in(
+            &mk_binding(vec![CacheKind::Ccache, CacheKind::Sccache]),
+            "/etc/ghars/ghars.toml",
+            "sha256:abcd",
+        )
+        .unwrap();
+
+        // Both must emit canonical (lex-ascending) CSV. The
+        // `\n...\n` bracketing pins the exact line — render_cache_drop_in
+        // emits X-Ghars-Pool-Kinds= exactly once per body, so a
+        // failed positive assertion is sufficient evidence of a
+        // sort regression (no separate negative assertion needed).
+        assert!(
+            body_sccache_first.contains("\nX-Ghars-Pool-Kinds=ccache,sccache\n"),
+            "operator [Sccache, Ccache] order must emit canonical \
+             ccache,sccache CSV (renderer-site sort regressed); got:\n{body_sccache_first}"
+        );
+        assert!(
+            body_ccache_first.contains("\nX-Ghars-Pool-Kinds=ccache,sccache\n"),
+            "operator [Ccache, Sccache] order must emit canonical \
+             ccache,sccache CSV; got:\n{body_ccache_first}"
+        );
+
+        // Strong invariance: same kind set in opposing orders must
+        // render byte-identical bodies. Both calls pass the same
+        // literal "sha256:abcd" so the X-Ghars-Spec-Hash line stays
+        // equal (production-path spec_hash desync from kinds Vec
+        // order is tracked by the upstream-sort task at
+        // `into_cache_pool_plan`); under that pin, the renderer-site
+        // sort makes the rendered body byte-identical for any
+        // permutation of the same kind set.
+        assert_eq!(
+            body_sccache_first, body_ccache_first,
+            "permutation invariance: same kinds set in opposing orders \
+             must render byte-identical bodies (renderer-site sort regressed); \
+             left:\n{body_sccache_first}\nright:\n{body_ccache_first}"
         );
     }
 
