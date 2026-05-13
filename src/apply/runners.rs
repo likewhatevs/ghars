@@ -1002,9 +1002,31 @@ pub(super) fn poll_dynamic_user_uid(
     let start = Instant::now();
     let budget = Duration::from_secs(5);
     let mut interval = Duration::from_millis(10);
+    let mut iterations: u32 = 0;
     loop {
+        iterations += 1;
         match systemd.lookup_dynamic_user_by_name(name)? {
-            Some(uid) => return Ok(uid),
+            Some(uid) => {
+                // Observability per-CreateRunner. Lets operators
+                // confirm the 5s budget and the doc-comment's
+                // "tens of ms" typical claim against fleet
+                // production data via `RUST_LOG=ghars=info`.
+                // Subsequent runners in the same trust zone
+                // typically resolve on iteration 1 (zero-iterations-
+                // of-sleep) because the DynamicUser name is
+                // already realized; only the first runner per
+                // trust zone after a cold boot hits the
+                // realize-side socket-population wait.
+                let elapsed = start.elapsed();
+                tracing::info!(
+                    trust_zone_user = %name,
+                    uid,
+                    iterations,
+                    elapsed_ms = elapsed.as_millis() as u64,
+                    "DynamicUser UID resolved via Manager.LookupDynamicUserByName"
+                );
+                return Ok(uid);
+            }
             None => {
                 if start.elapsed() >= budget {
                     return Err(GharsError::Apply {
