@@ -413,6 +413,99 @@ fn discovered_annotations_label_round_trip_canonical_sort() {
     );
 }
 
+/// Site-3 parity for caches: parse-boundary defensive sort in
+/// `DiscoveredAnnotations::from_drop_in_body` (classify.rs:202).
+/// `render_unchanged_on_caches_reorder_post_merge` covers sites
+/// 1 + 2 (lower_to_effective sort at compute.rs:1092 +
+/// render_identity defensive re-sort at units.rs:949-951). This
+/// pair pins site 3 — the parse boundary's `parsed.sort_unstable()`
+/// that runs after splitting the on-disk `X-Ghars-Caches=` CSV.
+/// Sister of `discovered_annotations_label_round_trip_canonical_sort`
+/// which pins the labels parse-boundary sort at classify.rs:161.
+///
+/// Block 1 (render → parse round-trip): builds a runner with
+/// non-canonical-order cache refs ["pool-z", "pool-a"], lowers via
+/// the full pipeline (expand_counts + lower_to_effective which
+/// fires site 1's sort), renders, parses, asserts `anns.caches`
+/// comes back canonical-sorted. Because sites 1+2 pre-canonicalize
+/// before render, Block 1 alone cannot isolate a site-3 regression
+/// — the parser sees pre-sorted input regardless.
+///
+/// Block 2 (hand-crafted bypass): constructs a drop-in body bytes
+/// with `X-Ghars-Caches=zebra,alpha,middle` directly, bypassing
+/// render entirely. The parser must re-sort to canonical
+/// alpha,middle,zebra. A regression that removed classify.rs:202's
+/// `parsed.sort_unstable()` would fail this block while passing
+/// Block 1.
+#[test]
+fn discovered_annotations_caches_round_trip_canonical_sort() {
+    use crate::config::{CacheKind, CacheMode, CachePoolSpec};
+
+    // Block 1: render → parse round-trip.
+    let mut cfg = config_with_runners(vec![minimal_runner("a")]);
+    cfg.cache_pools.insert(
+        "pool-a".into(),
+        CachePoolSpec {
+            kinds: vec![CacheKind::Ccache],
+            size: "10G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
+        },
+    );
+    cfg.cache_pools.insert(
+        "pool-z".into(),
+        CachePoolSpec {
+            kinds: vec![CacheKind::Sccache],
+            size: "10G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+            sccache_path: Some("/usr/local/bin/sccache".into()),
+            sleep_path: None,
+        },
+    );
+    cfg.runners[0].caches = vec!["pool-z".into(), "pool-a".into()];
+    let expanded = expand_counts(&cfg).expect("count expansion must succeed");
+    let mut eff = lower_to_effective(
+        &expanded[0],
+        &cfg,
+        Arch::X86_64,
+        "/etc/ghars/ghars.toml".into(),
+        0,
+    )
+    .expect("lower_to_effective must succeed");
+    eff.spec_hash = spec_hash(&eff);
+    let rendered = crate::systemd::render_runner_unit(&eff).unwrap();
+    let body = rendered.drop_ins.get("00-ghars.conf").unwrap();
+    let anns = DiscoveredAnnotations::from_drop_in_body(body);
+    assert_eq!(
+        anns.caches.as_deref(),
+        Some(&["pool-a".to_owned(), "pool-z".to_owned()][..]),
+        "site 3 (DiscoveredAnnotations defensive sort at parse boundary) \
+         regressed in the render→parse path: rendered body parsed back to \
+         non-canonical caches order; got: {:?}",
+        anns.caches
+    );
+
+    // Block 2: hand-crafted body bypasses render. The pipeline's
+    // sites 1+2 (compute.rs:1092 + units.rs:949-951) pre-canonicalize
+    // the input the parser sees in the render path, so Block 1 alone
+    // cannot isolate a parser-side sort regression. Construct a body
+    // with non-canonical CSV directly, parse it, and assert the
+    // result is canonical.
+    let bypass_body = "[Unit]\nX-Ghars-Caches=zebra,alpha,middle\n";
+    let bypass_anns = DiscoveredAnnotations::from_drop_in_body(bypass_body);
+    assert_eq!(
+        bypass_anns.caches.as_deref(),
+        Some(&["alpha".to_owned(), "middle".to_owned(), "zebra".to_owned()][..]),
+        "site 3 (DiscoveredAnnotations defensive sort at parse boundary) \
+         regressed: hand-crafted non-canonical body `X-Ghars-Caches=zebra,alpha,middle` \
+         parsed without re-sort; got: {:?}",
+        bypass_anns.caches
+    );
+}
+
 /// Sister regression pin to `render_unchanged_on_labels_reorder_post_merge`.
 /// Caches have the same two-site defensive-sort architecture as labels:
 /// site 1 sorts at the lowering layer (`lower_to_effective` at

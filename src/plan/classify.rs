@@ -146,7 +146,7 @@ impl DiscoveredAnnotations {
                     //
                     // Centralize set-semantic canonicalization at the
                     // parse boundary: labels are byte-sorted on emission
-                    // (render_identity defense-in-depth at systemd.rs)
+                    // (render_identity defense-in-depth at systemd/units.rs)
                     // and on classifier comparison (sorted_set_field_diff
                     // downstream). Sorting here makes those sibling
                     // sorts true defense-in-depth — every caller that
@@ -191,7 +191,7 @@ impl DiscoveredAnnotations {
                     // Sort at parse time (matches labels above):
                     // caches are set-semantic and the renderer +
                     // classifier both sort. Canonicalizing here keeps
-                    // those downstream sorts true defense-in-depth so
+                    // those sibling sorts true defense-in-depth so
                     // any future caller of `out.caches` sees stable
                     // order without an extra sort.
                     let mut parsed: Vec<String> = if v.is_empty() {
