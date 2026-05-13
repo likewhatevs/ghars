@@ -1534,13 +1534,21 @@ pub(super) fn execute_update_runner(
     // body + .env emission (CCACHE_DIR=/var/lib/ghars/<TZ>/.ccache,
     // gated on has_ccache in render_runner_env_file) but the dir on
     // disk was never created — workflow steps' ccache wrappers would
-    // try to write to a non-existent path. `create_dir_all` is
-    // idempotent so the same call is safe for runners whose ccache
-    // binding pre-existed. The reverse (removing the last ccache
-    // binding) leaves a stale empty dir; harmless (no env var points
-    // at it anymore once the renderer's has_ccache gate drops the
-    // emission) and avoids cross-runner racy rmdir (another runner
-    // in the same trust_zone may still need the dir).
+    // try to write to a non-existent path. The `if !exists()` gate
+    // around the create + chmod is load-bearing (not redundant
+    // idempotency): a pre-existing `.ccache` from a sibling runner's
+    // prior CreateRunner apply was already chowned + tightened to
+    // 0o770 by `chown_and_tighten_runner_state`; re-chmodding to
+    // 0o777 here would mode-thrash the sibling's post-StartUnit
+    // tightening and re-widen world access on a shared dir that
+    // another running runner is reading. Regression-pinned at
+    // `caches_tests::execute_update_runner_in_place_populates_pool_name_vecs`
+    // (pre-stages 0o770, asserts mode stays 0o770 after this block).
+    // The reverse direction (removing the last ccache binding) leaves
+    // a stale empty dir; harmless (no env var points at it anymore
+    // once the renderer's has_ccache gate drops the emission) and
+    // avoids cross-runner racy rmdir (another runner in the same
+    // trust_zone may still need the dir).
     //
     // KNOWN GAP (task #73): the freshly-created `.ccache` here stays
     // root-owned at 0o777 because `execute_update_runner` does NOT
