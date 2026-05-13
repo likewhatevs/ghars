@@ -1,6 +1,6 @@
 ---
 source: tests/python_parity_unit_snapshots.rs
-assertion_line: 406
+assertion_line: 402
 expression: body
 ---
 [Unit]
