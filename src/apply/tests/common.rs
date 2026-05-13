@@ -230,9 +230,23 @@ impl Tarball for MockTarball {
         // both point at this nested path.
         let inner_bin = bin.join("bin");
         std::fs::create_dir_all(inner_bin.as_std_path())?;
+        let runsvc = inner_bin.join("runsvc.sh");
         std::fs::write(
-            inner_bin.join("runsvc.sh").as_std_path(),
+            runsvc.as_std_path(),
             b"#!/bin/bash\n# mock runsvc from tarball\nexit 0\n",
+        )?;
+        // Mirror production: upstream actions/runner tar header sets
+        // runsvc.sh to 0o755 (executable). std::fs::write produces
+        // 0o644 from umask 0o022 by default, so without this chmod
+        // the mock would diverge from real install_runner_binary's
+        // tar-header preservation. The bin-tree-integrity regression
+        // test asserts the post-create mode matches this, so the
+        // mock's mode IS the test's pinned production-equivalent
+        // value.
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            runsvc.as_std_path(),
+            std::fs::Permissions::from_mode(0o755),
         )?;
         Ok(bin)
     }
@@ -258,10 +272,41 @@ impl ConfigShell for MockConfigShell {
             .unwrap()
             .push((ctx.name.into(), ctx.url.into(), ctx.token.into()));
         // Ensure runner_home exists; the real config.sh writes
-        // .runner / .credentials there at register time. We don't
-        // model those files for unit tests — execute_create_runner
-        // doesn't read them in the test code path.
-        std::fs::create_dir_all(ctx.runner_home.as_std_path())?;
+        // .runner / .credentials / .credentials_rsaparams there at
+        // register time. The mock writes all three at mode 0o600 to
+        // mirror the worst-case production shape:
+        //   - `.runner` / `.credentials` — upstream IOUtil.SaveObject
+        //     uses File.WriteAllText (Runner.Sdk/Util/IOUtil.cs:42)
+        //     with no explicit mode, so the resulting file inherits
+        //     `0o666 & ~umask`. ghars normally runs at umask 0o022
+        //     → 0o644, but a custom-spawned ghars (cron / nspawn
+        //     wrapper / hostile init) could inherit umask 0o077 →
+        //     0o600. The post-config.sh chmod loop in
+        //     execute_create_runner normalizes both files to 0o644
+        //     so the DynamicUser-allocated runner process can read
+        //     them regardless of ghars's invoking umask.
+        //   - `.credentials_rsaparams` — upstream explicitly chmods
+        //     to 0o600 in
+        //     src/Runner.Listener/Configuration/RSAFileKeyManager.cs:33
+        //     (the RSA key signs OAuth assertions for credential
+        //     refresh). The post-config.sh chmod loop normalizes
+        //     this to 0o644 so the DynamicUser-allocated runner
+        //     process can read the key for refresh signing.
+        // Tests that assert the post-create modes rely on this
+        // mock writing the 0o600 baseline for all three so the
+        // chmod-to-0o644 is observable.
+        use std::os::unix::fs::PermissionsExt;
+        let home = ctx.runner_home.as_std_path();
+        std::fs::create_dir_all(home)?;
+        for (basename, body) in &[
+            (".runner", &b"{\"mock_runner\":\"...\"}"[..]),
+            (".credentials", &b"{\"mock_creds\":\"...\"}"[..]),
+            (".credentials_rsaparams", &b"{\"mock_rsa_params\":\"...\"}"[..]),
+        ] {
+            let path = home.join(basename);
+            std::fs::write(&path, body)?;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        }
         Ok(())
     }
     fn run_remove(&self, ctx: &ConfigShellCtx<'_>) -> Result<()> {

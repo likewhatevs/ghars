@@ -897,7 +897,16 @@ pub fn prune_old_bin_versions(runner_home: &Utf8Path, keep_versions: u32) -> Res
         if suffix.is_empty() || suffix == "tmp" {
             continue;
         }
-        let meta = match entry.metadata() {
+        // Use symlink_metadata (lstat) so symlinks are excluded from
+        // the candidate set entirely. entry.metadata() follows
+        // symlinks: an attacker-planted `bin.evil → /etc` would
+        // otherwise have metadata() report /etc's metadata
+        // (is_dir() = true), the symlink would enter the prune
+        // candidate set, and although std's remove_dir_all is
+        // hardened to unlink-only on symlinks (Rust 1.62+), the
+        // inclusion is still wrong — same TOCTOU-via-symlink class
+        // as the deleted set_tree_permissions cascade.
+        let meta = match fs::symlink_metadata(entry.path()) {
             Ok(m) => m,
             Err(_) => continue,
         };

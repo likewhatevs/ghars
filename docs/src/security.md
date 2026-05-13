@@ -29,6 +29,69 @@ There is no `Group=` line, no `SupplementaryGroups=`, no `gpasswd`
 involvement. systemd allocates the matching transient GID alongside
 the UID.
 
+## Runner home lifecycle
+
+The per-runner home directory
+`/var/lib/ghars/<TRUST_ZONE>/ghars-<NAME>/` goes through a two-stage
+chmod during `ghars apply`'s CreateRunner action:
+
+- **Stage 1 (apply-time)**: the directory is clamped to mode
+  `0o755` (root rwx, others rx) BEFORE `config.sh` runs and before
+  any per-file chmod. Non-root users — including any sibling
+  DynamicUser that shares the trust zone's allocated UID — cannot
+  write to the directory in this window. This prevents a sibling
+  from planting a symlink at a path ghars will later chmod
+  (e.g. `runner_home/.credentials*`) and tricking `config.sh` into
+  writing OAuth credentials through the symlink to an attacker
+  target.
+
+- **Pre-Stage-1 entry sweep**: before Stage 1, ghars enumerates
+  `runner_home`'s direct children via `lstat` and refuses to
+  proceed if any are symlinks, FIFOs, device files, or sockets.
+  Catches PRE-existing planted entries left over from a prior
+  failed apply.
+
+- **Stage 2 (unit-start)**: just before
+  `systemctl start ghars-runner@NAME.service`, the directory is
+  re-opened to `0o777` so the DynamicUser allocated at unit start
+  can create `_work/`, `_diag/`, and per-tool caches. The Stage 2
+  re-open is the LAST mutation under `runner_home` before the
+  unit starts.
+
+The trust-zone parent dir `/var/lib/ghars/<TRUST_ZONE>/` is
+`0o711` (descend-only): non-root can traverse into named
+children but cannot `ls` the parent. Shared trust-zone subdirs
+(`.ktstr`, `.ccache`) under it are `0o777` for cross-runner
+coordination within the zone.
+
+Per-file chmods (`runner_tmp`, the credential files, and the
+two runner_home stages) all route through a single helper that
+opens the target with `O_RDONLY | O_NOFOLLOW` and chmod's via
+`/proc/self/fd/{fd}`. Two implications:
+
+- A symlink at the chmod target returns `ELOOP` on open;
+  the apply errors with `refusing to chmod through symlink at
+  {path}`.
+- The fd binds the inode at open time, so no
+  path-resolution race between the open and the chmod can
+  redirect to a different inode.
+
+The post-`config.sh` chmod loop normalizes
+`.runner` / `.credentials` / `.credentials_rsaparams` to `0o644`
+regardless of the inherited umask. The runner unit's
+DynamicUser-allocated UID can then read them. Missing files
+(e.g. `.credentials_rsaparams` on PAT-authenticated runners) are
+tolerated.
+
+If an operator sees the apply diagnostic
+`refusing to chmod through symlink at {path}` or
+`refusing to proceed: planted symlink at {path}`, they should
+inspect the named path with `ls -la`; if it wasn't placed
+intentionally, remove it and re-run `ghars apply`. The symlink
+indicates either stale residue from a prior failed apply or a
+compromised sibling DynamicUser in the same trust zone planted
+it.
+
 ## Trust zones
 
 A trust zone is the unit of cross-runner isolation. Runners and

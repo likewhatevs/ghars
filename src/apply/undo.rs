@@ -122,6 +122,21 @@ pub enum UndoStep {
         /// (`/var/lib/ghars/<TRUST_ZONE>/ghars-<NAME>`).
         runner_home: Utf8PathBuf,
     },
+    /// Recorded after `fs::set_permissions(path, mode)` succeeds.
+    /// `prior_mode` is the file's mode bits BEFORE the chmod, masked
+    /// to `0o7777` (the standard permission bits including setuid /
+    /// setgid / sticky); used by undo to restore the pre-call state
+    /// when rollback fires. Used by `chmod_record_undo` in
+    /// `runners.rs::execute_create_runner`; the helper centralizes
+    /// O_NOFOLLOW symlink-refusal + prior-mode capture + UndoLog
+    /// push so future chmod call sites inherit all three guarantees
+    /// automatically without needing to be enumerated in this doc.
+    SetMode {
+        /// Path whose mode was changed.
+        path: Utf8PathBuf,
+        /// Mode bits before the chmod call (masked to `0o7777`).
+        prior_mode: u32,
+    },
 }
 
 impl UndoStep {
@@ -211,6 +226,13 @@ impl UndoStep {
                     "registered runner {} against {}",
                     crate::escape_control_chars(name),
                     crate::escape_control_chars(url),
+                )
+            }
+            UndoStep::SetMode { path, prior_mode } => {
+                format!(
+                    "chmod {} (was 0o{:o})",
+                    crate::escape_control_chars(path.as_str()),
+                    prior_mode
                 )
             }
         }
@@ -415,6 +437,65 @@ fn undo_one(step: &UndoStep, deps: &Deps<'_>) -> Result<()> {
                 labels: &[],
                 token: &token.value,
             })
+        }
+        UndoStep::SetMode { path, prior_mode } => {
+            use std::os::fd::AsRawFd;
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            // Restore the pre-call mode. Two tolerated edge cases:
+            //
+            //   1. ENOENT: the path may have been removed by a
+            //      later UndoStep's reverse (e.g. an
+            //      UndoStep::WriteFile undoing a creation of the
+            //      path before this SetMode reversal runs in the
+            //      outer reverse walk).
+            //
+            //   2. The path is now a symlink: the forward
+            //      `chmod_record_undo` in runners.rs refuses
+            //      symlinks at chmod time, but between the forward
+            //      chmod and this rollback, a malicious sibling
+            //      DynamicUser in the same trust_zone could have
+            //      raced to swap the path with a symlink to a
+            //      sensitive root-owned target (e.g. /etc/shadow,
+            //      /etc/passwd). Without this symlink check, the
+            //      rollback would silently chmod that target to
+            //      `prior_mode` (could lock out non-root users or
+            //      otherwise damage system state). Warn and skip;
+            //      mode restoration is best-effort during rollback
+            //      anyway (see the function-level docstring).
+            //
+            // The implementation uses the same O_RDONLY + O_NOFOLLOW
+            // → /proc/self/fd/{fd} pattern as `chmod_record_undo`,
+            // so both the symlink-refusal AND the chmod are atomic
+            // with the open: no path-resolution race between the
+            // lstat-equivalent (the open with O_NOFOLLOW) and the
+            // chmod.
+            match std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(path.as_std_path())
+            {
+                Ok(fd) => {
+                    let proc_path = format!("/proc/self/fd/{}", fd.as_raw_fd());
+                    fs::set_permissions(
+                        &proc_path,
+                        std::fs::Permissions::from_mode(*prior_mode),
+                    )
+                    .map_err(GharsError::Io)
+                }
+                Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
+                    tracing::warn!(
+                        path = path.as_str(),
+                        "rollback SetMode: path is now a symlink (not at \
+                         forward chmod time); refusing to chmod-through to \
+                         the symlink target. Manual intervention may be \
+                         needed if rollback completeness matters; this skip \
+                         is the safe default."
+                    );
+                    Ok(())
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(GharsError::Io(e)),
+            }
         }
         UndoStep::RemoveFile { .. }
         | UndoStep::RemoveDir { .. }

@@ -266,6 +266,245 @@ fn undo_create_dir_leaves_nonempty_directory() {
 }
 
 #[test]
+fn undo_set_mode_restores_prior_mode() {
+    // SetMode undo: chmod the path back to the pre-call mode
+    // captured by `chmod_record_undo`. Exercises the rollback path
+    // for `execute_create_runner`'s explicit chmods (tz_dir 0o711,
+    // runner_home 0o777, runner_tmp 0o777, .ktstr 0o777,
+    // .ccache 0o777, .runner / .credentials* 0o644) — without
+    // this undo, a partial CreateRunner that errors mid-way leaves
+    // the trust-zone tree at the apply-time modes, which can
+    // expose attacker write surface (runner_home at 0o777 in
+    // particular is the planted-symlink vector that the in-apply
+    // 0o755 clamp closes).
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let path = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
+        .unwrap()
+        .join("victim.file");
+    std::fs::write(path.as_std_path(), b"x").unwrap();
+    std::fs::set_permissions(
+        path.as_std_path(),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    // Simulate the apply having chmodded the path to 0o777 and
+    // recorded prior_mode = 0o600 in the log.
+    std::fs::set_permissions(
+        path.as_std_path(),
+        std::fs::Permissions::from_mode(0o777),
+    )
+    .unwrap();
+    let systemd = MockSystemd::default();
+    let config_shell = MockConfigShell::default();
+    let tarball = MockTarball::default();
+    let auth: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+    let deps = rollback_deps(&systemd, &config_shell, &tarball, &auth);
+    let paths = make_paths(&tmp);
+    let mut log = UndoLog::new();
+    log.push(UndoStep::SetMode {
+        path: path.clone(),
+        prior_mode: 0o600,
+    });
+    undo(&log, &deps, &paths).unwrap();
+    let restored = std::fs::metadata(path.as_std_path())
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o7777;
+    assert_eq!(
+        restored, 0o600,
+        "SetMode undo must restore prior_mode; got 0o{restored:o}"
+    );
+}
+
+#[test]
+fn undo_set_mode_restores_prior_mode_on_directory() {
+    // SetMode's undo must work on directories — production
+    // execute_create_runner chmods 5 directories (tz_dir,
+    // runner_home, runner_tmp, .ktstr, .ccache) plus 3 files.
+    // Dirs are the majority. A regression that special-cased
+    // SetMode for files only would silently fail the rollback
+    // for every CreateRunner that errored mid-way, leaving the
+    // trust-zone tree at apply-time modes — re-opening the
+    // planted-symlink window the Stage 1 clamp was meant to
+    // close.
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
+        .unwrap()
+        .join("victim_dir");
+    std::fs::create_dir(dir.as_std_path()).unwrap();
+    std::fs::set_permissions(dir.as_std_path(), std::fs::Permissions::from_mode(0o755))
+        .unwrap();
+    // Simulate the apply having chmodded the dir to 0o777
+    // (mirrors runner_home Stage 2 reopen).
+    std::fs::set_permissions(dir.as_std_path(), std::fs::Permissions::from_mode(0o777))
+        .unwrap();
+    let systemd = MockSystemd::default();
+    let config_shell = MockConfigShell::default();
+    let tarball = MockTarball::default();
+    let auth: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+    let deps = rollback_deps(&systemd, &config_shell, &tarball, &auth);
+    let paths = make_paths(&tmp);
+    let mut log = UndoLog::new();
+    log.push(UndoStep::SetMode {
+        path: dir.clone(),
+        prior_mode: 0o755,
+    });
+    undo(&log, &deps, &paths).unwrap();
+    let restored = std::fs::metadata(dir.as_std_path())
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o7777;
+    assert_eq!(
+        restored, 0o755,
+        "SetMode undo on directory must restore prior_mode 0o755; \
+         got 0o{restored:o}. Regression that special-cased SetMode \
+         to files only would silently leave directories at apply-time \
+         modes, re-opening the planted-symlink window."
+    );
+}
+
+#[test]
+fn undo_set_mode_refuses_symlink_target() {
+    // Symmetric symlink-refusal: the forward chmod_record_undo
+    // helper in runners.rs opens with O_NOFOLLOW (which atomically
+    // returns ELOOP for symlink targets), but the gap
+    // between the forward chmod and the rollback walk is wide
+    // enough for a malicious sibling DynamicUser to race a
+    // symlink-swap at the chmod target (e.g. plant runner_home/
+    // .credentials_rsaparams → /etc/shadow after the forward
+    // chmod ran but before the rollback's SetMode undo fires).
+    // Without this symlink check, the rollback would chmod the
+    // symlink target — write-amplification of attacker control.
+    //
+    // This test plants a symlink at the SetMode target between
+    // pushing the UndoStep and walking the undo, then verifies
+    // the symlink target's mode is unchanged.
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let victim = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
+        .unwrap()
+        .join("victim.real");
+    std::fs::write(victim.as_std_path(), b"original").unwrap();
+    std::fs::set_permissions(
+        victim.as_std_path(),
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    let original_victim_mode = std::fs::metadata(victim.as_std_path())
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o7777;
+
+    // The path the UndoStep::SetMode references is a SYMLINK
+    // pointing at victim. Simulates the race-window swap.
+    let swapped_path = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
+        .unwrap()
+        .join("swapped.symlink");
+    std::os::unix::fs::symlink(victim.as_std_path(), swapped_path.as_std_path()).unwrap();
+
+    let systemd = MockSystemd::default();
+    let config_shell = MockConfigShell::default();
+    let tarball = MockTarball::default();
+    let auth: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+    let deps = rollback_deps(&systemd, &config_shell, &tarball, &auth);
+    let paths = make_paths(&tmp);
+    let mut log = UndoLog::new();
+    log.push(UndoStep::SetMode {
+        path: swapped_path.clone(),
+        prior_mode: 0o600,
+    });
+    undo(&log, &deps, &paths).expect("undo must succeed (skip + warn, not error)");
+
+    // CRITICAL: victim's mode must be unchanged (0o644). If the
+    // SetMode undo had followed the symlink, victim would now be
+    // 0o600 (the prior_mode the UndoStep carries).
+    let post_mode = std::fs::metadata(victim.as_std_path())
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o7777;
+    assert_eq!(
+        post_mode, original_victim_mode,
+        "undo SetMode must NOT chmod-through to symlink target; \
+         victim mode changed from 0o{original_victim_mode:o} to 0o{post_mode:o}"
+    );
+}
+
+#[test]
+fn undo_set_mode_tolerates_missing_path() {
+    // The reverse walk runs UndoSteps in order; a SetMode for a
+    // path that a later (chronologically — earlier in the reverse
+    // walk) UndoStep removed must not error the whole rollback.
+    // Concretely: execute_create_runner's UndoLog might record
+    // {WriteFile newfile, SetMode newfile} (chmod after create);
+    // reverse walk: SetMode reverse (chmod the now-unlinked
+    // newfile — should NOT propagate ENOENT), then WriteFile
+    // reverse (unlink — already unlinked, fine).
+    // Or more typically: an enclosing rollback unlinks the file
+    // via a different step and SetMode's reverse sees ENOENT.
+    let tmp = tempfile::tempdir().unwrap();
+    let path = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
+        .unwrap()
+        .join("removed.file");
+    // Do NOT create the file — simulate it being gone.
+    let systemd = MockSystemd::default();
+    let config_shell = MockConfigShell::default();
+    let tarball = MockTarball::default();
+    let auth: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+    let deps = rollback_deps(&systemd, &config_shell, &tarball, &auth);
+    let paths = make_paths(&tmp);
+    let mut log = UndoLog::new();
+    log.push(UndoStep::SetMode {
+        path: path.clone(),
+        prior_mode: 0o644,
+    });
+    // Must not panic, must not return Err — the per-step undo
+    // catches the missing-path case (`path.exists()` short-
+    // circuits the chmod) and falls through to Ok(()).
+    undo(&log, &deps, &paths).expect("SetMode undo must tolerate missing path");
+}
+
+#[test]
+fn set_mode_describe_includes_path_and_prior_mode() {
+    // The rollback advisory in cmd_apply consumes
+    // UndoStep::describe(); pin the format so a future caller
+    // doesn't accidentally drop either field.
+    let step = UndoStep::SetMode {
+        path: Utf8PathBuf::from("/var/lib/ghars/default/ghars-a"),
+        prior_mode: 0o755,
+    };
+    let desc = step.describe();
+    assert!(
+        desc.contains("/var/lib/ghars/default/ghars-a"),
+        "describe must include path: {desc}"
+    );
+    assert!(
+        desc.contains("0o755"),
+        "describe must include prior_mode in 0oXXX form: {desc}"
+    );
+}
+
+#[test]
+fn set_mode_is_not_reverse_direction() {
+    // SetMode's inverse (chmod back to prior_mode) is lossless,
+    // so the `undo` walker must dispatch it through `undo_one`
+    // rather than the warn-and-skip lossy path.
+    let step = UndoStep::SetMode {
+        path: Utf8PathBuf::from("/x"),
+        prior_mode: 0o600,
+    };
+    assert!(
+        !step.is_reverse_direction(),
+        "SetMode must be forward-direction (lossless inverse)"
+    );
+}
+
+#[test]
 fn undo_github_registration_calls_run_remove_with_fresh_token() {
     // GitHubRegistration undo: mint fresh removal token via auth
     // registry, call config_shell.run_remove. Operator gets a

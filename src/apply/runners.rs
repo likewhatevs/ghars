@@ -1,7 +1,8 @@
 //! Per-runner action handlers: create / remove / update (in-place + recreate).
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
 
 use crate::Result;
 use crate::config::NetworkMode;
@@ -19,17 +20,217 @@ use super::undo::{Deps, UndoLog, UndoStep};
 use super::writes::{mint_token, read_prior, read_then_write_if_changed, write_record_undo};
 use camino::Utf8PathBuf;
 
-fn set_tree_permissions(root: &std::path::Path, mode: u32) -> crate::Result<()> {
-    let perms = std::fs::Permissions::from_mode(mode);
-    fs::set_permissions(root, perms.clone())?;
-    if root.is_dir() {
-        for entry in fs::read_dir(root)? {
-            let entry = entry?;
-            let path = entry.path();
-            fs::set_permissions(&path, perms.clone())?;
-            if path.is_dir() {
-                set_tree_permissions(&path, mode)?;
-            }
+/// chmod a path while recording the pre-call mode in the undo log
+/// so a rollback after a later step's failure can restore the
+/// previous mode.
+///
+/// SYMLINK SAFETY (PRIMARY DEFENSE): the helper opens the path
+/// with `O_RDONLY | O_NOFOLLOW` BEFORE chmod'ing it. `O_NOFOLLOW`
+/// causes the kernel to return ELOOP if the path is itself a
+/// symlink, so a symlink target is rejected ATOMICALLY at open
+/// time — no lstat-then-chmod race window. The chmod then runs
+/// against the path `/proc/self/fd/{fd}` — a kernel-magic path
+/// that resolves to the file the fd points to. Because the fd
+/// was bound at open time with O_NOFOLLOW protection, no
+/// subsequent path-resolution race can redirect the chmod to a
+/// different inode. This closes the planted-symlink vector that
+/// the deleted `set_tree_permissions` cascade exposed (a
+/// compromised sibling DynamicUser in the same trust_zone,
+/// which shares the trust-zone-allocated UID, planting
+/// `runner_home/tmp` or `runner_home/.credentials*` as a symlink
+/// to a sensitive root-owned path like `/etc/shadow`).
+///
+/// `O_RDONLY` is the access mode; apply runs as root so it
+/// always succeeds against the target's DAC. `O_PATH` would be
+/// lighter-weight but Linux rejects chmod via
+/// `/proc/self/fd/{fd}` when fd was opened O_PATH (returns
+/// ENOTSUP — the O_PATH handle is too "lightweight" for
+/// metadata mutation). `lchmod` is not in Rust's std, and the
+/// `fchmodat2(..., AT_SYMLINK_NOFOLLOW)` syscall (which is what
+/// glibc 2.38+ routes `fchmodat(..., AT_SYMLINK_NOFOLLOW)` to)
+/// was only added to Linux in 6.6 (commit 09da082b07bb), so the
+/// O_RDONLY+O_NOFOLLOW + /proc/self/fd pattern is the portable
+/// safe form for kernels >=4.x.
+///
+/// The Stage 1 clamp of `runner_home` to 0o755 in
+/// `execute_create_runner` is a SECONDARY defense layer: even if
+/// a hypothetical regression weakened the O_NOFOLLOW open here,
+/// a sibling DynamicUser could not write to runner_home (mode
+/// 0o755 root:root) during apply and so could not plant a
+/// symlink at any of the chmod sites under it. The pre-Stage-1
+/// entry sweep at `sweep_runner_home_for_planted_entries`
+/// catches PRE-existing planted entries; Stage 1 prevents NEW
+/// planting during the apply window; this O_NOFOLLOW helper
+/// catches anything that slips past both.
+///
+/// `prior_mode` is masked to `0o7777` — the standard permission
+/// bits including setuid / setgid / sticky. The pre-call mode is
+/// read via `metadata` on the opened fd's /proc/self/fd/{fd}
+/// path (fstat-equivalent on the fd target), atomic with the
+/// chmod. Caller is responsible for ensuring the path exists
+/// (the helper propagates ENOENT from the open call).
+///
+/// `context` is a short operator-readable label identifying the
+/// call site within `execute_create_runner` (e.g. `"tz_dir"`,
+/// `"runner_home (Stage 1)"`, `".credentials_rsaparams"`). It
+/// surfaces in the action label of the GharsError on failure so
+/// an operator reading the diagnostic can immediately tell which
+/// of the helper's eight call sites errored. The runner name is
+/// also included so multi-runner applies disambiguate per
+/// failing runner.
+///
+/// SetMode UndoLog push is GATED on `prior_mode != mode`: a
+/// no-op chmod (re-apply against an unchanged on-disk state)
+/// records nothing. This keeps the rollback advisory free of
+/// noise lines that describe chmod-to-current-mode operations.
+fn chmod_record_undo(
+    path: &camino::Utf8Path,
+    mode: u32,
+    context: &str,
+    log: &mut UndoLog,
+) -> crate::Result<()> {
+    // Open with O_RDONLY + O_NOFOLLOW: returns ELOOP if path is a
+    // symlink (refuses symlink targets atomically; no path-
+    // resolution race between an lstat and a chmod). Apply runs
+    // as root, so O_RDONLY succeeds against any file or directory
+    // owned by anyone. O_PATH would be lighter-weight but Linux
+    // does not let chmod operate on /proc/self/fd/{fd} when fd
+    // was opened O_PATH (returns ENOTSUP), so O_RDONLY is the
+    // simplest portable form.
+    // O_NONBLOCK defense-in-depth: a FIFO at the chmod target
+    // would otherwise block `open(O_RDONLY)` until a writer
+    // appears, hanging apply indefinitely. Even though
+    // `sweep_runner_home_for_planted_entries` rejects FIFOs at
+    // runner_home's direct children, adding O_NONBLOCK here is
+    // free and covers any future chmod target outside the
+    // sweep's scope (e.g. tz_dir, .ktstr, .ccache — currently
+    // root-owned but defended against a future regression
+    // weakening the parent dir mode).
+    let fd = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path.as_std_path())
+    {
+        Ok(fd) => fd,
+        Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
+            return Err(GharsError::Apply {
+                action: format!("chmod {context} at {path}"),
+                source: Box::new(GharsError::Validation(
+                    format!(
+                        "refusing to chmod through symlink at {path} \
+                         (context: {context}) — path-based chmod would \
+                         apply mode to the symlink target rather than the \
+                         symlink itself"
+                    ),
+                    "an attacker-planted symlink (stale from a failed \
+                     earlier apply or a compromised sibling DynamicUser \
+                     in the same trust_zone) is present at the chmod \
+                     target. Remove the symlink and re-run apply"
+                        .into(),
+                )),
+            });
+        }
+        Err(e) => {
+            return Err(GharsError::Apply {
+                action: format!("chmod {context} at {path}"),
+                source: Box::new(GharsError::Io(e)),
+            });
+        }
+    };
+    // Re-open the fd target through /proc/self/fd/{fd}, atomic
+    // with the open above (no path-resolution race). metadata()
+    // here follows the proc magic symlink to the fd target.
+    let proc_path = format!("/proc/self/fd/{}", fd.as_raw_fd());
+    let prior_mode = fs::metadata(&proc_path)?.permissions().mode() & 0o7777;
+    fs::set_permissions(&proc_path, std::fs::Permissions::from_mode(mode))?;
+    // fd drops here, closing the kernel handle. The /proc/self/fd
+    // pathname becomes invalid after this point — any later code
+    // accessing it would see ENOENT.
+    drop(fd);
+    // Gate the UndoLog push on a non-trivial mode change. A
+    // no-op chmod (current mode == requested mode) on a re-apply
+    // would otherwise pollute the rollback advisory with chmod-
+    // restore lines that describe restoring the mode to its
+    // current value.
+    if prior_mode != mode {
+        log.push(UndoStep::SetMode {
+            path: path.to_path_buf(),
+            prior_mode,
+        });
+    }
+    Ok(())
+}
+
+/// Pre-apply sweep of `runner_home` direct children. Refuses to
+/// proceed if any entry is a symlink, FIFO, device file, or
+/// socket. These can only arise from a sibling DynamicUser
+/// planting them during a prior failed apply's 0o777 window OR
+/// from operator manual intervention.
+///
+/// Why a sweep is needed even with chmod_record_undo's
+/// O_NOFOLLOW: `config.sh` runs BEFORE the post-config.sh
+/// chmod loop and uses .NET `File.WriteAllText` (no O_NOFOLLOW)
+/// — if a planted symlink exists at `runner_home/.credentials*`,
+/// config.sh writes OAuth credentials + RSA private key through
+/// the symlink to an attacker target before the chmod loop runs
+/// and notices. The credentials are already exfiltrated by then.
+///
+/// Why also reject FIFO/device/socket: opening a FIFO with
+/// `O_RDONLY` blocks until a writer opens — apply would hang
+/// indefinitely in chmod_record_undo. Devices and sockets have
+/// similar uncovered semantics through path-based file ops.
+///
+/// Why direct children only (not recursive): the recursive
+/// approach is what the deleted `set_tree_permissions` cascade
+/// did, and it has TOCTOU-during-walk problems of its own. The
+/// chmod and config.sh code paths only touch direct children
+/// of runner_home (`.runner`, `.credentials*`, `tmp`) plus
+/// the bin.X.Y.Z/ subtree (which is laid down by
+/// `install_binary` after this sweep with mode bits from the
+/// tarball headers). Deeper paths are not on the attack
+/// surface.
+fn sweep_runner_home_for_planted_entries(home: &std::path::Path) -> crate::Result<()> {
+    let entries = match fs::read_dir(home) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(GharsError::Io(e)),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        let meta = fs::symlink_metadata(&path)?;
+        let ft = meta.file_type();
+        if !ft.is_file() && !ft.is_dir() {
+            let kind = if ft.is_symlink() {
+                "symlink"
+            } else if ft.is_fifo() {
+                "FIFO"
+            } else if ft.is_block_device() {
+                "block device"
+            } else if ft.is_char_device() {
+                "char device"
+            } else if ft.is_socket() {
+                "socket"
+            } else {
+                "non-regular entry"
+            };
+            return Err(GharsError::Apply {
+                action: format!("pre-apply sweep of {}", home.display()),
+                source: Box::new(GharsError::Validation(
+                    format!(
+                        "refusing to proceed: planted {} at {} — \
+                         config.sh would write credentials through it \
+                         before the chmod loop can refuse",
+                        kind,
+                        path.display()
+                    ),
+                    "investigate runner_home: a sibling DynamicUser in \
+                     the same trust_zone may have planted this entry \
+                     during a prior failed apply's 0o777 window. Remove \
+                     the entry and re-run apply"
+                        .into(),
+                )),
+            });
         }
     }
     Ok(())
@@ -73,6 +274,19 @@ pub(super) fn execute_create_runner(
     let spec = &plan.spec;
     let runner_home = paths.runner_home(&spec.trust_zone, &spec.name);
 
+    // Trust-zone parent dir. fs::create_dir_all is idempotent and
+    // creates it as a side effect of the .ktstr / .ccache calls
+    // below, but making it explicit closes the gap if those children
+    // become conditional. 0o711 = root rwx, others execute-only:
+    // DynamicUser can descend into /var/lib/ghars/{tz}/ghars-{name}/
+    // and /var/lib/ghars/{tz}/.ktstr/ etc. but can NOT `ls` the
+    // trust-zone dir. Belt for out-of-sandbox processes; the systemd
+    // BindPaths inside the runner sandbox only surface the runner's
+    // own trust_zone path anyway.
+    let tz_dir = paths.state_dir.join(&spec.trust_zone);
+    fs::create_dir_all(tz_dir.as_std_path())?;
+    chmod_record_undo(&tz_dir, 0o711, "tz_dir", log)?;
+
     // Clean up stale DynamicUser symlinks from previous runs.
     let home_std = runner_home.as_std_path();
     if let Ok(meta) = fs::symlink_metadata(home_std) {
@@ -82,10 +296,70 @@ pub(super) fn execute_create_runner(
     }
     fs::create_dir_all(home_std)?;
 
+    // Pre-Stage-1 entry sweep: refuse to proceed if any direct child
+    // of runner_home is a symlink, FIFO, device file, or socket.
+    // chmod_record_undo's O_NOFOLLOW defense catches a symlink at
+    // a CHMOD TARGET path, but config.sh runs BEFORE the credential-
+    // file chmod loop and uses .NET File.WriteAllText (no O_NOFOLLOW)
+    // — if a sibling DynamicUser planted runner_home/.credentials*
+    // as a symlink during a prior failed apply's 0o777 window,
+    // config.sh would write OAuth credentials + RSA private key
+    // through the symlink to an attacker target BEFORE the post-
+    // config.sh chmod_record_undo loop runs and notices. The
+    // credentials are already exfiltrated by then.
+    //
+    // The sweep enumerates runner_home's direct children via
+    // symlink_metadata (lstat — does NOT follow), refuses to
+    // proceed if any are non-regular-non-dir. FIFO/device/socket
+    // entries would also cause apply to block on subsequent reads
+    // (FIFO open with O_RDONLY blocks until a writer opens, hanging
+    // apply indefinitely).
+    //
+    // Recursive sweep would re-introduce the same TOCTOU-during-
+    // walk class as the deleted set_tree_permissions cascade — we
+    // intentionally stay non-recursive. Only direct children matter:
+    // config.sh and the post-config.sh chmod loop write at
+    // runner_home/.runner / .credentials / .credentials_rsaparams,
+    // and chmod runner_home/tmp + runner_home itself. Deeper paths
+    // aren't touched by either code path.
+    sweep_runner_home_for_planted_entries(home_std)?;
+
+    // Stage 1 of runner_home chmod: clamp to 0o755 (root rwx, others
+    // r-x) for the duration of apply. Defense-in-depth on top of
+    // chmod_record_undo's O_NOFOLLOW: even if a future regression
+    // weakened the helper's symlink refusal, the 0o755 clamp denies
+    // sibling DynamicUser write access to runner_home so they
+    // cannot plant new symlinks DURING apply between the pre-
+    // Stage-1 sweep above and Stage 2 below. The pre-Stage-1 sweep
+    // catches PRE-existing planted entries; Stage 1 prevents NEW
+    // planting during the apply window.
+    //
+    // The dir needs to be traversable by root throughout — install_
+    // binary writes bin.X.Y.Z/ under it, config.sh writes .runner /
+    // .credentials* into it, ghars chmods those files after.
+    //
+    // Stage 2 below (just before deps.systemd.start_unit) re-opens
+    // runner_home to 0o777 so the DynamicUser allocated at unit
+    // start time can create _work/, _diag/, and operator toolchain
+    // caches:
+    //   - Runner.Listener creating `_work/` (Runner.cs:418).
+    //   - HostTraceListener creating `_diag/` (HostTraceListener.cs:29).
+    //   - workflow steps writing job artifacts under `_work/`.
+    //   - operator/runner-toolchain caches (~/.cargo, ~/.npm, ~/.config, ...).
+    // 0o777 is the right unit-runtime mode under the current
+    // architecture: the DynamicUser UID is not NSS-resolvable on
+    // systemd<256, so chown-by-name fails and Manager.RefUid is the
+    // narrower alternative once the runner unit has started.
+    chmod_record_undo(&runner_home, 0o755, "runner_home (Stage 1)", log)?;
+
     // Per-runner tmp dir so TMPDIR points somewhere the sccache server
-    // can reach (PrivateTmp isolates /tmp per unit).
+    // can reach (PrivateTmp isolates /tmp per unit). Safe to chmod
+    // 0o777 here because runner_home is currently 0o755 — no sibling
+    // DynamicUser can plant `runner_home/tmp` as a symlink between
+    // our create_dir_all and chmod.
     let runner_tmp = runner_home.join("tmp");
     fs::create_dir_all(runner_tmp.as_std_path())?;
+    chmod_record_undo(&runner_tmp, 0o777, "runner_tmp", log)?;
 
     // Shared .ktstr directory at the trust-zone level. All runners in the
     // same trust_zone bind this path into their sandbox for KTSTR_LOCK_DIR
@@ -93,12 +367,12 @@ pub(super) fn execute_create_runner(
     // unit-start time, unknown at apply time) can write to it; actual
     // isolation is at the trust-zone UID layer (different trust zones get
     // different UIDs).
-    let ktstr_dir = paths.state_dir.join(&spec.trust_zone).join(".ktstr");
+    let ktstr_dir = tz_dir.join(".ktstr");
     fs::create_dir_all(ktstr_dir.as_std_path())?;
-    fs::set_permissions(ktstr_dir.as_std_path(), std::fs::Permissions::from_mode(0o777))?;
-    let ccache_dir = paths.state_dir.join(&spec.trust_zone).join(".ccache");
+    chmod_record_undo(&ktstr_dir, 0o777, ".ktstr", log)?;
+    let ccache_dir = tz_dir.join(".ccache");
     fs::create_dir_all(ccache_dir.as_std_path())?;
-    fs::set_permissions(ccache_dir.as_std_path(), std::fs::Permissions::from_mode(0o777))?;
+    chmod_record_undo(&ccache_dir, 0o777, ".ccache", log)?;
 
     // No useradd / gpasswd step. The runner unit declares
     // DynamicUser=yes with `User=ghars-tz-<TRUST_ZONE>` set in the
@@ -246,12 +520,86 @@ pub(super) fn execute_create_runner(
     write_record_undo(&bin_dir.join(".path"), rendered.path_file.as_bytes(), log)?;
     write_record_undo(&bin_dir.join(".env"), rendered.env_file.as_bytes(), log)?;
 
-    // 5d) chmod the trust-zone tree so the DynamicUser can write.
-    // apply runs as root; DynamicUser UID is not resolvable via NSS
-    // (systemd-userdb on 252), so chown by name fails. 0777 is safe
-    // because trust-zone isolation is at the UID/BindPaths layer.
-    let tz_dir = paths.state_dir.join(&spec.trust_zone);
-    set_tree_permissions(tz_dir.as_std_path(), 0o777)?;
+    // 5d) Normalize post-config.sh file modes to DynamicUser-READ.
+    // Upstream actions/runner writes three files in runner_home:
+    //   - `.runner` — runner identity JSON (IOUtil.SaveObject ->
+    //     File.WriteAllText; mode is 0o666 & ~umask, so 0o644 with
+    //     the default 0o022 umask, but could be 0o600 if ghars was
+    //     invoked with a non-default umask like 0o077).
+    //   - `.credentials` — OAuth credentials JSON (same call shape;
+    //     same umask exposure).
+    //   - `.credentials_rsaparams` — RSA private key. Upstream
+    //     explicitly `chmod 600` in
+    //     src/Runner.Listener/Configuration/RSAFileKeyManager.cs:33
+    //     (the RSA key signs OAuth assertions for credential
+    //     refresh), so this file lands at 0o600 regardless of
+    //     umask.
+    //
+    // All three are root:root after config.sh (which ghars invokes
+    // as root). The runner unit runs under DynamicUser; the
+    // DynamicUser-allocated UID is in neither the owner nor any
+    // group of root, so 0o600 / 0o640 are unreadable to it. Without
+    // a normalize step, a non-default umask on the ghars host
+    // breaks credential refresh and the runner stops accepting
+    // jobs.
+    //
+    // Force 0o644 (owner rw, world r) on each file unconditionally
+    // — defense-in-depth that does not depend on the
+    // ghars-process-inherited umask being 0o022. Pre-exec umask
+    // pinning via CommandExt::pre_exec (which requires unsafe,
+    // forbidden by workspace lint) was the original plan, but
+    // post-hoc chmod is the cleaner mechanism here: it works
+    // regardless of WHICH process wrote the file (config.sh,
+    // a future helper, an upstream-runner-version that adds a
+    // new credential file with its own explicit chmod) AND
+    // doesn't mutate process-global umask state that other code
+    // paths in the same apply may depend on. nix::sys::stat::umask
+    // exposes a safe wrapper (would unblock the pre-exec plan)
+    // but using it process-wide has the same multi-writer
+    // ambiguity — post-hoc chmod is the right level.
+    //
+    // Files missing on disk are tolerated as a no-op — config.sh
+    // may legitimately omit `.credentials_rsaparams` on a
+    // PAT-authenticated runner, or skip a write if registration
+    // takes a path that doesn't materialize the file.
+    //
+    // The bin.X.Y.Z/ tree (extracted by deps.tarball.install_binary
+    // above) keeps the modes the tarball headers wrote — 0o755 for
+    // runsvc.sh / Runner.Listener / native binaries, 0o644 for
+    // managed assemblies, 0o644 for the .env / .path files
+    // write_record_undo just laid down. The pre-fix
+    // `set_tree_permissions(tz_dir, 0o777)` cascade opened ALL of
+    // these to 0o777, making runsvc.sh world-writable — a
+    // workflow-step-RCE persistence vector. With the cascade gone,
+    // those modes stay correct.
+    //
+    // The cascade also used path-based `fs::set_permissions` which
+    // follows symlinks (it's chmod(2), not lchmod). Combined with
+    // the recursive walk and ghars-runs-as-root, an operator-
+    // writable path under runner_home with a planted symlink to,
+    // e.g., /etc would have caused root to chmod /etc/* → 0o777, a
+    // full local privilege escalation — the well-known
+    // TOCTOU-during-recursive-chmod-on-operator-writable-trees
+    // vulnerability class. The deletion closes the class by
+    // construction (no walk → no follow), not by trying to walk
+    // safely.
+    let mut normalized = Vec::with_capacity(3);
+    for basename in [".runner", ".credentials", ".credentials_rsaparams"] {
+        let path = runner_home.join(basename);
+        if path.as_std_path().exists() {
+            chmod_record_undo(&path, 0o644, basename, log)?;
+            normalized.push(basename);
+        }
+    }
+    // Operator visibility: surface the per-CreateRunner credential
+    // normalization so an operator running under non-default umask
+    // can see ghars corrected modes. tracing::debug! keeps it out
+    // of the default log surface; opt in via `RUST_LOG=ghars=debug`.
+    tracing::debug!(
+        runner = %spec.name,
+        normalized = ?normalized,
+        "normalized config.sh credential file modes to 0o644 (DynamicUser READ)"
+    );
 
     // 6) Write unit file + drop-ins. The reset-on-empty validation
     //    already ran inside `render_runner_unit`.
@@ -291,6 +639,16 @@ pub(super) fn execute_create_runner(
     //     join succeeds. Fail-closed contract: missing netns =>
     //     runner refuses to start. Open mode is a no-op.
     provision_netns_artifacts(spec, deps, paths, log)?;
+
+    // Stage 2 of runner_home chmod: open to 0o777 so the
+    // DynamicUser allocated at unit start can write `_work/`,
+    // `_diag/`, and toolchain caches under the per-runner home.
+    // This is the LAST mutation under runner_home before the unit
+    // starts, so no later chmod follows a sibling-DynamicUser-
+    // planted symlink (the only file-mode mutations between here
+    // and start_unit are systemd unit / drop-in writes outside
+    // runner_home).
+    chmod_record_undo(&runner_home, 0o777, "runner_home (Stage 2)", log)?;
 
     deps.systemd.start_unit(&unit_name)?;
     log.push(UndoStep::StartUnit {

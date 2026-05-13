@@ -826,6 +826,7 @@ pub(super) fn render_apply_emission(
 /// - `enabled UNIT`            → `systemctl disable UNIT`
 /// - `disabled UNIT`           → `systemctl enable UNIT`
 /// - `registered runner NAME …` → `config.sh remove --token <fresh>`
+/// - `chmod PATH (was 0oMODE)` → `chmod 0oMODE PATH`
 ///
 /// Entries with empty step lists (synthetic `daemon_reload` post-loop
 /// failure; actions that errored before recording any side effect)
