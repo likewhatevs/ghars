@@ -223,6 +223,121 @@ fn spec_hash_unchanged_on_labels_reorder() {
     assert_eq!(spec_hash(&spec1), spec_hash(&spec2));
 }
 
+/// Pins TRIPLE-SORT COUPLING site 2 (render_identity defensive
+/// re-sort at `X-Ghars-Labels=` emission). `spec_hash_unchanged_on
+/// _labels_reorder` above pins site 1 (merge_defaults). This test
+/// extends through render_runner_unit to assert byte-identity of
+/// the identity drop-in across label permutations — so a regression
+/// that drops the defensive sort in render_identity (or that
+/// silently re-orders labels between merge and emit) fails here
+/// before reaching production.
+///
+/// Three permutations of the same label set are constructed,
+/// merged through merge_defaults (which sorts upstream), hashed,
+/// rendered, and compared. Both the full 00-ghars.conf body and
+/// the specific X-Ghars-Labels= CSV are pinned. A 4th block then
+/// bypasses merge_defaults by directly mutating an
+/// EffectiveRunnerSpec's labels Vec to an unsorted order, isolating
+/// site 2's defensive sort from site 1 — a regression that removes
+/// only render_identity's defensive sort would still pass the
+/// upstream three blocks (their inputs arrive pre-sorted from
+/// merge_defaults) but fail the bypass assertion.
+#[test]
+fn render_unchanged_on_labels_reorder_post_merge() {
+    let mk_runner = |labels: Vec<String>| {
+        let mut r = minimal_runner("a");
+        r.labels = labels;
+        r
+    };
+    let r1 = mk_runner(vec!["alpha".into(), "beta".into(), "gamma".into()]);
+    let r2 = mk_runner(vec!["gamma".into(), "alpha".into(), "beta".into()]);
+    let r3 = mk_runner(vec!["beta".into(), "gamma".into(), "alpha".into()]);
+
+    let defaults = Defaults::default();
+    let mk_spec = |runner: &RunnerSpec| -> EffectiveRunnerSpec {
+        let mut spec = merge_defaults(
+            runner,
+            &defaults,
+            "pat".into(),
+            vec![],
+            None,
+            None,
+            None,
+            Arch::X86_64,
+            "/etc/ghars/ghars.toml".into(),
+        );
+        spec.spec_hash = spec_hash(&spec);
+        spec
+    };
+    let spec1 = mk_spec(&r1);
+    let spec2 = mk_spec(&r2);
+    let spec3 = mk_spec(&r3);
+
+    assert_eq!(
+        spec_hash(&spec1),
+        spec_hash(&spec2),
+        "permutation 1→2 spec_hash mismatch — site 1 (merge_defaults sort) regressed"
+    );
+    assert_eq!(
+        spec_hash(&spec1),
+        spec_hash(&spec3),
+        "permutation 1→3 spec_hash mismatch — site 1 (merge_defaults sort) regressed"
+    );
+
+    let rendered1 = crate::systemd::render_runner_unit(&spec1).unwrap();
+    let rendered2 = crate::systemd::render_runner_unit(&spec2).unwrap();
+    let rendered3 = crate::systemd::render_runner_unit(&spec3).unwrap();
+
+    assert_eq!(
+        rendered1.drop_ins.get("00-ghars.conf"),
+        rendered2.drop_ins.get("00-ghars.conf"),
+        "permutation 1→2 produced different 00-ghars.conf bytes — \
+         site 2 (render_identity defensive sort at X-Ghars-Labels=) regressed"
+    );
+    assert_eq!(
+        rendered1.drop_ins.get("00-ghars.conf"),
+        rendered3.drop_ins.get("00-ghars.conf"),
+        "permutation 1→3 produced different 00-ghars.conf bytes — \
+         site 2 (render_identity defensive sort at X-Ghars-Labels=) regressed"
+    );
+
+    let body = rendered1.drop_ins.get("00-ghars.conf").unwrap();
+    let labels_line = body
+        .lines()
+        .find(|l| l.starts_with("X-Ghars-Labels="))
+        .expect("00-ghars.conf must emit X-Ghars-Labels=");
+    assert_eq!(
+        labels_line, "X-Ghars-Labels=alpha,beta,gamma",
+        "X-Ghars-Labels= must be ASCII byte-order ascending CSV regardless \
+         of operator TOML order; got {labels_line:?}"
+    );
+
+    // Direct-construct bypass: prove site 2 (render_identity defensive
+    // sort) fires on its own, not just downstream of site 1. The
+    // assertions above route through merge_defaults which sorts upstream
+    // — so a regression that removed render_identity's defensive sort
+    // would be masked there (every spec arriving at render already has
+    // sorted labels). Bypass merge_defaults by mutating an
+    // EffectiveRunnerSpec's labels Vec directly to an unsorted order,
+    // re-hash, render, and assert the X-Ghars-Labels= CSV is canonical.
+    // A site-2 regression fails here with the unsorted CSV.
+    let mut bypass = spec1.clone();
+    bypass.labels = vec!["zebra".into(), "alpha".into(), "middle".into()];
+    bypass.spec_hash = spec_hash(&bypass);
+    let rendered_bypass = crate::systemd::render_runner_unit(&bypass).unwrap();
+    let bypass_body = rendered_bypass.drop_ins.get("00-ghars.conf").unwrap();
+    let bypass_labels_line = bypass_body
+        .lines()
+        .find(|l| l.starts_with("X-Ghars-Labels="))
+        .expect("00-ghars.conf must emit X-Ghars-Labels=");
+    assert_eq!(
+        bypass_labels_line, "X-Ghars-Labels=alpha,middle,zebra",
+        "site 2 (render_identity defensive sort at X-Ghars-Labels=) \
+         regressed: direct-construct bypass produced non-canonical \
+         CSV: {bypass_labels_line:?}"
+    );
+}
+
 /// Property: two TOML files that produce semantically-identical
 /// configs (but with formatting differences — comments,
 /// whitespace, key order across runner blocks) must lower to the
