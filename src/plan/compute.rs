@@ -493,10 +493,23 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                             "uncovered: spec_hash differs but neither Stage 1 (annotation \
                              diff) nor Stage 2 (drop-in body diff) detected the change. \
                              Falling through to in-place update (rewrites X-Ghars-Spec-Hash \
-                             in 00-ghars.conf and restarts on any byte-changed file). This \
-                             indicates a coverage gap in classify_recreate_reasons or a non-\
-                             deterministic renderer; investigate if seen outside the \
-                             RENDERER_SCHEMA-bump deploy path."
+                             in 00-ghars.conf and restarts on any byte-changed file). \
+                             Investigate if seen outside the expected deploy paths: a \
+                             RENDERER_SCHEMA bump (renderer output changed for the same \
+                             EffectiveRunnerSpec input), a Some(empty) → None \
+                             normalization in lower_to_effective (operator-typed empty \
+                             strings or empty structs now collapse to None matching the \
+                             no-input case), or an operator edit to environment.vars / \
+                             path_prepend / path_append (these flip spec_hash via the \
+                             .env / .path renderer output but currently have no \
+                             X-Ghars-* annotation tracking them in Stage 1 and the .env \
+                             / .path files are rendered into separate \
+                             RunnerPlan.env_file / .path_file fields, not into the \
+                             rendered.drop_ins BTreeMap that Stage 2's body diff \
+                             iterates). If none applies, this \
+                             indicates a coverage gap in \
+                             classify_recreate_reasons_from_annotations or a non-\
+                             deterministic renderer; file a bug."
                         );
                     }
 
