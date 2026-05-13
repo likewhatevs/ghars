@@ -123,7 +123,7 @@ cache pool unit's `00-ghars.conf` drop-in (`ghars-cache@POOL.service.d/`):
 |---|---|---|---|
 | `X-Ghars-Spec-Hash` | `sha256:<hex>` — cache pool's per-pool digest (`cache_pool_hash()` output, same format as runner's spec_hash) | populated by `into_cache_pool_plan` (computes `cache_pool_hash()` over canonical-JSON binding + `RENDERER_SCHEMA`, NOT operator-supplied — value flips on `RENDERER_SCHEMA` bumps) | always |
 | `X-Ghars-Pool-Name` | identifier string | `EffectiveCacheBinding.name` | always |
-| `X-Ghars-Pool-Kinds` | comma-csv of `ccache` / `sccache` enum names, sorted alphabetically | `EffectiveCacheBinding.kinds` (sorted at emission) | always |
+| `X-Ghars-Pool-Kinds` | comma-csv of `ccache` / `sccache` / `ktstr` enum names, sorted alphabetically | `EffectiveCacheBinding.kinds` (sorted at emission) | always |
 | `X-Ghars-Config-Source` | path or identifier string | `config_source` argument threaded from `into_cache_pool_plan` to `render_cache_drop_in` (matches per-runner X-Ghars-Config-Source for the same apply) | always |
 
 Notes:

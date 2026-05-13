@@ -1150,12 +1150,13 @@ pub(super) fn lower_to_effective(
     // per-kind invariant so neither bypass can deliver a silently
     // shadowed runtime config to render.
     //
-    // Same KINDS tuple shape as the config-load validator: append a
-    // new variant IFF its renderer emits per-pool / per-binding env
-    // vars that clobber under last-writer-wins. A future kind with
-    // no per-pool emissions (e.g. a hypothetical metadata-only
-    // future kind like ktstr if it stays metadata-only) should
-    // NOT be added.
+    // Same per-kind enforcement shape as the config-load validator:
+    // add a `process_constraint` match arm IFF the new variant's
+    // renderer emits per-pool / per-binding env vars that clobber
+    // under last-writer-wins. A kind with no per-pool emissions
+    // should still appear in `CacheKind::ALL` for iteration but its
+    // match arm can describe a "no constraint" reason or be omitted
+    // by routing the kind through an early `continue`.
     {
         use crate::config::CacheKind;
         for &kind in CacheKind::ALL {
@@ -1172,6 +1173,10 @@ pub(super) fn lower_to_effective(
                     CacheKind::Sccache => "sccache supports only ONE server UDS per process; \
                                            the rendered SCCACHE_SERVER_UDS would be clobbered \
                                            last-writer-wins",
+                    CacheKind::Ktstr => "ktstr resolves a single KTSTR_CACHE_DIR per process \
+                                         (env::var lookup with no list semantics); \
+                                         the rendered KTSTR_CACHE_DIR / KTSTR_LOCK_DIR \
+                                         would be clobbered last-writer-wins",
                 };
                 return Err(GharsError::Validation(
                     format!(

@@ -313,14 +313,12 @@ pub(super) fn validate_no_duplicate_caches(cfg: &Config) -> Result<()> {
 /// `SCCACHE_SERVER_UDS`. Multi-pool-of-same-kind silently reduces to
 /// "one effective pool, last-wins on `*_MAXSIZE`".
 ///
-/// Adding a new `CacheKind` variant (e.g. a hypothetical future
-/// ktstr first-class kind): append a tuple to `KINDS` IFF the
-/// variant's renderer emits per-pool `Environment=KEY=value` or
-/// per-binding `.env KEY=value` entries that would clash with
-/// another binding of the same kind.
-/// Singleton-per-kind enforcement is correct only when the per-pool
-/// emissions actually exist — a future kind that emits no per-pool
-/// env entries doesn't need this gate.
+/// Adding a new `CacheKind` variant: append a `lww_reason` match
+/// arm IFF the variant's renderer emits per-pool `Environment=KEY=value`
+/// or per-binding `.env KEY=value` entries that would clash with
+/// another binding of the same kind. Singleton-per-kind enforcement is
+/// correct only when the per-pool emissions actually exist — a kind
+/// that emits no per-pool env entries doesn't need this gate.
 ///
 /// # Errors
 ///
@@ -348,6 +346,13 @@ pub(super) fn validate_no_duplicate_cache_kinds(cfg: &Config) -> Result<()> {
                 "SCCACHE_SERVER_UDS is single-valued and additional pools \
                  would be silently shadowed by systemd's last-writer-wins \
                  Environment= semantics"
+            }
+            CacheKind::Ktstr => {
+                "ghars wires a trust-zone-shared KTSTR_CACHE_DIR + KTSTR_LOCK_DIR \
+                 (/var/lib/ghars/<TRUST_ZONE>/.ktstr) — ktstr resolves a single \
+                 KTSTR_CACHE_DIR per process (env::var lookup with no list \
+                 semantics), so multiple ktstr pools cannot deliver distinct \
+                 cache dirs and the env emission would be silently shadowed"
             }
         }
     };
@@ -394,8 +399,9 @@ pub(super) fn validate_no_duplicate_cache_kinds(cfg: &Config) -> Result<()> {
 /// `render_cache_drop_in`'s ccache-only else branch which emits
 /// `ExecStart=<sleep_path> infinity` — a silently-dead cache pool
 /// unit that runs but contributes no env vars and serves no
-/// workload. The operator probably meant `kinds = ["ccache"]` or
-/// `kinds = ["sccache"]`; surfacing the error at config load gives
+/// workload. The operator probably meant `kinds = ["ccache"]`,
+/// `kinds = ["sccache"]`, or `kinds = ["ktstr"]`; surfacing the
+/// error at config load gives
 /// a scoped `cache_pool "NAME":` prefix instead of a silent dead
 /// pool that operators only notice when workflows fail to find
 /// expected env vars.
@@ -409,17 +415,19 @@ pub(super) fn validate_no_duplicate_cache_kinds(cfg: &Config) -> Result<()> {
 /// # Errors
 ///
 /// `GharsError::Validation` naming the pool and recommending the
-/// canonical fixes (specify at least one of `ccache`, `sccache`).
+/// canonical fixes (specify at least one of `ccache`, `sccache`,
+/// or `ktstr`).
 pub(super) fn validate_cache_pool_kinds_nonempty(cfg: &Config) -> Result<()> {
     for (name, pool) in &cfg.cache_pools {
         if pool.kinds.is_empty() {
             return Err(GharsError::Validation(
                 format!("cache_pool {name:?}: declared empty `kinds = []`"),
-                "specify at least one of `ccache` or `sccache` in [cache_pools.NAME] \
-                 kinds — an empty kinds list contributes no per-pool emissions and \
-                 produces a silently-dead `ghars-cache@NAME.service` unit (ExecStart \
-                 falls through to `sleep infinity` with no env vars) that operators \
-                 only notice when workflows fail to find expected env vars"
+                "specify at least one of `ccache`, `sccache`, or `ktstr` in \
+                 [cache_pools.NAME] kinds — an empty kinds list contributes no \
+                 per-pool emissions and produces a silently-dead \
+                 `ghars-cache@NAME.service` unit (ExecStart falls through to \
+                 `sleep infinity` with no env vars) that operators only notice \
+                 when workflows fail to find expected env vars"
                     .into(),
             ));
         }

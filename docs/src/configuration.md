@@ -14,7 +14,7 @@ tolerating unknown keys.
 ```toml
 [defaults]                # global defaults, inherited by every [[runner]]
 [auth.NAME]               # one auth source per block, keyed by identifier
-[cache_pools.NAME]        # ccache and/or sccache pool, keyed by identifier
+[cache_pools.NAME]        # ccache, sccache, and/or ktstr pool, keyed by identifier
 [network.NAME]            # network policy (netns or open mode), keyed by identifier
 [proxy]                   # singleton — applies to every runner unless overridden
 [hooks]                   # singleton — pre/post-job hook scripts

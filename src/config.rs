@@ -870,7 +870,7 @@ fn default_trust_zone() -> String {
     "default".into()
 }
 
-/// Per-pool cache kind. ccache and sccache only.
+/// Per-pool cache kind. ccache, sccache, and ktstr.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CacheKind {
@@ -878,6 +878,25 @@ pub enum CacheKind {
     Ccache,
     /// sccache via per-pool single-server.
     Sccache,
+    /// ktstr (kernel scheduler test harness) cache-pool marker.
+    /// Currently a forward-compatibility declaration: declaring
+    /// `[cache_pools.NAME] kinds = ["ktstr"]` parses cleanly and
+    /// passes both validator layers, but does NOT yet gate
+    /// runtime behavior. `KTSTR_LOCK_DIR` + `KTSTR_CACHE_DIR` env
+    /// vars (rendered at `render_runner_env_file` +
+    /// `render_runner_drop_in`) and the
+    /// `/var/lib/ghars/<TRUST_ZONE>/.ktstr` dir materialization
+    /// (in `execute_create_runner`) are still UNCONDITIONAL for
+    /// every runner regardless of binding. Pool-side: ktstr-only
+    /// pools currently route through the per-pool `sleep` stub
+    /// fall-through branch of `render_cache_drop_in` like
+    /// ccache-only pools (no daemon, no `ExecStart` beyond the
+    /// idle keepalive). The runtime-gating work — mirroring the
+    /// `has_ccache` gate at the env-emission + dir-creation sites
+    /// + bumping `RENDERER_SCHEMA` so existing deploys cascade
+    /// through the in-place rewrite path — is tracked as a
+    /// follow-up task.
+    Ktstr,
 }
 
 impl CacheKind {
@@ -888,18 +907,19 @@ impl CacheKind {
     /// here to enforce singleton-per-kind). Adding a variant here
     /// surfaces every consumer at compile time via exhaustive
     /// `match self.label()` arms.
-    pub const ALL: &'static [Self] = &[Self::Ccache, Self::Sccache];
+    pub const ALL: &'static [Self] = &[Self::Ccache, Self::Sccache, Self::Ktstr];
 
     /// Operator-facing label matching the TOML enum-rename
     /// (`#[serde(rename_all = "snake_case")]` above): lowercase
-    /// `"ccache"` / `"sccache"`. Used by validator error messages so
-    /// the operator sees the same identifier they wrote in
-    /// `[cache_pools.NAME].kinds = ["..."]`.
+    /// `"ccache"` / `"sccache"` / `"ktstr"`. Used by validator error
+    /// messages so the operator sees the same identifier they wrote
+    /// in `[cache_pools.NAME].kinds = ["..."]`.
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
             Self::Ccache => "ccache",
             Self::Sccache => "sccache",
+            Self::Ktstr => "ktstr",
         }
     }
 }
