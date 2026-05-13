@@ -126,7 +126,7 @@ pub struct RenderedUnit {
 /// false negatives (a missed bump) leave operators stranded on stale
 /// drop-ins requiring manual `rm -rf` to force convergence (the bug
 /// this constant exists to prevent).
-pub const RENDERER_SCHEMA: u32 = 1;
+pub const RENDERER_SCHEMA: u32 = 2;
 
 // --- Runner template body (Part 9) ---------------------------------------
 
@@ -1419,12 +1419,26 @@ fn render_cache_pool(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
             // mechanism. No daemon, no Requires=, no BindPaths to a
             // pool dir — runners with the same trust_zone share the
             // ccache directory by virtue of the shared DynamicUser UID.
-            // CCACHE_DIR points at the shared HOME location so every
-            // runner in the trust_zone hits the same backing store.
-            let _ = writeln!(s, "Environment=CCACHE_DIR=%h/.cache/ccache/{}", c.name);
-            // Pool-size override; the template defaults to 200G but the
-            // pool's configured size wins.
-            let _ = writeln!(s, "Environment=CCACHE_MAXSIZE={}", c.size);
+            //
+            // CCACHE_DIR + CCACHE_MAXSIZE are emitted ONLY by LAYER 2
+            // (`render_runner_env_file` → `bin.X.Y.Z/.env`). No LAYER 1
+            // `Environment=` emission here: Runner.Listener's
+            // `LoadAndSetEnv` runs AS THE FIRST STATEMENT of `Main` —
+            // BEFORE any subprocess spawn, BEFORE HostContext setup,
+            // BEFORE any other Runner.Listener code — and (verified
+            // in actions/runner at `src/Runner.Listener/Program.cs`)
+            // reads `.env` line-by-line, calling
+            // `Environment.SetEnvironmentVariable` per line. So a
+            // LAYER 1 `Environment=CCACHE_DIR=` here would be
+            // overwritten by LAYER 2 before any consumer reads it,
+            // making it dead code that misleads operators reading
+            // `systemctl cat` (the per-pool path it would show is
+            // never the path actually used at runtime).
+            //
+            // ccache invocation path: workflow step runs `gcc` →
+            // PATH wrapper at `/usr/lib64/ccache/gcc` → ccache reads
+            // CCACHE_DIR from process env → trust-zone-shared path
+            // from LAYER 2.
         }
         if c.kinds.contains(&CacheKind::Sccache) {
             let _ = writeln!(
@@ -1835,12 +1849,23 @@ pub fn render_cache_drop_in(
         s.push_str("Environment=SCCACHE_IDLE_TIMEOUT=0\n");
     }
     if serves_ccache {
-        let _ = writeln!(
-            s,
-            "Environment=CCACHE_DIR=%C/ghars/pools/{}/ccache",
-            binding.name
-        );
-        let _ = writeln!(s, "Environment=CCACHE_MAXSIZE={}", binding.size);
+        // No CCACHE_DIR / CCACHE_MAXSIZE emission here. This drop-in
+        // is on the CACHE POOL unit (`ghars-cache@NAME.service`),
+        // not the runner unit. For ccache-only pools, the cache pool
+        // unit's ExecStart is `<sleep_path> infinity` (the stub at
+        // the `else` branch below) — it never reads CCACHE_*. For
+        // combined-kind pools the cache pool unit runs
+        // `sccache --start-server` (the `if serves_sccache` ExecStart
+        // below); sccache is a separate tool whose documented config
+        // surface uses SCCACHE_* exclusively, no CCACHE_* reads.
+        //
+        // Workflow-step ccache invocations get CCACHE_DIR from the
+        // RUNNER unit's LAYER 2 `.env` (trust-zone-shared, gated on
+        // has_ccache by `render_runner_env_file`), NOT from this
+        // cache-pool-unit drop-in. Prior emission was dead code that
+        // misled operators reading `systemctl cat
+        // ghars-cache@NAME.service` (the per-pool path it showed was
+        // never the path actually consumed at runtime).
     }
 
     if serves_sccache {
@@ -3074,12 +3099,14 @@ mod tests {
         let c = r.drop_ins.get("30-cache-pool.conf").unwrap();
         // ccache-only pools use the filesystem-mode mechanism — no
         // ghars-cache@ unit dependency, no BindPaths to a pool dir,
-        // no sccache server. CCACHE_DIR points at the trust_zone-
-        // shared HOME path so co-trust_zone runners share the cache.
+        // no sccache server. CCACHE_DIR / CCACHE_MAXSIZE are NOT
+        // emitted here (#70: dead LAYER 1 emission removed — LAYER 2
+        // .env owns CCACHE_DIR / CCACHE_MAXSIZE for the trust-zone-
+        // shared path that ccache actually consumes).
         assert!(!c.contains("Requires=ghars-cache@build.service"));
         assert!(!c.contains("BindPaths="));
-        assert!(c.contains("Environment=CCACHE_DIR=%h/.cache/ccache/build"));
-        assert!(c.contains("Environment=CCACHE_MAXSIZE=200G"));
+        assert!(!c.contains("Environment=CCACHE_DIR="));
+        assert!(!c.contains("Environment=CCACHE_MAXSIZE="));
         assert!(!c.contains("SCCACHE_NO_DAEMON"));
     }
 
@@ -3123,25 +3150,27 @@ mod tests {
         });
         let r = render_runner_unit(&spec).unwrap();
         let c = r.drop_ins.get("30-cache-pool.conf").unwrap();
-        let i_dir_a = c
-            .find("Environment=CCACHE_DIR=%h/.cache/ccache/obj-a\n")
-            .expect("first ccache binding's CCACHE_DIR missing");
-        let i_dir_b = c
-            .find("Environment=CCACHE_DIR=%h/.cache/ccache/obj-b\n")
-            .expect("second ccache binding's CCACHE_DIR missing");
+        // Per-binding `Environment=CCACHE_DIR=` /
+        // `Environment=CCACHE_MAXSIZE=` are NO LONGER emitted here.
+        // The emission was LAYER 1 dead code — Runner.Listener's
+        // LoadAndSetEnv (verified in actions/runner at
+        // `src/Runner.Listener/Program.cs` — `Main` body invokes
+        // `LoadAndSetEnv` first; the helper reads `.env` and calls
+        // `Environment.SetEnvironmentVariable` per line) overwrites
+        // LAYER 1 systemd Environment= with LAYER 2 .env before any
+        // subprocess runs. The actual CCACHE_DIR / CCACHE_MAXSIZE
+        // that ccache reads come from `render_runner_env_file` (the
+        // trust-zone-shared path, gated on has_ccache, last-wins for
+        // multi-binding which the no-duplicate-cache-kinds validator
+        // rejects at config-load). This test now pins ABSENCE of
+        // the dead emissions.
         assert!(
-            i_dir_a < i_dir_b,
-            "insertion order broken for CCACHE_DIR: {c}"
+            !c.lines().any(|l| l.starts_with("Environment=CCACHE_DIR=")),
+            "no per-binding `Environment=CCACHE_DIR=` emission expected (#70 dead-code removal): {c}"
         );
-        let i_max_a = c
-            .find("Environment=CCACHE_MAXSIZE=50G\n")
-            .expect("first ccache binding's MAXSIZE missing");
-        let i_max_b = c
-            .find("Environment=CCACHE_MAXSIZE=100G\n")
-            .expect("second ccache binding's MAXSIZE missing");
         assert!(
-            i_max_a < i_max_b,
-            "insertion order broken for CCACHE_MAXSIZE: {c}"
+            !c.lines().any(|l| l.starts_with("Environment=CCACHE_MAXSIZE=")),
+            "no per-binding `Environment=CCACHE_MAXSIZE=` emission expected (#70): {c}"
         );
     }
 
@@ -3805,7 +3834,15 @@ mod tests {
         // Sanity: the prior hardcoded /usr/bin/sleep is no longer
         // emitted when the binding pins a different location.
         assert!(!body.contains("/usr/bin/sleep"));
-        assert!(body.contains("CCACHE_DIR=%C/ghars/pools/build/ccache"));
+        // Post-#70: CCACHE_DIR is NO LONGER emitted on the cache
+        // pool unit drop-in for ccache-only pools. The cache pool
+        // unit's ExecStart is `sleep infinity` (the stub) — it
+        // never reads CCACHE_DIR. The prior emission was dead code
+        // that misled `systemctl cat` readers.
+        assert!(
+            !body.lines().any(|l| l.starts_with("Environment=CCACHE_DIR=")),
+            "no `Environment=CCACHE_DIR=` expected on ccache-only cache pool unit (#70): {body}"
+        );
         assert!(!body.contains("--start-server"));
     }
 

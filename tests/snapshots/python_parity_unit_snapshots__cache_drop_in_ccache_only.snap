@@ -1,5 +1,6 @@
 ---
 source: tests/python_parity_unit_snapshots.rs
+assertion_line: 401
 expression: body
 ---
 [Unit]
@@ -10,7 +11,5 @@ X-Ghars-Config-Source=/etc/ghars/ghars.toml
 
 [Service]
 User=ghars-tz-default
-Environment=CCACHE_DIR=%C/ghars/pools/build/ccache
-Environment=CCACHE_MAXSIZE=200G
 ExecStart=/usr/bin/sleep infinity
 ReadWritePaths=%C/ghars/pools/build

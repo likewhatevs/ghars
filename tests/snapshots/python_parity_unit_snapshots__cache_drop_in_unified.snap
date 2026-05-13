@@ -1,6 +1,6 @@
 ---
 source: tests/python_parity_unit_snapshots.rs
-assertion_line: 426
+assertion_line: 443
 expression: body
 ---
 [Unit]
@@ -16,8 +16,6 @@ Environment=SCCACHE_CACHE_SIZE=200G
 Environment=SCCACHE_SERVER_UDS=%t/ghars/cache-build.sock
 Environment=SCCACHE_NO_DAEMON=1
 Environment=SCCACHE_IDLE_TIMEOUT=0
-Environment=CCACHE_DIR=%C/ghars/pools/build/ccache
-Environment=CCACHE_MAXSIZE=200G
 ExecStart=/usr/bin/sccache --start-server
 Type=forking
 ReadWritePaths=%C/ghars/pools/build %t/ghars /var/lib/ghars/default
