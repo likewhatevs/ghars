@@ -185,7 +185,24 @@ pub fn merge_defaults(
             .clone()
             .or_else(|| defaults.runner_sha256.clone())
             .filter(|s| !s.is_empty()),
-        runner_tarball: runner.runner_tarball.clone(),
+        // Same Some("") → None collapse as memory_max / runner_sha256
+        // above. `render_identity` emits `X-Ghars-Runner-Tarball-Hash`
+        // only when Some(non-empty); without the filter, empty and
+        // absent would render different drop-in bytes (None → no
+        // line; Some("") → sha256 of the empty string), flipping
+        // spec_hash. Unlike memory_max / allowed_cpus, operator TOML
+        // cannot reach this filter — `validate_runner_tarball` at
+        // config-load (`cli/load.rs` `validate_runner_tarballs`)
+        // rejects empty paths with "must be absolute" (empty paths
+        // are not absolute per `Path::new("").is_absolute() == false`).
+        // The filter is defense-in-depth for direct-construct callers
+        // (test fixtures, future programmatic spec builders) that
+        // bypass `cli::load`. No `.or_else(defaults.runner_tarball)`
+        // cascade: `Defaults` carries no `runner_tarball` field today.
+        runner_tarball: runner
+            .runner_tarball
+            .clone()
+            .filter(|p| !p.as_str().is_empty()),
         auth_name,
         caches,
         trust_zone,

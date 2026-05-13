@@ -3847,6 +3847,54 @@ fn merge_defaults_collapses_some_empty_runner_sha256_to_none() {
     );
 }
 
+/// Parallel pin for runner_tarball normalization. `render_identity`
+/// emits `X-Ghars-Runner-Tarball-Hash` only on `Some(non-empty)` —
+/// `Some(Utf8PathBuf::from(""))` would hash the empty string and emit
+/// `sha256:e3b0c44...` while `None` emits no line at all, producing
+/// different drop-in bytes from cosmetically-equivalent direct-
+/// construct input. Sister to the memory_max + runner_sha256
+/// normalization pattern at merge.rs. (Operator TOML cannot reach
+/// this filter — `validate_runner_tarball` at config-load rejects
+/// empty paths; this pin guards the defense-in-depth path for
+/// direct-construct callers that bypass `cli::load`.)
+#[test]
+fn merge_defaults_collapses_some_empty_runner_tarball_to_none() {
+    let mut runner = minimal_runner("a");
+    runner.runner_tarball = Some(Utf8PathBuf::from(""));
+    let defaults = Defaults::default();
+    let spec = merge_defaults(
+        &runner,
+        &defaults,
+        "pat".into(),
+        vec![],
+        None,
+        None,
+        None,
+        Arch::X86_64,
+        cfg_source_default(),
+    );
+    assert_eq!(spec.runner_tarball, None);
+
+    let mut none_runner = minimal_runner("a");
+    none_runner.runner_tarball = None;
+    let none_spec = merge_defaults(
+        &none_runner,
+        &defaults,
+        "pat".into(),
+        vec![],
+        None,
+        None,
+        None,
+        Arch::X86_64,
+        cfg_source_default(),
+    );
+    assert_eq!(
+        spec_hash(&spec),
+        spec_hash(&none_spec),
+        "Some(empty) and None for runner_tarball must produce identical spec_hash after normalization"
+    );
+}
+
 /// Pin ProxySpec::is_empty contract. Mirrors the field set
 /// `render_proxy` early-returns Ok(None) on (units.rs render_proxy:
 /// `http.is_none() && https.is_none() && no_proxy.is_empty() &&

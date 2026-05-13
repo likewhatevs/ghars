@@ -1042,8 +1042,18 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
     // sufficient for change detection — a change to the tarball
     // path produces a new hash, even though the operator's path is
     // never persisted in the on-disk artifact. No emission when
-    // None (same rationale as runner_sha256 above).
-    if let Some(tarball) = spec.runner_tarball.as_deref() {
+    // None (same rationale as runner_sha256 above). The empty-string
+    // gate below is the renderer-side mirror of the merge-time
+    // normalization at `merge_defaults` — defense-in-depth for
+    // direct-construct callers (test fixtures, future programmatic
+    // spec builders) that bypass `cli::load`. The operator-facing
+    // TOML pathway is already gated by `validate_runner_tarball` at
+    // config-load (`Path::new("").is_absolute() == false`). Idiom
+    // matches the immediate-sister `runner_sha256` let-chain above
+    // for adjacent-code consistency.
+    if let Some(tarball) = spec.runner_tarball.as_deref()
+        && !tarball.as_str().is_empty()
+    {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
         h.update(tarball.as_str().as_bytes());
@@ -2236,6 +2246,33 @@ mod tests {
         let r = render_runner_unit(&spec).unwrap();
         let id = r.drop_ins.get("00-ghars.conf").unwrap();
         assert!(!id.contains("X-Ghars-Runsvc-Sha256"));
+    }
+
+    /// Renderer-side defense-in-depth pin for the
+    /// `runner_tarball = Some(Utf8PathBuf::from(""))` direct-construct
+    /// dark input. The merge-layer filter at `merge_defaults` collapses
+    /// `Some("")` → `None` before lowering, but a direct-construct
+    /// caller (test fixture, future programmatic spec builder) can
+    /// still produce an `EffectiveRunnerSpec` with `runner_tarball =
+    /// Some(Utf8PathBuf::from(""))` that bypasses merge. The renderer's
+    /// own empty-string gate must short-circuit before hashing so the
+    /// `X-Ghars-Runner-Tarball-Hash=sha256:e3b0c44...` (sha256 of empty
+    /// input) line is NOT emitted — empty must render identically to
+    /// `None` (no line at all) so direct-construct callers cannot flip
+    /// `spec_hash`. Sister to the merge-side pin
+    /// `merge_defaults_collapses_some_empty_runner_tarball_to_none` in
+    /// `plan/tests/part2.rs`.
+    #[test]
+    fn render_identity_treats_some_empty_runner_tarball_as_none_at_renderer() {
+        let mut spec = minimal_spec();
+        spec.runner_tarball = Some(Utf8PathBuf::from(""));
+        let r = render_runner_unit(&spec).unwrap();
+        let id = r.drop_ins.get("00-ghars.conf").unwrap();
+        assert!(
+            !id.contains("X-Ghars-Runner-Tarball-Hash"),
+            "Some(empty) runner_tarball must NOT emit \
+             X-Ghars-Runner-Tarball-Hash; got drop-in:\n{id}"
+        );
     }
 
     #[test]

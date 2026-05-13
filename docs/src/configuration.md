@@ -505,7 +505,11 @@ Selected fields:
   to name the on-disk `bin.X.Y.Z` directory, and ghars cannot
   infer the version from the tarball filename; `ghars plan`
   rejects unpaired `runner_tarball` declarations at validation
-  time.
+  time. Empty string (`runner_tarball = ""`) is rejected at
+  config-load with "must be absolute" — to fall back to the
+  release-API lookup, OMIT the field rather than setting it to
+  empty (unlike `allowed_cpus`/`memory_max`, which silently
+  normalize empty to None at merge time).
 - `hardening` (`Hardening`) — per-field overrides on top of
   `defaults.hardening`.
 - `allowed_cpus` / `allowed_memory_nodes` (`Option<String>`) —

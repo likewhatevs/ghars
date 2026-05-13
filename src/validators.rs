@@ -2686,6 +2686,27 @@ mod tests {
         );
     }
 
+    /// Empty path string MUST reject — `Path::new("").is_absolute()`
+    /// is false, so the validator hits the same "must be absolute"
+    /// branch as relative paths with segments. Pins the assumption
+    /// that `merge_defaults` relies on: operator TOML cannot reach
+    /// the merge-time `.filter(|p| !p.as_str().is_empty())` chain
+    /// because `validate_runner_tarballs` (cli/load.rs) rejects empty
+    /// paths first. Without this pin, a stdlib change to
+    /// `Path::new("").is_absolute()` semantics would silently
+    /// invalidate the `merge.rs` defense-in-depth-only framing.
+    #[test]
+    fn runner_tarball_rejects_empty_path() {
+        let err = validate_runner_tarball("").expect_err("empty path must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("absolute"),
+            "empty-path rejection must surface via the 'must be \
+             absolute' branch so operator gets the same diagnostic \
+             as other non-absolute paths; got: {msg}"
+        );
+    }
+
     /// Positive pin: an absolute path with valid gzip magic MUST
     /// accept. Pins both gates passing in lockstep.
     #[test]
