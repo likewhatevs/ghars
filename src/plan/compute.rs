@@ -3,7 +3,7 @@
 //! [`crate::state::ActualState`]: count expansion, defaults merge,
 //! cross-reference validation (auth, caches, network), spec-hash
 //! population, intersection-branch classification (annotation Stage 1
-//! + drop-in Stage 2 + uncovered fallback), cache-pool diff, and
+//! + drop-in Stage 2 + uncovered arm), cache-pool diff, and
 //! orphan handling.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -98,10 +98,11 @@ pub(super) fn netns_subnet_for_slot(slot_idx: usize, runner_name: &str) -> Resul
 ///      `UpdateRunner` otherwise. Field-level classification populates
 ///      `requires_recreate` + `recreate_reasons` from annotation diff;
 ///      hash mismatch with no identifiable Stage 1 reason and no
-///      Stage 2 drop-in body diff falls back to a conservative
-///      `"uncovered"` recreate reason — the reason is named
-///      `uncovered` because the condition is broader than a hash
-///      mismatch alone.
+///      Stage 2 drop-in body diff falls through to in-place (the
+///      `uncovered` arm logs at warn level so coverage gaps surface
+///      but does not push a recreate reason — recreate is destructive,
+///      and a coverage-gap diagnostic is not evidence the runner needs
+///      to be unregistered from GitHub).
 /// 7. Apply Part 3 `requires_recreate` policy — done in
 ///    [`classify_recreate_reasons_from_annotations`].
 /// 8. Cache-pool diffs against the discovered set. State discovery
@@ -243,7 +244,7 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                     };
 
                     let mut field_changes: Vec<FieldChange> = Vec::new();
-                    let mut recreate_reasons = classify_recreate_reasons_from_annotations(
+                    let recreate_reasons = classify_recreate_reasons_from_annotations(
                         &annotations,
                         &after_spec,
                         &mut field_changes,
@@ -348,13 +349,32 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                             )
                     });
 
-                    // The `uncovered` recreate reason fires only
-                    // when hashes differ AND Stage 1 found neither
-                    // a recreate reason NOR a non-recreate FieldChange
-                    // (e.g. auth_name) AND Stage 2 found nothing —
-                    // which should be unreachable in a deterministic
-                    // renderer. Log tracing::warn! so we surface
-                    // coverage gaps.
+                    // The `uncovered` arm fires when hashes differ AND
+                    // Stage 1 found neither a recreate reason nor a
+                    // non-recreate FieldChange (e.g. auth_name) AND
+                    // Stage 2 found nothing — which should be
+                    // unreachable in a deterministic renderer. Log
+                    // tracing::warn! so we surface coverage gaps; the
+                    // in-place apply path takes over from here.
+                    //
+                    // Falling through to in-place (rather than recreate)
+                    // is the correct default for a coverage gap: in-place
+                    // is non-destructive (read_then_write_if_changed
+                    // short-circuits on byte equality; restart only fires
+                    // when files actually changed), whereas recreate
+                    // would stop the unit, unregister with GitHub, and
+                    // run config.sh again — destructive when the
+                    // diagnostic says nothing actually changed. The
+                    // upcoming RENDERER_SCHEMA bump path (planned task
+                    // #1) lands renderer-only deltas in exactly this
+                    // arm: spec_hash flips because the schema number
+                    // changed, but no operator-visible field or
+                    // drop-in body diff exists. Recreating every runner
+                    // on a binary upgrade would be the wrong behavior
+                    // — in-place rewrites the X-Ghars-Spec-Hash
+                    // annotation in 00-ghars.conf and restarts to pick
+                    // up any byte-changed drop-ins, but does not
+                    // unregister/re-register the runner with GitHub.
                     //
                     // Gate on `field_changes.is_empty()` alongside
                     // `recreate_reasons.is_empty()`.
@@ -363,9 +383,8 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                     // pushing a recreate reason (auth-name change is
                     // in-place per design Part 3). Without the
                     // field_changes gate, every auth-name-only change
-                    // would fall through to the uncovered recreate
-                    // fallback even though the classifier did detect
-                    // it.
+                    // would fall through to the uncovered arm even
+                    // though the classifier did detect it.
                     if !hashes_equal
                         && recreate_reasons.is_empty()
                         && field_changes.is_empty()
@@ -375,12 +394,14 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                             runner = name.as_str(),
                             discovered_hash = discovered.spec_hash.as_str(),
                             desired_hash = after_spec.spec_hash.as_str(),
-                            "uncovered fallback: spec_hash differs but neither Stage 1 \
-                             (annotation diff) nor Stage 2 (drop-in body diff) detected the change. \
-                             This indicates a coverage gap in classify_recreate_reasons or a non-\
-                             deterministic renderer. Falling back to recreate."
+                            "uncovered: spec_hash differs but neither Stage 1 (annotation \
+                             diff) nor Stage 2 (drop-in body diff) detected the change. \
+                             Falling through to in-place update (rewrites X-Ghars-Spec-Hash \
+                             in 00-ghars.conf and restarts on any byte-changed file). This \
+                             indicates a coverage gap in classify_recreate_reasons or a non-\
+                             deterministic renderer; investigate if seen outside the \
+                             RENDERER_SCHEMA-bump deploy path."
                         );
-                        recreate_reasons.push("uncovered");
                     }
 
                     let requires_recreate = !recreate_reasons.is_empty();

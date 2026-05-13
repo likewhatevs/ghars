@@ -778,8 +778,14 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
     // reconstruct the recreate-bound subset of an already-applied
     // EffectiveRunnerSpec from the on-disk unit text. Without these,
     // a labels-only or arch-only edit falls through to the
-    // conservative `spec_hash_mismatch` recreate fallback, even
-    // though both fields are knowable at config-load time.
+    // `uncovered` in-place arm in `plan_from` — the apply path
+    // would still rewrite the runner unit on the spec_hash diff,
+    // but it would do so without the typed recreate reason that
+    // GitHub-side registration needs (labels/arch are bound to the
+    // registration token), so the runner would land in production
+    // with the OLD label/arch metadata still active on GitHub's
+    // side. Stage 1 detection on these annotations is what flips
+    // the change to a true recreate so the runner re-registers.
     // Comma-joined labels mirrors the existing X-Ghars-Caches format.
     //
     // Labels arrive pre-sorted by `merge_defaults` (set semantics —

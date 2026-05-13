@@ -102,8 +102,10 @@ impl DiscoveredAnnotations {
     /// `DiscoveredAnnotations` with every field `None`. The classifier
     /// treats `None` as "skip this field" (avoiding spurious recreates
     /// on first apply post-upgrade), so no annotations + a hash
-    /// mismatch falls through to the `uncovered` recreate fallback —
-    /// the conservative correct behavior.
+    /// mismatch falls through to the `uncovered` in-place arm in
+    /// `plan_from` — the in-place rewrite re-establishes
+    /// `00-ghars.conf` (including all `X-Ghars-*` annotations) so the
+    /// next plan can classify cleanly.
     pub(super) fn from_discovered(discovered: &DiscoveredRunner) -> Self {
         let body = match discovered.drop_ins.get("00-ghars.conf") {
             Some(b) => b.as_str(),
@@ -234,9 +236,9 @@ impl DiscoveredAnnotations {
 ///   needed.
 ///
 /// All three of these record `FieldChanges` WITHOUT pushing a
-/// recreate reason; the `uncovered` guard at the call site gates
-/// on `field_changes.is_empty()` so any one signal alone prevents
-/// the spurious recreate-class fallback.
+/// recreate reason; the `uncovered` warn-log gate at the call site
+/// checks `field_changes.is_empty()` so any one signal alone
+/// prevents the spurious coverage-gap warn from firing.
 ///
 /// Missing-annotation handling: a field whose discovered annotation
 /// is `None` (older ghars-applied unit, or operator-stripped) is
@@ -433,9 +435,10 @@ pub(super) fn classify_recreate_reasons_from_annotations(
     // flow into nft.d/ files written by apply, which Stage 2 doesn't
     // diff. A pure egress edit therefore presents as a spec-hash
     // mismatch with no Stage 1 reason and no Stage 2 evidence, and
-    // falls through to the conservative `uncovered` recreate
-    // fallback. Tracked separately; not a correctness bug (recreate
-    // is safe, just operator-disruptive).
+    // falls through to the `uncovered` in-place arm in `plan_from`.
+    // The in-place apply rewrites 00-ghars.conf (X-Ghars-Spec-Hash
+    // annotation flips) and restarts the unit; the nft.d/ rules
+    // are re-applied at the netns side-unit's next restart cycle.
     if let Some(mode) = discovered.network_mode.as_deref() {
         let desired_mode = match desired.network.as_ref().map(|n| &n.spec.mode) {
             Some(crate::config::NetworkMode::Netns) => "netns",
@@ -458,14 +461,15 @@ pub(super) fn classify_recreate_reasons_from_annotations(
     // reason and no Stage 2
     // managed-drop-in-body delta (since `00-ghars.conf` carries the
     // X-Ghars-Auth-Name annotation but is excluded from the in-
-    // place filter), falling through to the `uncovered` recreate
-    // fallback at the spec_hash mismatch check below. Recording a
-    // FieldChange WITHOUT pushing to `reasons` keeps the operator-
-    // visible diff payload (the rendered text/JSON shows
-    // `auth_name: before → after`) AND prevents the spurious
-    // recreate. The uncovered guard below also gates on
-    // `out_changes.is_empty()` so this signal alone is sufficient
-    // evidence that the classifier saw the change.
+    // place filter), falling through to the `uncovered` in-place
+    // arm at the spec_hash mismatch check below. Recording a
+    // FieldChange (without pushing to `reasons`) keeps the
+    // operator-visible diff payload (the rendered text/JSON shows
+    // `auth_name: before → after`) AND surfaces the change in
+    // Stage 1 with a typed field rather than the opaque
+    // hash-only signal. The uncovered guard below also gates on
+    // `out_changes.is_empty()` so this FieldChange suppresses
+    // the warn log when auth_name is the lone cause.
     if let Some(auth_name) = discovered.auth_name.as_deref()
         && auth_name != desired.auth_name
     {
@@ -482,8 +486,11 @@ pub(super) fn classify_recreate_reasons_from_annotations(
     // SEC-03 (cache-pool isolation) at config-load time. trust_zone
     // is in EffectiveRunnerSpec spec_hash so any change does
     // surface as a hash mismatch; without this branch, that
-    // mismatch fell through to the `uncovered` recreate fallback
-    // even though the apply path has nothing to migrate.
+    // mismatch would fall through to the `uncovered` in-place arm
+    // (post-fix) and surface as a warn log without a typed
+    // FieldChange. Recording the FieldChange surfaces the change
+    // as a typed field in plan output instead of the opaque
+    // hash-only signal.
     if let Some(zone) = discovered.trust_zone.as_deref()
         && zone != desired.trust_zone
     {
@@ -500,8 +507,9 @@ pub(super) fn classify_recreate_reasons_from_annotations(
     // the `(added: …; removed: …)` per-action detail string.
     // Recording a FieldChange here (without pushing a recreate
     // reason) makes the change visible in plan output and gates
-    // the `uncovered` fallback the same way auth_name / trust_zone
-    // do.
+    // the `uncovered` warn log the same way auth_name / trust_zone
+    // do (post-fix the uncovered arm logs a warn but no longer
+    // recreates).
     //
     // Cache pool membership is set-semantics (the rendered drop-in
     // body sorts pool names alphabetically; execute_update_runner's

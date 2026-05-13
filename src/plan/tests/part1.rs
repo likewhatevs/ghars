@@ -903,9 +903,11 @@ fn plan_recreate_populates_before_drop_in_basenames_with_operator_drop_in() {
 // (memory_max, hardening.*, allowed_cpus, ...) are detected by
 // the Stage 2 drop-in body diff and surface as `drop_in_changes`,
 // not FieldChange entries. A spec-hash mismatch with no Stage 1
-// reason and no Stage 2 evidence falls through to the
-// conservative `"uncovered"` recreate reason. These tests pin
-// each row of the table.
+// reason and no Stage 2 evidence falls through to the `uncovered`
+// in-place arm in `plan_from` (logs at warn level and does not
+// push any recreate reason — see `RunnerDelta::recreate_reasons`
+// field doc for the contract). These tests pin each row of the
+// table.
 
 #[test]
 fn classify_recreate_url_change_emits_url_reason() {
@@ -971,7 +973,7 @@ fn classify_recreate_url_and_version_both_changed() {
 /// labels change is RECREATE per design table. The
 /// X-Ghars-Labels annotation makes labels Stage 1 detectable —
 /// recreate fires with reason "labels" rather than falling
-/// through to the "uncovered" fallback.
+/// through to the `uncovered` in-place arm.
 #[test]
 fn plan_update_recreate_on_labels_change() {
     let cfg = config_with_runners(vec![{
@@ -1260,7 +1262,7 @@ fn plan_update_recreate_on_runner_tarball_change() {
 /// arch change is recreate-class per Part 3. The X-Ghars-Arch
 /// annotation makes arch changes Stage 1 detectable — recreate
 /// fires with reason "arch" rather than falling through to the
-/// "uncovered" fallback.
+/// `uncovered` in-place arm.
 ///
 /// We construct a desired spec on `x86_64` against a discovered spec
 /// recorded as aarch64. Because `merge_defaults` resolves arch as

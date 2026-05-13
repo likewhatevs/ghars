@@ -102,9 +102,12 @@ The `Action` enum:
 `UpdateRunner` carries `requires_recreate: bool`; the plan
 classifier sets it true when an identity-bound field changed
 (`url`, `runner_version`, `labels`, `arch`, `runner_sha256`,
-`runner_tarball`, `network`), or as the conservative
-`"uncovered"` fallback. The full vocabulary lives in
-`RunnerDelta::recreate_reasons`.
+`runner_tarball`, `network`). A hash mismatch with no Stage 1
+reason and no Stage 2 drop-in body diff (the `uncovered` arm
+in `plan_from`) falls through to in-place — recreate is
+destructive, so a coverage-gap diagnostic logs at warn level
+without pushing a recreate reason. The full vocabulary lives
+in `RunnerDelta::recreate_reasons`.
 
 `plan_from` itself emits actions in alphabetical name order;
 `apply::sort_into_phases` re-orders into the canonical execution

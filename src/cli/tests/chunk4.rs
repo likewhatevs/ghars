@@ -1387,100 +1387,19 @@ fn render_action_line_recreate_multi_element_reasons_join_format() {
     );
 }
 
-// ---------- opaque recreate-reason gloss ----------------------------
+// ---------- recreate-reason rendering --------------------------------
 
-/// `recreate_reason_note` returns `Some` for the `uncovered` opaque
-/// classifier token. This is an internal trigger — `uncovered` fires
-/// for spec-hash-mismatch fallback — and looks meaningless in the
-/// `! runner NAME (… recreate (uncovered)) [recreate]` plan line
-/// without context. The note text feeds the indented `note: TOKEN
-/// — explanation` line `render_action_line` emits beneath the
-/// header.
-#[test]
-fn recreate_reason_note_glosses_opaque_tokens() {
-    let uncovered = recreate_reason_note("uncovered").expect("uncovered must have a gloss");
-    assert!(
-        uncovered.contains("spec hash"),
-        "uncovered gloss must mention the spec hash trigger; got: {uncovered}",
-    );
-    assert!(
-        uncovered.contains("coverage"),
-        "uncovered gloss must name the coverage-gap fallback nature; \
-         got: {uncovered}",
-    );
-}
-
-/// `recreate_reason_note` returns `None` for self-explanatory
-/// field-name tokens. The full vocabulary the classifier emits comes
-/// from `RunnerDelta::recreate_reasons` field doc (plan.rs); this
-/// test pins every named-field token to the no-gloss branch so a
-/// future addition that pushes a non-field token into
-/// `recreate_reasons` surfaces here unannotated. Adding a new opaque
-/// token without extending `recreate_reason_note` would leave the
-/// new token bare in plan output.
-#[test]
-fn recreate_reason_note_returns_none_for_field_name_tokens() {
-    let field_tokens = [
-        "url",
-        "runner_version",
-        "labels",
-        "arch",
-        "runner_sha256",
-        "runner_tarball",
-        "network",
-    ];
-    for token in field_tokens {
-        assert!(
-            recreate_reason_note(token).is_none(),
-            "field-name token {token:?} must NOT carry a gloss; \
-             the field_changes line above the header already shows \
-             the before→after pair",
-        );
-    }
-}
-
-/// `recreate_reason_note` returns `None` for unknown tokens.
-/// Defense for future classifier additions: a new token that lands
-/// here without an explicit gloss falls through silently rather
-/// than hard-erroring, but the test pins the no-gloss-by-default
-/// behavior so the dev advocate review flags the omission.
-#[test]
-fn recreate_reason_note_returns_none_for_unknown_token() {
-    assert!(recreate_reason_note("").is_none());
-    assert!(recreate_reason_note("some_future_token").is_none());
-}
-
-/// `render_action_line` emits an indented
-/// `note: uncovered — …` line beneath the header for the
-/// `uncovered` token. Header line is unchanged (operator grep
-/// `recreate (uncovered)` keeps working — pinned by the existing
-/// `render_action_line_recreate_multi_element_reasons_join_format`
-/// sibling); the gloss rides as a separate detail line at the
-/// 4-space indent matching the `field_changes` loop above.
-#[test]
-fn render_action_line_recreate_uncovered_emits_note_line() {
-    let action = Action::UpdateRunner(recreate_delta("buckos", vec!["uncovered"]));
-    let line = render_action_line(&action, ColorMode { enabled: false }, false);
-    // Header line still carries the raw token verbatim (operator
-    // grep parity with multi-element-reasons test).
-    let lines: Vec<&str> = line.split('\n').collect();
-    assert!(
-        lines[0].contains("update: recreate (uncovered)"),
-        "header line must carry the raw `uncovered` token (operator \
-         grep parity); got: {}",
-        lines[0],
-    );
-    // Note line must be present, indented 4 spaces, with the
-    // `note: TOKEN — explanation` shape.
-    let note_line = lines
-        .iter()
-        .find(|l| l.starts_with("    note: uncovered "))
-        .unwrap_or_else(|| panic!("missing `note: uncovered ` line; got: {line}"));
-    assert!(
-        note_line.contains("spec hash"),
-        "note line must explain the uncovered trigger; got: {note_line}",
-    );
-}
+// Before the uncovered-arm decoupling the renderer had an under-header `note: TOKEN — explanation`
+// loop for opaque recreate-reason tokens (only `uncovered`). Since the uncovered-arm decoupling
+// the uncovered arm in `plan_from` no longer pushes a recreate reason,
+// so the production vocabulary for `recreate_reasons` is strictly
+// field-name tokens (url, runner_version, labels, arch, runner_sha256,
+// runner_tarball, network) — every one self-explanatory via the
+// `field_changes` before→after row above. The note loop + the
+// `recreate_reason_note` helper were both deleted; the tests that
+// pinned them went with them. The pin below documents the no-note
+// invariant for the field-name vocabulary so a future regression that
+// re-introduces a gloss surfaces here.
 
 /// field-name tokens (`url`, `runner_version`, …) MUST NOT
 /// emit a `note:` line — the `field_changes` loop renders the
@@ -1498,42 +1417,11 @@ fn render_action_line_recreate_field_name_reasons_emit_no_note_line() {
     );
 }
 
-/// mixed reasons render the gloss for ONLY the opaque token, and
-/// the field-name token's `note:` line is suppressed because the
-/// `field_changes` loop already shows its before→after pair.
-#[test]
-fn render_action_line_recreate_mixed_reasons_emits_note_per_opaque_token() {
-    let action = Action::UpdateRunner(recreate_delta(
-        "buckos",
-        vec!["url", "uncovered"],
-    ));
-    let line = render_action_line(&action, ColorMode { enabled: false }, false);
-    let lines: Vec<&str> = line.split('\n').collect();
-    assert!(
-        lines[0].contains("update: recreate (url,uncovered)"),
-        "header must carry the full join(\",\")  payload; got: {}",
-        lines[0],
-    );
-    assert!(
-        line.contains("    note: uncovered "),
-        "uncovered note must appear; got: {line}",
-    );
-    assert!(
-        !line.contains("note: url "),
-        "url is self-explanatory; must NOT emit a note line; got: {line}",
-    );
-}
-
 /// in-place `UpdateRunner` (no recreate) MUST NOT emit any
-/// `note:` lines even when `recreate_reasons` somehow contains an
-/// opaque token (which `plan::plan_from` never produces — the
-/// `requires_recreate = !recreate_reasons.is_empty()` invariant
-/// ties the two). Pin the gate by inspecting an in-place delta
-/// fixture: `recreate_reasons` is empty, so the note loop has
-/// nothing to iterate, but defense-in-depth: the loop sits inside
-/// the same `Action::UpdateRunner` arm that handles both branches,
-/// and a future renderer change that decouples the loop from the
-/// recreate gate would surface here.
+/// `note:` lines. Before the uncovered-arm decoupling the gate was the `recreate_reason_note`
+/// helper returning None for non-opaque tokens; post-fix the gloss
+/// loop itself is removed, so the gate is structural — `note:` lines
+/// cannot appear at all from this renderer site. Pin the contract.
 #[test]
 fn render_action_line_inplace_update_emits_no_note_line() {
     let action = Action::UpdateRunner(inplace_delta("buckos"));

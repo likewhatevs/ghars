@@ -159,9 +159,11 @@ fn spec_hash_path_independent_when_logical_value_matches() {
 /// is order-independent for matching workflow `runs-on:` selectors
 /// once the `--labels CSV` argv is passed at registration.
 /// Locally flipping `spec_hash` on a cosmetic operator reorder
-/// would drive a recreate-class `UpdateRunner` (registration is
-/// labels-bound, so a hash mismatch with no Stage 1 typed reason
-/// fell to the `uncovered` recreate fallback) for a no-op edit.
+/// would drive an in-place `UpdateRunner` (a hash mismatch with
+/// no Stage 1 typed reason falls through the `uncovered` arm to
+/// in-place rewrite + restart) for a no-op edit — an unnecessary
+/// stop+start of the runner unit even though nothing functionally
+/// changed.
 /// Mirrors the caches canonicalization at the same function's
 /// `caches.sort_by` site (paired in `lower_to_effective`).
 ///
@@ -1550,9 +1552,10 @@ fn plan_noop_when_caches_reorder_only() {
 /// `spec_hash` flips on reorder (Vec preserves source order in
 /// canonical JSON; Stage 1 classifier would then either fire the
 /// `labels` typed reason on the annotation diff or fall through
-/// to the `uncovered` recreate fallback). After the sort, both
-/// orderings produce the same spec, the same `spec_hash`, and the
-/// same rendered `X-Ghars-Labels=` annotation, so plan diff sees
+/// to the `uncovered` in-place arm and incur an unnecessary
+/// unit-restart for a no-op edit). After the sort, both orderings
+/// produce the same spec, the same `spec_hash`, and the same
+/// rendered `X-Ghars-Labels=` annotation, so plan diff sees
 /// nothing to do.
 ///
 /// Built end-to-end through `plan_from` so this test exercises
@@ -1640,19 +1643,16 @@ fn plan_noop_when_labels_reorder_only() {
 /// First-post-upgrade transition: a runner whose on-disk
 /// `X-Ghars-Spec-Hash` was computed by a pre-canonicalization
 /// `merge_defaults` (no labels sort) must produce an `UpdateRunner`
-/// with `requires_recreate=true` and the `uncovered` recreate
-/// reason on the first plan run after the upgrade. This is the
-/// expected one-time recreate when a runner crosses the
-/// canonicalization boundary; the apply path then re-renders the
-/// canonical spec onto disk and the next plan returns to `NoOp`
-/// (the steady-state pinned by `plan_noop_when_labels_reorder_only`
-/// above).
+/// with `requires_recreate=false` (IN-PLACE) on the first plan run
+/// after the upgrade. The in-place apply path then re-renders the
+/// canonical 00-ghars.conf (with the NEW `X-Ghars-Spec-Hash`
+/// annotation) and the next plan returns to `NoOp` (the steady-state
+/// pinned by `plan_noop_when_labels_reorder_only` above).
 ///
 /// Mirrors the caches-canonicalization class but exercises the
 /// HASH-MISMATCH gate rather than the steady-state `NoOp` gate.
 /// Routes specifically through the `uncovered` arm at the
-/// `recreate_reasons.push("uncovered")` site in `plan_from`'s
-/// intersection branch:
+/// `recreate_reasons` site in `plan_from`'s intersection branch:
 ///   - `!hashes_equal`: discovered carries the pre-canonical OLD
 ///     hash, desired re-hashes to NEW after `merge_defaults`
 ///     sorts.
@@ -1665,6 +1665,15 @@ fn plan_noop_when_labels_reorder_only() {
 ///     `00-ghars.conf` (carries `X-Ghars-Spec-Hash`), which is
 ///     filtered out of the in-place evidence set by the basename
 ///     gate at the `any_drop_in_modified` filter.
+///
+/// Before the uncovered-arm decoupling, the `uncovered` arm pushed a "uncovered"
+/// recreate reason, forcing a destructive stop+unregister+create
+/// cycle for what was effectively a labels-reorder noop. Post-fix,
+/// the arm falls through to in-place: the X-Ghars-Spec-Hash
+/// annotation in 00-ghars.conf gets re-rendered with the NEW hash
+/// and the unit restarts to pick up the byte-changed drop-in, but
+/// the runner stays registered with GitHub and any in-flight
+/// workload only experiences the standard in-place restart cycle.
 ///
 /// Fixture construction: clone the canonical spec (post-merge_-
 /// defaults, labels sorted), then assign an unsorted labels Vec
@@ -1682,13 +1691,13 @@ fn plan_noop_when_labels_reorder_only() {
 /// A regression that REMOVED the `merge_defaults` labels sort
 /// would silently break this transition guarantee — the new plan
 /// would compute a hash from unsorted labels matching the OLD
-/// hash (no recreate fires) and the canonicalization promise
+/// hash (no rewrite fires) and the canonicalization promise
 /// (steady-state byte-identical X-Ghars-Labels) would silently
-/// erode. A regression that REMOVED the `uncovered` fallback
-/// would land the hash mismatch in `NoOp` territory and the on-
-/// disk `X-Ghars-Spec-Hash` would never re-sync to NEW.
+/// erode. A regression that RE-INTRODUCED the `uncovered` recreate
+/// push would surface as `requires_recreate=true` here, breaking
+/// the non-destructive-default contract.
 #[test]
-fn plan_first_post_upgrade_labels_canonicalization_emits_uncovered_recreate() {
+fn plan_first_post_upgrade_labels_canonicalization_emits_in_place_update() {
     // Desired: operator config with labels in some order. After
     // merge_defaults, labels sort to ["alpha","beta","middle"]
     // and spec_hash captures that canonical form (NEW).
@@ -1781,24 +1790,20 @@ fn plan_first_post_upgrade_labels_canonicalization_emits_uncovered_recreate() {
     );
     let upd = updates[0];
     assert!(
-        upd.requires_recreate,
-        "transition must recreate (hash mismatch with no field-level explanation); \
-         got reasons {:?} field_changes {:?}",
+        !upd.requires_recreate,
+        "post-fix transition must be in-place (hash mismatch with no field-level \
+         explanation routes through the uncovered arm which now falls through to \
+         in-place); got reasons {:?} field_changes {:?}",
         upd.recreate_reasons, upd.field_changes
     );
-    // The classifier MUST route this through the `uncovered`
-    // fallback specifically — labels are set-equal after sorting
-    // so no `labels` reason fires, and 00-ghars.conf is the only
-    // Modified drop-in (filtered by basename) so Stage 2 finds
-    // nothing. Pin the typed reason and the absence of the
-    // `labels` reason so a future regression that incorrectly
-    // routed this through Stage 1 (e.g. dropping the
-    // `sorted_set_field_diff` sort) would surface as `labels`
-    // instead of `uncovered`.
-    assert_eq!(
-        upd.recreate_reasons,
-        vec!["uncovered"],
-        "transition must route through `uncovered` only; got: {:?}",
+    // Since the uncovered-arm decoupling the uncovered arm pushes NO recreate reason —
+    // the in-place apply path takes over and rewrites the
+    // 00-ghars.conf X-Ghars-Spec-Hash annotation in place.
+    // A regression that re-introduced the recreate push would
+    // surface as a non-empty recreate_reasons here.
+    assert!(
+        upd.recreate_reasons.is_empty(),
+        "post-fix uncovered arm must NOT push any recreate reason; got: {:?}",
         upd.recreate_reasons
     );
     // Stage 1 must record NO labels FieldChange — the discovered
@@ -1808,17 +1813,17 @@ fn plan_first_post_upgrade_labels_canonicalization_emits_uncovered_recreate() {
     // hash classifier (canonical mismatch) on this transition.
     assert!(
         !upd.field_changes.iter().any(|c| c.path == "labels"),
-        "uncovered fallback must NOT carry a labels FieldChange (set-equal after sort); \
+        "uncovered arm must NOT carry a labels FieldChange (set-equal after sort); \
          got: {:?}",
         upd.field_changes
     );
     // Sibling pin: the `after` spec_hash on the delta carries
     // the canonical NEW hash. This is the hash apply will write
-    // back to disk during the recreate, so the next plan run
-    // returns to NoOp. RunnerDelta has no `before` field — the
-    // OLD hash lives on the input `DiscoveredRunner` which the
-    // planner consumes; we read it back from `actual` directly
-    // to pin the contract end-to-end.
+    // back to disk during the in-place rewrite, so the next plan
+    // run returns to NoOp. RunnerDelta has no `before` field —
+    // the OLD hash lives on the input `DiscoveredRunner` which
+    // the planner consumes; we read it back from `actual`
+    // directly to pin the contract end-to-end.
     assert_eq!(
         upd.after.spec_hash, new_hash,
         "delta.after.spec_hash must carry the canonical NEW hash"
@@ -1954,9 +1959,15 @@ fn plan_combined_labels_canonicalization_with_inplace_edit_is_inplace_update() {
         plan.actions
     );
     let upd = updates[0];
-    // Core contract: the coincident in-place edit prevents the
-    // uncovered-recreate fallback. A regression here would surface
-    // as `requires_recreate=true` with `recreate_reasons=["uncovered"]`.
+    // Core contract: the coincident in-place edit short-circuits
+    // the `uncovered` arm's warn log — Stage 2 detected the
+    // 10-memory.conf body diff, so `any_drop_in_modified` is
+    // true and the warn gate (which requires all three signals
+    // empty) doesn't fire. The uncovered arm itself never pushes
+    // a recreate token post-fix, so a regression that re-routed
+    // through it would surface in `field_changes` (a phantom
+    // Stage 1 mis-classification) rather than in
+    // `recreate_reasons`.
     assert!(
         !upd.requires_recreate,
         "combined transition must route in-place (Stage 2 detected memory_max diff in \

@@ -1213,15 +1213,13 @@ fn field_value_to_json_v1_consumer_predictable_failure() {
 // for every one. The (path, scenario) labels in assertion messages
 // identify which scenario a future regression broke.
 //
-// The "uncovered" recreate reason — emitted by the spec_hash
-// mismatch fallback at `plan_from` when neither Stage 1 nor Stage 2
-// detect the change — is not exercised by any in-tree test
-// scenario today; retained as defense-in-depth against future
-// classifier gaps (see plan_from's spec_hash fallback). It is
-// covered by the invariant by construction: the only site that
-// pushes `"uncovered"` does so before `requires_recreate` is set
-// from `!recreate_reasons.is_empty()`, so the Vec is non-empty
-// whenever that branch fires. No direct scenario drives it here.
+// The "uncovered" arm in `plan_from` (spec_hash mismatch with
+// neither Stage 1 nor Stage 2 evidence) no longer pushes a recreate
+// reason — it logs at warn level and falls through to in-place.
+// So the `requires_recreate=true ⇒ !recreate_reasons.is_empty()`
+// invariant tested below is satisfied vacuously for the uncovered
+// path: `requires_recreate` stays false in that arm, so the
+// implication's premise is never true.
 
 /// Drive every annotation-detected recreate-class path (url,
 /// `runner_version`, labels, `runner_sha256`, `runner_tarball`, arch,

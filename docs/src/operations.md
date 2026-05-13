@@ -413,11 +413,20 @@ fell back to the host netns. Confirm:
 
 A field listed in `RunnerDelta::recreate_reasons` triggered the
 recreate decision. Vocabulary: `url`, `runner_version`, `labels`,
-`arch`, `runner_sha256`, `runner_tarball`, `network`,
-`uncovered`. None of these are operator-
-configurable to in-place-only — the recreate is structural. To
-proceed, accept the disruption (or move the change behind a
-maintenance window).
+`arch`, `runner_sha256`, `runner_tarball`, `network`. None of
+these are operator-configurable to in-place-only — the recreate
+is structural. To proceed, accept the disruption (or move the
+change behind a maintenance window).
+
+A spec-hash mismatch with no field-level explanation no longer
+triggers recreate; the `uncovered` arm in `plan_from` falls
+through to in-place (rewrites the X-Ghars-Spec-Hash annotation
+in 00-ghars.conf and restarts the unit, leaving GitHub
+registration intact). If you previously alerted on
+`recreate (uncovered)` in plan output that signal moves to the
+warn-level log line in the planner — switch alerts to grep for
+"uncovered" in `ghars plan` stderr (the warn log) rather than
+stdout.
 
 ## --diff and credential leakage
 

@@ -89,38 +89,6 @@ pub(super) fn recreate_removed_basenames(
     })
 }
 
-/// human-readable gloss for opaque
-/// [`plan::RunnerDelta::recreate_reasons`] tokens. Returns `Some` only
-/// for the `uncovered` token, which doesn't name a config field and
-/// looks meaningless in the
-/// `! runner NAME (… recreate (uncovered)) [recreate]` plan line
-/// without context. Self-explanatory tokens (`url`, `runner_version`,
-/// `labels`, `arch`, `runner_sha256`, `runner_tarball`, `network`)
-/// are field names — no gloss needed.
-///
-/// Token strings are static `&'static str` constants pushed by
-/// [`plan::classify_recreate_reasons_from_annotations`] (the
-/// field-name set) and the `uncovered` arm in `plan_from`. The
-/// match here mirrors that vocabulary; the
-/// [`plan::RunnerDelta::recreate_reasons`] field doc is the single
-/// source of truth — keep the two in lockstep.
-///
-/// Returning `Option` rather than a fallback string keeps the
-/// renderer's `note:` line conditional — only opaque tokens
-/// produce noise; named-field tokens stay silent because
-/// `field_changes` already shows the before→after pair on the
-/// preceding line.
-pub(super) fn recreate_reason_note(reason: &str) -> Option<&'static str> {
-    match reason {
-        "uncovered" => Some(
-            "spec hash differs but no field-level change was detected; \
-             this is a coverage-gap fallback — recreate is safe but \
-             disruptive (file a bug if reproducible)",
-        ),
-        _ => None,
-    }
-}
-
 /// Render one Action as a single-line plan entry with leading sigil.
 ///
 /// Sigil → variant mapping (column-0 grep targets):
@@ -255,26 +223,15 @@ pub(super) fn render_action_line(action: &Action, color: ColorMode, diff: bool) 
                 fc.after.render_text(),
             ));
         }
-        // under-header gloss for the `uncovered` opaque recreate-
-        // reason token. The header line shows
-        // `! runner NAME (… recreate (url,uncovered)) …` verbatim
-        // from `recreate_reasons.join(",")` so operator grep
-        // (`grep 'recreate ('`) keeps working unchanged. Self-
-        // explanatory field-name tokens (url, labels, arch, …) already
-        // surface as before→after rows above; `uncovered` is the only
-        // non-field token and looks meaningless without context.
-        // Emit one indented `note: TOKEN — explanation` line per
-        // opaque token here, matching the 4-space indent used by
-        // field_changes above. `recreate_reason_note` returns `None`
-        // for self-explanatory tokens, so this loop is a no-op for
-        // typical recreates (e.g. label-only recreate emits the
-        // header + `labels: a → b` and stops).
-        for reason in &d.recreate_reasons {
-            if let Some(note) = recreate_reason_note(reason) {
-                out.push('\n');
-                out.push_str(&format!("    note: {reason} — {note}"));
-            }
-        }
+        // No under-header gloss. Before the uncovered-arm decoupling the `uncovered` opaque
+        // recreate-reason token had a `note: uncovered — …` gloss
+        // line beneath the header; post-fix the uncovered arm in
+        // `plan_from` falls through to in-place without pushing any
+        // recreate reason, so the production vocabulary for
+        // `recreate_reasons` is now strictly field-name tokens (url,
+        // runner_version, labels, arch, runner_sha256, runner_tarball,
+        // network). Field-name tokens already surface as before→after
+        // rows above; no separate gloss adds value.
         // Recreate-class UpdateRunner has empty `drop_in_changes` by
         // design (plan.rs short-circuits the per-basename diff when
         // `requires_recreate` is true — every drop-in is rebuilt from

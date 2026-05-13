@@ -348,12 +348,10 @@ pub struct RunnerDelta {
     /// change triggered the recreate decision; CLI consumers display
     /// them verbatim.
     ///
-    /// These are raw classifier tokens. Field-name tokens (`url`,
-    /// `labels`, `arch`, …) render verbatim because the corresponding
+    /// These are raw classifier tokens. Every token in the
+    /// vocabulary below is a field name (the corresponding
     /// `FieldChange` row already shows the before→after pair on the
-    /// preceding line; the `uncovered` non-field token is glossed for
-    /// operator display by `cli::recreate_reason_note` — keep that
-    /// match arm in lockstep with the vocabulary below.
+    /// preceding line); no gloss helper is needed.
     ///
     /// Vocabulary (every string this Vec may contain):
     /// - `"url"` — runner URL changed (registration is URL-bound).
@@ -366,9 +364,16 @@ pub struct RunnerDelta {
     /// - `"network"` — `NetworkMode` toggled between Open and Netns
     ///   (provision/teardown of netns side-units only run on the
     ///   recreate path).
-    /// - `"uncovered"` — conservative fallback for hash-mismatch with
-    ///   no Stage 1 reason and no Stage 2 drop-in diff (should be
-    ///   unreachable in practice; logs at warn level).
+    ///
+    /// Hash mismatch with no Stage 1 reason and no Stage 2 drop-in
+    /// diff (the `uncovered` arm in `plan_from`) does NOT push any
+    /// recreate reason — it falls through to in-place. Recreate is
+    /// destructive (stop + unregister + re-register with GitHub);
+    /// in-place rewrites the X-Ghars-Spec-Hash annotation in
+    /// 00-ghars.conf and restarts the unit to pick up any
+    /// byte-changed drop-ins, leaving the GitHub registration
+    /// intact. The uncovered arm logs at warn level so coverage
+    /// gaps surface, but does not cycle the runner destructively.
     pub recreate_reasons: Vec<&'static str>,
     /// Why this update was emitted: `SpecChanged` (config edit),
     /// `DriftDetected` (on-disk drift only), or both. Drives the CLI
@@ -388,7 +393,7 @@ pub struct RunnerDelta {
     /// check `recreate_reasons` for that.
     ///
     /// Empty when:
-    /// - the recreate fired via the `"uncovered"` fallback (no
+    /// - the in-place update fired via the `uncovered` arm (no
     ///   annotation source for the before-value), or
     /// - the change was confined to drop-in body deltas with no
     ///   annotation-classified field touched (those land in

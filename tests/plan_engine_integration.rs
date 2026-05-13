@@ -198,7 +198,16 @@ fn plan_update_with_recreate_when_url_changes_via_annotations() {
 }
 
 #[test]
-fn plan_update_conservative_recreate_on_hash_mismatch_alone() {
+fn plan_update_falls_through_to_in_place_on_hash_mismatch_alone() {
+    // Since the uncovered-arm decoupling: a hash mismatch with no Stage 1 (annotation diff) or
+    // Stage 2 (drop-in body diff) signal falls through to in-place
+    // (not recreate). Recreate is destructive (stop + unregister +
+    // re-register with GitHub); in-place is non-destructive
+    // (rewrites X-Ghars-Spec-Hash in 00-ghars.conf and restarts the
+    // unit to pick up any byte-changed drop-ins). The renderer-only
+    // deploy path planned for #1 lands every runner in exactly this
+    // arm — recreating every runner on a binary upgrade would be
+    // wrong behavior.
     let mut cfg = make_config();
     cfg.runners = vec![make_runner("buckos")];
 
@@ -207,13 +216,13 @@ fn plan_update_conservative_recreate_on_hash_mismatch_alone() {
     // re-render in the UpdateRunner branch will produce for the same
     // spec, so every Stage 2 entry is `Preserved`. Without this, an
     // empty `drop_ins` would make every rendered entry `Created` and
-    // C-1's predicate (Created/Modified/Removed all count as in-place
-    // evidence) would steer the planner into in-place. We need the
-    // uncovered fallback to fire — that requires Stage 1 + Stage 2
-    // both finding nothing — so we copy the rendered drop-ins
-    // verbatim and only force the OUTER `spec_hash` to a stale
-    // sentinel so the `hashes_equal` short-circuit fails and the
-    // planner enters Stage 1 + Stage 2.
+    // the in-place-evidence predicate (Created/Modified/Removed all
+    // count) would steer the planner into in-place via Stage 2 instead
+    // of the uncovered arm. We want the uncovered arm specifically —
+    // that requires Stage 1 + Stage 2 both finding nothing — so we
+    // copy the rendered drop-ins verbatim and only force the OUTER
+    // `spec_hash` to a stale sentinel so the `hashes_equal`
+    // short-circuit fails and the planner enters Stage 1 + Stage 2.
     let bootstrap = run_plan(&cfg, &ActualState::default());
     let create = bootstrap
         .actions
@@ -261,8 +270,16 @@ fn plan_update_conservative_recreate_on_hash_mismatch_alone() {
             _ => None,
         })
         .expect("UpdateRunner expected");
-    assert!(update.requires_recreate);
-    assert!(update.recreate_reasons.contains(&"uncovered"));
+    assert!(
+        !update.requires_recreate,
+        "post-fix hash-mismatch-alone must be in-place; got reasons {:?}",
+        update.recreate_reasons,
+    );
+    assert!(
+        update.recreate_reasons.is_empty(),
+        "post-fix uncovered arm pushes NO recreate reason; got: {:?}",
+        update.recreate_reasons,
+    );
 }
 
 #[test]
