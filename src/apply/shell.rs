@@ -108,7 +108,7 @@ pub(super) fn build_register_cmd(ctx: &ConfigShellCtx<'_>) -> Command {
         "--unattended",
         "--replace",
         // --disableupdate: actions/runner self-updates by default
-        // at job pickup (see ~/opensource/runner
+        // at job pickup (see actions/runner
         // `Runner.Listener/MessageListener.cs:258` + `Runner.cs:1136`
         // help text), which leaves on-disk runner binaries out of
         // sync with what ghars installed at create time. The
