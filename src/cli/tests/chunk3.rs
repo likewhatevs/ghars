@@ -1801,6 +1801,217 @@ fn validate_cache_pool_kinds_nonempty_accepts_zero_pools() {
         .expect("config with zero cache_pools must pass validation vacuously");
 }
 
+// -------- validate_no_duplicate_kinds_within_pool -------------------
+
+/// Reject `[cache_pools.NAME] kinds = ["ccache", "ccache"]` — the
+/// Vec layer accepts the duplicate at deserialization but each cache
+/// kind is single-valued per process. Duplicate within one pool's
+/// kinds Vec inflates `cache_pool_hash` (`serde_json` preserves
+/// duplicates) and renders to `X-Ghars-Pool-Kinds=ccache,ccache` —
+/// operator-visible artifacts that misrepresent the effective set
+/// without any semantic effect. Surfacing at config-load gives a
+/// scoped error the operator can act on.
+#[test]
+fn validate_no_duplicate_kinds_within_pool_rejects_duplicate_ccache() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.cache_pools.insert(
+        "dup-ccache".into(),
+        crate::config::CachePoolSpec {
+            kinds: vec![
+                crate::config::CacheKind::Ccache,
+                crate::config::CacheKind::Ccache,
+            ],
+            size: "200G".into(),
+            mode: crate::config::CacheMode::default(),
+            trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
+        },
+    );
+    let err = validate_no_duplicate_kinds_within_pool(&cfg)
+        .expect_err("duplicate ccache within one pool kinds Vec must reject");
+    let msg = err.to_string();
+    // Anchor on the validator's specific phrasing "declares ccache"
+    // (not just "ccache") so the assertion can't pass via the pool
+    // name "dup-ccache" overlapping the substring.
+    assert!(
+        msg.contains("dup-ccache") && msg.contains("declares `ccache`") && msg.contains("2 times"),
+        "error must name the pool, the duplicated kind via 'declares `ccache`', \
+         and the count: {msg}"
+    );
+}
+
+/// Sister of `..._rejects_duplicate_ccache` — same validator must
+/// catch within-pool duplicates of `Sccache`. The validator iterates
+/// `CacheKind::ALL` so any variant in that slice is covered
+/// automatically; compile-time exhaustiveness lives in
+/// `CacheKind::label()` (config.rs) — adding a variant without a
+/// `label()` arm breaks the build, which surfaces the need to also
+/// append it to `ALL`. This test pins runtime reachability of the
+/// Sccache arm so a future refactor that special-cased Ccache (or
+/// accidentally dropped Sccache from `ALL`) doesn't silently regress.
+#[test]
+fn validate_no_duplicate_kinds_within_pool_rejects_duplicate_sccache() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.cache_pools.insert(
+        "dup-sccache".into(),
+        crate::config::CachePoolSpec {
+            kinds: vec![
+                crate::config::CacheKind::Sccache,
+                crate::config::CacheKind::Sccache,
+            ],
+            size: "200G".into(),
+            mode: crate::config::CacheMode::default(),
+            trust_zone: "default".into(),
+            sccache_path: Some("/usr/bin/sccache".into()),
+            sleep_path: None,
+        },
+    );
+    let err = validate_no_duplicate_kinds_within_pool(&cfg)
+        .expect_err("duplicate sccache within one pool kinds Vec must reject");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("dup-sccache")
+            && msg.contains("declares `sccache`")
+            && msg.contains("2 times"),
+        "error must name the pool, the duplicated sccache kind, and the count: {msg}"
+    );
+}
+
+/// Sister covering the post-#5 `CacheKind::Ktstr` variant. The
+/// validator at `validate_no_duplicate_kinds_within_pool` iterates
+/// `CacheKind::ALL` (a static slice declared at config.rs alongside
+/// the enum); any variant added to that slice gets the
+/// duplicate-detect treatment automatically. Compile-time
+/// exhaustiveness for the enum lives in `CacheKind::label()` —
+/// adding a variant without a `label()` arm breaks the build,
+/// which surfaces the need to also append it to `ALL` per the
+/// convention pinned at config.rs. This test pins runtime
+/// reachability for ktstr specifically so a future refactor that
+/// special-cased one of the older kinds (or accidentally dropped
+/// Ktstr from ALL) doesn't silently regress ktstr.
+#[test]
+fn validate_no_duplicate_kinds_within_pool_rejects_duplicate_ktstr() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.cache_pools.insert(
+        "dup-ktstr".into(),
+        crate::config::CachePoolSpec {
+            kinds: vec![
+                crate::config::CacheKind::Ktstr,
+                crate::config::CacheKind::Ktstr,
+            ],
+            size: "200G".into(),
+            mode: crate::config::CacheMode::default(),
+            trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
+        },
+    );
+    let err = validate_no_duplicate_kinds_within_pool(&cfg)
+        .expect_err("duplicate ktstr within one pool kinds Vec must reject");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("dup-ktstr")
+            && msg.contains("declares `ktstr`")
+            && msg.contains("2 times"),
+        "error must name the pool, the duplicated ktstr kind, and the count: {msg}"
+    );
+}
+
+/// Pins the count format in the error message: a regression that
+/// hardcoded "2 times" instead of using the runtime `{count}`
+/// would pass the ccache-pair test but produce misleading text for
+/// triples or larger duplicates. This test catches the hardcoded-2
+/// regression by asserting the message says "3 times" specifically.
+#[test]
+fn validate_no_duplicate_kinds_within_pool_rejects_triple_ccache() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.cache_pools.insert(
+        "triple-ccache".into(),
+        crate::config::CachePoolSpec {
+            kinds: vec![
+                crate::config::CacheKind::Ccache,
+                crate::config::CacheKind::Ccache,
+                crate::config::CacheKind::Ccache,
+            ],
+            size: "200G".into(),
+            mode: crate::config::CacheMode::default(),
+            trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
+        },
+    );
+    let err = validate_no_duplicate_kinds_within_pool(&cfg)
+        .expect_err("triple ccache within one pool kinds Vec must reject");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("triple-ccache")
+            && msg.contains("declares `ccache`")
+            && msg.contains("3 times"),
+        "error must report the correct count (3, not hardcoded 2): {msg}"
+    );
+}
+
+/// Pins the validator's behavior when a duplicate co-occurs with
+/// other distinct kinds in the same pool. The pool kinds=[Sccache,
+/// Ccache, Ccache] has one duplicate (Ccache appears twice) plus one
+/// other kind (Sccache). The validator must still reject — the
+/// duplicate is the operator-redundant artifact even when paired
+/// with legitimate other kinds. Sister case to the pure-duplicate
+/// fixtures above.
+#[test]
+fn validate_no_duplicate_kinds_within_pool_rejects_dup_in_mixed_kinds_pool() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.cache_pools.insert(
+        "mixed-dup".into(),
+        crate::config::CachePoolSpec {
+            kinds: vec![
+                crate::config::CacheKind::Sccache,
+                crate::config::CacheKind::Ccache,
+                crate::config::CacheKind::Ccache,
+            ],
+            size: "200G".into(),
+            mode: crate::config::CacheMode::default(),
+            trust_zone: "default".into(),
+            sccache_path: Some("/usr/bin/sccache".into()),
+            sleep_path: None,
+        },
+    );
+    let err = validate_no_duplicate_kinds_within_pool(&cfg)
+        .expect_err("duplicate ccache in mixed-kinds pool must still reject");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("mixed-dup")
+            && msg.contains("declares `ccache`")
+            && msg.contains("2 times"),
+        "error must name the pool, the duplicated kind (ccache, not sccache), \
+         and the count (2): {msg}"
+    );
+}
+
+#[test]
+fn validate_no_duplicate_kinds_within_pool_accepts_distinct_kinds_combo() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    insert_cache_pool(
+        &mut cfg,
+        "combined",
+        vec![
+            crate::config::CacheKind::Ccache,
+            crate::config::CacheKind::Sccache,
+        ],
+    );
+    validate_no_duplicate_kinds_within_pool(&cfg)
+        .expect("distinct-kind pool [Ccache, Sccache] must pass — no within-pool duplicate");
+}
+
+#[test]
+fn validate_no_duplicate_kinds_within_pool_accepts_single_kind() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    insert_cache_pool(&mut cfg, "solo", vec![crate::config::CacheKind::Ccache]);
+    validate_no_duplicate_kinds_within_pool(&cfg)
+        .expect("single-kind pool must pass — trivially no duplicate");
+}
+
 // -------- validate_proxy_ca_certs_nonempty --------------------------
 
 /// Build a ProxySpec with one CaCertBinding parameterized by

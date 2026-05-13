@@ -151,6 +151,7 @@ pub(super) fn load_config(path: &Utf8Path) -> Result<Config> {
     validate_no_duplicate_caches(&cfg)?;
     validate_no_duplicate_cache_kinds(&cfg)?;
     validate_cache_pool_kinds_nonempty(&cfg)?;
+    validate_no_duplicate_kinds_within_pool(&cfg)?;
     validate_cache_pool_names(&cfg)?;
     validate_cache_pool_binary_paths(&cfg)?;
     validate_runner_names(&cfg)?;
@@ -430,6 +431,63 @@ pub(super) fn validate_cache_pool_kinds_nonempty(cfg: &Config) -> Result<()> {
                  when workflows fail to find expected env vars"
                     .into(),
             ));
+        }
+    }
+    Ok(())
+}
+
+/// Reject `[cache_pools.NAME] kinds = ["ccache", "ccache"]` at config
+/// load. Duplicate kinds within a single pool's `kinds` Vec are
+/// semantically redundant (each kind is single-valued per process —
+/// see [`validate_no_duplicate_cache_kinds`] for the upstream-tool
+/// contract for each kind) but the deserializer accepts the
+/// duplicate at the Vec layer.
+///
+/// Even with `canonicalize_kinds` (the per-kinds-Vec sort helper at
+/// `src/plan/compute.rs`) sorting
+/// the Vec at the lowering boundary, the duplicate persists into
+/// `cache_pool_hash` (`serde_json` serializes `["ccache","ccache"]`
+/// distinctly from `["ccache"]`) AND into the rendered
+/// `X-Ghars-Pool-Kinds=ccache,ccache` CSV — operator-visible
+/// artifacts that misrepresent the pool's effective kind set.
+///
+/// Surfacing the duplicate at config-load gives a scoped
+/// `cache_pool "NAME":` prefix the operator can act on, rather
+/// than silently rendering the duplicate through to disk.
+///
+/// Sibling of [`validate_cache_pool_kinds_nonempty`] —
+/// both are within-pool kind-Vec sanity gates the deserializer
+/// can't catch (the `Vec<CacheKind>` field has no length-bound
+/// or set-semantic constraint at the serde layer).
+///
+/// # Errors
+///
+/// `GharsError::Validation` naming the pool and the duplicated
+/// kind label, with a remediation hint to drop the duplicate.
+pub(super) fn validate_no_duplicate_kinds_within_pool(cfg: &Config) -> Result<()> {
+    use crate::config::CacheKind;
+    for (name, pool) in &cfg.cache_pools {
+        for &kind in CacheKind::ALL {
+            let count = pool.kinds.iter().filter(|&&k| k == kind).count();
+            if count > 1 {
+                let label = kind.label();
+                return Err(GharsError::Validation(
+                    format!(
+                        "cache_pool {name:?}: declares `{label}` {count} times in `kinds`"
+                    ),
+                    format!(
+                        "drop the duplicate `{label}` entry from [cache_pools.{name}] \
+                         kinds — each cache kind is single-valued per process and a \
+                         duplicate within one pool's kinds Vec is operator-redundant. \
+                         `canonicalize_kinds` sorts the Vec at the lowering boundary \
+                         but does not dedup, so the duplicate persists into both \
+                         `cache_pool_hash` (inflating the SHA256 input) and the \
+                         rendered `X-Ghars-Pool-Kinds` CSV (the duplicate `{label}` \
+                         tokens land alongside any other distinct kinds in the same \
+                         pool) without any semantic effect"
+                    ),
+                ));
+            }
         }
     }
     Ok(())
