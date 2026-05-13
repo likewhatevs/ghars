@@ -50,7 +50,7 @@ fn merge_defaults_bind_readonly_paths_some_empty_replaces_defaults() {
         None,
         None,
         Arch::X86_64,
-        "/etc/ghars/ghars.toml".into(),
+        cfg_source_default(),
     );
     // Some(empty) on the runner side wins via `runner.or_else(...)`
     // — the `or_else` only fires when runner is None, so Some(vec![])
@@ -84,7 +84,7 @@ fn merge_defaults_bind_readonly_paths_runner_none_inherits_defaults() {
         None,
         None,
         Arch::X86_64,
-        "/etc/ghars/ghars.toml".into(),
+        cfg_source_default(),
     );
     assert_eq!(
         eff.hardening.bind_readonly_paths,
@@ -126,7 +126,7 @@ fn spec_hash_path_independent_when_logical_value_matches() {
         None,
         None,
         Arch::X86_64,
-        "/etc/ghars/ghars.toml".into(),
+        cfg_source_default(),
     );
     // Path B: runner declares the labels, defaults has none.
     let runner_b = {
@@ -144,7 +144,7 @@ fn spec_hash_path_independent_when_logical_value_matches() {
         None,
         None,
         Arch::X86_64,
-        "/etc/ghars/ghars.toml".into(),
+        cfg_source_default(),
     );
     assert_eq!(
         spec_a, spec_b,
@@ -194,7 +194,7 @@ fn spec_hash_unchanged_on_labels_reorder() {
         None,
         None,
         Arch::X86_64,
-        "/etc/ghars/ghars.toml".into(),
+        cfg_source_default(),
     );
     let spec2 = merge_defaults(
         &runner2,
@@ -205,7 +205,7 @@ fn spec_hash_unchanged_on_labels_reorder() {
         None,
         None,
         Arch::X86_64,
-        "/etc/ghars/ghars.toml".into(),
+        cfg_source_default(),
     );
     // Both labels Vecs are sorted by `merge_defaults`, so the
     // resulting EffectiveRunnerSpec.labels is `["alpha","beta"]`
@@ -265,7 +265,7 @@ fn render_unchanged_on_labels_reorder_post_merge() {
             None,
             None,
             Arch::X86_64,
-            "/etc/ghars/ghars.toml".into(),
+            cfg_source_default(),
         );
         spec.spec_hash = spec_hash(&spec);
         spec
@@ -380,7 +380,7 @@ fn discovered_annotations_label_round_trip_canonical_sort() {
         None,
         None,
         Arch::X86_64,
-        "/etc/ghars/ghars.toml".into(),
+        cfg_source_default(),
     );
     spec.spec_hash = spec_hash(&spec);
 
@@ -474,7 +474,7 @@ fn discovered_annotations_caches_round_trip_canonical_sort() {
         &expanded[0],
         &cfg,
         Arch::X86_64,
-        "/etc/ghars/ghars.toml".into(),
+        cfg_source_default(),
         0,
     )
     .expect("lower_to_effective must succeed");
@@ -584,7 +584,7 @@ fn render_unchanged_on_caches_reorder_post_merge() {
         &expanded[0],
         &cfg,
         Arch::X86_64,
-        "/etc/ghars/ghars.toml".into(),
+        cfg_source_default(),
         0,
     )
     .expect("lower_to_effective must succeed");
@@ -613,7 +613,7 @@ fn render_unchanged_on_caches_reorder_post_merge() {
         &expanded_canonical[0],
         &cfg_canonical,
         Arch::X86_64,
-        "/etc/ghars/ghars.toml".into(),
+        cfg_source_default(),
         0,
     )
     .expect("lower_to_effective must succeed");
@@ -663,7 +663,7 @@ fn render_unchanged_on_caches_reorder_post_merge() {
         None,
         None,
         Arch::X86_64,
-        "/etc/ghars/ghars.toml".into(),
+        cfg_source_default(),
     );
     spec.spec_hash = spec_hash(&spec);
 
@@ -743,7 +743,7 @@ labels  = ["alpha", "beta"]
         None,
         None,
         Arch::X86_64,
-        "/etc/ghars/ghars.toml".into(),
+        cfg_source_default(),
     );
     let spec_b = merge_defaults(
         runner_b,
@@ -754,7 +754,7 @@ labels  = ["alpha", "beta"]
         None,
         None,
         Arch::X86_64,
-        "/etc/ghars/ghars.toml".into(),
+        cfg_source_default(),
     );
     assert_eq!(
         spec_hash(&spec_a),
@@ -2839,7 +2839,7 @@ fn merge_defaults_collapses_some_empty_memory_max_to_none() {
         None,
         None,
         Arch::X86_64,
-        "/etc/ghars/ghars.toml".into(),
+        cfg_source_default(),
     );
     assert_eq!(spec.memory_max, None);
 
@@ -2854,7 +2854,7 @@ fn merge_defaults_collapses_some_empty_memory_max_to_none() {
         None,
         None,
         Arch::X86_64,
-        "/etc/ghars/ghars.toml".into(),
+        cfg_source_default(),
     );
     assert_eq!(
         spec_hash(&spec),
@@ -2881,7 +2881,7 @@ fn merge_defaults_collapses_some_empty_runner_sha256_to_none() {
         None,
         None,
         Arch::X86_64,
-        "/etc/ghars/ghars.toml".into(),
+        cfg_source_default(),
     );
     assert_eq!(spec.runner_sha256, None);
 
@@ -2896,7 +2896,7 @@ fn merge_defaults_collapses_some_empty_runner_sha256_to_none() {
         None,
         None,
         Arch::X86_64,
-        "/etc/ghars/ghars.toml".into(),
+        cfg_source_default(),
     );
     assert_eq!(
         spec_hash(&spec),
@@ -2993,7 +2993,7 @@ fn lower_to_effective_collapses_some_empty_proxy_to_none() {
         &expanded[0],
         &cfg_empty_proxy,
         Arch::X86_64,
-        "/etc/ghars/ghars.toml".into(),
+        cfg_source_default(),
         0,
     )
     .expect("lower_to_effective must succeed");
@@ -3009,7 +3009,7 @@ fn lower_to_effective_collapses_some_empty_proxy_to_none() {
         &expanded_none[0],
         &cfg_no_proxy,
         Arch::X86_64,
-        "/etc/ghars/ghars.toml".into(),
+        cfg_source_default(),
         0,
     )
     .expect("lower_to_effective must succeed");
@@ -3926,7 +3926,7 @@ fn lower_to_effective_collapses_some_empty_hooks_to_none() {
         &expanded[0],
         &cfg_empty_hooks,
         Arch::X86_64,
-        "/etc/ghars/ghars.toml".into(),
+        cfg_source_default(),
         0,
     )
     .expect("lower_to_effective must succeed");
@@ -3942,7 +3942,7 @@ fn lower_to_effective_collapses_some_empty_hooks_to_none() {
         &expanded_none[0],
         &cfg_no_hooks,
         Arch::X86_64,
-        "/etc/ghars/ghars.toml".into(),
+        cfg_source_default(),
         0,
     )
     .expect("lower_to_effective must succeed");
