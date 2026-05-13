@@ -1381,11 +1381,7 @@ fn validate_no_duplicate_caches_accepts_same_pool_across_runners() {
     validate_no_duplicate_caches(&cfg).expect("cross-runner pool reuse must pass validation");
 }
 
-// -------- single sccache pool per runner ---------------------------
-
-/// Insert a `[cache_pools.NAME]` of the given kind into `cfg`.
-/// Used by the sccache-binding tests to compose pools with
-/// distinct kind sets without copy-pasting the literal each time.
+// -------- no duplicate cache kinds per runner ----------------------
 
 /// A runner referencing two sccache pools must reject. The renderer
 /// would emit two `Environment=SCCACHE_SERVER_UDS=` lines in the
@@ -1394,13 +1390,13 @@ fn validate_no_duplicate_caches_accepts_same_pool_across_runners() {
 /// routing every sccache call to one pool while the operator
 /// expected both to receive traffic.
 #[test]
-fn validate_single_sccache_pool_per_runner_rejects_two_sccache_refs() {
+fn validate_no_duplicate_cache_kinds_rejects_two_sccache_refs() {
     let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
     insert_cache_pool(&mut cfg, "build", vec![crate::config::CacheKind::Sccache]);
     insert_cache_pool(&mut cfg, "test", vec![crate::config::CacheKind::Sccache]);
     cfg.runners[0].caches = vec!["build".into(), "test".into()];
-    let err = validate_single_sccache_pool_per_runner(&cfg)
-        .expect_err("must reject two sccache pool refs");
+    let err =
+        validate_no_duplicate_cache_kinds(&cfg).expect_err("must reject two sccache pool refs");
     match err {
         GharsError::Validation(msg, hint) => {
             assert!(
@@ -1417,29 +1413,231 @@ fn validate_single_sccache_pool_per_runner_rejects_two_sccache_refs() {
                     || hint.contains("single-valued"),
                 "hint must explain the env-clobber root cause; got: {hint}"
             );
+            assert!(
+                hint.contains("merge"),
+                "hint must offer the merge-into-one-pool remediation; got: {hint}"
+            );
+        }
+        other => panic!("expected GharsError::Validation, got {other:?}"),
+    }
+}
+
+/// Three ccache pools on one runner must reject AND the error must
+/// name ALL three pools (not just the first two). Pins the
+/// `refs.join(", ")` format in the validator's error message at
+/// load.rs for n>2 — a regression that took `.take(2)` on the
+/// refs Vec would pass the 2-pool tests silently but break the
+/// operator UX for "I bound 3 ccache pools".
+#[test]
+fn validate_no_duplicate_cache_kinds_rejects_three_ccache_refs_names_all() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    insert_cache_pool(&mut cfg, "obj-a", vec![crate::config::CacheKind::Ccache]);
+    insert_cache_pool(&mut cfg, "obj-b", vec![crate::config::CacheKind::Ccache]);
+    insert_cache_pool(&mut cfg, "obj-c", vec![crate::config::CacheKind::Ccache]);
+    cfg.runners[0].caches = vec!["obj-a".into(), "obj-b".into(), "obj-c".into()];
+    let err = validate_no_duplicate_cache_kinds(&cfg)
+        .expect_err("must reject three ccache pool refs");
+    match err {
+        GharsError::Validation(msg, _) => {
+            assert!(
+                msg.contains('3'),
+                "msg must surface the count for n>2; got: {msg}"
+            );
+            assert!(
+                msg.contains("obj-a") && msg.contains("obj-b") && msg.contains("obj-c"),
+                "msg must name ALL conflicting pools (not just first 2); got: {msg}"
+            );
+        }
+        other => panic!("expected GharsError::Validation, got {other:?}"),
+    }
+}
+
+/// A runner referencing two ccache pools must reject. ccache is
+/// single-`CCACHE_DIR`-per-process by upstream design
+/// (`Config::read` in ccache's `src/ccache/config.cpp`); ghars wires
+/// a single trust-zone-shared `CCACHE_DIR` in `.env` plus one
+/// `CCACHE_MAXSIZE` per binding (last wins). Two pools cannot
+/// deliver distinct cache dirs and the second pool's
+/// `CCACHE_MAXSIZE` silently shadows the first. Mirror of
+/// `validate_no_duplicate_cache_kinds_rejects_two_sccache_refs`.
+///
+/// REPLACES `validate_single_sccache_pool_per_runner_accepts_two_ccache_pools`
+/// from before the generalization to per-kind enforcement: the
+/// prior accept-behavior was wrong (it claimed "distinct
+/// `CCACHE_DIR` values do compose" — false, the .env emits one
+/// trust-zone-fixed `CCACHE_DIR`, see src/systemd/units.rs:653).
+#[test]
+fn validate_no_duplicate_cache_kinds_rejects_two_ccache_refs() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    insert_cache_pool(&mut cfg, "obj-a", vec![crate::config::CacheKind::Ccache]);
+    insert_cache_pool(&mut cfg, "obj-b", vec![crate::config::CacheKind::Ccache]);
+    cfg.runners[0].caches = vec!["obj-a".into(), "obj-b".into()];
+    let err =
+        validate_no_duplicate_cache_kinds(&cfg).expect_err("must reject two ccache pool refs");
+    match err {
+        GharsError::Validation(msg, hint) => {
+            assert!(
+                msg.contains("runner") && msg.contains("buckos"),
+                "msg must scope to the offending runner; got: {msg}"
+            );
+            assert!(
+                msg.contains("ccache") && msg.contains("obj-a") && msg.contains("obj-b"),
+                "msg must name both conflicting pools; got: {msg}"
+            );
+            assert!(
+                hint.contains("CCACHE_DIR")
+                    || hint.contains("CCACHE_MAXSIZE")
+                    || hint.contains("single-CCACHE_DIR"),
+                "hint must explain the ccache env-clobber root cause; got: {hint}"
+            );
+            assert!(
+                hint.contains("merge"),
+                "hint must offer the merge-into-one-pool remediation; got: {hint}"
+            );
+        }
+        other => panic!("expected GharsError::Validation, got {other:?}"),
+    }
+}
+
+/// A runner referencing a combined-kind pool (`["ccache","sccache"]`)
+/// AND a ccache-only pool must reject — the combined pool contributes
+/// a ccache binding, the second pool contributes another; the
+/// per-kind gate trips on ccache. Pins that the validator inspects
+/// resolved KINDS (each pool's `kinds.contains()`) not pool names.
+#[test]
+fn validate_no_duplicate_cache_kinds_rejects_combined_plus_ccache() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    insert_cache_pool(
+        &mut cfg,
+        "build",
+        vec![
+            crate::config::CacheKind::Ccache,
+            crate::config::CacheKind::Sccache,
+        ],
+    );
+    insert_cache_pool(&mut cfg, "obj", vec![crate::config::CacheKind::Ccache]);
+    cfg.runners[0].caches = vec!["build".into(), "obj".into()];
+    let err = validate_no_duplicate_cache_kinds(&cfg)
+        .expect_err("must reject combined-kind + ccache-only when both contribute ccache");
+    match err {
+        GharsError::Validation(msg, hint) => {
+            assert!(
+                msg.contains("ccache") && msg.contains("build") && msg.contains("obj"),
+                "msg must name both pools contributing ccache; got: {msg}"
+            );
+            assert!(
+                hint.contains("merge"),
+                "hint must offer the merge-into-one-pool remediation \
+                 even when the conflict comes from a combined-kind pool; got: {hint}"
+            );
+        }
+        other => panic!("expected GharsError::Validation, got {other:?}"),
+    }
+}
+
+/// Symmetric counterpart to `_rejects_combined_plus_ccache`: a
+/// combined-kind pool (`["ccache","sccache"]`) AND an sccache-only
+/// pool. The combined pool contributes one sccache binding; the
+/// sccache-only pool contributes another; the per-kind gate trips
+/// on sccache. Proves the per-kind tally counts combined-pool
+/// contributions for either side.
+#[test]
+fn validate_no_duplicate_cache_kinds_rejects_combined_plus_sccache() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    insert_cache_pool(
+        &mut cfg,
+        "build",
+        vec![
+            crate::config::CacheKind::Ccache,
+            crate::config::CacheKind::Sccache,
+        ],
+    );
+    insert_cache_pool(&mut cfg, "test", vec![crate::config::CacheKind::Sccache]);
+    cfg.runners[0].caches = vec!["build".into(), "test".into()];
+    let err = validate_no_duplicate_cache_kinds(&cfg)
+        .expect_err("must reject combined-kind + sccache-only when both contribute sccache");
+    match err {
+        GharsError::Validation(msg, hint) => {
+            assert!(
+                msg.contains("sccache") && msg.contains("build") && msg.contains("test"),
+                "msg must name both pools contributing sccache; got: {msg}"
+            );
+            assert!(
+                hint.contains("merge"),
+                "hint must offer merge remediation even when conflict is mixed; got: {hint}"
+            );
+        }
+        other => panic!("expected GharsError::Validation, got {other:?}"),
+    }
+}
+
+/// Two combined-kind pools on one runner: each contributes one
+/// ccache binding AND one sccache binding; both per-kind tallies
+/// hit 2. The validator returns the first-detected violation; we
+/// don't pin which kind fires first (avoids coupling to the KINDS
+/// tuple iteration order in load.rs), only that the error names
+/// both pools.
+#[test]
+fn validate_no_duplicate_cache_kinds_rejects_two_combined_pools() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    insert_cache_pool(
+        &mut cfg,
+        "alpha",
+        vec![
+            crate::config::CacheKind::Ccache,
+            crate::config::CacheKind::Sccache,
+        ],
+    );
+    insert_cache_pool(
+        &mut cfg,
+        "beta",
+        vec![
+            crate::config::CacheKind::Ccache,
+            crate::config::CacheKind::Sccache,
+        ],
+    );
+    cfg.runners[0].caches = vec!["alpha".into(), "beta".into()];
+    let err = validate_no_duplicate_cache_kinds(&cfg)
+        .expect_err("two combined-kind pools must reject");
+    match err {
+        GharsError::Validation(msg, hint) => {
+            assert!(
+                msg.contains("alpha") && msg.contains("beta"),
+                "msg must name both conflicting pools; got: {msg}"
+            );
+            assert!(
+                msg.contains("ccache") || msg.contains("sccache"),
+                "msg must name at least one offending kind; got: {msg}"
+            );
+            assert!(
+                hint.contains("merge"),
+                "hint must offer merge remediation for two-combined-pools conflict; got: {hint}"
+            );
         }
         other => panic!("expected GharsError::Validation, got {other:?}"),
     }
 }
 
 /// A runner referencing one sccache pool plus one ccache-only pool
-/// must pass. ccache pools use filesystem mode (`CCACHE_DIR` per pool)
-/// and do not emit `SCCACHE_SERVER_UDS`, so they don't conflict.
+/// must pass — the per-kind gate checks each kind independently and
+/// neither kind exceeds 1. Sccache binding contributes 1 sccache;
+/// ccache binding contributes 1 ccache. No conflict.
 #[test]
-fn validate_single_sccache_pool_per_runner_accepts_one_sccache_plus_ccache() {
+fn validate_no_duplicate_cache_kinds_accepts_one_sccache_plus_one_ccache() {
     let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
     insert_cache_pool(&mut cfg, "build", vec![crate::config::CacheKind::Sccache]);
     insert_cache_pool(&mut cfg, "obj", vec![crate::config::CacheKind::Ccache]);
     cfg.runners[0].caches = vec!["build".into(), "obj".into()];
-    validate_single_sccache_pool_per_runner(&cfg)
+    validate_no_duplicate_cache_kinds(&cfg)
         .expect("one sccache + one ccache must pass validation");
 }
 
 /// A runner referencing one combined-kind pool (both ccache and
 /// sccache in the same `[cache_pools.NAME]`) must pass. The single
-/// pool emits exactly one `SCCACHE_SERVER_UDS` line.
+/// pool contributes exactly one ccache binding + one sccache
+/// binding; per-kind count = 1 for both.
 #[test]
-fn validate_single_sccache_pool_per_runner_accepts_one_combined_pool() {
+fn validate_no_duplicate_cache_kinds_accepts_one_combined_pool() {
     let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
     insert_cache_pool(
         &mut cfg,
@@ -1450,27 +1648,39 @@ fn validate_single_sccache_pool_per_runner_accepts_one_combined_pool() {
         ],
     );
     cfg.runners[0].caches = vec!["build".into()];
-    validate_single_sccache_pool_per_runner(&cfg)
+    validate_no_duplicate_cache_kinds(&cfg)
         .expect("single combined-kind pool must pass validation");
 }
 
-/// A runner referencing two ccache-only pools must pass. Only
-/// sccache is single-valued; ccache pools have distinct `CCACHE_DIR`
-/// values and compose without conflict.
+/// Control: a runner with NO caches must pass — the most-common
+/// operator config (runner with no caching at all). Guards against
+/// a future over-restrictive change that misreads "zero bindings
+/// per kind" as a violation.
 #[test]
-fn validate_single_sccache_pool_per_runner_accepts_two_ccache_pools() {
+fn validate_no_duplicate_cache_kinds_accepts_empty_caches() {
     let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
-    insert_cache_pool(&mut cfg, "obj-a", vec![crate::config::CacheKind::Ccache]);
-    insert_cache_pool(&mut cfg, "obj-b", vec![crate::config::CacheKind::Ccache]);
-    cfg.runners[0].caches = vec!["obj-a".into(), "obj-b".into()];
-    validate_single_sccache_pool_per_runner(&cfg).expect("two ccache pools must pass validation");
+    cfg.runners[0].caches = vec![];
+    validate_no_duplicate_cache_kinds(&cfg).expect("empty caches must pass validation");
 }
 
-/// Cross-runner sccache binding does NOT trip the per-runner gate.
-/// Each runner is checked independently; two runners each with one
-/// sccache pool must pass even if the pools differ.
+/// Control: a runner referencing exactly one ccache pool must pass.
+/// Guards against a future over-restrictive change that rejects the
+/// single-ccache happy path (the most common config). Mirror of the
+/// implicit single-sccache happy path covered by
+/// `_accepts_cross_runner_sccache` below.
 #[test]
-fn validate_single_sccache_pool_per_runner_accepts_cross_runner_sccache() {
+fn validate_no_duplicate_cache_kinds_accepts_single_ccache_pool() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    insert_cache_pool(&mut cfg, "obj", vec![crate::config::CacheKind::Ccache]);
+    cfg.runners[0].caches = vec!["obj".into()];
+    validate_no_duplicate_cache_kinds(&cfg).expect("single ccache pool must pass validation");
+}
+
+/// Cross-runner binding does NOT trip the per-runner gate. Each
+/// runner is checked independently; two runners each with one sccache
+/// pool (or one ccache pool) must pass even if the pools differ.
+#[test]
+fn validate_no_duplicate_cache_kinds_accepts_cross_runner_sccache() {
     let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
     insert_cache_pool(&mut cfg, "build", vec![crate::config::CacheKind::Sccache]);
     insert_cache_pool(&mut cfg, "test", vec![crate::config::CacheKind::Sccache]);
@@ -1480,8 +1690,28 @@ fn validate_single_sccache_pool_per_runner_accepts_cross_runner_sccache() {
     second.url = "https://github.com/example/ci".into();
     second.caches = vec!["test".into()];
     cfg.runners.push(second);
-    validate_single_sccache_pool_per_runner(&cfg)
+    validate_no_duplicate_cache_kinds(&cfg)
         .expect("distinct sccache pool per runner must pass validation");
+}
+
+/// Cross-runner ccache binding sibling of `_accepts_cross_runner_sccache`:
+/// two runners each with one ccache pool, distinct pools, must pass
+/// even though the underlying trust-zone-shared `CCACHE_DIR` is the
+/// same (filesystem-flock coordinates concurrent access — see
+/// `validate_no_duplicate_cache_kinds` doc).
+#[test]
+fn validate_no_duplicate_cache_kinds_accepts_cross_runner_ccache() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    insert_cache_pool(&mut cfg, "obj-a", vec![crate::config::CacheKind::Ccache]);
+    insert_cache_pool(&mut cfg, "obj-b", vec![crate::config::CacheKind::Ccache]);
+    cfg.runners[0].caches = vec!["obj-a".into()];
+    let mut second = cfg.runners[0].clone();
+    second.name = "ci".into();
+    second.url = "https://github.com/example/ci".into();
+    second.caches = vec!["obj-b".into()];
+    cfg.runners.push(second);
+    validate_no_duplicate_cache_kinds(&cfg)
+        .expect("distinct ccache pool per runner must pass validation");
 }
 
 /// Unknown pool refs (referenced but not declared in
@@ -1489,12 +1719,14 @@ fn validate_single_sccache_pool_per_runner_accepts_cross_runner_sccache() {
 /// unknown-pool gate surfaces them later. The validator must not
 /// panic on `cfg.cache_pools.get(unknown) == None`.
 #[test]
-fn validate_single_sccache_pool_per_runner_skips_unknown_refs() {
+fn validate_no_duplicate_cache_kinds_skips_unknown_refs() {
     let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
     insert_cache_pool(&mut cfg, "build", vec![crate::config::CacheKind::Sccache]);
-    cfg.runners[0].caches = vec!["build".into(), "no-such-pool".into()];
-    validate_single_sccache_pool_per_runner(&cfg)
-        .expect("unknown ref must not interact with sccache count");
+    insert_cache_pool(&mut cfg, "obj", vec![crate::config::CacheKind::Ccache]);
+    cfg.runners[0].caches =
+        vec!["build".into(), "no-such-pool".into(), "obj".into(), "ghost".into()];
+    validate_no_duplicate_cache_kinds(&cfg)
+        .expect("unknown refs must not interact with per-kind counts");
 }
 
 // -------- AuthSpec::Pat XOR shape gate ------------------------------

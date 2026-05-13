@@ -285,6 +285,12 @@ fn into_cache_pool_plan_populates_renderer_schema_from_runtime_constant() {
 /// unroll, first-iteration optimization) is still caught.
 #[test]
 fn lower_to_effective_populates_renderer_schema_on_every_cache_binding() {
+    // Two bindings of different kinds (1 ccache + 1 sccache) so
+    // the runner passes the `validate_no_duplicate_cache_kinds`
+    // gate in lower_to_effective. The loop being tested iterates
+    // all bindings regardless of kind, so a 1c+1s fixture proves
+    // the same "later iterations populate renderer_schema" property
+    // as the historical 2-ccache fixture.
     let mut cfg = config_with_runners(vec![{
         let mut r = minimal_runner("buckos");
         r.caches = vec!["pool-a".into(), "pool-b".into()];
@@ -305,12 +311,12 @@ fn lower_to_effective_populates_renderer_schema_on_every_cache_binding() {
     cfg.cache_pools.insert(
         "pool-b".into(),
         CachePoolSpec {
-            kinds: vec![CacheKind::Ccache],
+            kinds: vec![CacheKind::Sccache],
             size: "20G".into(),
             mode: CacheMode::Shared,
             trust_zone: "default".into(),
-            sccache_path: None,
-            sleep_path: Some("/usr/bin/sleep".into()),
+            sccache_path: Some("/usr/bin/sccache".into()),
+            sleep_path: None,
         },
     );
 

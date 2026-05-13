@@ -1078,36 +1078,63 @@ pub(super) fn lower_to_effective(
     // (validators.rs), so byte-wise `Ord` agrees with operator intent.
     caches.sort_by(|a, b| a.name.cmp(&b.name));
 
-    // SEC: a runner that binds 2+ sccache pools clobbers
-    // SCCACHE_SERVER_UDS / SCCACHE_CACHE_SIZE in the rendered
-    // 30-cache-pool.conf drop-in (last-writer-wins on duplicate
-    // Environment= keys per systemd.exec(5)). sccache itself only
-    // reads ONE server UDS, so the second-to-last pool would be
-    // silently unreachable from the runner. Reject the binding at
-    // plan time so the operator gets a clear remediation rather
-    // than a silently-broken cache pipeline.
-    let sccache_pools: Vec<&str> = caches
-        .iter()
-        .filter(|c| c.kinds.contains(&crate::config::CacheKind::Sccache))
-        .map(|c| c.name.as_str())
-        .collect();
-    if sccache_pools.len() > 1 {
-        return Err(GharsError::Validation(
-            format!(
-                "runner '{}' binds {} sccache pools ({}) — sccache \
-                 supports only ONE server UDS per process; the rendered \
-                 SCCACHE_SERVER_UDS would be clobbered last-writer-wins, \
-                 leaving all but one pool unreachable",
-                runner.name,
-                sccache_pools.len(),
-                sccache_pools.join(", "),
-            ),
-            "split the runner into multiple runners (one per sccache pool), \
-             or merge the pools, or change all but one to ccache-only \
-             (filesystem mode is multi-bind safe — only sccache's daemon \
-             model is single-server)"
-                .into(),
-        ));
+    // SEC: a runner that binds 2+ pools of the SAME CacheKind
+    // clobbers the kind's single-valued env vars in the rendered
+    // 30-cache-pool.conf drop-in / .env (last-writer-wins on
+    // duplicate Environment= keys per systemd.exec(5), same for
+    // shell .env loaders). sccache itself only reads ONE
+    // SCCACHE_SERVER_UDS per process; ccache reads ONE CCACHE_DIR
+    // per process (Config::read in ccache's src/ccache/config.cpp:
+    // strict single-value resolution chain). All-but-one same-kind
+    // pool would be silently unreachable from the runner. Reject
+    // the binding at plan time so the operator gets a clear
+    // remediation rather than a silently-broken cache pipeline.
+    //
+    // Defense-in-depth: the same gate runs at config-load via
+    // `crate::cli::load::validate_no_duplicate_cache_kinds`.
+    // Direct-construct callers (test fixtures, future programmatic
+    // paths) that skip load_config still pass through this
+    // lower_to_effective gate. Both layers must enforce the same
+    // per-kind invariant so neither bypass can deliver a silently
+    // shadowed runtime config to render.
+    //
+    // Same KINDS tuple shape as the config-load validator: append a
+    // new variant IFF its renderer emits per-pool / per-binding env
+    // vars that clobber under last-writer-wins. A future kind with
+    // no per-pool emissions (e.g. ktstr per pending task #5 if it
+    // remains metadata-only) should NOT be added.
+    {
+        use crate::config::CacheKind;
+        for &kind in CacheKind::ALL {
+            let label = kind.label();
+            let refs: Vec<&str> = caches
+                .iter()
+                .filter(|c| c.kinds.contains(&kind))
+                .map(|c| c.name.as_str())
+                .collect();
+            if refs.len() > 1 {
+                let process_constraint = match kind {
+                    CacheKind::Ccache => "ccache reads ONE CCACHE_DIR per process \
+                                          (single-CCACHE_DIR-per-process by upstream design)",
+                    CacheKind::Sccache => "sccache supports only ONE server UDS per process; \
+                                           the rendered SCCACHE_SERVER_UDS would be clobbered \
+                                           last-writer-wins",
+                };
+                return Err(GharsError::Validation(
+                    format!(
+                        "runner '{}' binds {} {label} pools ({}) — {process_constraint}, \
+                         leaving all but one pool unreachable",
+                        runner.name,
+                        refs.len(),
+                        refs.join(", "),
+                    ),
+                    format!(
+                        "split the runner into multiple runners (one per {label} pool), \
+                         or merge the pools into a single [cache_pools.NAME] entry"
+                    ),
+                ));
+            }
+        }
     }
 
     // Network resolution. A runner with no `network` reference (and

@@ -76,6 +76,13 @@ pub(super) fn load_config(path: &Utf8Path) -> Result<Config> {
     // --- validate_no_duplicate_caches ---
     // Dedup-loop trap.
     //
+    // --- validate_no_duplicate_cache_kinds ---
+    // At-most-one-pool-per-CacheKind per runner. Sibling of
+    // validate_no_duplicate_caches at the resolved-kind layer — two
+    // distinct pools each contributing the same kind would clobber
+    // CCACHE_DIR / CCACHE_MAXSIZE / SCCACHE_SERVER_UDS via
+    // last-writer-wins shell .env and systemd Environment= semantics.
+    //
     // --- validate_cache_pool_names ---
     // Identifier-shape gate on pool keys and runner.caches refs.
     //
@@ -113,7 +120,7 @@ pub(super) fn load_config(path: &Utf8Path) -> Result<Config> {
     validate_identity_fields(&cfg)?;
     validate_trust_zone_lengths(&cfg)?;
     validate_no_duplicate_caches(&cfg)?;
-    validate_single_sccache_pool_per_runner(&cfg)?;
+    validate_no_duplicate_cache_kinds(&cfg)?;
     validate_cache_pool_names(&cfg)?;
     validate_cache_pool_binary_paths(&cfg)?;
     validate_runner_names(&cfg)?;
@@ -249,53 +256,97 @@ pub(super) fn validate_no_duplicate_caches(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-// ---------- single-sccache-pool-per-runner validator --------------------
+// ---------- no-duplicate-cache-kinds-per-runner validator ---------------
 
-/// Reject configs where a runner references 2+ cache pools that each
-/// host an sccache server. The runner unit emits one
-/// `Environment=SCCACHE_SERVER_UDS=` per sccache pool referenced;
-/// systemd's last-writer-wins semantics for `Environment=` would route
-/// every sccache call to the LAST pool's UDS, silently dropping cache
-/// hits from earlier pools and entangling builds across what the
-/// operator declared as separate pools. Catching at config load
-/// surfaces a scoped error (`runner "NAME": ...`) before any units are
-/// rendered or applied.
+/// Reject configs where a runner references 2+ cache pools that share
+/// any single `CacheKind`. Sibling of [`validate_no_duplicate_caches`]
+/// at the literal-pool-ref layer; this validator works at the resolved-
+/// kind layer (two distinct pools, both contributing the same kind to
+/// the runner).
 ///
-/// ccache pools are not affected — they use filesystem-mode bindings
-/// keyed on `CCACHE_DIR=%h/.cache/ccache/{pool}` (no per-pool UDS), and
-/// distinct `CCACHE_DIR` values do compose. Only the sccache UDS is
-/// single-valued.
+/// Singleton-per-kind is enforced because each kind's renderer emits
+/// per-pool / per-binding env vars that would silently shadow each
+/// other under last-writer-wins semantics — either systemd
+/// `Environment=` (Layer 1: `00-ghars.conf` / `30-cache-pool.conf`) or
+/// shell `.env` loader (Layer 2: actions/runner's
+/// `Runner.Listener::LoadAndSetEnv`). The operator's mental model
+/// ("this runner uses two ccache pools") cannot be satisfied:
+/// ccache is single-`CCACHE_DIR`-per-process by hard upstream design
+/// (`Config::read` in ccache's `src/ccache/config.cpp` picks ONE
+/// `cache_dir` from a strict resolution chain with no loop / list /
+/// multi-pool concept; config-file `cache_dir` is explicitly ignored
+/// to prevent recursion; the only multi-storage path is
+/// `remote_storage` for secondary HTTP/Redis backends on top of the
+/// primary local `CCACHE_DIR`); sccache similarly reads a single
+/// `SCCACHE_SERVER_UDS`. Multi-pool-of-same-kind silently reduces to
+/// "one effective pool, last-wins on `*_MAXSIZE`".
+///
+/// Adding a new `CacheKind` variant (e.g. ktstr per pending task #5):
+/// append a tuple to `KINDS` IFF the variant's renderer emits per-
+/// pool `Environment=KEY=value` or per-binding `.env KEY=value`
+/// entries that would clash with another binding of the same kind.
+/// Singleton-per-kind enforcement is correct only when the per-pool
+/// emissions actually exist — a future kind that emits no per-pool
+/// env entries doesn't need this gate.
 ///
 /// # Errors
 ///
-/// `GharsError::Validation` naming the runner and the conflicting
-/// sccache pools. The hint tells the operator to merge or drop one.
-pub(super) fn validate_single_sccache_pool_per_runner(cfg: &Config) -> Result<()> {
+/// `GharsError::Validation` naming the runner, the kind, and the
+/// conflicting pools. The hint offers two remediations: drop all but
+/// one pool of that kind, OR merge the kinds into one
+/// `[cache_pools.NAME]` entry.
+pub(super) fn validate_no_duplicate_cache_kinds(cfg: &Config) -> Result<()> {
     use crate::config::CacheKind;
-    for runner in &cfg.runners {
-        let mut sccache_refs: Vec<&str> = Vec::new();
-        for cache_ref in &runner.caches {
-            if let Some(spec) = cfg.cache_pools.get(cache_ref)
-                && spec.kinds.contains(&CacheKind::Sccache)
-            {
-                sccache_refs.push(cache_ref.as_str());
+    // Per-kind `lww_reason` text. Kind iteration uses
+    // `CacheKind::ALL` so a new variant added to the enum surfaces
+    // here at compile time via the exhaustive match.
+    let lww_reason = |kind: CacheKind| -> &'static str {
+        match kind {
+            CacheKind::Ccache => {
+                "ghars wires a trust-zone-shared CCACHE_DIR \
+                 (/var/lib/ghars/<TRUST_ZONE>/.ccache) and emits one \
+                 CCACHE_MAXSIZE per binding in the runner's .env — ccache \
+                 is single-CCACHE_DIR-per-process by upstream design, so \
+                 multiple ccache pools cannot deliver distinct cache dirs \
+                 and the per-binding CCACHE_MAXSIZE values race in the \
+                 .env load (last wins)"
             }
-        }
-        if sccache_refs.len() > 1 {
-            return Err(GharsError::Validation(
-                format!(
-                    "runner {:?}: references {} sccache pools ({}); only one sccache pool \
-                     binding is permitted per runner",
-                    runner.name,
-                    sccache_refs.len(),
-                    sccache_refs.join(", ")
-                ),
-                "remove all but one sccache pool from [[runner]].caches; \
-                 SCCACHE_SERVER_UDS is single-valued and additional pools \
+            CacheKind::Sccache => {
+                "SCCACHE_SERVER_UDS is single-valued and additional pools \
                  would be silently shadowed by systemd's last-writer-wins \
                  Environment= semantics"
-                    .into(),
-            ));
+            }
+        }
+    };
+    for runner in &cfg.runners {
+        for &kind in CacheKind::ALL {
+            let label = kind.label();
+            let refs: Vec<&str> = runner
+                .caches
+                .iter()
+                .filter_map(|cache_ref| {
+                    cfg.cache_pools
+                        .get(cache_ref)
+                        .filter(|spec| spec.kinds.contains(&kind))
+                        .map(|_| cache_ref.as_str())
+                })
+                .collect();
+            if refs.len() > 1 {
+                return Err(GharsError::Validation(
+                    format!(
+                        "runner {:?}: references {} {label} pools ({}); only one pool of \
+                         each cache kind is permitted per runner",
+                        runner.name,
+                        refs.len(),
+                        refs.join(", "),
+                    ),
+                    format!(
+                        "either drop all but one {label} pool from [[runner]].caches, or \
+                         merge the kinds into a single [cache_pools.NAME] entry — {}",
+                        lww_reason(kind),
+                    ),
+                ));
+            }
         }
     }
     Ok(())

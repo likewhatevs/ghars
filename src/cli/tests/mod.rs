@@ -413,8 +413,9 @@ fn cfg_with_runner_trust_zone(name: &str, trust_zone: String) -> Config {
 }
 
 /// Insert a `[cache_pools.NAME]` of the given kind into `cfg`.
-/// Used by the sccache-binding tests to compose pools with
-/// distinct kind sets without copy-pasting the literal each time.
+/// Used by the cache-binding tests (ccache + sccache + combined-kind)
+/// to compose pools with distinct kind sets without copy-pasting the
+/// literal each time.
 fn insert_cache_pool(cfg: &mut Config, name: &str, kinds: Vec<crate::config::CacheKind>) {
     cfg.cache_pools.insert(
         name.into(),

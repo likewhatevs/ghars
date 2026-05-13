@@ -584,6 +584,51 @@ BETWEEN the framework ccache wrappers and the per-runner
 `cc` and break compile-cache hits). `path_append` lands AFTER
 the system tail.
 
+## Why can't I declare two ccache (or sccache) pools per runner?
+
+`ghars validate` and `ghars apply` reject any runner whose
+`[[runner]].caches` list contains two pool refs that share a
+single `kind` (two ccache pools, two sccache pools, or a
+combined-kind pool plus a same-kind-only pool). The error scopes
+to the offending runner + names both conflicting pools + offers
+two remediations (drop one pool, or merge kinds into one pool
+entry).
+
+The constraint is structural, not arbitrary:
+
+- **ccache** is single-`CCACHE_DIR`-per-process by upstream
+  design. `ccache/src/ccache/config.cpp` picks ONE `cache_dir`
+  from a strict resolution chain with no loop or list. Multi-
+  pool ghars binding cannot deliver distinct cache dirs to the
+  workflow step. The runner sees a single trust-zone-shared
+  `CCACHE_DIR=/var/lib/ghars/<TRUST_ZONE>/.ccache` (so trust-
+  zone-shared cache hits across runners survive recreates) and
+  one `CCACHE_MAXSIZE` per binding in `.env` — `Runner.Listener::
+  LoadAndSetEnv` calls `Environment.SetEnvironmentVariable` per
+  line and the LAST `CCACHE_MAXSIZE` wins. Two pools collapse
+  to one effective cache with whichever pool's size cap was
+  emitted last.
+- **sccache** reads a single `SCCACHE_SERVER_UDS`. Two sccache
+  bindings emit two `Environment=SCCACHE_SERVER_UDS=` directives
+  in the runner's 30-cache-pool.conf; systemd's last-writer-wins
+  `Environment=` semantics route every sccache call to one pool,
+  silently shadowing the other.
+
+If your goal is shared cache across multiple runners, that's the
+default — every runner in the same `trust_zone` shares the
+trust-zone-derived `CCACHE_DIR` and can reference the same
+`[cache_pools.NAME]` entry. The `mode = "shared"` default on
+`[cache_pools.NAME]` permits cross-runner referencing without
+extra config.
+
+If your goal is multi-backend ccache storage (e.g. local +
+remote), use ccache's own `remote_storage` feature
+(`CCACHE_REMOTE_STORAGE` env var, configured via the operator
+`environment.vars` field on the runner) — a single primary
+local `CCACHE_DIR` with a secondary HTTP / Redis / file backend
+on top. ghars's `[[cache_pools]]` machinery is for primary local
+caches.
+
 ## Customizing runner unit directives: use `99-*.conf`, never edit ghars-managed drop-ins
 
 ghars renders every per-runner drop-in basename in the

@@ -2064,6 +2064,87 @@ mod tests {
                 "missing SCCACHE_DIR: {env2}");
     }
 
+    /// Renderer contract test: with two ccache bindings in
+    /// `spec.caches`, `render_runner_env_file` emits a per-binding
+    /// `CCACHE_MAXSIZE=` line for EACH binding in `spec.caches` source
+    /// order. The downstream `.env` loader semantic
+    /// (`Runner.Listener::LoadAndSetEnv` calls
+    /// `Environment.SetEnvironmentVariable` per line, later call
+    /// overwrites earlier) is the CONSEQUENCE that motivated the
+    /// `validate_no_duplicate_cache_kinds` gate — but this test does
+    /// not exercise that consumer. It pins the upstream renderer
+    /// contract: both lines present, deterministic source order.
+    ///
+    /// The config-load gate
+    /// `crate::cli::load::validate_no_duplicate_cache_kinds` REJECTS
+    /// multi-ccache configs before render — operators cannot trigger
+    /// this path through normal `ghars apply`. This test pins the
+    /// renderer's contract for direct-construct code paths (test
+    /// fixtures, future programmatic users) so the per-binding
+    /// emission stays deterministic if it's ever reachable.
+    ///
+    /// The `lower_to_effective` pipeline sorts `caches` alphabetically
+    /// by `name` (src/plan/compute.rs caches.sort_by) before reaching
+    /// this renderer — but that pipeline is upstream; this test
+    /// constructs `spec.caches` directly so it pins the renderer
+    /// contract, not the full pipeline.
+    #[test]
+    fn render_runner_env_file_emits_one_ccache_maxsize_per_binding_in_source_order() {
+        let mut spec = minimal_spec();
+        spec.caches.push(crate::config::EffectiveCacheBinding {
+            name: "build".into(),
+            kinds: vec![CacheKind::Ccache],
+            size: "50G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
+        });
+        spec.caches.push(crate::config::EffectiveCacheBinding {
+            name: "test".into(),
+            kinds: vec![CacheKind::Ccache],
+            size: "100G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
+        });
+        let env = render_runner_env_file(&spec).unwrap();
+        assert!(
+            env.contains("CCACHE_MAXSIZE=50G\n"),
+            "missing first binding's CCACHE_MAXSIZE: {env}"
+        );
+        assert!(
+            env.contains("CCACHE_MAXSIZE=100G\n"),
+            "missing second binding's CCACHE_MAXSIZE: {env}"
+        );
+        let p50 = env.find("CCACHE_MAXSIZE=50G").unwrap();
+        let p100 = env.find("CCACHE_MAXSIZE=100G").unwrap();
+        assert!(
+            p50 < p100,
+            "spec.caches order must drive emission order (50G before 100G): {env}"
+        );
+        // CCACHE_DIR is trust-zone-fixed, not per-binding. Pin that
+        // multi-ccache bindings do NOT introduce per-pool CCACHE_DIR
+        // emissions — that property is load-bearing for the
+        // singleton-per-kind validator's rationale.
+        let ccache_dir_count = env.matches("CCACHE_DIR=").count();
+        assert_eq!(
+            ccache_dir_count, 1,
+            "CCACHE_DIR must be emitted exactly once (trust-zone-fixed, not per-binding): {env}"
+        );
+        // Pin the trust_zone-interpolated VALUE so a regression that
+        // swapped the trust_zone variable for a literal "default"
+        // doesn't break operators on non-default trust zones while
+        // still passing the count check above.
+        assert!(
+            env.contains("CCACHE_DIR=/var/lib/ghars/default/.ccache\n"),
+            "CCACHE_DIR must include the trust-zone-interpolated path: {env}"
+        );
+    }
+
     #[test]
     fn render_runner_path_file_contains_ccache_wrappers_and_cargo_bin() {
         // Single line, newline-terminated. ccache wrappers FIRST so
@@ -2889,6 +2970,68 @@ mod tests {
         assert!(c.contains("Environment=CCACHE_DIR=%h/.cache/ccache/build"));
         assert!(c.contains("Environment=CCACHE_MAXSIZE=200G"));
         assert!(!c.contains("SCCACHE_NO_DAEMON"));
+    }
+
+    /// Contract test for the runner's 30-cache-pool.conf drop-in:
+    /// two ccache bindings produce two `Environment=CCACHE_DIR=`
+    /// AND two `Environment=CCACHE_MAXSIZE=` lines in insertion
+    /// order. systemd's `Environment=` last-writer-wins semantics
+    /// (`systemd.exec(5)`) means the second pool's CCACHE_DIR
+    /// replaces the first at process start — operator declared two
+    /// ccache pools, only one gets traffic. This is the dominant
+    /// collision surface that motivates the
+    /// `validate_no_duplicate_cache_kinds` validator + the parallel
+    /// `lower_to_effective` gate. The validator REJECTS this config
+    /// at config-load and plan-time so this drop-in shape is
+    /// unreachable from normal `ghars apply` — but direct
+    /// `EffectiveRunnerSpec` construction in tests bypasses both
+    /// gates, so this test pins the renderer's deterministic
+    /// per-binding emission as the last line of defense.
+    #[test]
+    fn render_emits_per_binding_ccache_lines_in_30_cache_pool_drop_in() {
+        let mut spec = minimal_spec();
+        spec.caches.push(EffectiveCacheBinding {
+            name: "obj-a".into(),
+            kinds: vec![CacheKind::Ccache],
+            size: "50G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
+        });
+        spec.caches.push(EffectiveCacheBinding {
+            name: "obj-b".into(),
+            kinds: vec![CacheKind::Ccache],
+            size: "100G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
+        });
+        let r = render_runner_unit(&spec).unwrap();
+        let c = r.drop_ins.get("30-cache-pool.conf").unwrap();
+        let i_dir_a = c
+            .find("Environment=CCACHE_DIR=%h/.cache/ccache/obj-a\n")
+            .expect("first ccache binding's CCACHE_DIR missing");
+        let i_dir_b = c
+            .find("Environment=CCACHE_DIR=%h/.cache/ccache/obj-b\n")
+            .expect("second ccache binding's CCACHE_DIR missing");
+        assert!(
+            i_dir_a < i_dir_b,
+            "insertion order broken for CCACHE_DIR: {c}"
+        );
+        let i_max_a = c
+            .find("Environment=CCACHE_MAXSIZE=50G\n")
+            .expect("first ccache binding's MAXSIZE missing");
+        let i_max_b = c
+            .find("Environment=CCACHE_MAXSIZE=100G\n")
+            .expect("second ccache binding's MAXSIZE missing");
+        assert!(
+            i_max_a < i_max_b,
+            "insertion order broken for CCACHE_MAXSIZE: {c}"
+        );
     }
 
     #[test]

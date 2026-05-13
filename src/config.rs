@@ -850,6 +850,30 @@ pub enum CacheKind {
     Sccache,
 }
 
+impl CacheKind {
+    /// Every `CacheKind` variant — shared iteration target for code
+    /// that needs to fan out over the kind set (e.g. the
+    /// `validate_no_duplicate_cache_kinds` config-load gate and the
+    /// `lower_to_effective` plan-time gate, both of which iterate
+    /// here to enforce singleton-per-kind). Adding a variant here
+    /// surfaces every consumer at compile time via exhaustive
+    /// `match self.label()` arms.
+    pub const ALL: &'static [Self] = &[Self::Ccache, Self::Sccache];
+
+    /// Operator-facing label matching the TOML enum-rename
+    /// (`#[serde(rename_all = "snake_case")]` above): lowercase
+    /// `"ccache"` / `"sccache"`. Used by validator error messages so
+    /// the operator sees the same identifier they wrote in
+    /// `[cache_pools.NAME].kinds = ["..."]`.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ccache => "ccache",
+            Self::Sccache => "sccache",
+        }
+    }
+}
+
 /// Pool sharing mode. `Shared` is the default; `Isolated` rejects
 /// configs where >1 runner references the pool (sccache pools are
 /// always shared regardless of this setting).

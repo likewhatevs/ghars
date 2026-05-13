@@ -165,8 +165,9 @@ Fields:
 - `mode` (`CacheMode`) — `Shared` (default) lets multiple runners
   reference the pool; `Isolated` rejects configs where >1 runner
   references the pool. sccache pools are always shared regardless
-  of this setting (the validator-enforced
-  single-sccache-pool-per-runner rule below applies anyway).
+  of this setting (the validator-enforced no-duplicate-cache-kinds
+  rule below applies anyway — at most one sccache pool per runner,
+  same for ccache).
 - `trust_zone` (`String`) — default `"default"`. Validator: every
   runner referencing the pool must have the same `trust_zone`.
   Must match `IDENTIFIER_REGEX` (lowercase letters, digits, dashes;
@@ -193,11 +194,20 @@ Fields:
   and uses the first hit. Validator: the path must be absolute
   when set.
 
-A runner that references >1 cache pool with `kinds` containing
-`sccache` is rejected at config load (`SCCACHE_SERVER_UDS` is
-single-valued; multi-pool sccache references would silently shadow
-all but the last via systemd's last-writer-wins `Environment=`
-semantics).
+A runner that references >1 cache pool sharing any single `kind`
+(ccache or sccache) is rejected at config load. For sccache pools,
+`SCCACHE_SERVER_UDS` is single-valued and multi-pool references would
+silently shadow all but the last via systemd's last-writer-wins
+`Environment=` semantics. For ccache pools, ghars wires a trust-zone-
+shared `CCACHE_DIR=/var/lib/ghars/<TRUST_ZONE>/.ccache` in the
+runner's `.env` plus one `CCACHE_MAXSIZE` per binding — ccache is
+single-`CCACHE_DIR`-per-process by upstream design, so multiple
+ccache pools cannot deliver distinct cache dirs, and the per-binding
+`CCACHE_MAXSIZE` values race in the `.env` load (last wins).
+Remediation: drop all but one pool of the offending kind from
+`[[runner]].caches`, OR merge the kinds into a single
+`[cache_pools.NAME]` entry (one pool with `kinds = ["ccache",
+"sccache"]` instead of two pools each contributing the same kind).
 
 ## `[network.NAME]`
 
@@ -463,7 +473,9 @@ Selected fields:
   via the runner's own field or `defaults.auth`.
 - `caches` (`Vec<String>`) — references to `[cache_pools.NAME]`.
   Ordered, dedup-on-validate. A runner can reference at most one
-  pool with `kinds` containing `sccache`.
+  pool contributing each kind (at most one ccache pool, at most
+  one sccache pool); a single combined-kind pool with
+  `kinds = ["ccache", "sccache"]` counts as one of each.
 - `trust_zone` (`String`) — default `"default"`. Pool references
   must match (validator enforces). Same `IDENTIFIER_REGEX` shape +
   `TRUST_ZONE_MAX_LEN = 22` cap as `[cache_pools.NAME]` — the
@@ -679,8 +691,16 @@ circuits:
    strict 31-char `valid_user_group_name` ceiling.
 5. `validate_no_duplicate_caches` — no `caches = ["a", "a"]`
    inside a single `[[runner]]`.
-6. `validate_single_sccache_pool_per_runner` — at most one sccache
-   pool per runner.
+6. `validate_no_duplicate_cache_kinds` — at most one pool of each
+   `CacheKind` per runner (one ccache, one sccache). Sibling of
+   `validate_no_duplicate_caches` at the literal-pool-ref layer;
+   this validator works at the resolved-kind layer so two distinct
+   pools that each contribute the same kind to one runner trip
+   the gate. Rationale: each kind's renderer emits per-pool /
+   per-binding env vars that would silently shadow under
+   last-writer-wins semantics — ccache via shell `.env` loader
+   (`CCACHE_MAXSIZE`), sccache via systemd `Environment=`
+   (`SCCACHE_SERVER_UDS`).
 7. `validate_cache_pool_names` — identifier-shape gate on pool keys
    and runner `caches` refs.
 8. `validate_cache_pool_binary_paths` — absolute-path gate on the

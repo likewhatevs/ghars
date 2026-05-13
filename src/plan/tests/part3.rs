@@ -327,48 +327,48 @@ fn classify_labels_none_annotation_skips() {
 /// input order.
 #[test]
 fn delta_before_caches_is_sorted_for_display() {
-    // Strategy: synthesize an old EffectiveRunnerSpec with caches
-    // ["pool-a","pool-m","pool-z"] (canonical order so render
-    // produces a clean drop-in body), then overwrite the
-    // X-Ghars-Caches annotation in the discovered drop-in with a
-    // non-canonical order (`pool-z,pool-a,pool-m`). The
+    // Strategy: synthesize an old EffectiveRunnerSpec with 3
+    // ccache bindings (`pool-a`, `pool-m`, `pool-z`) via direct
+    // construction (bypassing the plan-time `validate_no_duplicate_
+    // cache_kinds` gate), render its discovered drop-in, then
+    // overwrite the X-Ghars-Caches annotation to a non-canonical
+    // order (`pool-z,pool-a,pool-m`). The annotation is the BEFORE
+    // state — a snapshot of what was on disk, possibly from a
+    // pre-#38-validator config that allowed multi-ccache. The
     // intersection branch in plan_from reads this annotation and
     // populates `delta.before_caches` after `sort_unstable()` at
-    // the population site. New desired spec adds a `pool-new`
-    // cache, forcing an UpdateRunner whose `before_caches` we
-    // inspect.
+    // the population site.
+    //
+    // NEW desired cfg is a single-pool runner (one combined-kind
+    // pool) so lower_to_effective passes the per-kind cap. The
+    // diff between OLD (3 ghost ccache pools per annotation) and
+    // NEW (1 combined pool) shrinks the cache list, forcing an
+    // UpdateRunner whose `before_caches` we inspect.
     let mut cfg = config_with_runners(vec![{
         let mut r = minimal_runner("a");
-        r.caches = vec![
-            "pool-a".into(),
-            "pool-m".into(),
-            "pool-new".into(),
-            "pool-z".into(),
-        ];
+        r.caches = vec!["pool-current".into()];
         r
     }]);
-    // Inject the cache pool definitions so lower_to_effective can
-    // resolve the bindings. ccache (not sccache) — the
-    // multi-sccache-pool-per-runner gate in lower_to_effective
-    // would reject 4 sccache pools, but ccache pools have no
-    // single-valued env to clobber and freely compose.
-    for name in ["pool-a", "pool-m", "pool-new", "pool-z"] {
-        cfg.cache_pools.insert(
-            name.into(),
-            crate::config::CachePoolSpec {
-                kinds: vec![CacheKind::Ccache],
-                size: "5G".into(),
-                mode: CacheMode::Shared,
-                trust_zone: "default".into(),
-                sccache_path: None,
-                sleep_path: Some("/usr/bin/sleep".into()),
-            },
-        );
-    }
-    // Old runner had only 3 caches (no pool-new) so the desired
-    // diff is "grow by one new pool" — in-place UpdateRunner.
+    // NEW cfg: one combined-kind pool ("pool-current") — passes
+    // the single-binding-per-kind gate (1 ccache + 1 sccache).
+    cfg.cache_pools.insert(
+        "pool-current".into(),
+        crate::config::CachePoolSpec {
+            kinds: vec![CacheKind::Ccache, CacheKind::Sccache],
+            size: "5G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+            sccache_path: Some("/usr/bin/sccache".into()),
+            sleep_path: Some("/usr/bin/sleep".into()),
+        },
+    );
+    // OLD spec: 3 ccache bindings synthesized directly. This pre-
+    // dates the #38 validator (which would reject 3 ccache pools
+    // per runner); merge_defaults takes bindings as-is without
+    // validation, simulating an on-disk runner deployed under an
+    // older ghars binary.
     let mut old_runner = cfg.runners[0].clone();
-    old_runner.caches.retain(|n| n != "pool-new");
+    old_runner.caches = vec!["pool-a".into(), "pool-m".into(), "pool-z".into()];
     let old_bindings: Vec<EffectiveCacheBinding> = ["pool-a", "pool-m", "pool-z"]
         .iter()
         .map(|n| EffectiveCacheBinding {

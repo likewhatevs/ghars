@@ -564,6 +564,14 @@ caches = ["build", "test"]
         msg.contains("clobbered") || msg.contains("last-writer-wins"),
         "msg must explain the clobber: {msg}"
     );
+    // Pin the sccache-specific process_constraint at the plan-time
+    // arm so an arms-swap regression (sccache violation emits the
+    // ccache constraint text) is caught — parallel to the explicit
+    // CCACHE_DIR pin in `multi_ccache_pool_binding_rejected_at_plan_time`.
+    assert!(
+        msg.contains("server UDS") || msg.contains("SCCACHE_SERVER_UDS"),
+        "msg must explain the sccache root cause: {msg}"
+    );
     // Both offending pool names appear in the error so the
     // operator knows which to split / merge / downgrade.
     assert!(msg.contains("build"), "must name pool 'build': {msg}");
@@ -571,12 +579,42 @@ caches = ["build", "test"]
 }
 
 #[test]
-fn unified_cache_pool_with_sccache_plus_ccache_pool_does_not_double_count() {
-    // Defense in depth: the multi-sccache check counts pools whose
-    // `kinds` LIST contains Sccache, not pools whose ONLY kind is
-    // Sccache. A `kinds = ["sccache", "ccache"]` unified pool is
-    // ONE sccache server, so binding ONE such pool plus a
-    // ccache-only pool must NOT trigger rejection.
+fn unified_combined_kind_pool_alone_does_not_double_count() {
+    // Defense in depth: the per-kind binding check counts pools
+    // whose `kinds` LIST contains the kind, not pools whose ONLY
+    // kind is that kind. A single `kinds = ["sccache", "ccache"]`
+    // unified pool is ONE pool per kind (1 sccache binding + 1
+    // ccache binding), so binding ONE such pool must pass.
+    let cfg = parse(
+        r#"
+[auth.pat]
+kind = "pat"
+token_env = "GHARS_PAT"
+
+[cache_pools.unified]
+kinds = ["sccache", "ccache"]
+size = "200G"
+sccache_path = "/usr/bin/sccache"
+
+[[runner]]
+name = "ok"
+url = "https://github.com/example/ok"
+auth = "pat"
+caches = ["unified"]
+"#,
+    );
+    plan_from(&cfg, &ActualState::default(), &Paths::default())
+        .expect("single combined-kind pool must not double-count");
+}
+
+#[test]
+fn unified_combined_kind_pool_plus_same_kind_pool_rejected_at_plan_time() {
+    // Mirror of `multi_sccache_pool_binding_rejected_at_plan_time`
+    // but for ccache: a combined-kind pool (kinds=["sccache",
+    // "ccache"]) contributes 1 ccache binding; a ccache-only pool
+    // contributes another; total 2 ccache bindings on one runner
+    // → reject at plan time (parallel to the config-load gate at
+    // `validate_no_duplicate_cache_kinds`).
     let cfg = parse(
         r#"
 [auth.pat]
@@ -593,14 +631,151 @@ kinds = ["ccache"]
 size = "100G"
 
 [[runner]]
-name = "ok"
-url = "https://github.com/example/ok"
+name = "multi-ccache"
+url = "https://github.com/example/multi-ccache"
 auth = "pat"
 caches = ["unified", "fsonly"]
 "#,
     );
-    plan_from(&cfg, &ActualState::default(), &Paths::default())
-        .expect("one sccache pool + one ccache-only pool must NOT reject");
+    let err = plan_from(&cfg, &ActualState::default(), &Paths::default()).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("ccache pools") || msg.contains("ccache"),
+        "msg must name the kind: {msg}"
+    );
+    assert!(
+        msg.contains("unified") && msg.contains("fsonly"),
+        "msg must name both conflicting pools: {msg}"
+    );
+}
+
+#[test]
+fn unified_combined_kind_pool_plus_same_kind_sccache_pool_rejected_at_plan_time() {
+    // Symmetric to `unified_combined_kind_pool_plus_same_kind_pool_rejected_at_plan_time`:
+    // combined pool (1 sccache binding) + sccache-only pool (1 more) →
+    // 2 sccache bindings total. The Ccache branch of compute.rs's
+    // CacheKind::ALL loop sees only 1 ccache binding (from the
+    // combined pool) and passes; the Sccache branch must catch the
+    // violation. Without this test, a regression that miscounted
+    // combined-pool sccache contributions would pass.
+    let cfg = parse(
+        r#"
+[auth.pat]
+kind = "pat"
+token_env = "GHARS_PAT"
+
+[cache_pools.unified]
+kinds = ["sccache", "ccache"]
+size = "200G"
+sccache_path = "/usr/bin/sccache"
+
+[cache_pools.remote]
+kinds = ["sccache"]
+size = "100G"
+sccache_path = "/usr/bin/sccache"
+
+[[runner]]
+name = "multi-sccache"
+url = "https://github.com/example/multi-sccache"
+auth = "pat"
+caches = ["unified", "remote"]
+"#,
+    );
+    let err = plan_from(&cfg, &ActualState::default(), &Paths::default()).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("sccache pools") || msg.contains("sccache"),
+        "msg must name the sccache kind: {msg}"
+    );
+    assert!(
+        msg.contains("unified") && msg.contains("remote"),
+        "msg must name both conflicting pools: {msg}"
+    );
+}
+
+#[test]
+fn multi_ccache_three_pools_rejected_names_all_at_plan_time() {
+    // Plan-time analog of the config-load three-of-a-kind test.
+    // compute.rs uses an independent `refs.join(", ")` format from
+    // the config-load gate at load.rs — both need n=3 coverage so a
+    // future regression that took `.take(2)` in either layer is
+    // caught.
+    let cfg = parse(
+        r#"
+[auth.pat]
+kind = "pat"
+token_env = "GHARS_PAT"
+
+[cache_pools.obj-a]
+kinds = ["ccache"]
+size = "50G"
+
+[cache_pools.obj-b]
+kinds = ["ccache"]
+size = "100G"
+
+[cache_pools.obj-c]
+kinds = ["ccache"]
+size = "150G"
+
+[[runner]]
+name = "tri"
+url = "https://github.com/example/tri"
+auth = "pat"
+caches = ["obj-a", "obj-b", "obj-c"]
+"#,
+    );
+    let err = plan_from(&cfg, &ActualState::default(), &Paths::default()).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains('3'), "msg must surface the count for n>2; got: {msg}");
+    assert!(
+        msg.contains("obj-a") && msg.contains("obj-b") && msg.contains("obj-c"),
+        "msg must name ALL three conflicting pools (not just first 2); got: {msg}"
+    );
+}
+
+#[test]
+fn multi_ccache_pool_binding_rejected_at_plan_time() {
+    // Parallel of `multi_sccache_pool_binding_rejected_at_plan_time`
+    // for the ccache kind. Two ccache-only pools on one runner: at
+    // the runtime layer, ccache reads ONE CCACHE_DIR per process by
+    // upstream design (Config::read in ccache's src/ccache/config.cpp); the
+    // rendered .env's per-binding `CCACHE_MAXSIZE=` lines race
+    // last-writer-wins. Plan-time rejection points the operator at
+    // remediation.
+    let cfg = parse(
+        r#"
+[auth.pat]
+kind = "pat"
+token_env = "GHARS_PAT"
+
+[cache_pools.obj-a]
+kinds = ["ccache"]
+size = "50G"
+
+[cache_pools.obj-b]
+kinds = ["ccache"]
+size = "100G"
+
+[[runner]]
+name = "multi"
+url = "https://github.com/example/multi"
+auth = "pat"
+caches = ["obj-a", "obj-b"]
+"#,
+    );
+    let err = plan_from(&cfg, &ActualState::default(), &Paths::default()).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("ccache pools"),
+        "msg must name the kind: {msg}"
+    );
+    assert!(
+        msg.contains("CCACHE_DIR") || msg.contains("single-CCACHE_DIR"),
+        "msg must explain the ccache root cause: {msg}"
+    );
+    assert!(msg.contains("obj-a"), "must name pool 'obj-a': {msg}");
+    assert!(msg.contains("obj-b"), "must name pool 'obj-b': {msg}");
 }
 
 #[test]
