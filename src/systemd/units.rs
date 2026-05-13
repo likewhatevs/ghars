@@ -2962,6 +2962,57 @@ mod tests {
         );
     }
 
+    /// Per-side trim coverage: a regression that swapped `value.trim()`
+    /// for `value.trim_end()` would skip leading-whitespace detection.
+    /// The 5 both-end-padded tests above don't catch that regression
+    /// because their fixtures have whitespace at both ends (trim_end
+    /// would still reject them via the trailing whitespace). This test
+    /// uses leading-only padding to pin the leading-trim half of
+    /// `str::trim`'s contract.
+    #[test]
+    fn render_hardening_rejects_leading_only_whitespace_in_extra_capabilities_entry() {
+        let mut spec = minimal_spec();
+        spec.hardening.extra_capabilities = vec![" CAP_NET_BIND_SERVICE".into()];
+        let err = render_runner_unit(&spec).unwrap_err();
+        assert!(
+            matches!(err, GharsError::Validation(_, _)),
+            "expected Validation, got {err:?}"
+        );
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("extra_capabilities[]"),
+            "msg must name field: {msg}"
+        );
+        assert!(
+            msg.contains("whitespace"),
+            "msg must name class: {msg}"
+        );
+    }
+
+    /// Symmetric inverse of the test above: a regression that swapped
+    /// `value.trim()` for `value.trim_start()` would skip trailing-
+    /// whitespace detection. Trailing-only fixture pins the trailing-
+    /// trim half of `str::trim`'s contract.
+    #[test]
+    fn render_hardening_rejects_trailing_only_whitespace_in_extra_capabilities_entry() {
+        let mut spec = minimal_spec();
+        spec.hardening.extra_capabilities = vec!["CAP_NET_BIND_SERVICE ".into()];
+        let err = render_runner_unit(&spec).unwrap_err();
+        assert!(
+            matches!(err, GharsError::Validation(_, _)),
+            "expected Validation, got {err:?}"
+        );
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("extra_capabilities[]"),
+            "msg must name field: {msg}"
+        );
+        assert!(
+            msg.contains("whitespace"),
+            "msg must name class: {msg}"
+        );
+    }
+
     #[test]
     fn render_proxy_rejects_newline_in_https_url() {
         let mut spec = minimal_spec();
@@ -3513,6 +3564,92 @@ mod tests {
         // touched in the override.
         assert!(!h.lines().any(|l| l.starts_with("DeviceAllow")));
         assert!(r.warnings.is_empty());
+    }
+
+    // ---- single-token positive-render pins for the 4 Hardening
+    // list-typed fields not directly covered by
+    // `render_emits_hardening_when_overridden` above (which exercises
+    // extra_syscalls). `extra_capabilities` had no prior positive-render
+    // coverage; `restrict_address_families`, `bind_readonly_paths`, and
+    // `extra_bind_paths` are already exercised by composition fixtures
+    // elsewhere in this test file (the `*_composes_across_*` and
+    // `*_render_preserves_operator_order_for_colliding_paths` families)
+    // — these 4 tests add leaner single-token sibling pins so a
+    // regression that breaks the simple render path is caught at a
+    // narrow fixture before being masked by the broader composition
+    // fixtures. Pin that clean tokens pass BOTH `check_identity_field`
+    // AND `check_no_whitespace_padding` and render to the expected
+    // directive in the 20-hardening.conf drop-in body. Catches the
+    // regression where the whitespace gate becomes overly aggressive
+    // (e.g. swapped to `value != "FIXED"` by mistake) — would pass the
+    // negative tests above but break the simple positive render path.
+
+    #[test]
+    fn render_hardening_emits_extra_capabilities_for_clean_token() {
+        let mut spec = minimal_spec();
+        spec.hardening.extra_capabilities = vec!["CAP_NET_BIND_SERVICE".into()];
+        let r = render_runner_unit(&spec).expect("clean token must render");
+        let body = r
+            .drop_ins
+            .get("20-hardening.conf")
+            .expect("20-hardening.conf expected when extra_capabilities is non-empty");
+        assert!(
+            body.contains("CapabilityBoundingSet=CAP_NET_BIND_SERVICE"),
+            "expected CapabilityBoundingSet=CAP_NET_BIND_SERVICE in body; got:\n{body}"
+        );
+    }
+
+    #[test]
+    fn render_hardening_emits_restrict_address_families_for_clean_token() {
+        let mut spec = minimal_spec();
+        spec.hardening.restrict_address_families = vec!["AF_UNIX".into()];
+        let r = render_runner_unit(&spec).expect("clean token must render");
+        let body = r
+            .drop_ins
+            .get("20-hardening.conf")
+            .expect("20-hardening.conf expected when restrict_address_families is non-empty");
+        assert!(
+            body.contains("RestrictAddressFamilies=AF_UNIX"),
+            "expected RestrictAddressFamilies=AF_UNIX in body; got:\n{body}"
+        );
+    }
+
+    #[test]
+    fn render_hardening_emits_bind_readonly_paths_for_clean_path() {
+        let mut spec = minimal_spec();
+        spec.hardening.bind_readonly_paths = Some(vec![Utf8PathBuf::from("/etc/example")]);
+        let r = render_runner_unit(&spec).expect("clean path must render");
+        let body = r
+            .drop_ins
+            .get("20-hardening.conf")
+            .expect("20-hardening.conf expected when bind_readonly_paths is non-empty");
+        assert!(
+            body.contains("BindReadOnlyPaths=/etc/example"),
+            "expected BindReadOnlyPaths=/etc/example in body; got:\n{body}"
+        );
+    }
+
+    /// Note: `extra_bind_paths` emits via the `BindReadOnlyPaths=`
+    /// directive (not `BindPaths=`) — systemd treats `BindReadOnlyPaths`
+    /// as list-typed, so both `bind_readonly_paths` and
+    /// `extra_bind_paths` append to the cumulative list (per
+    /// `render_hardening`'s call site above and the field doc-comment
+    /// on `Hardening::extra_bind_paths` at `config.rs`). The assertion
+    /// therefore checks for `BindReadOnlyPaths=/var/log/example`, not
+    /// `BindPaths=`.
+    #[test]
+    fn render_hardening_emits_extra_bind_paths_for_clean_path() {
+        let mut spec = minimal_spec();
+        spec.hardening.extra_bind_paths = vec![Utf8PathBuf::from("/var/log/example")];
+        let r = render_runner_unit(&spec).expect("clean path must render");
+        let body = r
+            .drop_ins
+            .get("20-hardening.conf")
+            .expect("20-hardening.conf expected when extra_bind_paths is non-empty");
+        assert!(
+            body.contains("BindReadOnlyPaths=/var/log/example"),
+            "expected BindReadOnlyPaths=/var/log/example in body; got:\n{body}"
+        );
     }
 
     #[test]
