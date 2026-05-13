@@ -338,6 +338,190 @@ fn render_unchanged_on_labels_reorder_post_merge() {
     );
 }
 
+/// Sister regression pin to `render_unchanged_on_labels_reorder_post_merge`.
+/// Caches have the same two-site defensive-sort architecture as labels:
+/// site 1 sorts at the lowering layer (`lower_to_effective` at
+/// compute.rs:1092 sorts the resolved Vec<EffectiveCacheBinding> by
+/// binding name); site 2 sorts at the rendering layer
+/// (`render_identity` builds `cache_names: Vec<&str>` and calls
+/// `sort_unstable()` at units.rs:949-951) as defense against
+/// direct-construct callers bypassing the lowering sort.
+///
+/// Block 1 (site 1): construct a Config with 2 cache_pools `pool-a`
+/// (ccache) + `pool-z` (sccache) — capped at 1 binding per kind per
+/// #38's per-runner-per-kind validator; build a RunnerSpec whose
+/// `caches` field is `["pool-z", "pool-a"]` (operator TOML in
+/// lex-descending order); call `lower_to_effective` directly; assert
+/// the resulting EffectiveRunnerSpec.caches binding names come out
+/// as `["pool-a", "pool-z"]` (lex-ascending). A regression that
+/// removes compute.rs:1092's sort produces the non-canonical order
+/// here.
+///
+/// Block 2 (site 2): direct-construct bypass. `merge_defaults`
+/// threads the caches Vec verbatim (pinned by
+/// `merge_defaults_caches_threaded_verbatim` in part1.rs), so
+/// this block hand-feeds pre-sorted `EffectiveCacheBinding`
+/// values into merge_defaults — bypassing `lower_to_effective`
+/// entirely — then reverses the resulting `spec.caches` Vec to
+/// lex-descending and renders. This exercises site 2 in
+/// isolation: the renderer must re-sort regardless of input
+/// order. Assert the emitted `X-Ghars-Caches=` CSV is byte-order
+/// ascending. A regression that removes units.rs:949-951's sort
+/// emits the unsorted CSV here — the classifier's set-semantic
+/// sorted comparison would silently mask the divergence at plan
+/// time, but `systemctl cat` would show the unsorted CSV to
+/// operators.
+#[test]
+fn render_unchanged_on_caches_reorder_post_merge() {
+    use crate::config::{CacheKind, CacheMode, CachePoolSpec, EffectiveCacheBinding};
+
+    // Block 1: site 1 (lower_to_effective sort at compute.rs:1092).
+    // Operator TOML places caches in non-canonical order; the
+    // lowering layer must sort them by binding name. Constrained
+    // to 2 pools (1 ccache + 1 sccache) by the post-#38
+    // per-runner-per-kind validator; lex-descending TOML order
+    // [pool-z (sccache), pool-a (ccache)] must lower to ascending
+    // [pool-a (ccache), pool-z (sccache)].
+    let mut cfg = config_with_runners(vec![minimal_runner("a")]);
+    cfg.cache_pools.insert(
+        "pool-a".into(),
+        CachePoolSpec {
+            kinds: vec![CacheKind::Ccache],
+            size: "10G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
+        },
+    );
+    cfg.cache_pools.insert(
+        "pool-z".into(),
+        CachePoolSpec {
+            kinds: vec![CacheKind::Sccache],
+            size: "10G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+            sccache_path: Some("/usr/local/bin/sccache".into()),
+            sleep_path: None,
+        },
+    );
+    cfg.runners[0].caches = vec!["pool-z".into(), "pool-a".into()];
+
+    let expanded = expand_counts(&cfg).expect("count expansion must succeed");
+    let eff_site1 = lower_to_effective(
+        &expanded[0],
+        &cfg,
+        Arch::X86_64,
+        "/etc/ghars/ghars.toml".into(),
+        0,
+    )
+    .expect("lower_to_effective must succeed");
+    let lowered_names: Vec<&str> = eff_site1.caches.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(
+        lowered_names,
+        vec!["pool-a", "pool-z"],
+        "site 1 (lower_to_effective sort at compute.rs:1092) regressed: \
+         non-canonical TOML order [pool-z, pool-a] did not sort to \
+         [pool-a, pool-z]; got: {lowered_names:?}"
+    );
+
+    // Also pin spec_hash permutation invariance. lower_to_effective
+    // sorting the caches Vec is load-bearing for plan/apply: the
+    // spec_hash digest is computed over the resolved spec, so a
+    // regression that sorted the Vec but routed an additional
+    // order-dependent value into spec_hash would silently flip the
+    // hash across operator TOML reorders and trigger spurious
+    // in-place UpdateRunner cycles. Lower a second cfg whose
+    // caches are in canonical order and assert hash equality.
+    let mut cfg_canonical = cfg.clone();
+    cfg_canonical.runners[0].caches = vec!["pool-a".into(), "pool-z".into()];
+    let expanded_canonical =
+        expand_counts(&cfg_canonical).expect("count expansion must succeed");
+    let eff_canonical = lower_to_effective(
+        &expanded_canonical[0],
+        &cfg_canonical,
+        Arch::X86_64,
+        "/etc/ghars/ghars.toml".into(),
+        0,
+    )
+    .expect("lower_to_effective must succeed");
+    assert_eq!(
+        spec_hash(&eff_site1),
+        spec_hash(&eff_canonical),
+        "spec_hash differs across cache TOML permutations — lowering \
+         lost permutation invariance in a way that survives the \
+         lowered_names sort assertion above (some spec_hash input \
+         field other than caches order regressed)"
+    );
+
+    // Block 2: site 2 (render_identity defensive sort at units.rs:949-951).
+    // Direct-construct bypass — merge_defaults threads caches verbatim
+    // (see merge_defaults_caches_threaded_verbatim in part1.rs), so
+    // hand-feed sorted EffectiveCacheBinding values, then mutate the
+    // spec.caches Vec to lex-descending; the renderer must re-sort
+    // before emit.
+    let defaults = Defaults::default();
+    let mut spec = merge_defaults(
+        &minimal_runner("a"),
+        &defaults,
+        "pat".into(),
+        vec![
+            EffectiveCacheBinding {
+                name: "build".into(),
+                kinds: vec![CacheKind::Ccache],
+                size: "10G".into(),
+                mode: CacheMode::Shared,
+                trust_zone: "default".into(),
+                sccache_path: None,
+                sleep_path: Some("/usr/bin/sleep".into()),
+                renderer_schema: crate::systemd::RENDERER_SCHEMA,
+            },
+            EffectiveCacheBinding {
+                name: "test".into(),
+                kinds: vec![CacheKind::Ccache],
+                size: "5G".into(),
+                mode: CacheMode::Shared,
+                trust_zone: "default".into(),
+                sccache_path: None,
+                sleep_path: Some("/usr/bin/sleep".into()),
+                renderer_schema: crate::systemd::RENDERER_SCHEMA,
+            },
+        ],
+        None,
+        None,
+        None,
+        Arch::X86_64,
+        "/etc/ghars/ghars.toml".into(),
+    );
+    spec.spec_hash = spec_hash(&spec);
+
+    // Bypass site 1's sort by directly reversing the Vec to put
+    // "test" before "build" (lex-descending). A renderer that
+    // dropped the defensive sort at units.rs:949-951 would emit
+    // `X-Ghars-Caches=test,build` here.
+    let mut bypass = spec.clone();
+    bypass.caches.reverse();
+    bypass.spec_hash = spec_hash(&bypass);
+    assert_eq!(
+        bypass.caches.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        vec!["test", "build"],
+        "bypass setup must place caches in lex-descending order to exercise site 2"
+    );
+
+    let rendered_bypass = crate::systemd::render_runner_unit(&bypass).unwrap();
+    let bypass_body = rendered_bypass.drop_ins.get("00-ghars.conf").unwrap();
+    let bypass_caches_line = bypass_body
+        .lines()
+        .find(|l| l.starts_with("X-Ghars-Caches="))
+        .expect("00-ghars.conf must emit X-Ghars-Caches=");
+    assert_eq!(
+        bypass_caches_line, "X-Ghars-Caches=build,test",
+        "site 2 (render_identity defensive sort at X-Ghars-Caches=) \
+         regressed: direct-construct bypass with unsorted caches \
+         produced non-canonical CSV: {bypass_caches_line:?}"
+    );
+}
+
 /// Property: two TOML files that produce semantically-identical
 /// configs (but with formatting differences — comments,
 /// whitespace, key order across runner blocks) must lower to the
