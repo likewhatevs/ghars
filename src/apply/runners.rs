@@ -406,6 +406,61 @@ pub(super) fn chown_and_tighten_runner_state(
     Ok(())
 }
 
+/// Snapshot operator-territory drop-in bodies (basenames NOT in
+/// `MANAGED_DROP_IN_BASENAMES`, typically `99-*.conf` from
+/// `systemctl edit`) before the recreate path wipes
+/// `drop_in_dir`. Returns `(basename, body_bytes)` pairs to feed
+/// `restore_operator_drop_ins` post-create. Read failures are
+/// logged via `tracing::warn` and skipped — they don't fail the
+/// recreate (the operator override is lost, but the recreate
+/// proceeds; a hard error here would block the version bump
+/// driving the recreate).
+pub(super) fn snapshot_operator_drop_ins(
+    drop_in_dir: &camino::Utf8Path,
+) -> Vec<(String, Vec<u8>)> {
+    let Ok(read_dir) = std::fs::read_dir(drop_in_dir.as_std_path()) else {
+        return Vec::new();
+    };
+    let mut snapshot = Vec::new();
+    for entry in read_dir.flatten() {
+        let file_name = entry.file_name();
+        let basename = file_name.to_string_lossy().into_owned();
+        if MANAGED_DROP_IN_BASENAMES.contains(&basename.as_str()) {
+            continue;
+        }
+        match std::fs::read(entry.path()) {
+            Ok(content) => snapshot.push((basename, content)),
+            Err(e) => {
+                tracing::warn!(
+                    drop_in = %basename,
+                    error = %e,
+                    "failed to snapshot operator drop-in before recreate; \
+                     override will be lost on the post-create restore"
+                );
+            }
+        }
+    }
+    snapshot
+}
+
+/// Restore operator-territory drop-ins captured by
+/// `snapshot_operator_drop_ins` after the recreate's
+/// `execute_create_runner` finishes. Uses `write_record_undo`
+/// so the restored files are tracked in the undo log — a
+/// rollback post-restore unlinks them, leaving the runner with
+/// only managed drop-ins (matching the create-path baseline).
+pub(super) fn restore_operator_drop_ins(
+    drop_in_dir: &camino::Utf8Path,
+    snapshot: &[(String, Vec<u8>)],
+    log: &mut UndoLog,
+) -> crate::Result<()> {
+    for (basename, content) in snapshot {
+        let path = drop_in_dir.join(basename);
+        write_record_undo(&path, content, log)?;
+    }
+    Ok(())
+}
+
 /// Write the runner's `bin_dir/.env` and `bin_dir/.path` files in a
 /// single call, returning the number of files whose on-disk bytes
 /// changed (0 or 2 for `conditional = false` since every write counts
@@ -1233,8 +1288,31 @@ pub(super) fn execute_update_runner(
         // a single `Recreated` — the user-facing contract is one row
         // per `Action`, and the inner remove+create are
         // implementation detail of the recreate path.
+        // Snapshot operator-territory drop-ins (basenames NOT in
+        // `MANAGED_DROP_IN_BASENAMES` — typically `99-*.conf` from
+        // `systemctl edit`) BEFORE `execute_remove_runner` wipes
+        // `drop_in_dir` via `fs::remove_dir_all` at runners.rs:1184.
+        // Without this snapshot, the operator's override file
+        // vanishes on remove and never comes back on create
+        // (`execute_create_runner` only emits managed basenames).
+        // Operators reporting "my systemctl edit override
+        // disappeared after a runner_version bump" hit this class.
+        //
+        // The snapshot reads file bodies into memory before the
+        // wipe; the restore re-writes them post-create with the
+        // same byte content + ownership via `write_record_undo`,
+        // so the recreate cascade preserves operator overrides
+        // end-to-end. In-place updates already preserve them via
+        // the `MANAGED_DROP_IN_BASENAMES` guard at the deletion
+        // loop in `execute_update_runner` (covered by
+        // `update_runner_in_place_preserves_operator_drop_ins`);
+        // this commit closes the recreate-path equivalent gap
+        // adversary A9 flagged.
+        let recreate_drop_in_dir = paths.drop_in_dir(&delta.identity.name);
+        let operator_drop_ins = snapshot_operator_drop_ins(&recreate_drop_in_dir);
         execute_remove_runner(&delta.identity, deps, paths, log)?;
         execute_create_runner(&delta.after, deps, paths, log, keep_versions)?;
+        restore_operator_drop_ins(&recreate_drop_in_dir, &operator_drop_ins, log)?;
         return Ok(ApplyOutcome::Recreated);
     }
 
