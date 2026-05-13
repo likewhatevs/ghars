@@ -248,6 +248,100 @@ fn merge_defaults_populates_renderer_schema_from_runtime_constant() {
     );
 }
 
+/// Companion to `merge_defaults_populates_renderer_schema_from_runtime_constant`
+/// covering the OTHER construction site that builds an
+/// `EffectiveCacheBinding`: `into_cache_pool_plan` in
+/// `plan/compute.rs`. A refactor that hardcoded the value here
+/// would silently break the cache-pool drop-in rewrite cascade on
+/// RENDERER_SCHEMA bumps (cache_pool_hash would not flip), even
+/// though the merge_defaults test continues to pass.
+#[test]
+fn into_cache_pool_plan_populates_renderer_schema_from_runtime_constant() {
+    let pool = CachePoolSpec {
+        kinds: vec![CacheKind::Ccache],
+        size: "10G".into(),
+        mode: CacheMode::Shared,
+        trust_zone: "default".into(),
+        sccache_path: None,
+        sleep_path: Some("/usr/bin/sleep".into()),
+    };
+    let plan = into_cache_pool_plan("build".into(), &pool, "/etc/ghars/ghars.toml")
+        .expect("into_cache_pool_plan must succeed for a ccache-only pool");
+    assert_eq!(
+        plan.binding.renderer_schema,
+        crate::systemd::RENDERER_SCHEMA,
+        "into_cache_pool_plan must populate renderer_schema from the runtime \
+         crate::systemd::RENDERER_SCHEMA constant; a hardcoded literal would \
+         silently break the cache-pool drop-in rewrite cascade on \
+         RENDERER_SCHEMA bumps (cache_pool_hash would not flip)"
+    );
+}
+
+/// Companion to `merge_defaults_populates_renderer_schema_from_runtime_constant`
+/// covering the THIRD construction site: the inner loop of
+/// `lower_to_effective` that builds an `EffectiveCacheBinding` per
+/// pool the runner references. Two-binding fixture so a future
+/// refactor that hardcoded the constant for one iteration (loop
+/// unroll, first-iteration optimization) is still caught.
+#[test]
+fn lower_to_effective_populates_renderer_schema_on_every_cache_binding() {
+    let mut cfg = config_with_runners(vec![{
+        let mut r = minimal_runner("buckos");
+        r.caches = vec!["pool-a".into(), "pool-b".into()];
+        r
+    }]);
+    cfg.auth = pat_auth();
+    cfg.cache_pools.insert(
+        "pool-a".into(),
+        CachePoolSpec {
+            kinds: vec![CacheKind::Ccache],
+            size: "10G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
+        },
+    );
+    cfg.cache_pools.insert(
+        "pool-b".into(),
+        CachePoolSpec {
+            kinds: vec![CacheKind::Ccache],
+            size: "20G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
+        },
+    );
+
+    let expanded = expand_counts(&cfg).expect("count expansion must succeed");
+    let eff = lower_to_effective(
+        &expanded[0],
+        &cfg,
+        Arch::X86_64,
+        "/etc/ghars/ghars.toml".into(),
+        0,
+    )
+    .expect("lower_to_effective must succeed for a two-pool runner");
+    assert_eq!(
+        eff.caches.len(),
+        2,
+        "fixture sanity: runner must resolve to exactly 2 cache bindings"
+    );
+    for binding in &eff.caches {
+        assert_eq!(
+            binding.renderer_schema,
+            crate::systemd::RENDERER_SCHEMA,
+            "every cache binding from lower_to_effective must populate \
+             renderer_schema from the runtime constant; binding `{name}` \
+             got {actual}, expected {expected}",
+            name = binding.name,
+            actual = binding.renderer_schema,
+            expected = crate::systemd::RENDERER_SCHEMA,
+        );
+    }
+}
+
 #[test]
 fn merge_defaults_empty_labels_falls_back_to_name() {
     let runner = minimal_runner("solo");
