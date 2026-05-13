@@ -2953,7 +2953,7 @@ fn merge_defaults_empty_runner_vec_inherits_defaults_for_pick_vec_fields() {
     let defaults = Defaults {
         hardening: Hardening {
             restrict_address_families: vec!["AF_INET".into(), "AF_INET6".into()],
-            extra_syscalls: vec!["@privileged".into()],
+            extra_syscalls: vec!["clone3".into()],
             ..Hardening::default()
         },
         ..Defaults::default()
@@ -2973,7 +2973,7 @@ fn merge_defaults_empty_runner_vec_inherits_defaults_for_pick_vec_fields() {
         eff.hardening.restrict_address_families,
         vec!["AF_INET", "AF_INET6"]
     );
-    assert_eq!(eff.hardening.extra_syscalls, vec!["@privileged"]);
+    assert_eq!(eff.hardening.extra_syscalls, vec!["clone3"]);
 }
 
 /// Property: `extra_bind_paths` and `extra_capabilities` are

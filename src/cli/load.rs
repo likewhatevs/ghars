@@ -235,6 +235,7 @@ pub(super) fn validate_hardening_block(h: &Hardening) -> Result<()> {
         "hardening.restrict_address_families",
         &h.restrict_address_families,
     )?;
+    validators::validate_extra_syscalls(&h.extra_syscalls)?;
     Ok(())
 }
 

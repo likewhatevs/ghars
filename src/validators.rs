@@ -182,6 +182,38 @@ const AF_FAMILY_ALIASES: &[(&str, &str)] = &[
     ("AF_ROUTE", "AF_NETLINK"),
 ];
 
+/// Bare syscall identifier shape for `Hardening.extra_syscalls`
+/// tokens. Lowercase ASCII letter or underscore as the lead char,
+/// then alphanumeric + underscore (matches libseccomp's syscall
+/// registry naming convention — e.g. `clone3`, `pidfd_open`,
+/// `_llseek`, `io_uring_setup`).
+///
+/// Deliberately REJECTS systemd's other accepted SystemCallFilter=
+/// shapes:
+/// - `@group` syntax (e.g. `@basic-io`, `@privileged`): groups grant
+///   bulk syscall surface and `@privileged` carries the CAP_SYS_ADMIN-
+///   equivalent set, which would bypass the SEC-01 deny-list applied
+///   to `extra_capabilities`.
+/// - `name:errno` action annotations (e.g. `mount:EPERM`): systemd's
+///   `config_parse_syscall_filter` at `systemd/src/core/load-fragment.c`
+///   line 3287-3291 silently drops these in allow-list mode (which is
+///   the only mode ghars emits), so they would never take effect.
+/// - `~`-prefix tokens: see `validate_extra_syscalls` below.
+///
+/// Operators needing groups or action annotations should file an
+/// issue with the concrete use case (mirrors the `extra_capabilities`
+/// pattern).
+static SYSCALL_NAME_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^[a-z_][a-z0-9_]*$").expect("SYSCALL_NAME_REGEX is a compile-time constant")
+});
+
+/// Hard cap on the byte length of an `extra_syscalls` token. The
+/// longest current Linux syscall name is `landlock_restrict_self`
+/// at 22 bytes; 64 leaves substantial headroom for future syscall
+/// + architecture-suffix combinations while catching operator-pasted
+/// nonsense before it reaches systemd's parser.
+const SYSCALL_NAME_MAX_LEN: usize = 64;
+
 // GitHub repo URL. Form: https://github.com/OWNER[/REPO][.git][/].
 // OWNER and REPO segments match GitHub's own rules: start with an
 // alphanumeric, continue with alphanumerics, dots, hyphens, or
@@ -1121,6 +1153,14 @@ pub fn validate_restrict_address_families(field_label: &str, families: &[String]
 /// Validate `Hardening.extra_capabilities` (SEC-01).
 ///
 /// Each entry must satisfy:
+/// - Equal to its own trimmed form (no surrounding whitespace). The
+///   renderer at `units::render_hardening_drop_in` emits tokens via
+///   `Vec::join(" ")` verbatim, so a whitespace-padded token would
+///   produce different on-disk bytes (and a different `spec_hash`)
+///   from the equivalent unpadded form, triggering a spurious in-place
+///   `UpdateRunner` cascade across cosmetically-equivalent TOML —
+///   mirroring the byte-equality contract `merge_hardening` enforces
+///   via sort+dedup for the Vec ordering.
 /// - Non-empty after trim.
 /// - Match the systemd capability-token shape `CAP_[A-Z0-9_]+`
 ///   (case-insensitive). Anything else is a typo or a confused
@@ -1139,6 +1179,20 @@ pub fn validate_extra_capabilities(caps: &[String]) -> Result<()> {
     });
     for raw in caps {
         let trimmed = raw.trim();
+        if raw.as_str() != trimmed {
+            return Err(validation(
+                format!(
+                    "extra_capabilities entry {raw:?} has surrounding whitespace; \
+                     ghars's renderer emits the raw token verbatim into the \
+                     CapabilityBoundingSet= line, so a whitespace-padded token \
+                     would produce different on-disk bytes (and a different \
+                     spec_hash) from the equivalent unpadded form, triggering \
+                     a spurious in-place UpdateRunner cascade across \
+                     cosmetically-equivalent TOML"
+                ),
+                "remove the leading/trailing whitespace from the token",
+            ));
+        }
         if trimmed.is_empty() {
             return Err(validation(
                 "extra_capabilities entry is empty",
@@ -1166,6 +1220,154 @@ pub fn validate_extra_capabilities(caps: &[String]) -> Result<()> {
                      issue describing the capability use case",
                 ));
             }
+        }
+    }
+    Ok(())
+}
+
+/// Validate `Hardening.extra_syscalls` (SEC-01).
+///
+/// Each entry must satisfy:
+/// - Equal to its own trimmed form (no surrounding whitespace). The
+///   renderer at `units::render_hardening_drop_in` emits tokens via
+///   `Vec::join(" ")` verbatim, so a whitespace-padded token would
+///   produce different on-disk bytes (and a different `spec_hash`)
+///   from the equivalent unpadded form, triggering a spurious in-place
+///   `UpdateRunner` cascade across cosmetically-equivalent TOML —
+///   mirroring the byte-equality contract `merge_hardening` enforces
+///   via sort+dedup for the Vec ordering.
+/// - Non-empty.
+/// - Not start with `~`. systemd's `SystemCallFilter=` parser at
+///   `systemd/src/core/load-fragment.c` line 3238-3241 checks
+///   `rvalue[0] == '~'` on the WHOLE directive value and, if set,
+///   flips the directive from allow-list to deny-list semantics for
+///   ALL subsequent tokens. A single `~`-prefix token in an
+///   otherwise-empty Vec joins to `"~foo"` (`rvalue[0] == '~'`) and
+///   flips the polarity; in a mixed Vec, `~` (ASCII 0x7E) sorts AFTER
+///   all alphanumerics so the `~`-prefix token lands at the END of
+///   the joined directive and is silently dropped by libseccomp as
+///   an unknown syscall name. Both outcomes contradict the operator's
+///   stated intent of "extend the allowlist"; rejecting at config-
+///   load shape-check eliminates both — mirrors how `AF_FAMILY_RE`
+///   intrinsically rejects `~`-prefix for `validate_restrict_address_families`.
+/// - Not start with `@`. systemd treats `@group` (e.g. `@basic-io`,
+///   `@privileged`) as a syscall-group reference. Granting groups
+///   bypasses the SEC-01 deny-list applied to `extra_capabilities`
+///   (e.g. `@privileged` carries CAP_SYS_ADMIN-equivalent syscalls).
+/// - Not contain `:`. systemd parses `name:errno` as an action
+///   annotation, but the parser silently drops these in allow-list
+///   mode (`load-fragment.c:3287-3291`: `if (!invert && num >= 0) ...
+///   log_syntax ... continue`). ghars emits SystemCallFilter= in
+///   allow-list mode only, so `:errno` tokens have no effect.
+/// - Match [`SYSCALL_NAME_RE`] (`^[a-z_][a-z0-9_]*$`). Catches
+///   embedded whitespace, control characters, uppercase, leading
+///   digits, hyphens, and Unicode that libseccomp's
+///   `sym_seccomp_syscall_resolve_name` would warning-log and silently
+///   drop.
+/// - Length ≤ [`SYSCALL_NAME_MAX_LEN`] (64 bytes).
+///
+/// # Errors
+///
+/// Returns `GharsError::Validation` on the first offending token. The
+/// message names `extra_syscalls`, quotes the rejected token verbatim,
+/// and provides a remediation hint pointing at systemd.exec(5)
+/// `SystemCallFilter=` for the supported allow-list-style bare-name
+/// form.
+pub fn validate_extra_syscalls(syscalls: &[String]) -> Result<()> {
+    for raw in syscalls {
+        let trimmed = raw.trim();
+        if raw.as_str() != trimmed {
+            return Err(validation(
+                format!(
+                    "extra_syscalls entry {raw:?} has surrounding whitespace; \
+                     ghars's renderer emits the raw token verbatim into the \
+                     SystemCallFilter= line, so a whitespace-padded token \
+                     would produce different on-disk bytes (and a different \
+                     spec_hash) from the equivalent unpadded form, \
+                     triggering a spurious in-place UpdateRunner cascade \
+                     across cosmetically-equivalent TOML"
+                ),
+                "remove the leading/trailing whitespace from the token",
+            ));
+        }
+        if trimmed.is_empty() {
+            return Err(validation(
+                "extra_syscalls entry is empty",
+                "remove the empty token from [hardening.extra_syscalls]",
+            ));
+        }
+        if trimmed.starts_with('~') {
+            return Err(validation(
+                format!(
+                    "extra_syscalls entry {trimmed:?} starts with `~`; \
+                     systemd treats a leading `~` on the SystemCallFilter= \
+                     directive as a deny-list polarity flip. A single \
+                     `~`-prefix token in the Vec joins to a directive value \
+                     whose first byte is `~` and flips systemd's polarity; \
+                     even in a mixed Vec where the `~` token sorts to the \
+                     end (ASCII 0x7E > alphanumerics) and is silently \
+                     dropped by libseccomp, the operator's intent is \
+                     subverted"
+                ),
+                "drop the `~` prefix; ghars emits SystemCallFilter= in \
+                 allow-list mode only. If you need to remove a syscall \
+                 the template grants, file an issue with the use case",
+            ));
+        }
+        if trimmed.starts_with('@') {
+            return Err(validation(
+                format!(
+                    "extra_syscalls entry {trimmed:?} starts with `@`; \
+                     systemd treats `@`-prefixed tokens as syscall groups, \
+                     but ghars rejects them at config-load because groups \
+                     like `@privileged` grant CAP_SYS_ADMIN-equivalent \
+                     syscall surface, bypassing the SEC-01 deny-list \
+                     applied to extra_capabilities"
+                ),
+                "use bare syscall names (e.g. `clone3`, `rseq`, \
+                 `pidfd_open`); see systemd.exec(5) SystemCallFilter= \
+                 for the bare-name form. If you need a specific group, \
+                 file an issue with the use case",
+            ));
+        }
+        if trimmed.contains(':') {
+            return Err(validation(
+                format!(
+                    "extra_syscalls entry {trimmed:?} contains `:`; \
+                     systemd treats `name:errno` as an action annotation \
+                     valid only in deny-list mode, but ghars emits \
+                     SystemCallFilter= in allow-list mode where such \
+                     tokens are silently dropped"
+                ),
+                "drop the `:errno` suffix; ghars's allow-list mode does \
+                 not support action annotations",
+            ));
+        }
+        if trimmed.len() > SYSCALL_NAME_MAX_LEN {
+            return Err(validation(
+                format!(
+                    "extra_syscalls entry {trimmed:?} is {} bytes; real \
+                     syscall names top out under {SYSCALL_NAME_MAX_LEN}",
+                    trimmed.len(),
+                ),
+                "shorten the token; if it really is a systemd-supported \
+                 syscall name longer than 64 bytes, file an issue with \
+                 the systemd reference",
+            ));
+        }
+        if !SYSCALL_NAME_RE.is_match(trimmed) {
+            return Err(validation(
+                format!(
+                    "extra_syscalls entry {trimmed:?} is not a valid \
+                     syscall name; ghars accepts only bare lowercase \
+                     ASCII syscall identifiers (e.g. `clone3`, `rseq`, \
+                     `pidfd_open`)"
+                ),
+                "use systemd syscall tokens like `clone3`, `rseq`, \
+                 `pidfd_open`, `io_uring_setup`; see systemd.exec(5) \
+                 SystemCallFilter= for the supported list. Tokens are \
+                 case-sensitive lowercase",
+            ));
         }
     }
     Ok(())
@@ -3210,17 +3412,47 @@ mod tests {
         assert!(msg.contains(cap), "{msg}");
     }
 
+    /// Lowercase / mixed-case denied-cap variants still hit the
+    /// deny-list (validator uppercases trimmed before comparison).
+    /// Pure case variants — no surrounding whitespace — bypass the
+    /// raw != trimmed gate and reach the deny-list check.
     #[rstest]
     #[case("cap_sys_admin")]
     #[case("Cap_Sys_Admin")]
-    #[case(" CAP_SYS_ADMIN ")]
-    fn extra_capabilities_case_and_whitespace_insensitive(#[case] cap: &str) {
+    fn extra_capabilities_case_insensitive_against_deny_list(#[case] cap: &str) {
         let err = validate_extra_capabilities(&[cap.to_string()])
-            .expect_err("must reject regardless of case/whitespace");
+            .expect_err("must reject denied cap regardless of case");
         let msg = format!("{err}");
         assert!(
             msg.contains("CAP_SYS_ADMIN") && msg.contains("denied"),
             "{msg}"
+        );
+    }
+
+    /// Whitespace-padded tokens reject with the "surrounding
+    /// whitespace" message — fires the raw != trimmed gate BEFORE
+    /// the trim+uppercase+deny-list check. Defends the spec_hash
+    /// stability invariant: the renderer at
+    /// `units::render_hardening_drop_in` emits the raw token verbatim,
+    /// so without this gate a whitespace-padded token would produce
+    /// different on-disk bytes (and a different spec_hash) from the
+    /// equivalent unpadded form, triggering a spurious in-place
+    /// UpdateRunner cascade across cosmetically-equivalent TOML.
+    #[rstest]
+    #[case::space_padded(" CAP_SYS_ADMIN ")]
+    #[case::leading_space(" CAP_NET_BIND_SERVICE")]
+    #[case::trailing_tab("CAP_CHOWN\t")]
+    fn extra_capabilities_rejects_whitespace_padded_tokens(#[case] cap: &str) {
+        let err = validate_extra_capabilities(&[cap.to_string()])
+            .expect_err("whitespace-padded token must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("surrounding whitespace"),
+            "msg must name the whitespace violation: {msg}"
+        );
+        assert!(
+            msg.contains("extra_capabilities"),
+            "msg must name the field: {msg}"
         );
     }
 
@@ -3263,6 +3495,223 @@ mod tests {
         let caps = vec!["CAP_CHOWN".into(), "CAP_SYS_ADMIN".into()];
         let err = validate_extra_capabilities(&caps).expect_err("must reject");
         assert!(format!("{err}").contains("CAP_SYS_ADMIN"));
+    }
+
+    // ---- extra_syscalls (SEC-01) -------------------------------------
+
+    /// Bare syscall identifiers — lowercase ASCII letters, digits,
+    /// underscore — that mirror real libseccomp registry names must
+    /// pass. Sample covers single-word, multi-word, leading-underscore,
+    /// and digit-suffix forms.
+    #[rstest]
+    #[case::read("read")]
+    #[case::openat("openat")]
+    #[case::clone3("clone3")]
+    #[case::mmap2("mmap2")]
+    #[case::leading_underscore("_llseek")]
+    #[case::epoll_create1("epoll_create1")]
+    #[case::pidfd_open("pidfd_open")]
+    #[case::io_uring_setup("io_uring_setup")]
+    #[case::landlock_restrict_self("landlock_restrict_self")]
+    #[case::clock_gettime64("clock_gettime64")]
+    fn extra_syscalls_accepts_bare_names(#[case] name: &str) {
+        validate_extra_syscalls(&[name.into()]).expect("valid bare syscall name must pass");
+    }
+
+    /// Empty list (the default) passes — no override is a valid
+    /// state.
+    #[test]
+    fn extra_syscalls_accepts_empty_list() {
+        validate_extra_syscalls(&[]).unwrap();
+    }
+
+    /// The primary SEC finding: a `~`-prefix token in the operator's
+    /// Vec would land at position 0 after `merge_hardening`'s lex sort
+    /// (ASCII `~` = 0x7E sorts AFTER all alphanumerics) and silently
+    /// flip systemd's `SystemCallFilter=` directive from allow-list to
+    /// deny-list. Every variant of the `~` prefix must reject at
+    /// config-load.
+    #[rstest]
+    #[case::tilde_alone("~")]
+    #[case::tilde_name("~read")]
+    #[case::tilde_group("~@system-service")]
+    #[case::double_tilde("~~read")]
+    #[case::tilde_space("~ read")]
+    fn extra_syscalls_rejects_tilde_prefix(#[case] token: &str) {
+        let err = validate_extra_syscalls(&[token.into()])
+            .expect_err("~-prefix token must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("starts with `~`"),
+            "msg must name the ~ prefix: {msg}"
+        );
+        assert!(
+            msg.contains("extra_syscalls"),
+            "msg must name the field: {msg}"
+        );
+        assert!(
+            msg.contains(&format!("{token:?}")),
+            "msg must quote the offending token: {msg}"
+        );
+    }
+
+    /// `@group` syntax is rejected. Granting `@privileged` would carry
+    /// CAP_SYS_ADMIN-equivalent syscalls, bypassing the SEC-01 deny-
+    /// list on extra_capabilities.
+    #[rstest]
+    #[case::privileged("@privileged")]
+    #[case::raw_io("@raw-io")]
+    #[case::basic_io("@basic-io")]
+    #[case::system_service("@system-service")]
+    fn extra_syscalls_rejects_at_prefix(#[case] token: &str) {
+        let err =
+            validate_extra_syscalls(&[token.into()]).expect_err("@-prefix token must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("starts with `@`"),
+            "msg must name the @ prefix: {msg}"
+        );
+        assert!(
+            msg.contains(&format!("{token:?}")),
+            "msg must quote the offending token: {msg}"
+        );
+    }
+
+    /// `name:errno` annotation is rejected on a bare syscall name.
+    /// systemd silently drops these in allow-list mode per
+    /// load-fragment.c:3287-3291. Test cases use bare-name `:errno`
+    /// forms only — `@group:errno` would hit the earlier `@`-prefix
+    /// check (`extra_syscalls_rejects_at_prefix`) and never reach
+    /// the `:` check, so it doesn't exercise this code path.
+    #[rstest]
+    #[case::mount_eperm("mount:EPERM")]
+    #[case::unshare_kill("unshare:KILL")]
+    #[case::read_errno("read:255")]
+    fn extra_syscalls_rejects_errno_suffix(#[case] token: &str) {
+        let err =
+            validate_extra_syscalls(&[token.into()]).expect_err(":errno token must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("contains `:`"),
+            "msg must name the `:` violation: {msg}"
+        );
+    }
+
+    /// Empty token rejects with "is empty". An empty string (e.g.,
+    /// from a stray comma in TOML producing an empty string between
+    /// commas in the resulting Vec) fires the is_empty branch
+    /// because raw == trimmed (both empty) — bypasses the raw !=
+    /// trimmed whitespace gate.
+    #[test]
+    fn extra_syscalls_rejects_empty_entry() {
+        let err = validate_extra_syscalls(&[String::new()])
+            .expect_err("empty token must reject");
+        let msg = format!("{err}");
+        assert!(msg.contains("is empty"), "msg must say empty: {msg}");
+    }
+
+    /// Whitespace-padded tokens reject with the "surrounding
+    /// whitespace" message. Defends the spec_hash stability
+    /// invariant: the renderer at `units::render_hardening_drop_in`
+    /// emits the raw token verbatim, so without this gate a
+    /// whitespace-padded token would produce different on-disk bytes
+    /// (and a different spec_hash) from the equivalent unpadded form,
+    /// triggering a spurious in-place UpdateRunner cascade across
+    /// cosmetically-equivalent TOML. See doc-comment in `merge.rs`
+    /// `merge_hardening` (the canonicalization block) for the
+    /// byte-equality invariant chain.
+    #[rstest]
+    #[case::space_only(" ")]
+    #[case::tab_only("\t")]
+    #[case::multiple_spaces("   ")]
+    #[case::leading_space(" read")]
+    #[case::trailing_space("read ")]
+    #[case::padded("  read  ")]
+    #[case::tab_padded("\tread\t")]
+    fn extra_syscalls_rejects_whitespace_padded_tokens(#[case] token: &str) {
+        let err = validate_extra_syscalls(&[token.into()])
+            .expect_err("whitespace-padded token must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("surrounding whitespace"),
+            "msg must name the whitespace violation: {msg}"
+        );
+        assert!(
+            msg.contains("extra_syscalls"),
+            "msg must name the field: {msg}"
+        );
+    }
+
+    /// Tokens with embedded newlines, control chars, comment markers,
+    /// or systemd-directive separators must reject — these would
+    /// either split into multiple tokens at systemd's parser or
+    /// inject a new directive line at unit-load time.
+    #[rstest]
+    #[case::newline("read\nDeleteMe=")]
+    #[case::carriage_return("read\r\nKillMode=process")]
+    #[case::comment_hash("#read")]
+    #[case::comment_semi(";read")]
+    #[case::equals("read=foo")]
+    #[case::embedded_space("read foo")]
+    #[case::uppercase("Read")]
+    #[case::dash("read-now")]
+    #[case::leading_digit("9read")]
+    #[case::asterisk("open*")]
+    #[case::accented("réad")]
+    fn extra_syscalls_rejects_malformed_shape(#[case] token: &str) {
+        let err = validate_extra_syscalls(&[token.into()])
+            .expect_err("malformed-shape token must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("not a valid syscall name"),
+            "msg must name shape violation: {msg}"
+        );
+        assert!(
+            msg.contains(&format!("{token:?}")) || msg.contains(token.trim()),
+            "msg must quote the offending token: {msg}"
+        );
+    }
+
+    /// Tokens beyond SYSCALL_NAME_MAX_LEN (64 bytes) reject, naming
+    /// the actual byte count. Defense-in-depth against operator-
+    /// pasted nonsense; real syscall names top out under 25 bytes.
+    #[test]
+    fn extra_syscalls_rejects_overlong() {
+        // 65 bytes: 'a' repeated.
+        let overlong = "a".repeat(65);
+        assert_eq!(overlong.len(), 65);
+        let err = validate_extra_syscalls(std::slice::from_ref(&overlong))
+            .expect_err("overlong token must reject");
+        let msg = format!("{err}");
+        assert!(msg.contains("65 bytes"), "msg must name length: {msg}");
+        assert!(
+            msg.contains(&format!("{overlong:?}")),
+            "msg must quote the bad token: {msg}"
+        );
+    }
+
+    /// Token of exactly SYSCALL_NAME_MAX_LEN (64 bytes) MUST accept.
+    /// Boundary case — off-by-one in the length check would silently
+    /// reject a 64-byte token that the cap permits.
+    #[test]
+    fn extra_syscalls_accepts_at_max_length() {
+        // 64 bytes: 'a' repeated.
+        let at_max = "a".repeat(64);
+        assert_eq!(at_max.len(), 64);
+        validate_extra_syscalls(std::slice::from_ref(&at_max))
+            .expect("token at max length must accept");
+    }
+
+    /// Multi-entry list with one bad token rejects on the bad token,
+    /// short-circuiting on the first failure. Pins that the validator
+    /// does NOT silently accept later entries by stopping at the
+    /// first.
+    #[test]
+    fn extra_syscalls_first_failure_short_circuits() {
+        let syscalls = vec!["read".into(), "~mount".into(), "openat".into()];
+        let err = validate_extra_syscalls(&syscalls).expect_err("must reject");
+        let msg = format!("{err}");
+        assert!(msg.contains("\"~mount\""), "msg must name bad token: {msg}");
     }
 
     // ---- extra_bind_paths (SEC-01) -----------------------------------

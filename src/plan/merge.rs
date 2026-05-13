@@ -320,11 +320,28 @@ pub(super) fn merge_hardening(runner: &Hardening, defaults: &Hardening) -> Harde
     // change effective behavior):
     //   - `restrict_address_families` → RestrictAddressFamilies= appends
     //     with union semantics across drop-in lines, set-semantic.
+    //     Token shape gated upstream by `validate_restrict_address_families`
+    //     (validators.rs) — `AF_FAMILY_RE` (`^AF_[A-Z0-9_]+$`) rejects
+    //     `~`-prefix tokens at config-load by shape, so a `~AF_*` token
+    //     never reaches this sort and cannot subvert systemd's polarity.
     //   - `extra_syscalls` → SystemCallFilter= is APPEND with union
     //     semantics (consecutive lines union the allowlist), so order
-    //     is not load-bearing.
+    //     is not load-bearing. Token shape gated upstream by
+    //     `validate_extra_syscalls` (validators.rs) — `SYSCALL_NAME_RE`
+    //     (`^[a-z_][a-z0-9_]*$`) + explicit `~`-prefix / `@`-prefix /
+    //     `:` / surrounding-whitespace rejects, so a `~`-prefix token
+    //     never reaches this sort. Without the upstream gate, systemd's
+    //     `config_parse_syscall_filter` parser (`systemd/src/core/
+    //     load-fragment.c` line 3238-3241) would flip the WHOLE
+    //     directive from allow-list to deny-list whenever a `~`-prefix
+    //     token landed at position 0 of the joined directive value
+    //     (which happens trivially when it's the only token in the
+    //     Vec).
     //   - `extra_capabilities` → CapabilityBoundingSet= unions across
-    //     drop-in lines.
+    //     drop-in lines. Token shape gated upstream by
+    //     `validate_extra_capabilities` — `CAP_RE` (`^CAP_[A-Z0-9_]+$`)
+    //     rejects `~`-prefix tokens at config-load by shape, so a
+    //     `~CAP_*` token never reaches this sort.
     //
     // The `.dedup()` call lands AFTER `.sort()` because `Vec::dedup`
     // collapses only *consecutive* equal elements; sort first puts
