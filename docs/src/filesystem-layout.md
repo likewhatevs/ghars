@@ -135,16 +135,18 @@ Notes:
 - Labels, caches, and pool kinds are sorted alphabetically via
   `sort_unstable()` at the emission site as defense-in-depth on
   top of the upstream source-of-truth sort (`merge_defaults` for
-  labels, `lower_to_effective` for caches; pool kinds defensive
-  sort lives at the renderer, pending the lowering-boundary sort
-  that will make `cache_pool_hash` and `render_cache_drop_in`
-  agree on canonical order). The parse boundary
+  labels, `lower_to_effective` for caches, `canonicalize_kinds()`
+  helper called at both `EffectiveCacheBinding` construction sites
+  (`into_cache_pool_plan` and the inner loop of `lower_to_effective`)
+  for pool kinds). All three sites sort at the lowering boundary so
+  `spec_hash` / `cache_pool_hash` and the rendered drop-in body are
+  both byte-stable across operator TOML reorders. The parse boundary
   (`DiscoveredAnnotations::from_drop_in_body` in `plan/classify.rs`)
   re-sorts labels and caches as a third defensive layer so any
   direct consumer of the parsed annotations gets canonical order;
-  pool kinds is not currently parsed at the classifier boundary
-  (cache-pool drift detection routes through `cache_pool_hash`
-  rather than typed annotation reconstruction).
+  pool kinds is not parsed at the classifier boundary (cache-pool
+  drift detection routes through `cache_pool_hash` rather than
+  typed annotation reconstruction).
 - `X-Ghars-Network-Mode` is always emitted: the renderer collapses
   the no-binding case to `open` rather than omitting the key, so
   operators auditing `systemctl cat` always see the mode explicitly.

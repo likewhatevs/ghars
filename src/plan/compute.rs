@@ -823,6 +823,44 @@ pub(super) fn into_runner_plan(
     })
 }
 
+/// Canonicalize a `kinds` Vec by sorting alphabetically via
+/// [`CacheKind::label()`]. Used at both production
+/// `EffectiveCacheBinding` construction sites so `cache_pool_hash`,
+/// `spec_hash`, and the rendered drop-in body are all
+/// permutation-invariant across operator-supplied
+/// `[cache_pools.NAME].kinds` TOML order. Direct-construct test
+/// fixtures bypass this helper and rely on the renderer-site
+/// defensive sort at `render_cache_drop_in` for canonical CSV
+/// emission.
+///
+/// Two construction sites exist:
+/// - `into_cache_pool_plan` (pool-side binding feeding
+///   `cache_pool_hash` + the cache pool's `00-ghars.conf` drop-in)
+/// - `lower_to_effective` inner loop (runner-side binding feeding
+///   `spec_hash` + the runner's `00-ghars.conf` / `30-cache-pool.conf`
+///   drop-ins)
+///
+/// Without canonicalization at BOTH sites, a cosmetic TOML reorder
+/// `["sccache", "ccache"]` ↔ `["ccache", "sccache"]` flips
+/// `cache_pool_hash` AND every runner's `spec_hash` (serde_json
+/// preserves Vec order → different JSON bytes → different SHA256),
+/// producing spurious `UpdateCachePool` plans AND `UpdateRunner`
+/// plans for every runner that binds the pool, all with no
+/// semantic delta.
+///
+/// Sort-by-label matches the renderer-site sort at
+/// `render_cache_drop_in` (`binding.kinds.iter().map(|k| k.label())`
+/// then `sort_unstable()`), guaranteeing all three sites agree on
+/// canonical order for any current and future variant of
+/// `CacheKind`. The label-keyed sort is explicit about the canonical
+/// order (matches the operator-facing TOML key naming) and avoids
+/// any hidden coupling to `CacheKind` enum variant declaration order.
+fn canonicalize_kinds(kinds: &[CacheKind]) -> Vec<CacheKind> {
+    let mut out = kinds.to_vec();
+    out.sort_unstable_by_key(|k| k.label());
+    out
+}
+
 pub(super) fn into_cache_pool_plan(
     name: String,
     pool: &CachePoolSpec,
@@ -831,7 +869,7 @@ pub(super) fn into_cache_pool_plan(
     let (sccache_path, sleep_path) = resolve_cache_pool_paths(&name, pool)?;
     let binding = EffectiveCacheBinding {
         name,
-        kinds: pool.kinds.clone(),
+        kinds: canonicalize_kinds(&pool.kinds),
         size: pool.size.clone(),
         mode: pool.mode,
         trust_zone: pool.trust_zone.clone(),
@@ -1070,7 +1108,7 @@ pub(super) fn lower_to_effective(
         let (sccache_path, sleep_path) = resolve_cache_pool_paths(cache_name, pool)?;
         caches.push(EffectiveCacheBinding {
             name: cache_name.clone(),
-            kinds: pool.kinds.clone(),
+            kinds: canonicalize_kinds(&pool.kinds),
             size: pool.size.clone(),
             mode: pool.mode,
             trust_zone: pool.trust_zone.clone(),

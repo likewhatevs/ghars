@@ -14,17 +14,28 @@ use crate::config::{EffectiveCacheBinding, EffectiveRunnerSpec};
 ///   `BTreeMap`-backed (no `preserve_order` feature) — keys land in
 ///   sorted order at every depth.
 /// - Arrays preserve source order in canonical JSON (`Vec` is
-///   ordered by intent). `caches` and `labels` are the set-semantic
-///   exceptions: `lower_to_effective` sorts `caches` by name during
-///   cache-pool resolution; `merge_defaults` sorts `labels` by name
-///   after the concat-and-dedup pass. So the spec arriving here is
-///   canonical regardless of the operator's TOML ordering. `spec_hash`
-///   itself does NOT re-sort — callers that bypass the lowering
-///   pipeline (e.g. hand-built test fixtures) must sort their own
-///   `caches` / `labels` Vecs before hashing if they want the
-///   reorder-invariance contract. First apply post-upgrade will
-///   rewrite `00-ghars.conf` and `30-cache-pool.conf` with sorted
-///   caches/labels for any runner whose TOML order differed.
+///   ordered by intent). Three set-semantic exceptions get
+///   pre-sorted at the lowering boundary so `serde_json` sees
+///   canonical input regardless of operator TOML ordering:
+///     - `caches` (the outer per-runner Vec) — `lower_to_effective`
+///       sorts by name during cache-pool resolution.
+///     - `labels` — `merge_defaults` sorts by name after the
+///       concat-and-dedup pass.
+///     - `pool.kinds` (the inner per-`EffectiveCacheBinding` Vec) —
+///       `canonicalize_kinds()` sorts by label at BOTH
+///       `EffectiveCacheBinding` construction sites (the per-pool
+///       `into_cache_pool_plan` consumed by `cache_pool_hash`, and
+///       the per-runner inner loop of `lower_to_effective`
+///       consumed by `spec_hash`).
+///   So the spec arriving here is canonical regardless of the
+///   operator's TOML ordering. `spec_hash` itself does NOT re-sort
+///   — callers that bypass the lowering pipeline (e.g. hand-built
+///   test fixtures) must sort their own `caches` / `labels` Vecs
+///   and the inner `kinds` Vec on each binding before hashing if
+///   they want the reorder-invariance contract. First apply
+///   post-upgrade will rewrite `00-ghars.conf` and
+///   `30-cache-pool.conf` with canonical sorted output for any
+///   runner whose TOML order differed.
 ///
 ///   Set-semantic rationale for `labels`: GitHub Actions matches
 ///   workflow `runs-on:` against the registered label set

@@ -277,6 +277,154 @@ fn into_cache_pool_plan_populates_renderer_schema_from_runtime_constant() {
     );
 }
 
+/// Permutation invariance of `cache_pool_hash` across operator-
+/// supplied `[cache_pools.NAME].kinds` Vec order. The renderer-side
+/// defensive sort at `render_cache_drop_in` makes the rendered
+/// drop-in body byte-stable across operator TOML reorders; this
+/// test pins the matching upstream sort at `into_cache_pool_plan`
+/// so the embedded `X-Ghars-Spec-Hash` annotation stays equal too.
+/// Without the upstream sort, `cache_pool_hash` (`serde_json::to_value`
+/// preserves `Vec` order) flipped between equivalent operator configs
+/// and triggered spurious `UpdateCachePool` plan actions with empty
+/// drop-in body diffs.
+///
+/// Two `CachePoolSpec` fixtures differing ONLY in `kinds` Vec order
+/// — `[Sccache, Ccache]` vs `[Ccache, Sccache]` — must produce
+/// identical `CachePoolPlan.spec_hash` values.
+///
+/// Sister to the `caches`-Vec permutation invariance at
+/// `lower_to_effective` (per-runner caches sorted by name during
+/// cache-pool resolution).
+#[test]
+fn into_cache_pool_plan_kinds_permutation_invariant_for_spec_hash() {
+    let base = CachePoolSpec {
+        kinds: vec![CacheKind::Sccache, CacheKind::Ccache],
+        size: "200G".into(),
+        mode: CacheMode::Shared,
+        trust_zone: "default".into(),
+        sccache_path: Some("/usr/bin/sccache".into()),
+        sleep_path: None,
+    };
+    let permuted = CachePoolSpec {
+        kinds: vec![CacheKind::Ccache, CacheKind::Sccache],
+        ..base.clone()
+    };
+
+    let plan_base = into_cache_pool_plan("build".into(), &base, "/etc/ghars/ghars.toml")
+        .expect("into_cache_pool_plan must succeed for a sccache+ccache pool");
+    let plan_permuted = into_cache_pool_plan("build".into(), &permuted, "/etc/ghars/ghars.toml")
+        .expect("into_cache_pool_plan must succeed for the permuted-kinds variant");
+
+    assert_eq!(
+        plan_base.spec_hash, plan_permuted.spec_hash,
+        "into_cache_pool_plan must canonicalize the kinds Vec so \
+         cache_pool_hash is permutation-invariant across operator \
+         TOML reorders of [cache_pools.NAME].kinds; otherwise a \
+         cosmetic ordering swap triggers a spurious UpdateCachePool \
+         plan action with an empty drop-in body diff. Sister to the \
+         renderer-site defensive sort in render_cache_drop_in."
+    );
+
+    assert_eq!(
+        plan_base.drop_in_body, plan_permuted.drop_in_body,
+        "with both upstream + renderer-site sorts in place, the \
+         rendered drop-in body must also be byte-identical across \
+         permuted-kinds fixtures (full body-byte invariance, matching \
+         the labels + caches + pool-kinds defensive-sort triplet)."
+    );
+}
+
+/// Runner-side sister of
+/// `into_cache_pool_plan_kinds_permutation_invariant_for_spec_hash`.
+/// The pool-side test pins the `cache_pool_hash` invariant via
+/// `into_cache_pool_plan`; this test pins the matching `spec_hash`
+/// invariant via the runner-side `lower_to_effective` construction
+/// path.
+///
+/// Without canonicalization at the `lower_to_effective` inner loop
+/// (the per-binding `EffectiveCacheBinding` construction site for
+/// each pool a runner references), `EffectiveRunnerSpec.caches[i].kinds`
+/// stays in operator TOML order. `spec_hash` then includes the
+/// preserved Vec order via canonical-JSON serde, so an operator
+/// reorder of `[cache_pools.NAME].kinds = ["sccache", "ccache"]`
+/// ↔ `["ccache", "sccache"]` flipped the runner's `spec_hash` and
+/// triggered spurious `UpdateRunner` plans for every runner that
+/// bound the pool — much wider blast radius than just the
+/// `cache_pool_hash` desync that the `into_cache_pool_plan` site
+/// solves alone.
+///
+/// `canonicalize_kinds()` (called at BOTH `EffectiveCacheBinding`
+/// construction sites — `lower_to_effective` and
+/// `into_cache_pool_plan`) makes both `spec_hash` and
+/// `cache_pool_hash` permutation-invariant.
+#[test]
+fn lower_to_effective_kinds_permutation_invariant_for_runner_spec_hash() {
+    fn build_cfg(pool_kinds: Vec<CacheKind>) -> Config {
+        let mut cfg = config_with_runners(vec![{
+            let mut r = minimal_runner("buckos");
+            r.caches = vec!["build".into()];
+            r
+        }]);
+        cfg.auth = pat_auth();
+        cfg.cache_pools.insert(
+            "build".into(),
+            CachePoolSpec {
+                kinds: pool_kinds,
+                size: "200G".into(),
+                mode: CacheMode::Shared,
+                trust_zone: "default".into(),
+                sccache_path: Some("/usr/bin/sccache".into()),
+                sleep_path: None,
+            },
+        );
+        cfg
+    }
+
+    let cfg_base = build_cfg(vec![CacheKind::Sccache, CacheKind::Ccache]);
+    let cfg_permuted = build_cfg(vec![CacheKind::Ccache, CacheKind::Sccache]);
+
+    let expanded_base = expand_counts(&cfg_base).expect("count expansion must succeed");
+    let expanded_permuted = expand_counts(&cfg_permuted).expect("count expansion must succeed");
+
+    let eff_base = lower_to_effective(
+        &expanded_base[0],
+        &cfg_base,
+        Arch::X86_64,
+        "/etc/ghars/ghars.toml".into(),
+        0,
+    )
+    .expect("lower_to_effective must succeed for the base [Sccache, Ccache] fixture");
+
+    let eff_permuted = lower_to_effective(
+        &expanded_permuted[0],
+        &cfg_permuted,
+        Arch::X86_64,
+        "/etc/ghars/ghars.toml".into(),
+        0,
+    )
+    .expect("lower_to_effective must succeed for the permuted [Ccache, Sccache] fixture");
+
+    assert_eq!(
+        eff_base.caches[0].kinds, eff_permuted.caches[0].kinds,
+        "lower_to_effective must canonicalize the kinds Vec on each \
+         EffectiveCacheBinding so EffectiveRunnerSpec.caches stays \
+         byte-stable across operator [cache_pools.NAME].kinds reorders; \
+         got base={:?} permuted={:?}",
+        eff_base.caches[0].kinds,
+        eff_permuted.caches[0].kinds,
+    );
+
+    assert_eq!(
+        spec_hash(&eff_base), spec_hash(&eff_permuted),
+        "spec_hash must be permutation-invariant across operator \
+         [cache_pools.NAME].kinds reorders; otherwise every runner \
+         binding the pool sees a spurious UpdateRunner plan when the \
+         operator cosmetically reorders the kinds list. Sister to the \
+         into_cache_pool_plan_kinds_permutation_invariant_for_spec_hash \
+         test for the pool-side cache_pool_hash."
+    );
+}
+
 /// Companion to `merge_defaults_populates_renderer_schema_from_runtime_constant`
 /// covering the THIRD construction site: the inner loop of
 /// `lower_to_effective` that builds an `EffectiveCacheBinding` per

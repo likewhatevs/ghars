@@ -1852,16 +1852,18 @@ pub fn render_cache_drop_in(
     let _ = writeln!(s, "X-Ghars-Pool-Name={}", binding.name);
     // Defense-in-depth sort: render emits kinds in canonical
     // alphabetical order regardless of operator-supplied
-    // `[cache_pools.NAME].kinds` Vec order. PARTIAL mirror of the
-    // labels + caches defensive sorts at render_identity — labels
-    // (`merge_defaults`) and caches (`lower_to_effective`) are
-    // sorted upstream too, delivering full body-byte invariance;
-    // pool kinds has only the renderer-site sort today, so the
-    // embedded `X-Ghars-Spec-Hash` line still differs across
-    // operator permutations until the upstream sort lands at
-    // `into_cache_pool_plan`. Until then, the
-    // `X-Ghars-Pool-Kinds=` line itself is byte-stable even for
-    // direct-construct callers.
+    // `[cache_pools.NAME].kinds` Vec order. Mirrors the labels +
+    // caches defensive sorts at `render_identity` — labels
+    // (`merge_defaults`), caches (`lower_to_effective` per-runner
+    // caches Vec), and pool kinds (`canonicalize_kinds()` at both
+    // `into_cache_pool_plan` and the inner loop of
+    // `lower_to_effective`) are all sorted at the lowering boundary
+    // too, so `cache_pool_hash` / `spec_hash` and this renderer
+    // agree on canonical order and the full drop-in body is
+    // byte-stable across operator TOML reorders. The renderer-site
+    // sort here remains the load-bearing gate for any
+    // direct-construct caller that bypasses the lowering layer
+    // (test fixtures, future programmatic paths).
     let mut pool_kinds: Vec<&str> = binding.kinds.iter().map(|k| k.label()).collect();
     pool_kinds.sort_unstable();
     let _ = writeln!(s, "X-Ghars-Pool-Kinds={}", pool_kinds.join(","));
