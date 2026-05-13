@@ -1556,8 +1556,8 @@ pub(super) fn execute_update_runner(
     // in-place update ADDED a ccache binding (or refreshed an existing
     // one). Without this, an operator who edits a no-cache runner to
     // add `caches = ["build"]` (a ccache pool) gets the new drop-in
-    // body + .env emission (CCACHE_DIR=/var/lib/ghars/<TZ>/.ccache,
-    // gated on has_ccache in render_runner_env_file) but the dir on
+    // body + .env emission (`CCACHE_DIR=/var/lib/ghars/<TZ>/.ccache`,
+    // gated on `has_ccache` in `render_runner_env_file`) but the dir on
     // disk was never created — workflow steps' ccache wrappers would
     // try to write to a non-existent path. The `if !exists()` gate
     // around the create + chmod is load-bearing (not redundant
@@ -1571,14 +1571,16 @@ pub(super) fn execute_update_runner(
     // (pre-stages 0o770, asserts mode stays 0o770 after this block).
     // The reverse direction (removing the last ccache binding) leaves
     // a stale empty dir; harmless (no env var points at it anymore
-    // once the renderer's has_ccache gate drops the emission) and
+    // once the renderer's `has_ccache` gate drops the emission) and
     // avoids cross-runner racy rmdir (another runner in the same
     // trust_zone may still need the dir).
     //
     // KNOWN GAP: the freshly-created `.ccache` here stays root-owned
     // at 0o777 because `execute_update_runner` does NOT call
     // `chown_and_tighten_runner_state` post-StartUnit (only
-    // `execute_create_runner` does, at the chown call-site below).
+    // `execute_create_runner` does, at the
+    // `chown_and_tighten_runner_state` call site in
+    // `execute_create_runner`).
     // The dir is functionally writable by the DynamicUser via the
     // world bit, but the ownership posture diverges from the
     // CreateRunner path (which produces DynamicUser-owned 0o770).
