@@ -584,6 +584,46 @@ BETWEEN the framework ccache wrappers and the per-runner
 `cc` and break compile-cache hits). `path_append` lands AFTER
 the system tail.
 
+## Customizing runner unit directives: use `99-*.conf`, never edit ghars-managed drop-ins
+
+ghars renders every per-runner drop-in basename in the
+`MANAGED_DROP_IN_BASENAMES` set (the `00-ghars.conf`,
+`10-memory.conf`, `15-resolv.conf`, `20-hardening.conf`,
+`30-cache-pool.conf`, `40-network.conf`, `50-numa.conf`,
+`60-proxy.conf`, `70-hooks.conf`, `80-lognamespace.conf` family).
+ghars OWNS these files: every `ghars apply` rewrites them from
+the rendered output, and any operator hand-edit is silently
+overwritten the next time the runner's spec_hash flips or a
+managed body diff is detected.
+
+**Only `99-*.conf` drop-ins survive across applies.** The
+in-place update loop guards the `99-*.conf` namespace (any
+basename NOT in `MANAGED_DROP_IN_BASENAMES`) so operator-added
+directives via `systemctl edit ghars-runner@NAME.service` (which
+writes `/etc/systemd/system/ghars-runner@NAME.service.d/override.conf`,
+typically renamed to `99-operator.conf` for ghars compatibility)
+are preserved indefinitely.
+
+### When you hand-edit a ghars-managed drop-in anyway
+
+The `X-Ghars-Spec-Hash` annotation in `00-ghars.conf` lives
+inside the file ghars rewrites. If you hand-edit `00-ghars.conf`
+to add an extra `Environment=` line and leave the annotation
+intact, ghars's plan layer still considers the spec_hash equal
+to the desired hash (the annotation line didn't change) — so
+the in-place arm classifies the runner as in-sync and emits
+NoOp. Your edit persists, but only because plan happened to
+short-circuit. Any subsequent change to the desired spec
+(memory_max bump, cache binding edit, RENDERER_SCHEMA bump on
+ghars upgrade) flips spec_hash, triggers the in-place rewrite,
+and your hand-edit is silently lost.
+
+**Don't rely on hand-edits to ghars-managed drop-ins surviving.**
+The supported override mechanism is `99-*.conf`. Any directive
+you would have added to `00-ghars.conf` belongs in a 99-prefixed
+file the in-place update loop's `MANAGED_DROP_IN_BASENAMES`
+guard preserves.
+
 ### Workflow steps see empty / minimal env after a failed apply
 
 A `ghars apply` that failed PARTWAY through a `CreateRunner`
