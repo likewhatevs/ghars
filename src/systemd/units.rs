@@ -653,7 +653,7 @@ pub(crate) fn render_runner_env_file(spec: &EffectiveRunnerSpec) -> Result<Strin
     // CCACHE_DIR is gated on the runner having at least one ccache-
     // kind binding. The .ccache dir at this path is created in
     // execute_create_runner ONLY when the same binding gate is
-    // satisfied (see src/apply/runners.rs has_ccache check). The
+    // satisfied (see `has_ccache` check in apply/runners.rs). The
     // two must stay symmetric: if the runner has no ccache binding,
     // the dir is not created AND the env var is not emitted. Otherwise
     // the unconditional ccache wrappers in PATH (units.rs PATH file)
@@ -1909,7 +1909,7 @@ pub fn render_cache_drop_in(
         //
         // Workflow-step ccache invocations get CCACHE_DIR from the
         // RUNNER unit's LAYER 2 `.env` (trust-zone-shared, gated on
-        // has_ccache by `render_runner_env_file`), NOT from this
+        // `has_ccache` by `render_runner_env_file`), NOT from this
         // cache-pool-unit drop-in. Prior emission was dead code that
         // misled operators reading `systemctl cat
         // ghars-cache@NAME.service` (the per-pool path it showed was

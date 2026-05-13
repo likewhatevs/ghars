@@ -203,7 +203,7 @@ fn empty_operator_environment_produces_no_extra_emission() {
 
     // .env should ONLY contain LANG + KTSTR_LOCK_DIR + KTSTR_CACHE_DIR
     // (3 framework lines for a spec with no caches). CCACHE_DIR is
-    // gated on has_ccache binding — empty caches → no
+    // gated on `has_ccache` binding — empty caches → no
     // CCACHE_DIR emission.
     let line_count = unit.env_file.lines().count();
     assert_eq!(
