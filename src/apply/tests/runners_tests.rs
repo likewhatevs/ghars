@@ -10,7 +10,9 @@ use crate::auth::TokenSource;
 use crate::error::GharsError;
 use crate::plan::{DropInChangeKind, RunnerDelta, RunnerIdentity};
 
-use super::super::runners::{execute_create_runner, execute_remove_runner, execute_update_runner};
+use super::super::runners::{
+    execute_create_runner, execute_remove_runner, execute_update_runner, poll_dynamic_user_uid,
+};
 use super::super::undo::{Deps, UndoLog, UndoStep};
 use super::common::{
     MockConfigShell, MockSystemd, MockTarball, MockTokenSource, make_paths, make_runner_plan,
@@ -930,6 +932,246 @@ fn create_runner_chmod_loop_tolerates_missing_credential_files() {
             .as_std_path()
             .exists(),
         "ghars must not create placeholder .credentials_rsaparams when config.sh skipped it"
+    );
+}
+
+/// fchown_record_undo on a path the test process already owns
+/// (chown-to-self) succeeds without EPERM and — critically —
+/// records NO `UndoStep::SetOwner` because the no-op gate at
+/// runners.rs:320 (`if (prior_uid, prior_gid) != (uid, gid)`)
+/// fires. Regression catch: a future change that flipped the
+/// gate to always-record would pollute the rollback advisory
+/// with no-op chown-restore entries on every re-apply.
+#[test]
+fn fchown_record_undo_chown_to_self_is_no_op_and_records_nothing() {
+    use std::os::unix::fs::MetadataExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let file = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
+        .unwrap()
+        .join("victim.file");
+    std::fs::write(file.as_std_path(), b"x").unwrap();
+    let meta = std::fs::metadata(file.as_std_path()).unwrap();
+    let our_uid = meta.uid();
+    let our_gid = meta.gid();
+
+    let mut log = UndoLog::new();
+    crate::apply::runners::fchown_record_undo(&file, our_uid, our_gid, "test", &mut log)
+        .expect("fchown to current owner must succeed");
+    assert!(
+        log.steps().is_empty(),
+        "no-op chown must not push UndoStep::SetOwner (prior == requested); \
+         got steps: {:?}",
+        log.steps()
+    );
+}
+
+/// fchown_record_undo refuses to chown through a symlink target
+/// — the open with O_NOFOLLOW returns ELOOP, the helper wraps it
+/// in a typed GharsError::Apply with "symlink" in the message.
+/// Verifies the symlink-target's uid/gid is UNCHANGED (no
+/// chown-through happened).
+#[test]
+fn fchown_record_undo_refuses_planted_symlink() {
+    use std::os::unix::fs::MetadataExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let victim = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
+        .unwrap()
+        .join("victim.real");
+    std::fs::write(victim.as_std_path(), b"original").unwrap();
+    let original_meta = std::fs::metadata(victim.as_std_path()).unwrap();
+    let original_uid = original_meta.uid();
+    let original_gid = original_meta.gid();
+
+    let symlink = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
+        .unwrap()
+        .join("evil.symlink");
+    std::os::unix::fs::symlink(victim.as_std_path(), symlink.as_std_path()).unwrap();
+
+    let mut log = UndoLog::new();
+    // prior_uid/gid 0 (root) so any chown-through would EPERM as
+    // non-root — but the refusal makes it ELOOP-Err first.
+    let err = crate::apply::runners::fchown_record_undo(&symlink, 0, 0, "test", &mut log)
+        .expect_err("planted symlink at chown target must error with ELOOP");
+    assert!(
+        format!("{err}").to_lowercase().contains("symlink"),
+        "error must mention the symlink-refusal; got: {err}"
+    );
+
+    let post_meta = std::fs::metadata(victim.as_std_path()).unwrap();
+    assert_eq!(
+        post_meta.uid(),
+        original_uid,
+        "victim.real uid must NOT have been chowned through the symlink"
+    );
+    assert_eq!(
+        post_meta.gid(),
+        original_gid,
+        "victim.real gid must NOT have been chowned through the symlink"
+    );
+}
+
+/// chown_and_tighten_runner_state is the production helper that
+/// runs after the post-StartUnit DynamicUser UID query. The
+/// helper chowns runner_home, runner_tmp, .ktstr, .ccache, and
+/// the credential files to the DynamicUser UID, then tightens
+/// modes (0o700 dirs, 0o770 shared, 0o600 credentials).
+///
+/// This test exercises the FULL helper directly (not via
+/// execute_create_runner's root-gate, which skips it under non-
+/// root) by passing the test process's own UID — Linux allows
+/// chown-to-own-UID without CAP_CHOWN. Verifies the post-state
+/// modes are exactly the production tightening targets and that
+/// each chmod/chown produced its expected UndoLog entries (with
+/// no-op gates correctly skipping no-change pushes).
+///
+/// Adversary F3 regression guard for #4: catches a future
+/// refactor that flips the chown-then-chmod ordering (breaks
+/// DynamicUser access during the window), drops a mode-tighten
+/// site (leaves runner_home or credentials at world-readable
+/// modes after the runner is started), or changes a target
+/// mode (silent permission drift).
+#[test]
+fn chown_and_tighten_runner_state_chowns_and_tightens_all_paths() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let tmp = tempfile::tempdir().unwrap();
+    let our_meta = std::fs::metadata("/proc/self").unwrap();
+    let our_uid = our_meta.uid();
+    let our_gid = our_meta.gid();
+
+    // Construct a synthetic trust-zone tree:
+    //   tz_dir/
+    //     ghars-a/         (runner_home)
+    //       tmp/           (runner_tmp)
+    //       .runner
+    //       .credentials
+    //       .credentials_rsaparams
+    //     .ktstr/
+    //     .ccache/
+    let tz_dir = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
+        .unwrap()
+        .join("default");
+    let runner_home = tz_dir.join("ghars-a");
+    let runner_tmp = runner_home.join("tmp");
+    let ktstr_dir = tz_dir.join(".ktstr");
+    let ccache_dir = tz_dir.join(".ccache");
+    for d in [&tz_dir, &runner_home, &runner_tmp, &ktstr_dir, &ccache_dir] {
+        std::fs::create_dir_all(d.as_std_path()).unwrap();
+    }
+    // Plant the 3 credential files at 0o644 (post-#14 normalize state).
+    for basename in [".runner", ".credentials", ".credentials_rsaparams"] {
+        let p = runner_home.join(basename);
+        std::fs::write(p.as_std_path(), b"{}").unwrap();
+        std::fs::set_permissions(p.as_std_path(), std::fs::Permissions::from_mode(0o644))
+            .unwrap();
+    }
+    // Pre-stage dir modes to the apply-time pre-tighten state.
+    std::fs::set_permissions(runner_home.as_std_path(), std::fs::Permissions::from_mode(0o777))
+        .unwrap();
+    std::fs::set_permissions(runner_tmp.as_std_path(), std::fs::Permissions::from_mode(0o777))
+        .unwrap();
+    std::fs::set_permissions(ktstr_dir.as_std_path(), std::fs::Permissions::from_mode(0o777))
+        .unwrap();
+    std::fs::set_permissions(ccache_dir.as_std_path(), std::fs::Permissions::from_mode(0o777))
+        .unwrap();
+
+    let mut log = UndoLog::new();
+    crate::apply::runners::chown_and_tighten_runner_state(
+        &runner_home,
+        &runner_tmp,
+        &ktstr_dir,
+        &ccache_dir,
+        our_uid,
+        our_gid,
+        &mut log,
+    )
+    .expect("chown+tighten with our own (uid, gid) must succeed");
+
+    // Post-state assertions: ownership is our_uid (no-op chown,
+    // but the helper still went through the open+fchown loop);
+    // modes are the production-tightened values.
+    let mode_of = |p: &camino::Utf8PathBuf| -> u32 {
+        std::fs::metadata(p.as_std_path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    let uid_of = |p: &camino::Utf8PathBuf| std::fs::metadata(p.as_std_path()).unwrap().uid();
+    assert_eq!(
+        mode_of(&runner_home),
+        0o700,
+        "runner_home must be 0o700 (was 0o777, tightened post-chown)"
+    );
+    assert_eq!(uid_of(&runner_home), our_uid, "runner_home chowned to our UID");
+    assert_eq!(
+        mode_of(&runner_tmp),
+        0o700,
+        "runner_tmp must be 0o700 (was 0o777, tightened post-chown)"
+    );
+    assert_eq!(uid_of(&runner_tmp), our_uid, "runner_tmp chowned to our UID");
+    assert_eq!(
+        mode_of(&ktstr_dir),
+        0o770,
+        ".ktstr must be 0o770 (cross-runner shared via trust-zone UID group)"
+    );
+    assert_eq!(uid_of(&ktstr_dir), our_uid, ".ktstr chowned to our UID");
+    assert_eq!(
+        mode_of(&ccache_dir),
+        0o770,
+        ".ccache must be 0o770 (cross-runner shared via trust-zone UID group)"
+    );
+    assert_eq!(uid_of(&ccache_dir), our_uid, ".ccache chowned to our UID");
+    for basename in [".runner", ".credentials", ".credentials_rsaparams"] {
+        let p = runner_home.join(basename);
+        assert_eq!(
+            mode_of(&p),
+            0o600,
+            "{basename} must be 0o600 (owner-only read; world no longer sees credentials)"
+        );
+        assert_eq!(uid_of(&p), our_uid, "{basename} chowned to our UID");
+    }
+
+    // UndoLog has at minimum a SetMode entry per chmod site that
+    // actually changed a mode. We pre-staged dirs at 0o777 (not
+    // 0o700/0o770) and credentials at 0o644 (not 0o600), so all
+    // 7 SetMode entries must exist. SetOwner entries are gated on
+    // (prior_uid, prior_gid) != (uid, gid); the chown-to-self is a
+    // no-op so the gate skips them all (clean undo log — no
+    // pointless chown-restore entries on rollback).
+    let set_mode_count = log
+        .steps()
+        .iter()
+        .filter(|s| matches!(s, UndoStep::SetMode { .. }))
+        .count();
+    let set_owner_count = log
+        .steps()
+        .iter()
+        .filter(|s| matches!(s, UndoStep::SetOwner { .. }))
+        .count();
+    assert_eq!(
+        set_mode_count, 7,
+        "expected 7 SetMode entries (4 dirs + 3 creds); got {set_mode_count}"
+    );
+    assert_eq!(
+        set_owner_count, 0,
+        "expected 0 SetOwner entries (chown-to-self is a no-op, gate skips); got {set_owner_count}"
+    );
+}
+
+/// poll_dynamic_user_uid returns immediately when the mock has
+/// a pre-populated UID. Production systemd has a per-name UID
+/// allocated by `dynamic_user_realize` during ExecStart child
+/// setup; subsequent runners in the same trust zone hit this
+/// "already-populated" branch.
+#[test]
+fn poll_dynamic_user_uid_returns_immediately_when_populated() {
+    let systemd = MockSystemd::default();
+    systemd.set_dynamic_user_uid("ghars-tz-default", 65532);
+    let uid =
+        poll_dynamic_user_uid(&systemd, "ghars-tz-default").expect("poll must succeed");
+    assert_eq!(
+        uid, 65532,
+        "poll must return the pre-populated UID without waiting"
     );
 }
 

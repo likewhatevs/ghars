@@ -925,6 +925,10 @@ mod tests {
         fn get_service_property_u64(&self, _unit: &str, _property: &str) -> Result<u64> {
             Ok(0)
         }
+        fn lookup_dynamic_user_by_name(&self, _name: &str) -> Result<Option<u32>> {
+            // state.rs tests don't exercise DynamicUser lookup.
+            Ok(None)
+        }
     }
 
     /// Build a `Paths` rooted at `tmp` so discovery scans a controlled

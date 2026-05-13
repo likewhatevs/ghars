@@ -468,6 +468,9 @@ impl Systemd for FlippingMockSystemd {
     fn get_service_property_u64(&self, unit: &str, property: &str) -> Result<u64> {
         self.get_unit_property_u64(unit, "org.freedesktop.systemd1.Service", property)
     }
+    fn lookup_dynamic_user_by_name(&self, _: &str) -> Result<Option<u32>> {
+        unreachable!("FlippingMockSystemd does not exercise DynamicUser lookup")
+    }
 }
 
 #[test]

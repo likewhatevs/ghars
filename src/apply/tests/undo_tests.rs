@@ -505,6 +505,162 @@ fn set_mode_is_not_reverse_direction() {
 }
 
 #[test]
+fn undo_set_owner_restores_prior_owner() {
+    // Direct unit test of UndoStep::SetOwner. Captures the test
+    // process's current uid/gid, simulates a forward fchown
+    // (no-op because we'd chown to ourselves), then exercises
+    // the undo restore path. The "restore" is also a no-op in
+    // the file-owner-is-test-process case but proves the undo
+    // dispatch reaches the right code path without EPERM.
+    use std::os::unix::fs::MetadataExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let file = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
+        .unwrap()
+        .join("victim.file");
+    std::fs::write(file.as_std_path(), b"x").unwrap();
+    let meta = std::fs::metadata(file.as_std_path()).unwrap();
+    let our_uid = meta.uid();
+    let our_gid = meta.gid();
+
+    let systemd = MockSystemd::default();
+    let config_shell = MockConfigShell::default();
+    let tarball = MockTarball::default();
+    let auth: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+    let deps = rollback_deps(&systemd, &config_shell, &tarball, &auth);
+    let paths = make_paths(&tmp);
+    let mut log = UndoLog::new();
+    log.push(UndoStep::SetOwner {
+        path: file.clone(),
+        prior_uid: our_uid,
+        prior_gid: our_gid,
+    });
+    undo(&log, &deps, &paths)
+        .expect("SetOwner undo to self uid/gid must succeed without EPERM");
+    let post = std::fs::metadata(file.as_std_path()).unwrap();
+    assert_eq!(post.uid(), our_uid, "uid round-tripped");
+    assert_eq!(post.gid(), our_gid, "gid round-tripped");
+}
+
+#[test]
+fn undo_set_owner_tolerates_missing_path() {
+    // Mirror SetMode tolerance: rollback walks UndoSteps in
+    // reverse, and an earlier (chronologically later) step may
+    // have removed the SetOwner target. ENOENT at undo time =>
+    // Ok (best-effort rollback contract).
+    let tmp = tempfile::tempdir().unwrap();
+    let missing_path = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
+        .unwrap()
+        .join("never-existed");
+    let systemd = MockSystemd::default();
+    let config_shell = MockConfigShell::default();
+    let tarball = MockTarball::default();
+    let auth: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+    let deps = rollback_deps(&systemd, &config_shell, &tarball, &auth);
+    let paths = make_paths(&tmp);
+    let mut log = UndoLog::new();
+    log.push(UndoStep::SetOwner {
+        path: missing_path,
+        prior_uid: 0,
+        prior_gid: 0,
+    });
+    undo(&log, &deps, &paths)
+        .expect("SetOwner undo on missing path must be best-effort");
+}
+
+#[test]
+fn undo_set_owner_refuses_symlink_target() {
+    // Symmetric symlink-refusal: between the forward fchown and
+    // the rollback walk, a malicious sibling DynamicUser could
+    // race a symlink swap. The undo path must refuse to chown
+    // through the symlink (which would re-direct ownership of
+    // an attacker-chosen file). Verify the apparent victim file
+    // remains owned by the test process post-undo.
+    use std::os::unix::fs::MetadataExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let victim = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
+        .unwrap()
+        .join("victim.real");
+    std::fs::write(victim.as_std_path(), b"original").unwrap();
+    let original_uid = std::fs::metadata(victim.as_std_path()).unwrap().uid();
+    let original_gid = std::fs::metadata(victim.as_std_path()).unwrap().gid();
+
+    let swapped_path = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
+        .unwrap()
+        .join("swapped.symlink");
+    std::os::unix::fs::symlink(victim.as_std_path(), swapped_path.as_std_path())
+        .unwrap();
+
+    let systemd = MockSystemd::default();
+    let config_shell = MockConfigShell::default();
+    let tarball = MockTarball::default();
+    let auth: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+    let deps = rollback_deps(&systemd, &config_shell, &tarball, &auth);
+    let paths = make_paths(&tmp);
+    let mut log = UndoLog::new();
+    // prior_uid/gid set to 0/0 (root) so a chown-through would
+    // try to set victim to root-owned — would EPERM as non-root.
+    // The refusal makes it Ok-skip, not Err.
+    log.push(UndoStep::SetOwner {
+        path: swapped_path.clone(),
+        prior_uid: 0,
+        prior_gid: 0,
+    });
+    undo(&log, &deps, &paths)
+        .expect("undo SetOwner on symlink must Ok-skip (warn + continue), not Err");
+
+    let post = std::fs::metadata(victim.as_std_path()).unwrap();
+    assert_eq!(
+        post.uid(),
+        original_uid,
+        "undo SetOwner must NOT chown-through symlink target; uid changed"
+    );
+    assert_eq!(
+        post.gid(),
+        original_gid,
+        "undo SetOwner must NOT chown-through symlink target; gid changed"
+    );
+}
+
+#[test]
+fn set_owner_describe_includes_path_and_prior_uid_gid() {
+    let step = UndoStep::SetOwner {
+        path: Utf8PathBuf::from("/var/lib/ghars/default/ghars-a"),
+        prior_uid: 1234,
+        prior_gid: 5678,
+    };
+    let desc = step.describe();
+    assert!(
+        desc.contains("/var/lib/ghars/default/ghars-a"),
+        "describe must include path: {desc}"
+    );
+    assert!(
+        desc.contains("1234"),
+        "describe must include prior_uid: {desc}"
+    );
+    assert!(
+        desc.contains("5678"),
+        "describe must include prior_gid: {desc}"
+    );
+}
+
+#[test]
+fn set_owner_is_not_reverse_direction() {
+    // SetOwner's inverse (chown back to prior_uid/gid) is
+    // lossless and SAFE to invoke during rollback. Verify it
+    // dispatches through undo_one (not the warn-and-skip
+    // reverse-direction path).
+    let step = UndoStep::SetOwner {
+        path: Utf8PathBuf::from("/x"),
+        prior_uid: 0,
+        prior_gid: 0,
+    };
+    assert!(
+        !step.is_reverse_direction(),
+        "SetOwner must be forward-direction (lossless inverse)"
+    );
+}
+
+#[test]
 fn undo_github_registration_calls_run_remove_with_fresh_token() {
     // GitHubRegistration undo: mint fresh removal token via auth
     // registry, call config_shell.run_remove. Operator gets a

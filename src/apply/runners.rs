@@ -236,6 +236,176 @@ fn sweep_runner_home_for_planted_entries(home: &std::path::Path) -> crate::Resul
     Ok(())
 }
 
+/// fchown a path while recording the pre-call uid/gid in the undo
+/// log so a rollback after a later step's failure can restore the
+/// previous ownership.
+///
+/// Uses the same O_RDONLY + O_NOFOLLOW + O_NONBLOCK open pattern as
+/// `chmod_record_undo`. The fchown then operates on the fd
+/// directly via `nix::unistd::fchown` — no /proc/self/fd round-
+/// trip needed because fchown is a direct file-descriptor syscall.
+/// The fd binds the inode at open time with O_NOFOLLOW protection,
+/// so no path-resolution race can redirect the chown to a
+/// different inode.
+///
+/// `uid` and `gid` are the new owner/group. ghars passes the
+/// DynamicUser-allocated UID (queried from systemd's D-Bus
+/// interface) for both fields — systemd's DynamicUser model uses
+/// UID==GID when there's no /etc/passwd entry (verified at
+/// systemd src/core/dynamic-user.c:459-461 — `*ret_gid = num`
+/// when the gid wasn't separately allocated).
+///
+/// `context` mirrors chmod_record_undo's parameter: a short
+/// operator-readable label identifying the call site for the
+/// error wrapper.
+///
+/// The UndoLog push is gated on `(prior_uid, prior_gid) != (uid,
+/// gid)` so no-op re-chowns (re-apply over an already-chowned
+/// tree) don't pollute the rollback advisory.
+pub(super) fn fchown_record_undo(
+    path: &camino::Utf8Path,
+    uid: u32,
+    gid: u32,
+    context: &str,
+    log: &mut UndoLog,
+) -> crate::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let fd = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path.as_std_path())
+    {
+        Ok(fd) => fd,
+        Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
+            return Err(GharsError::Apply {
+                action: format!("chown {context} at {path}"),
+                source: Box::new(GharsError::Validation(
+                    format!(
+                        "refusing to chown through symlink at {path} \
+                         (context: {context}) — path-based chown would \
+                         apply ownership to the symlink target rather \
+                         than the symlink itself"
+                    ),
+                    "an attacker-planted symlink (stale from a failed \
+                     earlier apply or a compromised sibling DynamicUser \
+                     in the same trust_zone) is present at the chown \
+                     target. Remove the symlink and re-run apply"
+                        .into(),
+                )),
+            });
+        }
+        Err(e) => {
+            return Err(GharsError::Apply {
+                action: format!("chown {context} at {path}"),
+                source: Box::new(GharsError::Io(e)),
+            });
+        }
+    };
+    // Read the pre-call uid/gid via fstat through /proc/self/fd
+    // (atomic with the open — no path-resolution race).
+    let proc_path = format!("/proc/self/fd/{}", fd.as_raw_fd());
+    let meta = fs::metadata(&proc_path)?;
+    let prior_uid = meta.uid();
+    let prior_gid = meta.gid();
+    nix::unistd::fchown(
+        fd.as_raw_fd(),
+        Some(nix::unistd::Uid::from_raw(uid)),
+        Some(nix::unistd::Gid::from_raw(gid)),
+    )
+    .map_err(|e| GharsError::Apply {
+        action: format!("chown {context} at {path}"),
+        source: Box::new(GharsError::Io(std::io::Error::from_raw_os_error(e as i32))),
+    })?;
+    drop(fd);
+    if (prior_uid, prior_gid) != (uid, gid) {
+        log.push(UndoStep::SetOwner {
+            path: path.to_path_buf(),
+            prior_uid,
+            prior_gid,
+        });
+    }
+    Ok(())
+}
+
+/// fchown the runner's writable set to the DynamicUser-allocated
+/// UID, then tighten modes to DynamicUser-only access. Extracted
+/// from `execute_create_runner` so a test can drive this path
+/// directly without needing CAP_CHOWN (callers in production pass
+/// the real allocated UID from `poll_dynamic_user_uid`; tests
+/// pass the test process's own UID, which Linux allows non-root
+/// to fchown to).
+///
+/// fchown ALL paths first, THEN chmod tighten ALL paths. The
+/// order is correctness-critical:
+///   - After chown, ownership is the DynamicUser UID. The
+///     subsequent chmod tighten leaves OWNER bits intact (0o7xx
+///     family), so the DynamicUser can still read/write its own
+///     files post-tighten.
+///   - The reverse order (tighten first, chown second) would
+///     leave a window where files are at the tightened mode but
+///     still owned by root, blocking the runner from credential
+///     read.
+///
+/// Modes applied:
+///   - runner_home → 0o700 (was 0o777 — non-owner access removed)
+///   - runner_tmp → 0o700 (same)
+///   - .ktstr / .ccache → 0o770 (group is the trust-zone UID
+///     == owner UID for DynamicUser, so group bits are equivalent
+///     to owner; 0o770 leaves room for a future separate trust-
+///     zone group with read access)
+///   - .runner / .credentials* → 0o600 (owner-only read; world
+///     no longer sees OAuth credentials or the RSA private key)
+///
+/// Optional credential files (.runner, .credentials,
+/// .credentials_rsaparams) are existence-gated: a runner whose
+/// config.sh skipped one (e.g. PAT-authenticated runners may not
+/// produce .credentials_rsaparams) silently skips its chown +
+/// chmod entry.
+pub(super) fn chown_and_tighten_runner_state(
+    runner_home: &camino::Utf8Path,
+    runner_tmp: &camino::Utf8Path,
+    ktstr_dir: &camino::Utf8Path,
+    ccache_dir: &camino::Utf8Path,
+    uid: u32,
+    gid: u32,
+    log: &mut UndoLog,
+) -> crate::Result<()> {
+    // fchown every path the DynamicUser needs to read/write. The
+    // helper uses O_NOFOLLOW + O_NONBLOCK + nix::unistd::fchown so
+    // symlink targets, FIFOs, devices, and sockets at the chown
+    // target are refused atomically with the open.
+    //
+    // Production callers pass (uid, gid) where gid==uid (the
+    // DynamicUser invariant; see dynamic-user.c:459-461). Tests
+    // pass (test_process_uid, test_process_gid) so non-root chown
+    // doesn't trip on the gid-change-needs-CAP_CHOWN-unless-in-
+    // group-set rule.
+    fchown_record_undo(runner_home, uid, gid, "runner_home", log)?;
+    fchown_record_undo(runner_tmp, uid, gid, "runner_tmp", log)?;
+    fchown_record_undo(ktstr_dir, uid, gid, ".ktstr", log)?;
+    fchown_record_undo(ccache_dir, uid, gid, ".ccache", log)?;
+    for basename in [".runner", ".credentials", ".credentials_rsaparams"] {
+        let path = runner_home.join(basename);
+        if path.as_std_path().exists() {
+            fchown_record_undo(&path, uid, gid, basename, log)?;
+        }
+    }
+
+    // Tighten modes now that ownership is the DynamicUser.
+    chmod_record_undo(runner_home, 0o700, "runner_home (tighten)", log)?;
+    chmod_record_undo(runner_tmp, 0o700, "runner_tmp (tighten)", log)?;
+    chmod_record_undo(ktstr_dir, 0o770, ".ktstr (tighten)", log)?;
+    chmod_record_undo(ccache_dir, 0o770, ".ccache (tighten)", log)?;
+    for basename in [".runner", ".credentials", ".credentials_rsaparams"] {
+        let path = runner_home.join(basename);
+        if path.as_std_path().exists() {
+            chmod_record_undo(&path, 0o600, basename, log)?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Find the most recent `bin.X.Y.Z/` directory under runner_home that
 /// contains config.sh. Used by remove/undo paths that need to run
 /// config.sh but don't have the version from a plan.
@@ -655,7 +825,81 @@ pub(super) fn execute_create_runner(
         name: unit_name.clone(),
     });
 
-    // 8) Post-start netns verification. Belt-and-suspenders against
+    // 8) Post-start: chown runner_home and the trust-zone-shared
+    // dirs + credential files to the DynamicUser-allocated UID,
+    // then tighten modes to DynamicUser-only access.
+    //
+    // Gated on running-as-root. Production ghars apply always
+    // runs as root (CAP_CHOWN required + many other capabilities
+    // for systemd D-Bus, file ownership management, etc.) so the
+    // gate is normally taken. Non-root invocations (operator
+    // running `ghars apply` without sudo, test harnesses) hit
+    // the warn-and-skip arm: the runner starts with the wider
+    // apply-time modes (0o777 runner_home, 0o644 credentials)
+    // but ownership stays root:root. The runner unit won't be
+    // able to read its credentials in that case, so non-root
+    // apply is best-effort for dry-run / development; production
+    // requires root.
+    //
+    // SystemD's `Manager.LookupDynamicUserByName(name) → uid`
+    // returns BUS_ERROR_NO_SUCH_DYNAMIC_USER until the unit's
+    // ExecStart child has run `dynamic_user_realize` (verified
+    // against systemd src/core/exec-invoke.c:5401 +
+    // src/core/dynamic-user.c:333-464). For a FIRST-IN-TRUST-ZONE
+    // runner, that hasn't happened yet at `start_unit` return time —
+    // Manager.StartUnit only enqueues the job, doesn't wait for
+    // the child fork to complete. Poll with backoff: 10ms doubling
+    // to 100ms cap, total budget 5s. If the poll times out, the
+    // runner unit probably failed to start; surface a typed
+    // GharsError::Apply with operator-actionable remediation.
+    //
+    // For subsequent runners in the same trust zone (sharing the
+    // `User=ghars-tz-X` name), the UID is already allocated and
+    // the first poll returns immediately.
+    //
+    // GID equals UID for DynamicUser without a /etc/passwd entry
+    // (verified at dynamic-user.c:459-461: `*ret_gid = num`
+    // in the no-passwd-entry branch). Use the same value for
+    // both fchown args.
+    if nix::unistd::geteuid().is_root() {
+        let trust_zone_user = format!(
+            "{}{}",
+            crate::validators::TRUST_ZONE_USER_PREFIX,
+            spec.trust_zone
+        );
+        let uid = poll_dynamic_user_uid(deps.systemd, &trust_zone_user)?;
+        tracing::debug!(
+            runner = %spec.name,
+            trust_zone = %spec.trust_zone,
+            trust_zone_user = %trust_zone_user,
+            uid,
+            "DynamicUser UID resolved post-start; chowning narrow writable set"
+        );
+        // DynamicUser without a /etc/passwd entry: gid == uid
+        // (systemd src/core/dynamic-user.c:459-461 sets
+        // `*ret_gid = num` in the no-passwd-entry branch).
+        chown_and_tighten_runner_state(
+            &runner_home,
+            &runner_tmp,
+            &ktstr_dir,
+            &ccache_dir,
+            uid,
+            uid,
+            log,
+        )?;
+    } else {
+        tracing::warn!(
+            runner = %spec.name,
+            "non-root apply: skipping post-start chown + mode tighten. \
+             Runner started with wider apply-time modes (runner_home 0o777, \
+             credentials 0o644). Re-run as root to apply production-grade \
+             narrow DynamicUser-owned ownership + modes. Without root, the \
+             runner unit cannot read credentials owned by root and credential \
+             refresh will fail."
+        );
+    }
+
+    // 9) Post-start netns verification. Belt-and-suspenders against
     //    a fail-open regression: if the runner has Netns mode but
     //    landed in the host netns, the systemd unit was misjoined
     //    and we abort the action. The runner's PID is read from
@@ -668,6 +912,51 @@ pub(super) fn execute_create_runner(
     }
 
     Ok(ApplyOutcome::Created)
+}
+
+/// Poll `systemd.lookup_dynamic_user_by_name` with exponential
+/// backoff (10ms doubling to 100ms cap, 5s total budget) until
+/// the DynamicUser name allocates or the budget is exhausted.
+///
+/// systemd's Manager.LookupDynamicUserByName returns
+/// BUS_ERROR_NO_SUCH_DYNAMIC_USER until the unit's ExecStart
+/// child runs `dynamic_user_realize` and registers the name. The
+/// poll budget accommodates the typical fork+realize latency
+/// (tens of ms in practice) plus headroom for slow-start machines.
+pub(super) fn poll_dynamic_user_uid(
+    systemd: &dyn crate::systemd::Systemd,
+    name: &str,
+) -> crate::Result<u32> {
+    use std::time::{Duration, Instant};
+    let start = Instant::now();
+    let budget = Duration::from_secs(5);
+    let mut interval = Duration::from_millis(10);
+    loop {
+        match systemd.lookup_dynamic_user_by_name(name)? {
+            Some(uid) => return Ok(uid),
+            None => {
+                if start.elapsed() >= budget {
+                    return Err(GharsError::Apply {
+                        action: format!("resolve DynamicUser UID for {name}"),
+                        source: Box::new(GharsError::Systemd(
+                            format!(
+                                "Manager.LookupDynamicUserByName({name}) returned \
+                                 NoSuchDynamicUser for {budget:?} — the runner unit \
+                                 likely failed to start or systemd is unhealthy"
+                            ),
+                            "inspect `systemctl status ghars-runner@*.service` and \
+                             the unit's journal. If the unit started successfully, \
+                             this may be a systemd D-Bus latency issue — re-run \
+                             apply and report if it persists."
+                                .into(),
+                        )),
+                    });
+                }
+                std::thread::sleep(interval);
+                interval = (interval * 2).min(Duration::from_millis(100));
+            }
+        }
+    }
 }
 
 pub(super) fn execute_remove_runner(

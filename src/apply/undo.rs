@@ -137,6 +137,23 @@ pub enum UndoStep {
         /// Mode bits before the chmod call (masked to `0o7777`).
         prior_mode: u32,
     },
+    /// Recorded after `fchown(fd, uid, gid)` succeeds. `prior_uid` and
+    /// `prior_gid` are the file's owner/group BEFORE the fchown; used
+    /// by undo to restore the pre-call ownership when rollback fires.
+    /// Used by `fchown_record_undo` in `runners.rs::execute_create_runner`
+    /// to chown the runner's writable set (runner_home, runner_home/tmp,
+    /// .ktstr, .ccache, credential files) to the DynamicUser-allocated
+    /// UID. The helper centralizes O_NOFOLLOW symlink-refusal +
+    /// prior-ownership capture + UndoLog push so future chown call
+    /// sites inherit all three guarantees automatically.
+    SetOwner {
+        /// Path whose owner / group was changed.
+        path: Utf8PathBuf,
+        /// uid before the fchown call.
+        prior_uid: u32,
+        /// gid before the fchown call.
+        prior_gid: u32,
+    },
 }
 
 impl UndoStep {
@@ -233,6 +250,18 @@ impl UndoStep {
                     "chmod {} (was 0o{:o})",
                     crate::escape_control_chars(path.as_str()),
                     prior_mode
+                )
+            }
+            UndoStep::SetOwner {
+                path,
+                prior_uid,
+                prior_gid,
+            } => {
+                format!(
+                    "chown {} (was {}:{})",
+                    crate::escape_control_chars(path.as_str()),
+                    prior_uid,
+                    prior_gid
                 )
             }
         }
@@ -487,6 +516,55 @@ fn undo_one(step: &UndoStep, deps: &Deps<'_>) -> Result<()> {
                         path = path.as_str(),
                         "rollback SetMode: path is now a symlink (not at \
                          forward chmod time); refusing to chmod-through to \
+                         the symlink target. Manual intervention may be \
+                         needed if rollback completeness matters; this skip \
+                         is the safe default."
+                    );
+                    Ok(())
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(GharsError::Io(e)),
+            }
+        }
+        UndoStep::SetOwner {
+            path,
+            prior_uid,
+            prior_gid,
+        } => {
+            use std::os::fd::AsRawFd;
+            use std::os::unix::fs::OpenOptionsExt;
+            // Mirror SetMode's rollback semantics: use the same
+            // O_RDONLY + O_NOFOLLOW + O_NONBLOCK open pattern so a
+            // sibling-DynamicUser-raced symlink swap between forward
+            // chown and reverse chown doesn't redirect the rollback
+            // to a different inode. ENOENT (path removed by an
+            // earlier reverse step) and ELOOP (symlink swap)
+            // tolerated; other I/O errors propagate.
+            //
+            // fchown takes a RawFd directly — no /proc/self/fd
+            // round-trip needed because fchown is a direct
+            // file-descriptor syscall (unlike fchmod via /proc which
+            // chmod_record_undo uses due to ENOTSUP on O_PATH fds;
+            // here we use plain O_RDONLY anyway, so fchown is the
+            // natural shape).
+            match std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                .open(path.as_std_path())
+            {
+                Ok(fd) => nix::unistd::fchown(
+                    fd.as_raw_fd(),
+                    Some(nix::unistd::Uid::from_raw(*prior_uid)),
+                    Some(nix::unistd::Gid::from_raw(*prior_gid)),
+                )
+                .map_err(|e| {
+                    GharsError::Io(std::io::Error::from_raw_os_error(e as i32))
+                }),
+                Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
+                    tracing::warn!(
+                        path = path.as_str(),
+                        "rollback SetOwner: path is now a symlink (not at \
+                         forward chown time); refusing to chown-through to \
                          the symlink target. Manual intervention may be \
                          needed if rollback completeness matters; this skip \
                          is the safe default."

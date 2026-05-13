@@ -190,6 +190,37 @@ pub trait Systemd {
     /// a non-numeric type (`s`/`o`/`a`/struct), or D-Bus is
     /// unreachable.
     fn get_service_property_u64(&self, unit: &str, property: &str) -> Result<u64>;
+
+    /// Look up the UID a `DynamicUser=yes` unit allocated for the
+    /// given name (typically `User=ghars-tz-<TRUST_ZONE>`). Backed by
+    /// `Manager.LookupDynamicUserByName(s name) → (u uid)` on
+    /// `org.freedesktop.systemd1` (declared at
+    /// `src/core/dbus-manager.c:3440` in systemd upstream;
+    /// `SD_BUS_VTABLE_UNPRIVILEGED` so no polkit auth needed).
+    ///
+    /// Returns `Ok(Some(uid))` when the name is currently allocated
+    /// to a transient UID. Returns `Ok(None)` when the name has not
+    /// yet been allocated (systemd's `BUS_ERROR_NO_SUCH_DYNAMIC_USER`)
+    /// — this happens before the first unit with the matching
+    /// `User=` name has reached its ExecStart child setup (where
+    /// `dynamic_user_realize` populates the storage_socket).
+    /// Callers retrieving the UID for a newly-started runner unit
+    /// should poll with backoff until either `Some(uid)` returns or
+    /// the timeout fires.
+    ///
+    /// The GID for a `DynamicUser=yes` name equals the UID when no
+    /// `/etc/passwd` entry exists for the name (verified at systemd
+    /// `src/core/dynamic-user.c:459-461`: `*ret_gid = num` in the
+    /// no-passwd path). Callers can use the returned UID for both
+    /// `uid` and `gid` arguments of `fchown(2)` / `chown(2)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `GharsError::Systemd` on D-Bus failures other than
+    /// `BUS_ERROR_NO_SUCH_DYNAMIC_USER` (which maps to `Ok(None)`),
+    /// and on systemd's `NOT_SUPPORTED` reply when running against a
+    /// user-instance manager (DynamicUser is system-instance only).
+    fn lookup_dynamic_user_by_name(&self, name: &str) -> Result<Option<u32>>;
 }
 
 /// Raw tuple shape of one entry in `Manager.ListUnitsFiltered`'s reply
@@ -458,6 +489,35 @@ impl Systemd for DbusSystemd {
 
     fn get_service_property_u64(&self, unit: &str, property: &str) -> Result<u64> {
         self.get_unit_property_u64(unit, SD_SERVICE_IFACE, property)
+    }
+
+    fn lookup_dynamic_user_by_name(&self, name: &str) -> Result<Option<u32>> {
+        let proxy = self.manager_proxy()?;
+        match proxy.call::<_, _, u32>("LookupDynamicUserByName", &(name,)) {
+            Ok(uid) => Ok(Some(uid)),
+            Err(e) => {
+                // systemd raises BUS_ERROR_NO_SUCH_DYNAMIC_USER
+                // (`org.freedesktop.systemd1.NoSuchDynamicUser`) when
+                // the name hasn't been allocated yet. Map that
+                // specific D-Bus error to Ok(None) so callers can
+                // poll with backoff until the name lands without
+                // having to inspect error string contents at every
+                // call site.
+                let err_str = e.to_string();
+                if err_str.contains("NoSuchDynamicUser") {
+                    Ok(None)
+                } else {
+                    Err(GharsError::Systemd(
+                        format!("Manager.LookupDynamicUserByName({name}): {e}"),
+                        "if running against a user-instance manager: \
+                         DynamicUser is system-instance only. Otherwise \
+                         verify systemd D-Bus is reachable and the \
+                         method is supported (added pre-v249)."
+                            .into(),
+                    ))
+                }
+            }
+        }
     }
 }
 
@@ -1032,6 +1092,9 @@ mod tests {
         }
         fn get_service_property_u64(&self, unit: &str, property: &str) -> Result<u64> {
             self.get_unit_property_u64(unit, SD_SERVICE_IFACE, property)
+        }
+        fn lookup_dynamic_user_by_name(&self, _: &str) -> Result<Option<u32>> {
+            Ok(None)
         }
     }
 

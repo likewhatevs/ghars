@@ -466,6 +466,9 @@ fn fail_fast_short_circuits_on_first_failure() {
         fn get_service_property_u64(&self, _: &str, _: &str) -> Result<u64> {
             Ok(0)
         }
+        fn lookup_dynamic_user_by_name(&self, _: &str) -> Result<Option<u32>> {
+            Ok(None)
+        }
     }
     // FlakySystemd is not Sync; tests run single-threaded for this case.
     // unsafe is forbidden — wrap RefCell access via a Mutex on the

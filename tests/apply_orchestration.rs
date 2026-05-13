@@ -155,6 +155,17 @@ impl Systemd for TestSystemd {
     fn get_service_property_u64(&self, unit: &str, property: &str) -> ghars::Result<u64> {
         self.get_unit_property_u64(unit, "org.freedesktop.systemd1.Service", property)
     }
+    fn lookup_dynamic_user_by_name(&self, _name: &str) -> ghars::Result<Option<u32>> {
+        // Default to the test process's UID so the production
+        // post-start chown succeeds (chown-to-self requires no
+        // CAP_CHOWN). Tests that exercise polling explicitly can
+        // be added once #4 lands.
+        use std::os::unix::fs::MetadataExt;
+        let uid = std::fs::metadata("/proc/self")
+            .map(|m| m.uid())
+            .unwrap_or(0);
+        Ok(Some(uid))
+    }
 }
 
 #[derive(Default)]

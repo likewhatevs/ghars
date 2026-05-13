@@ -35,6 +35,11 @@ pub(super) struct MockSystemd {
     // hostile control-char payload into the synthetic Failed-row
     // construction site in `apply` (post-loop daemon_reload arm).
     pub(super) fail_daemon_reload_message: Mutex<Option<String>>,
+    // Per-DynamicUser-name UID map. Populated by
+    // set_dynamic_user_uid() so tests can simulate systemd's
+    // Manager.LookupDynamicUserByName behavior — Ok(Some(uid))
+    // when the name is allocated, Ok(None) otherwise.
+    pub(super) dynamic_user_uids: Mutex<HashMap<String, u32>>,
 }
 
 impl MockSystemd {
@@ -49,6 +54,17 @@ impl MockSystemd {
             .lock()
             .unwrap()
             .insert((unit.into(), prop.into()), value.into());
+    }
+    /// Simulate systemd having allocated a transient UID for a
+    /// `DynamicUser=yes` name. Calls to
+    /// `lookup_dynamic_user_by_name(name)` return `Ok(Some(uid))`
+    /// when the name was set here; absent names return `Ok(None)`
+    /// matching systemd's `BUS_ERROR_NO_SUCH_DYNAMIC_USER` reply.
+    pub(super) fn set_dynamic_user_uid(&self, name: &str, uid: u32) {
+        self.dynamic_user_uids
+            .lock()
+            .unwrap()
+            .insert(name.into(), uid);
     }
 }
 
@@ -139,6 +155,23 @@ impl Systemd for MockSystemd {
     }
     fn get_service_property_u64(&self, unit: &str, property: &str) -> Result<u64> {
         self.get_unit_property_u64(unit, "org.freedesktop.systemd1.Service", property)
+    }
+    fn lookup_dynamic_user_by_name(&self, name: &str) -> Result<Option<u32>> {
+        // Explicit set_dynamic_user_uid override takes precedence.
+        // Default: return the TEST PROCESS's own UID so chown-to-this-UID
+        // succeeds without CAP_CHOWN (Linux allows chown to your own
+        // UID for any user). Without this default, the production
+        // poll_dynamic_user_uid loop would spin for 5s per test that
+        // calls execute_create_runner, making the suite painfully
+        // slow.
+        if let Some(uid) = self.dynamic_user_uids.lock().unwrap().get(name).copied() {
+            return Ok(Some(uid));
+        }
+        use std::os::unix::fs::MetadataExt;
+        let uid = std::fs::metadata("/proc/self")
+            .map(|m| m.uid())
+            .unwrap_or(0);
+        Ok(Some(uid))
     }
 }
 
