@@ -495,28 +495,36 @@ impl Systemd for DbusSystemd {
         let proxy = self.manager_proxy()?;
         match proxy.call::<_, _, u32>("LookupDynamicUserByName", &(name,)) {
             Ok(uid) => Ok(Some(uid)),
-            Err(e) => {
-                // systemd raises BUS_ERROR_NO_SUCH_DYNAMIC_USER
-                // (`org.freedesktop.systemd1.NoSuchDynamicUser`) when
-                // the name hasn't been allocated yet. Map that
-                // specific D-Bus error to Ok(None) so callers can
-                // poll with backoff until the name lands without
-                // having to inspect error string contents at every
-                // call site.
-                let err_str = e.to_string();
-                if err_str.contains("NoSuchDynamicUser") {
-                    Ok(None)
-                } else {
-                    Err(GharsError::Systemd(
-                        format!("Manager.LookupDynamicUserByName({name}): {e}"),
-                        "if running against a user-instance manager: \
-                         DynamicUser is system-instance only. Otherwise \
-                         verify systemd D-Bus is reachable and the \
-                         method is supported (added pre-v249)."
-                            .into(),
-                    ))
-                }
+            // systemd raises BUS_ERROR_NO_SUCH_DYNAMIC_USER
+            // (`org.freedesktop.systemd1.NoSuchDynamicUser`) when
+            // the name hasn't been allocated yet. Map that
+            // specific D-Bus error to Ok(None) so callers can
+            // poll with backoff until the name lands without
+            // having to inspect error string contents at every
+            // call site.
+            //
+            // Structured `zbus::Error::MethodError` name-pattern
+            // match (not substring on `e.to_string()`) so a future
+            // zbus Display-format change doesn't silently regress
+            // the ESRCH-to-Ok(None) mapping. `OwnedErrorName::as_str`
+            // returns the canonical dotted error-name string D-Bus
+            // wire format carries (`zbus_names::error_name::ErrorName`
+            // is the validated D-Bus error-name type; the match
+            // string is the literal interface + name systemd emits
+            // per `src/core/bus-error.c` upstream).
+            Err(zbus::Error::MethodError(ref error_name, _, _))
+                if error_name.as_str() == "org.freedesktop.systemd1.NoSuchDynamicUser" =>
+            {
+                Ok(None)
             }
+            Err(e) => Err(GharsError::Systemd(
+                format!("Manager.LookupDynamicUserByName({name}): {e}"),
+                "if running against a user-instance manager: \
+                 DynamicUser is system-instance only. Otherwise \
+                 verify systemd D-Bus is reachable and the \
+                 method is supported (added pre-v249)."
+                    .into(),
+            )),
         }
     }
 }
