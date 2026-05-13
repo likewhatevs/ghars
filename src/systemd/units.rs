@@ -1072,11 +1072,15 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
     let _ = writeln!(s, "User=ghars-tz-{}", spec.trust_zone);
     // WorkingDirectory + HOME stamp the per-runner home. ghars creates
     // and manages the runner home during apply. StateDirectory= is NOT
-    // used because DynamicUser=yes on systemd < 256 tries to create a
-    // private dir + symlink at the runner home path, which conflicts
-    // with the regular directory ghars already created. The full
-    // sandbox (TemporaryFileSystem, BindReadOnlyPaths, DynamicUser)
-    // still applies -- only the auto-chown is lost.
+    // used because DynamicUser=yes + StateDirectory= would trigger
+    // systemd's private-dir + symlink dance at the runner home path
+    // (per systemd/src/core/exec-invoke.c:3080-3166 — invariant
+    // across all currently-supported systemd versions; verified
+    // present in v261), which conflicts with the regular directory
+    // ghars already created and breaks ghars's later O_NOFOLLOW-
+    // protected operations on the path. The full sandbox
+    // (TemporaryFileSystem, BindReadOnlyPaths, DynamicUser) still
+    // applies -- only the auto-chown is lost.
     // BindPaths= makes the runner home writable inside the sandbox.
     let _ = writeln!(
         s,
