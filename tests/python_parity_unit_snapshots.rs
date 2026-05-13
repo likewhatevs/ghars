@@ -773,7 +773,8 @@ fn snap_files_must_not_carry_assertion_line_header() {
          `insta` save path strips this field — its presence indicates \
          a `.snap.new` → `.snap` hand-rename or a stale older-`insta` \
          artifact). Delete the line from each file; the header is \
-         metadata-only and `cargo insta show` falls back to file:1. \
+         metadata-only and the canonical `insta` save path strips it \
+         via `trim_for_persistence` (snapshot.rs:307-322). \
          Violations:\n  {}\n",
         violations.join("\n  ")
     );
