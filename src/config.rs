@@ -1127,8 +1127,19 @@ pub(crate) fn dns_to_annotation(dns: &DnsMode) -> String {
 /// incompatible annotation format gets a journal hint rather than
 /// a silent skip. Exactly empty input (`""`) is silent — treated
 /// identically to absent annotation, the legacy-runner path.
-/// Whitespace-only input (e.g. `" "`) is NOT empty and DOES warn;
-/// whitespace IS a value, just an unrecognized one.
+/// Whitespace-only input (e.g. `" "`) is NOT empty at the helper
+/// boundary and DOES warn; whitespace IS a value, just an
+/// unrecognized one.
+///
+/// NOTE on the end-to-end body-parse path: `ParsedUnit::from_text`
+/// trims `value` before storing it in the section, so an on-disk
+/// drop-in body containing `X-Ghars-Dns= ` (whitespace value) is
+/// silently flattened to `""` upstream of this helper and reaches
+/// `dns_from_annotation` as the empty string — taking the silent
+/// legacy-runner path, NOT the whitespace-warn path. The
+/// whitespace-warn contract is enforceable only for direct
+/// callers (helper-level tests, future synthetic call sites)
+/// whose input bypasses the systemd-unit parser.
 #[must_use]
 pub(crate) fn dns_from_annotation(s: &str) -> Option<DnsMode> {
     if s == "forward" {
@@ -1178,8 +1189,15 @@ pub(crate) fn ipv6_to_annotation(ipv6: Ipv6Mode) -> &'static str {
 ///
 /// Non-empty unparseable input emits a `tracing::warn!`; exactly
 /// empty input (`""`) is silent (the legacy-runner path).
-/// Whitespace-only input warns — it's a value, just an
-/// unrecognized one.
+/// Whitespace-only input warns at the helper boundary — it's a
+/// value, just an unrecognized one.
+///
+/// NOTE on the end-to-end body-parse path: same upstream-trim
+/// caveat as [`dns_from_annotation`] — `ParsedUnit::from_text`
+/// strips whitespace from values, so an on-disk
+/// `X-Ghars-Ipv6= ` body reaches this helper as `""` and takes
+/// the silent legacy-runner path. The whitespace-warn fires only
+/// for direct callers.
 #[must_use]
 pub(crate) fn ipv6_from_annotation(s: &str) -> Option<Ipv6Mode> {
     match s {

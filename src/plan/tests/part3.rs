@@ -950,6 +950,28 @@ fn discovered_annotations_round_trip_for_all_fields() {
         Arch::X86_64,
         cfg_source_default(),
     );
+    // Attach a non-default NetworkSpec so the round-trip exercises
+    // the dns + ipv6 + network_mode annotations alongside the
+    // runner-level fields. Without a network binding the renderer
+    // gates X-Ghars-Dns / X-Ghars-Ipv6 emission on
+    // spec.network.is_some() and emits `X-Ghars-Network-Mode=open`,
+    // leaving those two round-trip paths uncovered for a
+    // no-binding spec.
+    spec.network = Some(crate::config::EffectiveNetworkBinding {
+        name: "isolated".into(),
+        spec: crate::config::NetworkSpec {
+            mode: crate::config::NetworkMode::Netns,
+            allowed_egress: vec![],
+            ip_allow: vec![],
+            ip_deny: vec![],
+            restrict_address_families: vec![],
+            dns: crate::config::DnsMode::Static {
+                servers: vec!["8.8.8.8".parse().unwrap()],
+            },
+            ipv6: crate::config::Ipv6Mode::Enabled,
+        },
+        subnet: None,
+    });
     spec.spec_hash = spec_hash(&spec);
     let rendered = crate::systemd::render_runner_unit(&spec).unwrap();
     let body = rendered
@@ -1008,13 +1030,25 @@ fn discovered_annotations_round_trip_for_all_fields() {
     );
     assert_eq!(
         anns.network_mode.as_deref(),
-        Some("open"),
-        "Network-Mode round-trip (no [network] → \"open\")"
+        Some("netns"),
+        "Network-Mode round-trip (binding attached → \"netns\")"
     );
     assert_eq!(
         anns.caches.as_deref(),
         Some(&["build".to_owned(), "rust".to_owned()][..]),
         "Caches round-trip (comma-joined → split)"
+    );
+    assert_eq!(
+        anns.dns,
+        Some(crate::config::DnsMode::Static {
+            servers: vec!["8.8.8.8".parse().unwrap()],
+        }),
+        "Dns round-trip (Static{{8.8.8.8}} via static:8.8.8.8 emit)"
+    );
+    assert_eq!(
+        anns.ipv6,
+        Some(crate::config::Ipv6Mode::Enabled),
+        "Ipv6 round-trip (Enabled via `enabled` emit)"
     );
 }
 
