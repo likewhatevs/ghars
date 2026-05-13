@@ -197,26 +197,6 @@ fn dropin_20_hardening_strict_snapshot() {
 }
 
 #[test]
-fn dropin_30_cache_pool_ccache_only_snapshot() {
-    let mut spec = base_spec();
-    spec.caches.push(EffectiveCacheBinding {
-        name: "build".into(),
-        kinds: vec![CacheKind::Ccache],
-        size: "200G".into(),
-        mode: CacheMode::Shared,
-        trust_zone: "default".into(),
-        sccache_path: None,
-        sleep_path: Some("/usr/bin/sleep".into()),
-        renderer_schema: ghars::systemd::RENDERER_SCHEMA,
-    });
-    let r = render_runner_unit(&spec).unwrap();
-    insta::assert_snapshot!(
-        "dropin_30_cache_pool_ccache",
-        dropin(&r.drop_ins, "30-cache-pool.conf")
-    );
-}
-
-#[test]
 fn dropin_30_cache_pool_sccache_only_snapshot() {
     let mut spec = base_spec();
     spec.caches.push(EffectiveCacheBinding {

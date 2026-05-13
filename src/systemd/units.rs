@@ -126,7 +126,7 @@ pub struct RenderedUnit {
 /// false negatives (a missed bump) leave operators stranded on stale
 /// drop-ins requiring manual `rm -rf` to force convergence (the bug
 /// this constant exists to prevent).
-pub const RENDERER_SCHEMA: u32 = 2;
+pub const RENDERER_SCHEMA: u32 = 3;
 
 // --- Runner template body (Part 9) ---------------------------------------
 
@@ -1391,6 +1391,15 @@ fn render_cache_pool(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
         check_identity_field("caches[].size", &c.size)?;
     }
     let mut s = String::new();
+    // Track whether any structurally-meaningful directive landed in the
+    // body. ccache-only specs hit no emission site (the Ccache branch
+    // is empty per LAYER 1/2 contract); without this gate the renderer
+    // would write a `[Service]\n` stub drop-in to disk for every
+    // ccache-only runner, polluting `systemctl cat` and the in-place
+    // diff path. Returning None when nothing meaningful was emitted
+    // lets the apply layer's DropInChangeKind::Removed branch delete
+    // any pre-existing stub on first apply post-deploy.
+    let mut emitted_anything = false;
     let unit_section_pools: Vec<&EffectiveCacheBinding> = spec
         .caches
         .iter()
@@ -1407,6 +1416,7 @@ fn render_cache_pool(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
             let _ = writeln!(s, "After=ghars-cache@{}.service", c.name);
         }
         s.push('\n');
+        emitted_anything = true;
     }
     s.push_str("[Service]\n");
     let mut bind_paths: Vec<String> = Vec::new();
@@ -1456,6 +1466,7 @@ fn render_cache_pool(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
             if !bind_paths.contains(&pool_dir) {
                 bind_paths.push(pool_dir);
             }
+            emitted_anything = true;
         }
     }
     if needs_run_ghars {
@@ -1468,6 +1479,9 @@ fn render_cache_pool(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
         // The reset-on-empty validator passes because we only get
         // here with at least one entry.
         let _ = writeln!(s, "BindPaths={}", bind_paths.join(" "));
+    }
+    if !emitted_anything {
+        return Ok(None);
     }
     Ok(Some(s))
 }
@@ -3083,7 +3097,7 @@ mod tests {
     }
 
     #[test]
-    fn render_emits_cache_pool_for_ccache_filesystem_only() {
+    fn render_omits_30_cache_pool_for_ccache_filesystem_only() {
         let mut spec = minimal_spec();
         spec.caches.push(EffectiveCacheBinding {
             name: "build".into(),
@@ -3096,37 +3110,42 @@ mod tests {
             renderer_schema: crate::systemd::RENDERER_SCHEMA,
         });
         let r = render_runner_unit(&spec).unwrap();
-        let c = r.drop_ins.get("30-cache-pool.conf").unwrap();
         // ccache-only pools use the filesystem-mode mechanism — no
         // ghars-cache@ unit dependency, no BindPaths to a pool dir,
-        // no sccache server. CCACHE_DIR / CCACHE_MAXSIZE are NOT
-        // emitted here (#70: dead LAYER 1 emission removed — LAYER 2
-        // .env owns CCACHE_DIR / CCACHE_MAXSIZE for the trust-zone-
-        // shared path that ccache actually consumes).
-        assert!(!c.contains("Requires=ghars-cache@build.service"));
-        assert!(!c.contains("BindPaths="));
-        assert!(!c.contains("Environment=CCACHE_DIR="));
-        assert!(!c.contains("Environment=CCACHE_MAXSIZE="));
-        assert!(!c.contains("SCCACHE_NO_DAEMON"));
+        // no sccache server, no LAYER 1 Environment= directives. With
+        // nothing structurally meaningful to emit, render_cache_pool
+        // returns None and the 30-cache-pool.conf drop-in is absent
+        // from RenderedUnit.drop_ins entirely — the apply layer's
+        // DropInChangeKind::Removed branch will delete any stub left
+        // over on disk from before this gate landed.
+        assert!(
+            !r.drop_ins.contains_key("30-cache-pool.conf"),
+            "ccache-only pools must omit 30-cache-pool.conf (no LAYER 1 \
+             directives to carry; CCACHE_DIR/CCACHE_MAXSIZE live in \
+             LAYER 2 .env): got drop_ins {:?}",
+            r.drop_ins.keys().collect::<Vec<_>>()
+        );
     }
 
-    /// Contract test for the runner's 30-cache-pool.conf drop-in:
-    /// two ccache bindings produce two `Environment=CCACHE_DIR=`
-    /// AND two `Environment=CCACHE_MAXSIZE=` lines in insertion
-    /// order. systemd's `Environment=` last-writer-wins semantics
-    /// (`systemd.exec(5)`) means the second pool's CCACHE_DIR
-    /// replaces the first at process start — operator declared two
-    /// ccache pools, only one gets traffic. This is the dominant
-    /// collision surface that motivates the
-    /// `validate_no_duplicate_cache_kinds` validator + the parallel
-    /// `lower_to_effective` gate. The validator REJECTS this config
-    /// at config-load and plan-time so this drop-in shape is
-    /// unreachable from normal `ghars apply` — but direct
-    /// `EffectiveRunnerSpec` construction in tests bypasses both
-    /// gates, so this test pins the renderer's deterministic
-    /// per-binding emission as the last line of defense.
+    /// Last-line-of-defense regression pin for a multi-ccache spec
+    /// reaching the renderer via direct `EffectiveRunnerSpec`
+    /// construction (bypassing `validate_no_duplicate_cache_kinds` at
+    /// config-load and the parallel `lower_to_effective` gate).
+    ///
+    /// Multi-ccache bindings produce no structurally-meaningful drop-in
+    /// content — the ccache branch in `render_cache_pool` is empty by
+    /// design (CCACHE_DIR / CCACHE_MAXSIZE live in LAYER 2 .env, owned
+    /// by `render_runner_env_file`; the trust-zone-shared CCACHE_DIR
+    /// plus last-writer-wins CCACHE_MAXSIZE in .env is what ccache
+    /// actually consumes). With nothing to emit, the renderer returns
+    /// None and the 30-cache-pool.conf drop-in is absent from
+    /// RenderedUnit.drop_ins entirely.
+    ///
+    /// Pins the renderer-side absence so a future regression that
+    /// re-introduces per-binding LAYER 1 emission (and thereby a
+    /// misleading `systemctl cat` view) fails this test immediately.
     #[test]
-    fn render_emits_per_binding_ccache_lines_in_30_cache_pool_drop_in() {
+    fn render_omits_30_cache_pool_for_multi_ccache_only_spec() {
         let mut spec = minimal_spec();
         spec.caches.push(EffectiveCacheBinding {
             name: "obj-a".into(),
@@ -3149,28 +3168,12 @@ mod tests {
             renderer_schema: crate::systemd::RENDERER_SCHEMA,
         });
         let r = render_runner_unit(&spec).unwrap();
-        let c = r.drop_ins.get("30-cache-pool.conf").unwrap();
-        // Per-binding `Environment=CCACHE_DIR=` /
-        // `Environment=CCACHE_MAXSIZE=` are NO LONGER emitted here.
-        // The emission was LAYER 1 dead code — Runner.Listener's
-        // LoadAndSetEnv (verified in actions/runner at
-        // `src/Runner.Listener/Program.cs` — `Main` body invokes
-        // `LoadAndSetEnv` first; the helper reads `.env` and calls
-        // `Environment.SetEnvironmentVariable` per line) overwrites
-        // LAYER 1 systemd Environment= with LAYER 2 .env before any
-        // subprocess runs. The actual CCACHE_DIR / CCACHE_MAXSIZE
-        // that ccache reads come from `render_runner_env_file` (the
-        // trust-zone-shared path, gated on has_ccache, last-wins for
-        // multi-binding which the no-duplicate-cache-kinds validator
-        // rejects at config-load). This test now pins ABSENCE of
-        // the dead emissions.
         assert!(
-            !c.lines().any(|l| l.starts_with("Environment=CCACHE_DIR=")),
-            "no per-binding `Environment=CCACHE_DIR=` emission expected (#70 dead-code removal): {c}"
-        );
-        assert!(
-            !c.lines().any(|l| l.starts_with("Environment=CCACHE_MAXSIZE=")),
-            "no per-binding `Environment=CCACHE_MAXSIZE=` emission expected (#70): {c}"
+            !r.drop_ins.contains_key("30-cache-pool.conf"),
+            "multi-ccache spec must omit 30-cache-pool.conf (no LAYER 1 \
+             directives produced — all CCACHE_* live in LAYER 2 .env): \
+             got drop_ins {:?}",
+            r.drop_ins.keys().collect::<Vec<_>>()
         );
     }
 

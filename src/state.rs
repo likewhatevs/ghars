@@ -1111,7 +1111,9 @@ mod tests {
         //   10-memory.conf      — memory_max set
         //   15-resolv.conf      — unconditional (the basename this test guards)
         //   20-hardening.conf   — at least one hardening field touched
-        //   30-cache-pool.conf  — caches non-empty
+        //   30-cache-pool.conf  — at least one Sccache-serving binding
+        //                         (ccache-only pools omit per the
+        //                         render_cache_pool emit-anything gate)
         //   50-numa.conf        — allowed_cpus set
         //   60-proxy.conf       — proxy resolved
         //   70-hooks.conf       — hooks resolved
