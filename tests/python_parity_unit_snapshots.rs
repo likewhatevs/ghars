@@ -702,3 +702,79 @@ fn nft_rules_full_snapshot() {
     insta::assert_snapshot!("nft_rules_full_host", rules.host_rules);
     insta::assert_snapshot!("nft_rules_full_ns", rules.ns_rules);
 }
+
+/// Regression pin for the `.snap.new`-hand-rename anti-pattern.
+///
+/// `insta`'s `trim_for_persistence` (snapshot.rs:307-322) strips the
+/// `assertion_line:` metadata field from `.snap` files written via the
+/// canonical `save()` path (snapshot.rs:560-564) — `insta`'s explicit
+/// intent is "those we only use for display while reviewing". A
+/// `.snap` file with the `assertion_line:` header indicates someone
+/// hand-renamed `.snap.new` → `.snap` (bypassing `cargo insta accept`,
+/// which round-trips through `save()`), an older `insta` version
+/// without the trim, or a build script that bypassed `save()`. The
+/// per-snap header drifts on the next test reorder because nothing
+/// rewrites it, producing confusing `cargo insta show` jump-to-source
+/// behavior.
+///
+/// This test fails fast on the anti-pattern so a stale
+/// `.snap`-with-`assertion_line:` cannot land or persist undetected.
+/// Sister to the `.snap.new`-in-tree CI gate, but at the test layer
+/// (catches locally before push).
+#[test]
+fn snap_files_must_not_carry_assertion_line_header() {
+    // CARGO_MANIFEST_DIR is the crate root at compile time — deterministic
+    // regardless of test runner cwd. Avoids the silent-misdetect class
+    // where a workspace-member sub-Cargo invocation lands cwd elsewhere
+    // and `read_dir("tests/snapshots")` errors with a misleading message.
+    let snap_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots");
+    let entries = std::fs::read_dir(&snap_dir)
+        .expect("tests/snapshots/ directory must be readable");
+    let mut violations: Vec<String> = Vec::new();
+    for entry in entries {
+        let path = entry.expect("snap dir entry must be readable").path();
+        if path.extension().is_none_or(|e| e != "snap") {
+            continue;
+        }
+        let content = std::fs::read_to_string(&path).expect("snap file must be readable");
+        // Scope the scan to the YAML frontmatter (between the first and
+        // second `---` delimiters). Body lines after the closing `---`
+        // are operator-snapshot content and could legitimately start
+        // with `assertion_line:` (a config-file fragment, log line,
+        // etc.) without indicating an insta-metadata anti-pattern.
+        let mut in_frontmatter = false;
+        let mut frontmatter_closed = false;
+        for (idx, line) in content.lines().enumerate() {
+            if frontmatter_closed {
+                break;
+            }
+            if line.trim() == "---" {
+                if in_frontmatter {
+                    frontmatter_closed = true;
+                } else {
+                    in_frontmatter = true;
+                }
+                continue;
+            }
+            if in_frontmatter && line.trim_start().starts_with("assertion_line:") {
+                violations.push(format!(
+                    "{}:{}",
+                    path.file_name()
+                        .expect("snap path must have a basename")
+                        .to_string_lossy(),
+                    idx + 1
+                ));
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "\n\n.snap files carrying `assertion_line:` header (canonical \
+         `insta` save path strips this field — its presence indicates \
+         a `.snap.new` → `.snap` hand-rename or a stale older-`insta` \
+         artifact). Delete the line from each file; the header is \
+         metadata-only and `cargo insta show` falls back to file:1. \
+         Violations:\n  {}\n",
+        violations.join("\n  ")
+    );
+}

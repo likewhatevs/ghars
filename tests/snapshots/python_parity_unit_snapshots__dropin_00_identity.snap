@@ -1,6 +1,5 @@
 ---
 source: tests/python_parity_unit_snapshots.rs
-assertion_line: 123
 expression: "dropin(&r.drop_ins, \"00-ghars.conf\")"
 ---
 [Unit]

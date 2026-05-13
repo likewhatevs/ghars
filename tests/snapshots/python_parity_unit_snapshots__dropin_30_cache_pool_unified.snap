@@ -1,6 +1,5 @@
 ---
 source: tests/python_parity_unit_snapshots.rs
-assertion_line: 236
 expression: "dropin(&r.drop_ins, \"30-cache-pool.conf\")"
 ---
 [Unit]

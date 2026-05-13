@@ -1,6 +1,5 @@
 ---
 source: tests/python_parity_unit_snapshots.rs
-assertion_line: 509
 expression: r.path_file
 ---
 /usr/lib64/ccache:/usr/lib/ccache:/var/lib/ghars/default/ghars-buckos/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

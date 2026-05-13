@@ -1,6 +1,5 @@
 ---
 source: tests/python_parity_unit_snapshots.rs
-assertion_line: 423
 expression: body
 ---
 [Unit]
