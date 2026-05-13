@@ -173,6 +173,86 @@ fn create_runner_writes_unit_and_drop_ins_and_starts() {
     );
 }
 
+/// Pins the contract that the on-disk X-Ghars-Spec-Hash annotation
+/// matches the canonical-JSON hash of the spec actually rendered to
+/// disk — not the plan-time placeholder or a stale pre-resolve hash.
+///
+/// `execute_create_runner` clones the spec, recomputes spec_hash via
+/// `crate::plan::spec_hash`, and renders against the resolved clone.
+/// Without that recompute, the placeholder hash carried into the test
+/// fixture (`sha256:dead`) would land on disk verbatim, since
+/// `render_identity` consumes `spec.spec_hash` regardless of whether
+/// it was recomputed. A regression dropping the recompute is invisible
+/// to other assertions (drop-in body still has [Service]/ExecStart=
+/// etc.) — this test is the dedicated regression guard.
+///
+/// The contract pin matters because the next plan's intersection-arm
+/// fill (compute.rs:270-308) reads the on-disk hash as
+/// `discovered.spec_hash` and compares it against a candidate hash
+/// computed against an annotation-filled spec. A hash-vs-bytes
+/// mismatch on disk breaks the invariant downstream classifier
+/// comparisons rely on, with consequences depending on the discovered
+/// X-Ghars-Effective-Version annotation state: well-formed annotation
+/// produces a spurious in-place UpdateRunner cycle per plan (the
+/// candidate fills to Some-version and the candidate hash diverges
+/// from the None-version on-disk hash); empty or invalid annotation
+/// produces a silent false-NoOp (the intersection-arm fill skips, the
+/// candidate hash matches the on-disk hash by accident at the
+/// unresolved None-version, while the rendered bytes still use
+/// resolved bin.X.Y.Z paths). Either consequence is wrong.
+#[test]
+fn create_runner_emits_on_disk_spec_hash_matching_resolved_spec_canonical_hash() {
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = make_paths(&tmp);
+    std::fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
+    let plan = make_runner_plan("a", &paths.state_dir);
+    let systemd = MockSystemd::default();
+    let mut auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+    auth_map.insert(
+        "pat".into(),
+        Box::new(MockTokenSource {
+            name: "pat".into(),
+            ..MockTokenSource::default()
+        }),
+    );
+    let tarball = MockTarball::default();
+    let config_shell = MockConfigShell::default();
+    let deps = Deps {
+        systemd: &systemd,
+        auth: &auth_map,
+        tarball: &tarball,
+        config_shell: &config_shell,
+    };
+    execute_create_runner(&plan, &deps, &paths, &mut UndoLog::new(), 2).unwrap();
+
+    let drop_in_path = paths.drop_in_dir("a").join("00-ghars.conf");
+    let drop_in_body = std::fs::read_to_string(drop_in_path.as_std_path()).unwrap();
+    let on_disk_hash = drop_in_body
+        .lines()
+        .find_map(|l| l.strip_prefix("X-Ghars-Spec-Hash="))
+        .expect("00-ghars.conf must carry X-Ghars-Spec-Hash=");
+
+    let expected_hash = crate::plan::spec_hash(&plan.spec);
+    assert_eq!(
+        on_disk_hash, expected_hash,
+        "on-disk X-Ghars-Spec-Hash must match canonical hash of the spec actually \
+         rendered to disk (recompute against the resolved spec). A regression that \
+         drops the recompute would write the plan-time placeholder hash through \
+         unchanged, breaking the invariant downstream plan classifiers rely on \
+         (well-formed X-Ghars-Effective-Version annotation: spurious in-place \
+         UpdateRunner cycles since candidate hash and on-disk hash disagree; \
+         empty/invalid annotation: silent false-NoOp acceptance of the divergence)"
+    );
+
+    assert_ne!(
+        on_disk_hash, "sha256:dead",
+        "on-disk X-Ghars-Spec-Hash must not equal the plan-time placeholder \
+         carried in the test fixture — that placeholder being on disk would \
+         indicate the recompute did not fire and the placeholder was written \
+         through verbatim"
+    );
+}
+
 /// Bin tree integrity post-CreateRunner. The pre-fix
 /// `set_tree_permissions(tz_dir, 0o777)` cascade chmodded every
 /// file in the trust-zone tree to 0o777, including

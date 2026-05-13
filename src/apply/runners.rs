@@ -835,7 +835,32 @@ pub(super) fn execute_create_runner(
     // block that filled `runner_version` from `plan.resolved_release`
     // here is gone — resolve_plan_releases now owns the spec-level
     // fill so this site reads the same field uniformly.
-    let rendered = render_runner_unit(spec)?;
+    //
+    // spec_hash is also recomputed against the resolved spec so the
+    // on-disk X-Ghars-Spec-Hash annotation matches the canonical-JSON
+    // hash of what's actually rendered to disk. Without this
+    // recompute, the on-disk X-Ghars-Spec-Hash would remain the
+    // plan-time hash computed with runner_version=None for
+    // implicit-latest runners, while the rendered drop-in body bytes
+    // use bin.X.Y.Z paths from the resolved version. The resulting
+    // hash-vs-bytes mismatch breaks the invariant downstream plan
+    // classifiers rely on, with consequences that depend on the
+    // discovered X-Ghars-Effective-Version annotation state: the
+    // intersection-arm fill at compute.rs:270-308 fires when the
+    // annotation is well-formed, producing a spurious in-place
+    // UpdateRunner cycle because the candidate hash (computed against
+    // the annotation-filled runner_version) and the on-disk hash
+    // (frozen at plan-time None) disagree; skips when the annotation
+    // is empty or invalid, silently accepting the divergence as a
+    // permanent NoOp. Either consequence is wrong. Recomputing pins
+    // the contract that the on-disk hash reflects the spec actually
+    // rendered to disk; the intersection arm then reads
+    // X-Ghars-Effective-Version from the annotation, fills
+    // runner_version on the candidate BEFORE its hash computation,
+    // and produces a matching candidate hash on the next plan.
+    let mut resolved_spec = spec.clone();
+    resolved_spec.spec_hash = crate::plan::spec_hash(&resolved_spec);
+    let rendered = render_runner_unit(&resolved_spec)?;
 
     // 5c) Write .path and .env into the versioned bin dir.
     //   - `.path`: read once by runsvc.sh (`export PATH=\`cat .path\``)
