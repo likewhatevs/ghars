@@ -852,6 +852,53 @@ pub(crate) fn check_identity_field(field: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Defense-in-depth: reject Hardening list-typed entries whose raw form
+/// differs from the trimmed form (i.e. surrounding whitespace).
+/// `render_hardening` emits these entries via `Vec::join(" ")` verbatim
+/// into systemd directive bodies (`RestrictAddressFamilies=`,
+/// `SystemCallFilter=`, `CapabilityBoundingSet=`, `BindReadOnlyPaths=`),
+/// so a whitespace-padded token would produce different on-disk bytes
+/// (and a different `spec_hash`) from the equivalent unpadded form,
+/// triggering a spurious in-place `UpdateRunner` cascade across
+/// cosmetically-equivalent TOML.
+///
+/// Coverage role per field:
+/// - `extra_capabilities`, `extra_syscalls`: `validators::validate_extra_capabilities`
+///   / `validate_extra_syscalls` already enforce `raw != trimmed` at
+///   config-load; this renderer-side check is defense-in-depth for
+///   direct-construct callers that build `Hardening { extra_syscalls:
+///   vec!["  read  ".into()], ... }` programmatically and skip
+///   `cli::load`.
+/// - `restrict_address_families`: `validators::validate_restrict_address_families`
+///   uses the anchored regex `AF_FAMILY_RE = ^AF_[A-Z0-9_]+$` which
+///   implicitly rejects whitespace-padded entries via the shape check;
+///   the renderer-side check is the explicit safety net for
+///   direct-construct callers.
+/// - `bind_readonly_paths`: no config-load validator exists; the
+///   renderer-side check is the primary whitespace defense.
+/// - `extra_bind_paths`: `validators::validate_extra_bind_paths` catches
+///   leading whitespace via `starts_with('/')` but lets trailing
+///   whitespace through; the renderer-side check closes the trailing
+///   gap.
+///
+/// Mirrors `check_identity_field`'s renderer-side control-char
+/// rejection above.
+fn check_no_whitespace_padding(field: &str, value: &str) -> Result<()> {
+    if value != value.trim() {
+        return Err(GharsError::Validation(
+            format!(
+                "field {field:?} entry {value:?} has surrounding whitespace; \
+                 hardening list entries must be unpadded — whitespace-padded \
+                 tokens render to different drop-in bytes than the equivalent \
+                 unpadded form and trigger a spurious in-place UpdateRunner \
+                 cascade across cosmetically-equivalent specs"
+            ),
+            "remove the leading/trailing whitespace from the token".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
     // Validate every interpolated field BEFORE writing — fail-fast
     // before the bytes touch the BTreeMap so an upstream caller's
@@ -1237,22 +1284,44 @@ fn render_hardening(
     // newline anywhere in those values would inject a new directive
     // line at unit-load time. Validating at the top of the renderer
     // means a malformed entry produces an Err instead of bytes.
+    //
+    // Each entry also clears check_no_whitespace_padding — the
+    // renderer-side whitespace gate. For extra_syscalls /
+    // extra_capabilities this is defense-in-depth (the canonical
+    // gate at validators::validate_extra_syscalls /
+    // validate_extra_capabilities already enforces raw != trimmed).
+    // For restrict_address_families the loader's AF_FAMILY_RE
+    // implicitly rejects padding via shape, and the renderer check
+    // is the explicit safety net. For bind_readonly_paths (no
+    // config-load validator) and extra_bind_paths (loader catches
+    // leading whitespace only, trailing slips past), the renderer
+    // check provides primary or trailing-whitespace coverage. In all
+    // 5 cases a direct-construct caller bypassing cli/load.rs would
+    // otherwise emit whitespace-padded tokens verbatim through
+    // `Vec::join(" ")`, producing different on-disk bytes than the
+    // equivalent unpadded form and triggering a spurious in-place
+    // UpdateRunner cascade across cosmetically-equivalent specs.
     for entry in &h.restrict_address_families {
         check_identity_field("restrict_address_families[]", entry)?;
+        check_no_whitespace_padding("restrict_address_families[]", entry)?;
     }
     for entry in &h.extra_syscalls {
         check_identity_field("extra_syscalls[]", entry)?;
+        check_no_whitespace_padding("extra_syscalls[]", entry)?;
     }
     for entry in &h.extra_capabilities {
         check_identity_field("extra_capabilities[]", entry)?;
+        check_no_whitespace_padding("extra_capabilities[]", entry)?;
     }
     if let Some(paths) = &h.bind_readonly_paths {
         for p in paths {
             check_identity_field("bind_readonly_paths[]", p.as_str())?;
+            check_no_whitespace_padding("bind_readonly_paths[]", p.as_str())?;
         }
     }
     for p in &h.extra_bind_paths {
         check_identity_field("extra_bind_paths[]", p.as_str())?;
+        check_no_whitespace_padding("extra_bind_paths[]", p.as_str())?;
     }
 
     // Determine if any directive needs to be emitted. The template
@@ -2775,6 +2844,120 @@ mod tests {
             "msg must name field: {msg}"
         );
         assert!(msg.contains("newline"), "msg must name class: {msg}");
+    }
+
+    // ---- check_no_whitespace_padding renderer-side gate
+    //
+    // Direct-construct exercise of `check_no_whitespace_padding`
+    // across all 5 Hardening list-typed fields (see the helper's
+    // doc-comment for per-field coverage role — defense-in-depth
+    // for extra_syscalls/extra_capabilities, safety net for
+    // restrict_address_families, primary defense for
+    // bind_readonly_paths, trailing-whitespace closer for
+    // extra_bind_paths). Each test mutates ONE operator-controllable
+    // list entry in `minimal_spec()` to add surrounding whitespace,
+    // calls `render_runner_unit`, and asserts the error names the
+    // offending field + says "whitespace".
+
+    #[test]
+    fn render_hardening_rejects_whitespace_padding_in_extra_capabilities_entry() {
+        let mut spec = minimal_spec();
+        spec.hardening.extra_capabilities = vec!["  CAP_NET_BIND_SERVICE  ".into()];
+        let err = render_runner_unit(&spec).unwrap_err();
+        assert!(
+            matches!(err, GharsError::Validation(_, _)),
+            "expected Validation, got {err:?}"
+        );
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("extra_capabilities[]"),
+            "msg must name field: {msg}"
+        );
+        assert!(
+            msg.contains("whitespace"),
+            "msg must name class: {msg}"
+        );
+    }
+
+    #[test]
+    fn render_hardening_rejects_whitespace_padding_in_extra_syscalls_entry() {
+        let mut spec = minimal_spec();
+        spec.hardening.extra_syscalls = vec!["  read  ".into()];
+        let err = render_runner_unit(&spec).unwrap_err();
+        assert!(
+            matches!(err, GharsError::Validation(_, _)),
+            "expected Validation, got {err:?}"
+        );
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("extra_syscalls[]"),
+            "msg must name field: {msg}"
+        );
+        assert!(
+            msg.contains("whitespace"),
+            "msg must name class: {msg}"
+        );
+    }
+
+    #[test]
+    fn render_hardening_rejects_whitespace_padding_in_restrict_address_families_entry() {
+        let mut spec = minimal_spec();
+        spec.hardening.restrict_address_families = vec!["  AF_UNIX  ".into()];
+        let err = render_runner_unit(&spec).unwrap_err();
+        assert!(
+            matches!(err, GharsError::Validation(_, _)),
+            "expected Validation, got {err:?}"
+        );
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("restrict_address_families[]"),
+            "msg must name field: {msg}"
+        );
+        assert!(
+            msg.contains("whitespace"),
+            "msg must name class: {msg}"
+        );
+    }
+
+    #[test]
+    fn render_hardening_rejects_whitespace_padding_in_bind_readonly_paths_entry() {
+        let mut spec = minimal_spec();
+        spec.hardening.bind_readonly_paths =
+            Some(vec![Utf8PathBuf::from("  /etc/example  ")]);
+        let err = render_runner_unit(&spec).unwrap_err();
+        assert!(
+            matches!(err, GharsError::Validation(_, _)),
+            "expected Validation, got {err:?}"
+        );
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("bind_readonly_paths[]"),
+            "msg must name field: {msg}"
+        );
+        assert!(
+            msg.contains("whitespace"),
+            "msg must name class: {msg}"
+        );
+    }
+
+    #[test]
+    fn render_hardening_rejects_whitespace_padding_in_extra_bind_paths_entry() {
+        let mut spec = minimal_spec();
+        spec.hardening.extra_bind_paths = vec![Utf8PathBuf::from("  /var/log/example  ")];
+        let err = render_runner_unit(&spec).unwrap_err();
+        assert!(
+            matches!(err, GharsError::Validation(_, _)),
+            "expected Validation, got {err:?}"
+        );
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("extra_bind_paths[]"),
+            "msg must name field: {msg}"
+        );
+        assert!(
+            msg.contains("whitespace"),
+            "msg must name class: {msg}"
+        );
     }
 
     #[test]
