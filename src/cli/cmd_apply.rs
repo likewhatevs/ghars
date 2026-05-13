@@ -304,68 +304,6 @@ fn reconcile_github_registrations(
     Ok(reconciled)
 }
 
-/// Migrate runner home directories from regular root-owned dirs to the
-/// DynamicUser private layout (dir under /var/lib/private/ + symlink
-/// from /var/lib/). Runs once before plan so existing runners don't
-/// fail at unit start.
-/// Migrate runner home directories from regular root-owned dirs to the
-/// DynamicUser private layout. Scans /var/lib/ghars/ for `ghars-*`
-/// subdirs that are regular directories (not symlinks) and moves them
-/// to /var/lib/private/ghars/ with a symlink in place.
-fn migrate_runner_homes_to_private(
-    _cfg: &crate::config::Config,
-    paths: &Paths,
-) -> Result<()> {
-    let state_dir = paths.state_dir.as_std_path();
-    let Ok(trust_zones) = std::fs::read_dir(state_dir) else {
-        return Ok(());
-    };
-    for tz_entry in trust_zones.flatten() {
-        if !tz_entry.file_type().map_or(false, |t| t.is_dir()) {
-            continue;
-        }
-        let tz_name = tz_entry.file_name();
-        let tz_str = tz_name.to_string_lossy();
-        if tz_str.starts_with('.') {
-            continue; // skip .staging etc
-        }
-        let Ok(runners) = std::fs::read_dir(tz_entry.path()) else {
-            continue;
-        };
-        for runner_entry in runners.flatten() {
-            let name = runner_entry.file_name();
-            let name_str = name.to_string_lossy();
-            if !name_str.starts_with("ghars-") {
-                continue;
-            }
-            let meta = match std::fs::symlink_metadata(runner_entry.path()) {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            if meta.file_type().is_symlink() || !meta.file_type().is_dir() {
-                continue; // already correct or not a dir
-            }
-            let private_path = std::path::PathBuf::from(format!(
-                "/var/lib/private/ghars/{}/{}",
-                tz_str, name_str
-            ));
-            if private_path.exists() {
-                continue;
-            }
-            tracing::info!(
-                path = %runner_entry.path().display(),
-                "migrating runner home to DynamicUser private layout"
-            );
-            if let Some(parent) = private_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::rename(runner_entry.path(), &private_path)?;
-            std::os::unix::fs::symlink(&private_path, runner_entry.path())?;
-        }
-    }
-    Ok(())
-}
-
 /// Read the PAT value from the config's auth source for API auth.
 fn extract_pat_for_api(cfg: &crate::config::Config) -> Option<String> {
     for (_name, spec) in &cfg.auth {
