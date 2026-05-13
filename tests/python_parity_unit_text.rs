@@ -24,7 +24,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use ghars::config::{Arch, EffectiveRunnerSpec, EnvironmentSpec, Hardening};
-use ghars::systemd::{render_runner_unit, runner_template_text};
+use ghars::systemd::{cache_template_text, render_runner_unit, runner_template_text};
 
 fn minimal_spec(name: &str) -> EffectiveRunnerSpec {
     EffectiveRunnerSpec {
@@ -436,4 +436,84 @@ fn render_runner_unit_trust_zone_paths() {
     ));
     assert!(body.contains("WorkingDirectory=/var/lib/ghars/default/ghars-buckos/bin.2.334.0"));
     assert!(body.contains("Environment=HOME=/var/lib/ghars/default/ghars-buckos"));
+}
+
+/// Pin the version-interpolation fallback contract: when
+/// `runner_version` is None, `WorkingDirectory` and
+/// `ConditionPathExists` fall back to a literal `bin.latest`
+/// path segment (the renderer's placeholder before apply-time
+/// release-API resolution fills the version). The CreateRunner +
+/// recreate paths re-render with a resolved version BEFORE the
+/// bytes land on disk; this test covers the plan-time-only render
+/// output that the in-place UpdateRunner intersection arm
+/// produces when the discovered runner has no
+/// X-Ghars-Effective-Version annotation to inherit from.
+#[test]
+fn render_runner_unit_falls_back_to_bin_latest_when_runner_version_is_none() {
+    let mut spec = minimal_spec("buckos");
+    spec.runner_version = None;
+    let r = render_runner_unit(&spec).unwrap();
+    let body = r.drop_ins.get("00-ghars.conf").expect("00-ghars.conf");
+    assert!(
+        body.contains("WorkingDirectory=/var/lib/ghars/default/ghars-buckos/bin.latest"),
+        "WorkingDirectory must fall back to bin.latest when runner_version is None; got: {body}"
+    );
+    assert!(
+        body.contains(
+            "ConditionPathExists=/var/lib/ghars/default/ghars-buckos/bin.latest/bin/runsvc.sh"
+        ),
+        "ConditionPathExists must fall back to bin.latest too; got: {body}"
+    );
+}
+
+/// `BindPaths=/var/lib/ghars/{trust_zone}` is the StateDirectory
+/// replacement that makes the runner home writable inside the
+/// sandbox (the runner home dir is not under
+/// `/var/lib/private/ghars-tz-<TRUST_ZONE>` because ghars creates
+/// the dir ahead of unit-start; systemd's DynamicUser auto-bind
+/// would otherwise try to create a private dir + symlink that
+/// conflicts with the regular dir). The directive must be present
+/// in every runner's 00-ghars.conf regardless of which trust zone
+/// the runner is in. Parametrize over multiple trust_zones to
+/// catch any future hardcoding of the "default" zone name.
+#[test]
+fn render_runner_unit_bind_paths_carries_per_trust_zone() {
+    for trust_zone in ["default", "privileged", "isolated-x86"] {
+        let mut spec = minimal_spec("buckos");
+        spec.trust_zone = trust_zone.into();
+        let r = render_runner_unit(&spec).unwrap();
+        let body = r.drop_ins.get("00-ghars.conf").expect("00-ghars.conf");
+        let expected = format!("BindPaths=/var/lib/ghars/{trust_zone}");
+        assert!(
+            body.contains(&expected),
+            "00-ghars.conf must contain `{expected}` for trust_zone={trust_zone}; got:\n{body}"
+        );
+    }
+}
+
+/// `cache_template_text()` carries both `Environment=HOME=%C/ghars/pools/%i`
+/// AND `ProtectHome=yes`. The coupling is load-bearing: `ProtectHome=yes`
+/// makes `/root`, `/home`, and `/run/user` inaccessible to the cache
+/// server process; sccache's `dirs::config_dir()` would otherwise
+/// resolve to `$HOME/.config` and panic when the directory is
+/// inaccessible. Setting `HOME=%C/ghars/pools/%i` redirects sccache to
+/// the per-pool `CacheDirectory=` (which IS accessible inside the
+/// sandbox via systemd's bind-mount of `%C` = `/var/cache`).
+///
+/// A future refactor that removes either directive without the other
+/// silently breaks sccache (panic on cache-server start, no
+/// observable error in `ghars apply`). This test pins both together.
+#[test]
+fn cache_template_couples_protect_home_with_home_redirect() {
+    let t = cache_template_text();
+    assert!(
+        t.contains("ProtectHome=yes"),
+        "cache template must enable ProtectHome=yes; got: {t}"
+    );
+    assert!(
+        t.contains("Environment=HOME=%C/ghars/pools/%i"),
+        "cache template must redirect HOME under %C/ghars/pools/%i so sccache's \
+         dirs::config_dir() lands in CacheDirectory= rather than the \
+         ProtectHome=yes-blocked /root; got: {t}"
+    );
 }
