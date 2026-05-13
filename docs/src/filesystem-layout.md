@@ -121,10 +121,10 @@ cache pool unit's `00-ghars.conf` drop-in (`ghars-cache@POOL.service.d/`):
 
 | key | value format | source | emission gate |
 |---|---|---|---|
-| `X-Ghars-Spec-Hash` | `sha256:<hex>` — cache pool's per-pool digest (`cache_pool_hash()` output, same format as runner's spec_hash) | composer-supplied at render time | always |
+| `X-Ghars-Spec-Hash` | `sha256:<hex>` — cache pool's per-pool digest (`cache_pool_hash()` output, same format as runner's spec_hash) | populated by `into_cache_pool_plan` (computes `cache_pool_hash()` over canonical-JSON binding + `RENDERER_SCHEMA`, NOT operator-supplied — value flips on `RENDERER_SCHEMA` bumps) | always |
 | `X-Ghars-Pool-Name` | identifier string | `EffectiveCacheBinding.name` | always |
 | `X-Ghars-Pool-Kinds` | comma-csv of `ccache` / `sccache` enum names | `EffectiveCacheBinding.kinds` | always |
-| `X-Ghars-Config-Source` | path or identifier string | composer-supplied at render time | always |
+| `X-Ghars-Config-Source` | path or identifier string | `config_source` argument threaded from `into_cache_pool_plan` to `render_cache_drop_in` (matches per-runner X-Ghars-Config-Source for the same apply) | always |
 
 Notes:
 
