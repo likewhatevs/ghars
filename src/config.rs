@@ -1053,6 +1053,50 @@ pub(crate) fn validate_environments(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
+/// Validate every operator-set `runner_version` field in `config` —
+/// `[defaults].runner_version` and every `[[runner]].runner_version`.
+/// Calls `crate::validators::validate_version` (X.Y.Z form gate) per
+/// value, prepending the scope (`[defaults]:` / `[runner.NAME]:`)
+/// so the operator can locate the offending block.
+///
+/// Closes the gap where operator typos like `"2.334.0 "` (trailing
+/// space) or `"2.334"` (missing patch) propagate through merge +
+/// lowering and land as literal directory names on disk (`bin.2.334.0 /`)
+/// before any error surfaces. The `validate_version` helper itself
+/// already lives in `crate::validators`; this wrapper exists so the
+/// `cli::load_config` gate chain can invoke it uniformly with the
+/// other config-load validators.
+///
+/// Note: this gate does NOT cover the release-API resolution path
+/// (`crate::github::resolve_plan_releases`), which already runs
+/// `validate_version` on every returned version string per the
+/// `resolve_release_for_runner` impl. Operators whose `runner_version`
+/// is `None` (release-API-resolved at apply time) inherit that
+/// downstream validation. The wrapper here is the missing config-load
+/// gate for OPERATOR-SET values.
+///
+/// # Errors
+///
+/// Returns `GharsError::Validation` on the first failing value with
+/// the scope prefix naming the offending block.
+pub(crate) fn validate_runner_versions(cfg: &Config) -> Result<()> {
+    if let Some(v) = &cfg.defaults.runner_version {
+        crate::validators::validate_version(v)
+            .map_err(|e| crate::error::prepend_validation_scope("[defaults]", e))?;
+    }
+    for runner in &cfg.runners {
+        if let Some(v) = &runner.runner_version {
+            crate::validators::validate_version(v).map_err(|e| {
+                crate::error::prepend_validation_scope(
+                    &format!("[runner.{}]", runner.name),
+                    e,
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -1174,6 +1218,124 @@ mod tests {
             msg.contains("disallowed character"),
             "error must point at the comment validator; got: {msg}"
         );
+    }
+
+    #[test]
+    fn validate_runner_versions_rejects_defaults_typo() {
+        // Operator typo "2.334" (missing patch) at [defaults] must
+        // reject at config-load with the [defaults] scope prefix.
+        let mut cfg = Config::default();
+        cfg.defaults.runner_version = Some("2.334".into());
+        let err = validate_runner_versions(&cfg).expect_err("malformed defaults version must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("[defaults]"),
+            "error must name the [defaults] block; got: {msg}"
+        );
+        assert!(
+            msg.contains("X.Y.Z"),
+            "error must mention X.Y.Z form expectation; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_runner_versions_rejects_per_runner_typo_with_runner_scope() {
+        // Operator typo "2.334.0 " (trailing space) on a specific
+        // runner must reject with [runner.NAME] scope so operator
+        // finds the offending [[runner]] block.
+        let mut cfg = Config::default();
+        cfg.runners.push(RunnerSpec {
+            name: "buckos".into(),
+            count: None,
+            url: "https://github.com/example/buckos".into(),
+            auth: None,
+            labels: vec![],
+            memory_max: None,
+            runner_version: Some("2.334.0 ".into()),
+            runner_sha256: None,
+            runner_tarball: None,
+            arch: None,
+            caches: vec![],
+            trust_zone: "default".into(),
+            network: None,
+            proxy: None,
+            hooks: None,
+            hardening: Hardening::default(),
+            allowed_cpus: None,
+            allowed_memory_nodes: None,
+            environment: EnvironmentSpec::default(),
+        });
+        let err = validate_runner_versions(&cfg)
+            .expect_err("trailing-space version must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("[runner.buckos]"),
+            "error must name the [runner.NAME] block; got: {msg}"
+        );
+        assert!(
+            msg.contains("X.Y.Z"),
+            "error must mention X.Y.Z form; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_runner_versions_accepts_valid_x_y_z() {
+        // Positive case: well-formed runner_version values on both
+        // sides pass cleanly.
+        let mut cfg = Config::default();
+        cfg.defaults.runner_version = Some("2.321.0".into());
+        cfg.runners.push(RunnerSpec {
+            name: "buckos".into(),
+            count: None,
+            url: "https://github.com/example/buckos".into(),
+            auth: None,
+            labels: vec![],
+            memory_max: None,
+            runner_version: Some("2.334.0".into()),
+            runner_sha256: None,
+            runner_tarball: None,
+            arch: None,
+            caches: vec![],
+            trust_zone: "default".into(),
+            network: None,
+            proxy: None,
+            hooks: None,
+            hardening: Hardening::default(),
+            allowed_cpus: None,
+            allowed_memory_nodes: None,
+            environment: EnvironmentSpec::default(),
+        });
+        validate_runner_versions(&cfg).expect("valid X.Y.Z versions must pass");
+    }
+
+    #[test]
+    fn validate_runner_versions_accepts_none_on_both_sides() {
+        // Both sides unset is the common operator pattern (release-
+        // API resolution at apply time). Must pass cleanly so
+        // operators that don't pin a version aren't gated here.
+        let mut cfg = Config::default();
+        cfg.runners.push(RunnerSpec {
+            name: "buckos".into(),
+            count: None,
+            url: "https://github.com/example/buckos".into(),
+            auth: None,
+            labels: vec![],
+            memory_max: None,
+            runner_version: None,
+            runner_sha256: None,
+            runner_tarball: None,
+            arch: None,
+            caches: vec![],
+            trust_zone: "default".into(),
+            network: None,
+            proxy: None,
+            hooks: None,
+            hardening: Hardening::default(),
+            allowed_cpus: None,
+            allowed_memory_nodes: None,
+            environment: EnvironmentSpec::default(),
+        });
+        validate_runner_versions(&cfg).expect("None on both sides must pass (release-API path)");
     }
 
     #[test]

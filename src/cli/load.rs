@@ -122,6 +122,7 @@ pub(super) fn load_config(path: &Utf8Path) -> Result<Config> {
     validate_runner_tarballs(&cfg)?;
     validate_netns_runner_name_lengths(&cfg)?;
     crate::config::validate_environments(&cfg)?;
+    crate::config::validate_runner_versions(&cfg)?;
     Ok(cfg)
 }
 
