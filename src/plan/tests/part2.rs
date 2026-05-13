@@ -3535,6 +3535,276 @@ fn merge_defaults_collapses_some_empty_memory_max_to_none() {
     );
 }
 
+/// Parallel pins for allowed_cpus + allowed_memory_nodes
+/// normalization. `render_numa` returns Ok(None) for empty strings
+/// (matches `render_memory`'s pattern), so `Some("")` and `None`
+/// render identically. The merge-time filter at `merge_defaults`
+/// keeps spec_hash byte-stable across the operator-toggled
+/// empty-string dark input.
+#[test]
+fn merge_defaults_collapses_some_empty_allowed_cpus_to_none() {
+    let mut runner = minimal_runner("a");
+    runner.allowed_cpus = Some(String::new());
+    let defaults = Defaults::default();
+    let spec = merge_defaults(
+        &runner,
+        &defaults,
+        "pat".into(),
+        vec![],
+        None,
+        None,
+        None,
+        Arch::X86_64,
+        cfg_source_default(),
+    );
+    assert_eq!(spec.allowed_cpus, None);
+
+    let mut none_runner = minimal_runner("a");
+    none_runner.allowed_cpus = None;
+    let none_spec = merge_defaults(
+        &none_runner,
+        &defaults,
+        "pat".into(),
+        vec![],
+        None,
+        None,
+        None,
+        Arch::X86_64,
+        cfg_source_default(),
+    );
+    assert_eq!(
+        spec_hash(&spec),
+        spec_hash(&none_spec),
+        "Some(empty) and None for allowed_cpus must produce identical spec_hash"
+    );
+}
+
+#[test]
+fn merge_defaults_collapses_some_empty_allowed_memory_nodes_to_none() {
+    let mut runner = minimal_runner("a");
+    runner.allowed_memory_nodes = Some(String::new());
+    let defaults = Defaults::default();
+    let spec = merge_defaults(
+        &runner,
+        &defaults,
+        "pat".into(),
+        vec![],
+        None,
+        None,
+        None,
+        Arch::X86_64,
+        cfg_source_default(),
+    );
+    assert_eq!(spec.allowed_memory_nodes, None);
+
+    let mut none_runner = minimal_runner("a");
+    none_runner.allowed_memory_nodes = None;
+    let none_spec = merge_defaults(
+        &none_runner,
+        &defaults,
+        "pat".into(),
+        vec![],
+        None,
+        None,
+        None,
+        Arch::X86_64,
+        cfg_source_default(),
+    );
+    assert_eq!(
+        spec_hash(&spec),
+        spec_hash(&none_spec),
+        "Some(empty) and None for allowed_memory_nodes must produce identical spec_hash"
+    );
+}
+
+/// Combined-field interaction pin: each `.filter()` at merge.rs:201-205
+/// operates on its own field; a regression that coupled them (e.g.
+/// shared early-return) would not be caught by the per-field tests
+/// above. Sets BOTH to `Some(empty)` and asserts both fields
+/// collapse + spec_hash equality with the all-None baseline.
+#[test]
+fn merge_defaults_collapses_some_empty_allowed_cpus_and_memory_nodes_to_none() {
+    let mut runner = minimal_runner("a");
+    runner.allowed_cpus = Some(String::new());
+    runner.allowed_memory_nodes = Some(String::new());
+    let defaults = Defaults::default();
+    let spec = merge_defaults(
+        &runner,
+        &defaults,
+        "pat".into(),
+        vec![],
+        None,
+        None,
+        None,
+        Arch::X86_64,
+        cfg_source_default(),
+    );
+    assert_eq!(spec.allowed_cpus, None);
+    assert_eq!(spec.allowed_memory_nodes, None);
+
+    let none_runner = minimal_runner("a");
+    let none_spec = merge_defaults(
+        &none_runner,
+        &defaults,
+        "pat".into(),
+        vec![],
+        None,
+        None,
+        None,
+        Arch::X86_64,
+        cfg_source_default(),
+    );
+    assert_eq!(
+        spec_hash(&spec),
+        spec_hash(&none_spec),
+        "both fields Some(empty) must produce identical spec_hash to both None — combined-field normalization invariant"
+    );
+}
+
+/// Mirror of `lower_to_effective_collapses_some_empty_proxy_to_none`
+/// for the per-runner `allowed_cpus` field. Pins that the merge-time
+/// filter at merge.rs:201 is actually reached by the
+/// `lower_to_effective` resolver chain — a regression that added a
+/// denormalization layer downstream of `merge_defaults` would pass
+/// the `merge_defaults_*` tests above but fail here.
+#[test]
+fn lower_to_effective_collapses_some_empty_allowed_cpus_to_none() {
+    let mut runner_empty = minimal_runner("a");
+    runner_empty.allowed_cpus = Some(String::new());
+    let cfg_empty = config_with_runners(vec![runner_empty]);
+    let expanded = expand_counts(&cfg_empty).expect("count expansion must succeed");
+    let eff_empty = lower_to_effective(
+        &expanded[0],
+        &cfg_empty,
+        Arch::X86_64,
+        cfg_source_default(),
+        0,
+    )
+    .expect("lower_to_effective must succeed");
+    assert_eq!(eff_empty.allowed_cpus, None);
+
+    let cfg_none = config_with_runners(vec![minimal_runner("a")]);
+    let expanded_none = expand_counts(&cfg_none).expect("count expansion must succeed");
+    let eff_none = lower_to_effective(
+        &expanded_none[0],
+        &cfg_none,
+        Arch::X86_64,
+        cfg_source_default(),
+        0,
+    )
+    .expect("lower_to_effective must succeed");
+    assert_eq!(
+        spec_hash(&eff_empty),
+        spec_hash(&eff_none),
+        "Some(empty) allowed_cpus at runner config must produce identical spec_hash to None after lower_to_effective normalization — wiring intact"
+    );
+}
+
+/// Symmetric inverse of the test above, for `allowed_memory_nodes`.
+#[test]
+fn lower_to_effective_collapses_some_empty_allowed_memory_nodes_to_none() {
+    let mut runner_empty = minimal_runner("a");
+    runner_empty.allowed_memory_nodes = Some(String::new());
+    let cfg_empty = config_with_runners(vec![runner_empty]);
+    let expanded = expand_counts(&cfg_empty).expect("count expansion must succeed");
+    let eff_empty = lower_to_effective(
+        &expanded[0],
+        &cfg_empty,
+        Arch::X86_64,
+        cfg_source_default(),
+        0,
+    )
+    .expect("lower_to_effective must succeed");
+    assert_eq!(eff_empty.allowed_memory_nodes, None);
+
+    let cfg_none = config_with_runners(vec![minimal_runner("a")]);
+    let expanded_none = expand_counts(&cfg_none).expect("count expansion must succeed");
+    let eff_none = lower_to_effective(
+        &expanded_none[0],
+        &cfg_none,
+        Arch::X86_64,
+        cfg_source_default(),
+        0,
+    )
+    .expect("lower_to_effective must succeed");
+    assert_eq!(
+        spec_hash(&eff_empty),
+        spec_hash(&eff_none),
+        "Some(empty) allowed_memory_nodes at runner config must produce identical spec_hash to None after lower_to_effective normalization — wiring intact"
+    );
+}
+
+/// End-to-end wire-up: a runner with `allowed_cpus = Some(empty)`
+/// and `allowed_memory_nodes = Some(empty)` must drive
+/// `render_runner_unit` to skip the `50-numa.conf` drop-in entirely.
+/// Stronger guarantee than the `merge_defaults` + `render_numa` tests
+/// in isolation — pins that the merge filter is actually plumbed
+/// into the renderer pipeline through `render_runner_unit`'s
+/// dispatch. A regression that bypassed the merge layer in a
+/// production code path between `merge_defaults` and `render_numa`
+/// would fail here.
+#[test]
+fn merge_defaults_some_empty_allowed_cpus_drives_render_runner_unit_to_skip_50_numa() {
+    let mut runner = minimal_runner("a");
+    runner.allowed_cpus = Some(String::new());
+    runner.allowed_memory_nodes = Some(String::new());
+    runner.runner_version = Some("2.334.0".into());
+    let mut spec = merge_defaults(
+        &runner,
+        &Defaults::default(),
+        "pat".into(),
+        vec![],
+        None,
+        None,
+        None,
+        Arch::X86_64,
+        cfg_source_default(),
+    );
+    spec.spec_hash = spec_hash(&spec);
+    let r = crate::systemd::render_runner_unit(&spec)
+        .expect("render_runner_unit must succeed for normalized spec");
+    assert!(
+        !r.drop_ins.contains_key("50-numa.conf"),
+        "Some(empty) allowed_cpus and allowed_memory_nodes must NOT trigger 50-numa.conf emission via the merge→render pipeline; got drop-ins: {:?}",
+        r.drop_ins.keys().collect::<Vec<_>>()
+    );
+}
+
+/// End-to-end PRODUCTION-pipeline pin: drives a runner config
+/// through `expand_counts` + `lower_to_effective` (the production
+/// resolver chain that wraps `merge_defaults`) and asserts the
+/// rendered drop-in set excludes `50-numa.conf`. Sister to the
+/// `merge_defaults`→render_runner_unit pin above; this one verifies
+/// the FULL production wiring rather than only the merge boundary.
+/// A regression that re-introduced empty-string values inside
+/// `lower_to_effective` AFTER the `merge_defaults` filter call
+/// would slip past the merge-only integration test but fail here.
+#[test]
+fn lower_to_effective_some_empty_allowed_cpus_drives_render_runner_unit_to_skip_50_numa() {
+    let mut runner = minimal_runner("a");
+    runner.allowed_cpus = Some(String::new());
+    runner.allowed_memory_nodes = Some(String::new());
+    runner.runner_version = Some("2.334.0".into());
+    let cfg = config_with_runners(vec![runner]);
+    let expanded = expand_counts(&cfg).expect("count expansion must succeed");
+    let mut eff = lower_to_effective(
+        &expanded[0],
+        &cfg,
+        Arch::X86_64,
+        cfg_source_default(),
+        0,
+    )
+    .expect("lower_to_effective must succeed");
+    eff.spec_hash = spec_hash(&eff);
+    let r = crate::systemd::render_runner_unit(&eff)
+        .expect("render_runner_unit must succeed for normalized spec");
+    assert!(
+        !r.drop_ins.contains_key("50-numa.conf"),
+        "Some(empty) allowed_cpus and allowed_memory_nodes must NOT trigger 50-numa.conf emission via the lower_to_effective→render pipeline; got drop-ins: {:?}",
+        r.drop_ins.keys().collect::<Vec<_>>()
+    );
+}
+
 /// Parallel pin for runner_sha256 normalization. render_identity
 /// emits X-Ghars-Runner-Sha256 only on `Some(non-empty)` so `Some("")`
 /// and `None` render identically but pre-normalization differed in

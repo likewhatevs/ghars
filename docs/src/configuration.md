@@ -510,7 +510,9 @@ Selected fields:
   `defaults.hardening`.
 - `allowed_cpus` / `allowed_memory_nodes` (`Option<String>`) —
   systemd cgroup v2 cpuset values. None ≡ no `50-numa.conf`
-  drop-in.
+  drop-in. Empty string is normalized to None at merge time
+  (equivalent to omitting the field); no separate "explicit reset"
+  semantic.
 - `environment` (`EnvironmentSpec`) — operator-declared env vars
   and PATH additions; merged with `[defaults.environment]`. See
   the `EnvironmentSpec` section below.

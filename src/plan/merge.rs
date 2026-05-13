@@ -193,8 +193,18 @@ pub fn merge_defaults(
         proxy,
         hooks,
         hardening: merge_hardening(&runner.hardening, &defaults.hardening),
-        allowed_cpus: runner.allowed_cpus.clone(),
-        allowed_memory_nodes: runner.allowed_memory_nodes.clone(),
+        // Same Some("") → None collapse as memory_max / runner_sha256
+        // above — `render_numa` returns Ok(None) for empty strings,
+        // so the empty and absent cases render identically, and
+        // normalizing at merge time keeps spec_hash byte-stable
+        // across the operator-toggled empty-string dark input. No
+        // `.or_else(defaults.allowed_*)` cascade: `Defaults` carries
+        // no `allowed_cpus` / `allowed_memory_nodes` field today.
+        allowed_cpus: runner.allowed_cpus.clone().filter(|s| !s.is_empty()),
+        allowed_memory_nodes: runner
+            .allowed_memory_nodes
+            .clone()
+            .filter(|s| !s.is_empty()),
         environment: merge_environment(&runner.environment, &defaults.environment),
         spec_hash: String::new(),
         config_source,

@@ -1672,8 +1672,21 @@ fn render_network(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
 }
 
 fn render_numa(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
-    let cpus = spec.allowed_cpus.as_deref();
-    let mems = spec.allowed_memory_nodes.as_deref();
+    // Treat `Some("")` identically to `None` for both fields (mirror
+    // of `render_memory`'s empty-string short-circuit). Without this, a
+    // direct-construct `EffectiveRunnerSpec` with `Some("")` would
+    // emit `AllowedCPUs=` / `AllowedMemoryNodes=` (reset directives)
+    // that aren't operator intent. Production paths normalize at
+    // `merge_defaults`, but defense-in-depth at the renderer protects
+    // direct-construct callers.
+    let cpus = spec
+        .allowed_cpus
+        .as_deref()
+        .filter(|s| !s.is_empty());
+    let mems = spec
+        .allowed_memory_nodes
+        .as_deref()
+        .filter(|s| !s.is_empty());
     if cpus.is_none() && mems.is_none() {
         return Ok(None);
     }
@@ -2795,6 +2808,80 @@ mod tests {
         let msg = format!("{err}");
         assert!(msg.contains("allowed_cpus"), "msg must name field: {msg}");
         assert!(msg.contains("newline"), "msg must name class: {msg}");
+    }
+
+    /// Direct-construct defense-in-depth pin: a hand-built
+    /// `EffectiveRunnerSpec` with `Some("")` for allowed_cpus or
+    /// allowed_memory_nodes bypasses `merge_defaults`' normalization.
+    /// `render_numa` must STILL emit no 50-numa.conf for the
+    /// empty-string case (renderer-side filter mirrors
+    /// `render_memory`'s empty-string short-circuit).
+    #[test]
+    fn render_numa_treats_some_empty_as_none_at_renderer() {
+        let mut spec = minimal_spec();
+        spec.allowed_cpus = Some(String::new());
+        spec.allowed_memory_nodes = Some(String::new());
+        let r = render_runner_unit(&spec).unwrap();
+        assert!(
+            !r.drop_ins.contains_key("50-numa.conf"),
+            "render_numa must not emit 50-numa.conf when both fields are \
+             Some(empty); got drop-ins: {:?}",
+            r.drop_ins.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// Per-field independence pin: when ONLY `allowed_cpus` is
+    /// `Some(empty)`, the renderer must skip the `AllowedCPUs=` line
+    /// while still emitting `AllowedMemoryNodes=` for the non-empty
+    /// sister field. Pins that the per-field `.filter()` at
+    /// `render_numa` operates field-by-field — surviving non-empty
+    /// values still render, and the eliminated empty-string value
+    /// does NOT leak a bare `AllowedCPUs=` reset directive into the
+    /// body.
+    #[test]
+    fn render_numa_treats_some_empty_allowed_cpus_alone_as_none_for_that_field() {
+        let mut spec = minimal_spec();
+        spec.allowed_cpus = Some(String::new());
+        spec.allowed_memory_nodes = Some("0".into());
+        let r = render_runner_unit(&spec).unwrap();
+        let body = r
+            .drop_ins
+            .get("50-numa.conf")
+            .expect("50-numa.conf must still emit when one field is non-empty");
+        assert!(
+            body.contains("AllowedMemoryNodes=0"),
+            "AllowedMemoryNodes=0 must appear in 50-numa.conf body; got:\n{body}"
+        );
+        assert!(
+            !body.contains("AllowedCPUs="),
+            "Some(empty) allowed_cpus must NOT emit AllowedCPUs= reset directive; got:\n{body}"
+        );
+    }
+
+    /// Symmetric inverse of the test above: when ONLY
+    /// `allowed_memory_nodes` is `Some(empty)`, the renderer must
+    /// skip the `AllowedMemoryNodes=` line while still emitting
+    /// `AllowedCPUs=` for the non-empty sister field, and the
+    /// eliminated empty-string value does NOT leak a bare
+    /// `AllowedMemoryNodes=` reset directive into the body.
+    #[test]
+    fn render_numa_treats_some_empty_allowed_memory_nodes_alone_as_none_for_that_field() {
+        let mut spec = minimal_spec();
+        spec.allowed_cpus = Some("0-31".into());
+        spec.allowed_memory_nodes = Some(String::new());
+        let r = render_runner_unit(&spec).unwrap();
+        let body = r
+            .drop_ins
+            .get("50-numa.conf")
+            .expect("50-numa.conf must still emit when one field is non-empty");
+        assert!(
+            body.contains("AllowedCPUs=0-31"),
+            "AllowedCPUs=0-31 must appear in 50-numa.conf body; got:\n{body}"
+        );
+        assert!(
+            !body.contains("AllowedMemoryNodes="),
+            "Some(empty) allowed_memory_nodes must NOT emit AllowedMemoryNodes= reset directive; got:\n{body}"
+        );
     }
 
     // ---- defense-in-depth across the remaining render_*
