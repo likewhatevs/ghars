@@ -221,6 +221,115 @@ fn cmd_init_returns_zero_and_writes_canonical_body() {
 }
 
 #[test]
+fn init_example_config_content_invariants() {
+    // Pin specific content invariants on INIT_EXAMPLE_CONFIG that
+    // the byte-equality tests at chunk3.rs:217 +
+    // chunk1.rs:767 cannot catch — those compare the WRITTEN
+    // bytes to the SAME constant, so any field deletion
+    // propagates to both sides and the equality assertion still
+    // passes. These invariants guard against silent regressions
+    // in the shipped template.
+    //
+    // Constructive design: every assertion is a positive presence
+    // check OR a constructive pattern check (every github.com URL
+    // must use a placeholder), not a destructive deny-list naming
+    // any specific banned token in the test source.
+
+    // POSITIVE: required fields the template ships. Line-start
+    // anchoring (via `lines().any(|l| l.starts_with(...))`) so
+    // commented-out lines (`# runner_version = ...`) do not
+    // silently satisfy the invariant — only active TOML
+    // directives count.
+    assert!(
+        INIT_EXAMPLE_CONFIG
+            .lines()
+            .any(|l| l.starts_with("runner_version =")),
+        "INIT_EXAMPLE_CONFIG must declare a runner_version default \
+         on an un-commented line"
+    );
+    assert!(
+        INIT_EXAMPLE_CONFIG
+            .lines()
+            .any(|l| l.starts_with("token_env = \"GHARS_PAT\"")),
+        "INIT_EXAMPLE_CONFIG must use GHARS_PAT as the default PAT \
+         env var name on an un-commented line"
+    );
+    assert!(
+        INIT_EXAMPLE_CONFIG
+            .lines()
+            .any(|l| l.starts_with("arch = \"x86_64\"")),
+        "INIT_EXAMPLE_CONFIG must declare arch = x86_64 by default \
+         on an un-commented line"
+    );
+    assert!(
+        INIT_EXAMPLE_CONFIG
+            .lines()
+            .any(|l| l.starts_with("[auth.pat]")),
+        "INIT_EXAMPLE_CONFIG must define an [auth.pat] section header \
+         on an un-commented line"
+    );
+    assert!(
+        INIT_EXAMPLE_CONFIG
+            .lines()
+            .any(|l| l.starts_with("kind = \"pat\"")),
+        "INIT_EXAMPLE_CONFIG must declare auth kind = pat on an \
+         un-commented line inside the [auth.pat] section"
+    );
+
+    // POSITIVE: the shipped template must parse as valid TOML so
+    // `ghars init` produces a parseable config on first run.
+    // Catches quoting bugs, unclosed brackets, mis-escaped strings
+    // that the substring checks above don't see. Parses to a
+    // generic toml::Value (grammar check only); Config-shape
+    // validation lives in the loader's own test surface.
+    toml::from_str::<toml::Value>(INIT_EXAMPLE_CONFIG)
+        .expect("INIT_EXAMPLE_CONFIG must parse as valid TOML");
+
+    // POSITIVE + CONSTRUCTIVE: every `github.com/` URL uses a
+    // generic placeholder path segment (`github.com/OWNER/` or
+    // `github.com/owner/`), never a real handle. The full-pattern
+    // match (with trailing slash) avoids substring-bypass via
+    // handles containing "owner" as a substring (e.g. "landowner",
+    // "OWNERSHIP"). Sidesteps env-leakage by avoiding any specific
+    // banned-token literal in the test source.
+    //
+    // Scope: this check guards github.com URLs only. Handle leaks
+    // via non-github URL hosts, non-URL contexts (bare comments,
+    // emails, file paths), are NOT caught here — they rely on the
+    // pre-publish audit gate for defense in depth. Extend the
+    // check when the template grows to include such surfaces.
+    let mut github_url_count = 0usize;
+    for (idx, line) in INIT_EXAMPLE_CONFIG.lines().enumerate() {
+        if !line.contains("github.com/") {
+            continue;
+        }
+        github_url_count += 1;
+        assert!(
+            line.contains("github.com/OWNER/") || line.contains("github.com/owner/"),
+            "INIT_EXAMPLE_CONFIG line {} carries a `github.com/` URL \
+             without the `github.com/OWNER/` or `github.com/owner/` \
+             placeholder pattern — env-leakage risk. Replace the \
+             handle with the placeholder.\nOffending line: {:?}",
+            idx + 1,
+            line
+        );
+    }
+    // Vacuous-truth guard: if a future template restructure drops
+    // github.com URLs, the loop above iterates fewer times and
+    // silently weakens the placeholder check. Pin the template's
+    // didactic intent: it must demonstrate the OWNER/REPO pattern
+    // via BOTH the schema link (current line 26) and the runner
+    // example URL (current line 43). Drop of either is caught.
+    assert!(
+        github_url_count >= 2,
+        "INIT_EXAMPLE_CONFIG must demonstrate at least two \
+         `github.com/` URLs with the placeholder pattern (schema \
+         link + runner example) — got {}",
+        github_url_count
+    );
+}
+
+#[test]
 fn cmd_init_output_override_writes_to_alt_path_not_global() {
     // When `--output` is set, the global --config path stays
     // untouched. This pins the override semantics so a future
