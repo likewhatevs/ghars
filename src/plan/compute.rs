@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 
 use camino::Utf8PathBuf;
+use ipnet::IpNet;
 
 use crate::Result;
 use crate::config::{
@@ -860,12 +861,13 @@ pub(super) fn into_runner_plan(
 /// any token that doesn't match `AF_FAMILY_RE = ^AF_[A-Z0-9_]+$` at
 /// config-load (applies to BOTH `NetworkSpec.restrict_address_families`
 /// and `Hardening.restrict_address_families`), so no `~`-prefix
-/// token can reach this sort. The analogous gate exists for
-/// `Hardening.extra_capabilities` via `CAP_RE`. The same defect
-/// class IS still open at the upstream `merge_hardening` sort for
-/// `Hardening.extra_syscalls` — that field has no token-shape
-/// validator today, and a config-load validator rejecting
-/// `~`-prefix syscall tokens is tracked as a separate work order.
+/// token can reach this sort. Analogous gates exist for
+/// `Hardening.extra_capabilities` via `CAP_RE` and for
+/// `Hardening.extra_syscalls` via `SYSCALL_NAME_RE`
+/// (`^[a-z_][a-z0-9_]*$`) plus an explicit `~`-prefix check in
+/// `validate_extra_syscalls`. With all three Hardening Vec<String>
+/// fields gated at config-load, the upstream `merge_hardening` sort
+/// sees only token-shape-validated entries.
 ///
 /// SORT SAFETY for `ip_allow` / `ip_deny`: systemd stores these
 /// into a userspace hash-set at parse time
@@ -885,11 +887,62 @@ fn canonicalize_network_spec(spec: &NetworkSpec) -> NetworkSpec {
     let mut s = spec.clone();
     s.restrict_address_families.sort();
     s.restrict_address_families.dedup();
+    // Normalize CIDR host bits to zero BEFORE sort+dedup so operator-
+    // equivalent forms collapse to the same canonical key. An operator
+    // writing `10.0.0.5/24` and `10.0.0.99/24` is supplying the same
+    // network — `ipnet::IpNet::trunc()` returns the same network
+    // address (`10.0.0.0/24`) for both, dedup removes the duplicate,
+    // and the rendered `IPAddressAllow=` / `IPAddressDeny=` lines AND
+    // `spec_hash` are byte-stable across cosmetically-equivalent TOML.
+    //
+    // The systemd parser at `systemd/src/shared/in-addr-prefix-util.c`
+    // (`in_addr_prefix_add`) calls `in_addr_mask` on every entry
+    // before the kernel-side BPF map insert, so the kernel layer
+    // already sees the masked network — operator host bits are pure
+    // ghars-side spec_hash drift risk. Mirrors the byte-equality
+    // pattern established for the Hardening Vec<String> fields:
+    // sort+dedup canonicalizes ORDER+ELEMENT-COUNT, trunc canonicalizes
+    // each ELEMENT's CONTENT.
+    //
+    // A `tracing::warn!` per host-bits-set CIDR surfaces the
+    // normalization for operators whose CIDR notation may have
+    // diverged from intent — e.g., `10.0.0.5/24` could mean "single
+    // host 10.0.0.5 in subnet /24" (in which case the operator wanted
+    // `/32`, not `/24`). Silent normalization preserves correctness
+    // for legitimate typo / upstream-tool-output scenarios; the warn
+    // educates without blocking.
+    s.ip_allow
+        .iter_mut()
+        .for_each(|n| *n = trunc_with_warn(n, "ip_allow"));
     s.ip_allow.sort();
     s.ip_allow.dedup();
+    s.ip_deny
+        .iter_mut()
+        .for_each(|n| *n = trunc_with_warn(n, "ip_deny"));
     s.ip_deny.sort();
     s.ip_deny.dedup();
     s
+}
+
+/// Helper for [`canonicalize_network_spec`]: returns the host-bits-
+/// zero form of `cidr` and emits a `tracing::warn!` if the input had
+/// host bits set. `field` names which `NetworkSpec` field
+/// (`ip_allow` / `ip_deny`) the CIDR came from so operators reading
+/// the structured log can locate the offending TOML entry.
+fn trunc_with_warn(cidr: &IpNet, field: &'static str) -> IpNet {
+    let truncated = cidr.trunc();
+    if *cidr != truncated {
+        tracing::warn!(
+            field = field,
+            operator = %cidr,
+            normalized = %truncated,
+            "CIDR has host bits set; ghars normalized to network address \
+             (systemd's kernel-side BPF map insert masks identically). \
+             Operators who intended a single host should write /32 \
+             (IPv4) or /128 (IPv6) instead."
+        );
+    }
+    truncated
 }
 
 /// Canonicalize a `kinds` Vec by sorting alphabetically via

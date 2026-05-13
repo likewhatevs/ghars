@@ -1099,6 +1099,272 @@ fn render_unchanged_on_ip_allow_ip_deny_reorder_post_merge() {
     );
 }
 
+/// Property: operator-supplied CIDRs with host bits set
+/// (`10.0.0.5/24`) get normalized to network address
+/// (`10.0.0.0/24`) by `canonicalize_network_spec` before sort+dedup.
+/// systemd's kernel-side BPF map insert already masks host bits via
+/// `in_addr_mask` (see `systemd/src/shared/in-addr-prefix-util.c`
+/// `in_addr_prefix_add`), so an operator's host bits are functionally
+/// meaningless at the kernel layer; ghars-side normalization
+/// preserves `spec_hash` byte-stability across cosmetically-
+/// equivalent TOML.
+///
+/// Cases cover IPv4 (mid-octet, max host bits, cross-octet,
+/// non-octet-aligned prefix, small-subnet boundary), the idempotent
+/// already-canonical case, `/32` single-host (no host bits), `/0`
+/// default route, IPv6 (typical, boundary `/128`, already-canonical).
+#[test]
+fn canonicalize_network_spec_normalizes_host_bits_to_zero() {
+    let cases: &[(&str, &str)] = &[
+        // IPv4 with host bits set
+        ("10.0.0.5/24", "10.0.0.0/24"),
+        ("10.0.0.255/24", "10.0.0.0/24"),
+        ("192.168.42.99/16", "192.168.0.0/16"),
+        ("172.16.42.42/12", "172.16.0.0/12"),
+        ("10.0.0.5/30", "10.0.0.4/30"),
+        // IPv4 idempotent
+        ("10.0.0.0/24", "10.0.0.0/24"),
+        ("10.0.0.5/32", "10.0.0.5/32"),
+        ("0.0.0.0/0", "0.0.0.0/0"),
+        // IPv6 with host bits set
+        ("2001:db8::1234:5678/64", "2001:db8::/64"),
+        // IPv6 idempotent
+        ("::1/128", "::1/128"),
+        ("2001:db8:abcd:ef::/64", "2001:db8:abcd:ef::/64"),
+    ];
+    for (input, expected) in cases {
+        let mut cfg = config_with_runners(vec![minimal_runner("a")]);
+        cfg.networks.insert(
+            "net-a".into(),
+            NetworkSpec {
+                mode: NetworkMode::Netns,
+                allowed_egress: vec![],
+                ip_allow: vec![input.parse::<IpNet>().unwrap()],
+                ip_deny: vec![],
+                restrict_address_families: vec![],
+                dns: DnsMode::default(),
+                ipv6: Ipv6Mode::default(),
+            },
+        );
+        cfg.runners[0].network = Some("net-a".into());
+        let expanded = expand_counts(&cfg).expect("count expansion must succeed");
+        let eff = lower_to_effective(
+            &expanded[0],
+            &cfg,
+            Arch::X86_64,
+            cfg_source_default(),
+            0,
+        )
+        .expect("lower_to_effective must succeed");
+        let got = eff
+            .network
+            .as_ref()
+            .unwrap()
+            .spec
+            .ip_allow[0]
+            .to_string();
+        assert_eq!(
+            got, *expected,
+            "canonicalize_network_spec must normalize host bits to zero: \
+             input {input} should normalize to {expected}, got {got}"
+        );
+    }
+}
+
+/// Load-bearing test: operator-equivalent CIDR forms (same network,
+/// different host bits) collapse to a single canonical entry after
+/// trunc+sort+dedup. Without trunc-before-dedup, 3 distinct CIDR
+/// strings would survive into the rendered drop-in body and the
+/// spec_hash, defeating the cosmetic-equivalence invariant.
+///
+/// THE failure mode the host-bits-zero normalization closes: an
+/// operator writing `[10.0.0.5/24, 10.0.0.99/24, 10.0.0.0/24]`
+/// thinks they're naming a single network three different ways; the
+/// validator+canonicalizer should collapse to `[10.0.0.0/24]`.
+#[test]
+fn canonicalize_network_spec_normalize_then_dedup_collapses_equivalent_cidrs() {
+    let mut cfg = config_with_runners(vec![minimal_runner("a")]);
+    cfg.networks.insert(
+        "net-a".into(),
+        NetworkSpec {
+            mode: NetworkMode::Netns,
+            allowed_egress: vec![],
+            ip_allow: vec![
+                "10.0.0.5/24".parse::<IpNet>().unwrap(),
+                "10.0.0.99/24".parse::<IpNet>().unwrap(),
+                "10.0.0.0/24".parse::<IpNet>().unwrap(),
+            ],
+            ip_deny: vec![
+                "172.16.42.99/16".parse::<IpNet>().unwrap(),
+                "172.16.0.0/16".parse::<IpNet>().unwrap(),
+            ],
+            restrict_address_families: vec![],
+            dns: DnsMode::default(),
+            ipv6: Ipv6Mode::default(),
+        },
+    );
+    cfg.runners[0].network = Some("net-a".into());
+    let expanded = expand_counts(&cfg).expect("count expansion must succeed");
+    let eff = lower_to_effective(
+        &expanded[0],
+        &cfg,
+        Arch::X86_64,
+        cfg_source_default(),
+        0,
+    )
+    .expect("lower_to_effective must succeed");
+    let allow: Vec<String> = eff
+        .network
+        .as_ref()
+        .unwrap()
+        .spec
+        .ip_allow
+        .iter()
+        .map(|c| c.to_string())
+        .collect();
+    assert_eq!(
+        allow,
+        vec!["10.0.0.0/24"],
+        "trunc-before-dedup must collapse 3 operator-equivalent ip_allow \
+         CIDRs to 1 canonical entry; got: {allow:?}"
+    );
+    let deny: Vec<String> = eff
+        .network
+        .as_ref()
+        .unwrap()
+        .spec
+        .ip_deny
+        .iter()
+        .map(|c| c.to_string())
+        .collect();
+    assert_eq!(
+        deny,
+        vec!["172.16.0.0/16"],
+        "trunc-before-dedup must collapse 2 operator-equivalent ip_deny \
+         CIDRs to 1 canonical entry; got: {deny:?}"
+    );
+}
+
+/// Property: two operator TOMLs that differ only in CIDR host bits
+/// (e.g., `10.0.0.5/24` vs `10.0.0.0/24`) produce equal `spec_hash`
+/// after lowering. Pins the cosmetic-equivalence guarantee at the
+/// hash level — without trunc-before-sort+dedup, the two forms
+/// would produce different JSON bytes during `spec_hash`
+/// computation and trigger a spurious in-place UpdateRunner
+/// cascade on re-deploy.
+#[test]
+fn spec_hash_equal_for_host_bits_set_vs_zero() {
+    let mk = |ip: &str, deny: &str| -> EffectiveRunnerSpec {
+        let mut cfg = config_with_runners(vec![minimal_runner("a")]);
+        cfg.networks.insert(
+            "net-a".into(),
+            NetworkSpec {
+                mode: NetworkMode::Netns,
+                allowed_egress: vec![],
+                ip_allow: vec![ip.parse::<IpNet>().unwrap()],
+                ip_deny: vec![deny.parse::<IpNet>().unwrap()],
+                restrict_address_families: vec![],
+                dns: DnsMode::default(),
+                ipv6: Ipv6Mode::default(),
+            },
+        );
+        cfg.runners[0].network = Some("net-a".into());
+        let expanded = expand_counts(&cfg).expect("count expansion must succeed");
+        lower_to_effective(
+            &expanded[0],
+            &cfg,
+            Arch::X86_64,
+            cfg_source_default(),
+            0,
+        )
+        .expect("lower_to_effective must succeed")
+    };
+    let eff_with_host_bits = mk("10.0.0.5/24", "172.16.42.99/16");
+    let eff_canonical = mk("10.0.0.0/24", "172.16.0.0/16");
+    assert_eq!(
+        eff_with_host_bits.spec_hash, eff_canonical.spec_hash,
+        "spec_hash must be byte-stable across operator host-bits-set vs \
+         host-bits-zero forms; got {} vs {}",
+        eff_with_host_bits.spec_hash, eff_canonical.spec_hash
+    );
+}
+
+/// Property: `canonicalize_network_spec` emits a `tracing::warn!`
+/// for each operator-supplied CIDR with host bits set (one warn per
+/// CIDR, naming both the operator form and the normalized form +
+/// the field). Educational signal for operators who may have
+/// confused CIDR notation (e.g., `10.0.0.5/24` could mean "single
+/// host 10.0.0.5 in subnet /24" — they actually want `/32`).
+/// Canonical CIDRs (already host-bits-zero) MUST NOT emit a warn —
+/// no log noise for legitimate input.
+#[test]
+#[tracing_test::traced_test]
+fn canonicalize_network_spec_warns_on_host_bits_set() {
+    let mut cfg = config_with_runners(vec![minimal_runner("a")]);
+    cfg.networks.insert(
+        "net-a".into(),
+        NetworkSpec {
+            mode: NetworkMode::Netns,
+            allowed_egress: vec![],
+            ip_allow: vec![
+                "10.0.0.5/24".parse::<IpNet>().unwrap(),     // host bits set
+                "192.168.0.0/16".parse::<IpNet>().unwrap(),  // canonical
+            ],
+            ip_deny: vec![
+                "172.16.42.42/12".parse::<IpNet>().unwrap(), // host bits set
+            ],
+            restrict_address_families: vec![],
+            dns: DnsMode::default(),
+            ipv6: Ipv6Mode::default(),
+        },
+    );
+    cfg.runners[0].network = Some("net-a".into());
+    let expanded = expand_counts(&cfg).expect("count expansion must succeed");
+    let _eff = lower_to_effective(
+        &expanded[0],
+        &cfg,
+        Arch::X86_64,
+        cfg_source_default(),
+        0,
+    )
+    .expect("lower_to_effective must succeed");
+    // Two host-bits-set CIDRs → two warns naming the operator + normalized forms.
+    assert!(
+        logs_contain("CIDR has host bits set"),
+        "warn message must name the violation class"
+    );
+    assert!(
+        logs_contain("10.0.0.5/24"),
+        "warn must name the operator form for ip_allow violation"
+    );
+    assert!(
+        logs_contain("10.0.0.0/24"),
+        "warn must name the normalized form for ip_allow violation"
+    );
+    assert!(
+        logs_contain("172.16.42.42/12"),
+        "warn must name the operator form for ip_deny violation"
+    );
+    assert!(
+        logs_contain("172.16.0.0/12"),
+        "warn must name the normalized form for ip_deny violation"
+    );
+    assert!(
+        logs_contain("ip_allow"),
+        "warn must name ip_allow field for the .5/24 violation"
+    );
+    assert!(
+        logs_contain("ip_deny"),
+        "warn must name ip_deny field for the .42/12 violation"
+    );
+    // The already-canonical 192.168.0.0/16 must NOT warn — pin no-noise.
+    assert!(
+        !logs_contain("192.168.0.0/16"),
+        "canonical CIDR (192.168.0.0/16) must not appear in warn output \
+         — no false-positive log noise for legitimate input"
+    );
+}
+
 /// Property: two TOML files that produce semantically-identical
 /// configs (but with formatting differences — comments,
 /// whitespace, key order across runner blocks) must lower to the
