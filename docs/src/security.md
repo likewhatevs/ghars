@@ -24,6 +24,14 @@ Cross-trust-zone reach is denied at the UID-DAC layer:
 - Different UIDs return EACCES at `connect()` to the sccache UDS
   (the socket inode is mode 0600 owned by the cache-server's
   trust-zone UID; AF_UNIX `connect()` checks owner-DAC).
+  Kernel-source verified: `unix_find_bsd` at
+  `net/unix/af_unix.c:1219` calls `path_permission(&path,
+  MAY_WRITE)` on the socket inode BEFORE the socket lookup —
+  `connect(2)` to a 0600 socket from a UID that is neither owner
+  nor in the owning group fails the path_permission check and
+  returns EACCES. The check is on the SOCKET FILE inode, not on
+  the open socket, so the DAC layer fires even when the listening
+  process belongs to a different mount namespace.
 
 There is no `Group=` line, no `SupplementaryGroups=`, no `gpasswd`
 involvement. systemd allocates the matching transient GID alongside
