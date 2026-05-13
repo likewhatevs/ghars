@@ -1668,8 +1668,17 @@ fn render_network(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
     // entry would inject a new directive. `ip_allow` / `ip_deny` are
     // typed (`Vec<IpNet>`) so they cannot carry control chars;
     // `spec.name` is gated by `validate_runner_name` upstream.
+    //
+    // `check_no_whitespace_padding` mirrors the renderer-side gate the
+    // sister `render_hardening` already runs for the same field on
+    // `Hardening::restrict_address_families`. The canonical config-load
+    // gate for `NetworkSpec.restrict_address_families` is the
+    // `AF_FAMILY_RE` shape-check at `validators::validate_restrict_address_families`
+    // which implicitly rejects whitespace-padded tokens; this renderer
+    // gate is the explicit safety net for direct-construct callers.
     for entry in &net.spec.restrict_address_families {
         check_identity_field("network.restrict_address_families[]", entry)?;
+        check_no_whitespace_padding("network.restrict_address_families[]", entry)?;
     }
     let mut s = String::new();
     if netns_mode {
@@ -3203,6 +3212,90 @@ mod tests {
             "msg must name field: {msg}"
         );
         assert!(msg.contains("newline"), "msg must name class: {msg}");
+    }
+
+    /// Sister to the `render_hardening` whitespace-padding rejection
+    /// tests above. `network.restrict_address_families[]` is the only
+    /// operator-supplied String surface in `render_network`'s body and
+    /// is joined with `" "` verbatim, so a whitespace-padded token
+    /// produces different on-disk bytes (and a different `spec_hash`)
+    /// from the equivalent unpadded form. Pin the renderer-side
+    /// `check_no_whitespace_padding` mirror that complements
+    /// `render_hardening`'s same-field gate. The canonical config-load
+    /// gate at `validators::validate_restrict_address_families` uses
+    /// the anchored `AF_FAMILY_RE` regex which implicitly rejects
+    /// padding via shape; this renderer-side check is the explicit
+    /// safety net for direct-construct callers that bypass
+    /// `cli::load`.
+    #[test]
+    fn render_network_rejects_whitespace_padding_in_restrict_address_families_entry() {
+        let mut spec = minimal_spec();
+        spec.network = Some(EffectiveNetworkBinding {
+            name: "buck2-isolated".into(),
+            spec: NetworkSpec {
+                mode: NetworkMode::Netns,
+                allowed_egress: vec![],
+                ip_allow: vec![],
+                ip_deny: vec![],
+                restrict_address_families: vec!["  AF_UNIX  ".into()],
+                dns: DnsMode::default(),
+                ipv6: Ipv6Mode::default(),
+            },
+            subnet: Some("10.200.0.0/30".parse::<IpNet>().unwrap()),
+        });
+        let err = render_runner_unit(&spec).unwrap_err();
+        assert!(
+            matches!(err, GharsError::Validation(_, _)),
+            "expected Validation, got {err:?}"
+        );
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("network.restrict_address_families[]"),
+            "msg must name field: {msg}"
+        );
+        assert!(
+            msg.contains("whitespace"),
+            "msg must name class: {msg}"
+        );
+    }
+
+    /// Open-mode sister to the Netns test above — pins that the
+    /// `check_no_whitespace_padding` gate fires INDEPENDENTLY of the
+    /// `if netns_mode` branch. A future regression that scoped the
+    /// check to only Netns mode would still pass the Netns test but
+    /// silently lose Open-mode coverage. Mirrors the existing
+    /// `render_network_open_rejects_newline_in_restrict_address_families_entry`
+    /// Netns-vs-Open pair pattern for the newline gate.
+    #[test]
+    fn render_network_open_rejects_whitespace_padding_in_restrict_address_families_entry() {
+        let mut spec = minimal_spec();
+        spec.network = Some(EffectiveNetworkBinding {
+            name: "buck2-isolated".into(),
+            spec: NetworkSpec {
+                mode: NetworkMode::Open,
+                allowed_egress: vec![],
+                ip_allow: vec![],
+                ip_deny: vec![],
+                restrict_address_families: vec!["  AF_UNIX  ".into()],
+                dns: DnsMode::default(),
+                ipv6: Ipv6Mode::default(),
+            },
+            subnet: None,
+        });
+        let err = render_runner_unit(&spec).unwrap_err();
+        assert!(
+            matches!(err, GharsError::Validation(_, _)),
+            "expected Validation, got {err:?}"
+        );
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("network.restrict_address_families[]"),
+            "msg must name field: {msg}"
+        );
+        assert!(
+            msg.contains("whitespace"),
+            "msg must name class: {msg}"
+        );
     }
 
     /// Defense-in-depth parity: `restrict_address_families[]` newline
