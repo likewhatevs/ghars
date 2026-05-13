@@ -176,7 +176,7 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
     // netns runners, not eroded by Open-mode entries that wouldn't
     // use a subnet.
     let mut desired: BTreeMap<String, EffectiveRunnerSpec> = BTreeMap::new();
-    let warnings: Vec<String> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
     for (slot_idx, runner) in expanded.iter().enumerate() {
         let effective =
             lower_to_effective(runner, config, host_arch, config_source.clone(), slot_idx)?;
@@ -204,7 +204,7 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                     .get(name)
                     .expect("name was in desired_names")
                     .clone();
-                actions.push(Action::CreateRunner(into_runner_plan(spec)?));
+                actions.push(Action::CreateRunner(into_runner_plan(spec, &mut warnings)?));
             }
             (false, true) => {
                 // Pure remove (managed unit, no matching desired).
@@ -300,6 +300,13 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                             return Err(e);
                         }
                     };
+                    // Plumb renderer-emitted warnings up to the
+                    // operator-visible Plan. Without this extend
+                    // call, hardening-toggle warnings like
+                    // `hardening.kvm=false` stay inside the
+                    // RenderedUnit and disappear before reaching
+                    // `Plan.warnings` at function return.
+                    warnings.extend(rendered.warnings.iter().cloned());
 
                     let mut field_changes: Vec<FieldChange> = Vec::new();
                     let recreate_reasons = classify_recreate_reasons_from_annotations(
@@ -741,13 +748,25 @@ pub(super) fn with_hash(mut spec: EffectiveRunnerSpec) -> EffectiveRunnerSpec {
 /// (if not already set) and rendering the unit text + drop-ins.
 /// `RunnerPlan` carries the rendered bytes that apply.rs writes to
 /// disk verbatim, instead of re-rendering.
-pub(super) fn into_runner_plan(spec: EffectiveRunnerSpec) -> Result<RunnerPlan> {
+/// Build a `RunnerPlan` for the CreateRunner action, extending
+/// `warnings` with any non-fatal advisories the renderer produced
+/// (e.g. `hardening.kvm=false` notes). The Plan-level `warnings`
+/// Vec at `plan_from`'s top is the single sink — without the
+/// extend call here, renderer-emitted warnings stay inside the
+/// returned `RenderedUnit` and disappear before reaching the
+/// operator-visible Plan, which is the bug the
+/// `warnings.extend(rendered.warnings)` line closes.
+pub(super) fn into_runner_plan(
+    spec: EffectiveRunnerSpec,
+    warnings: &mut Vec<String>,
+) -> Result<RunnerPlan> {
     let spec_with_hash = if spec.spec_hash.is_empty() {
         with_hash(spec)
     } else {
         spec
     };
     let rendered = crate::systemd::render_runner_unit(&spec_with_hash)?;
+    warnings.extend(rendered.warnings);
     Ok(RunnerPlan {
         spec_hash: spec_with_hash.spec_hash.clone(),
         spec: spec_with_hash,
