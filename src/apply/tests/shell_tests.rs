@@ -119,7 +119,21 @@ fn sec05_register_argv_includes_expected_flags() {
     let ctx = sec05_ctx(Utf8Path::new("/var/lib/ghars/buckos"), "TOKEN");
     let cmd = build_register_cmd(&ctx);
     let argv = argv_strings(&cmd);
-    for required in ["--url", "--name", "--labels", "--unattended", "--replace"] {
+    for required in [
+        "--url",
+        "--name",
+        "--labels",
+        "--unattended",
+        "--replace",
+        // --disableupdate opts the runner out of its built-in
+        // auto-update at job pickup (actions/runner
+        // `Runner.Listener/MessageListener.cs:258`). Without it,
+        // the on-disk runner binaries silently diverge from what
+        // ghars installed, breaking the X-Ghars-Effective-Version
+        // annotation invariant. Pinned here so a future refactor
+        // that drops the flag is caught.
+        "--disableupdate",
+    ] {
         assert!(
             argv.iter().any(|a| a == required),
             "register argv missing {required}: {argv:?}",

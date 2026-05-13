@@ -107,6 +107,23 @@ pub(super) fn build_register_cmd(ctx: &ConfigShellCtx<'_>) -> Command {
         "--no-default-labels",
         "--unattended",
         "--replace",
+        // --disableupdate: actions/runner self-updates by default
+        // at job pickup (see ~/opensource/runner
+        // `Runner.Listener/MessageListener.cs:258` + `Runner.cs:1136`
+        // help text), which leaves on-disk runner binaries out of
+        // sync with what ghars installed at create time. The
+        // `X-Ghars-Effective-Version` annotation and the on-disk
+        // `bin.X.Y.Z/` layout are then stale — plan layer's
+        // version-fill reads the annotation but the actual runner
+        // process is running newer binaries. ghars's design model
+        // is "operator pins the version via `runner_version` in
+        // TOML, ghars manages upgrades via apply"; opting out of
+        // the runner's auto-update keeps the model consistent.
+        // The flag is documented at
+        // `Runner.Common/Constants.cs:142 (= "disableupdate")` and
+        // wired through `Runner.Listener/CommandSettings.cs:35` +
+        // `Configuration/ConfigurationManager.cs:257`.
+        "--disableupdate",
     ])
     .env(RUNNER_TOKEN_ENV, ctx.token)
     .env("RUNNER_ALLOW_RUNASROOT", "1")
