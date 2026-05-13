@@ -3220,7 +3220,11 @@ mod tests {
 
     /// Tokens that don't match the AF_[A-Z0-9_]+ shape MUST reject:
     /// lowercase forms (systemd is case-sensitive), missing prefix,
-    /// typos, and stray punctuation.
+    /// typos, stray punctuation, and `~`-prefix denylist tokens
+    /// (intrinsically rejected by the `^AF_` anchor — documents the
+    /// gap that prevents systemd's polarity-flip ambiguity for this
+    /// field; sister to `validate_extra_syscalls`' explicit `~`-prefix
+    /// check).
     #[rstest]
     #[case::lowercase("af_unix")]
     #[case::mixed_case("Af_Unix")]
@@ -3230,6 +3234,8 @@ mod tests {
     #[case::with_dot("AF_UNIX.0")]
     #[case::trailing_space("AF_UNIX ")]
     #[case::leading_space(" AF_UNIX")]
+    #[case::tilde_prefix("~AF_UNIX")]
+    #[case::tilde_alone("~")]
     fn validate_restrict_address_families_rejects_malformed(#[case] family: &str) {
         let err = validate_restrict_address_families(
             "network.restrict_address_families",
@@ -3477,11 +3483,17 @@ mod tests {
         assert!(format!("{err}").contains("empty"));
     }
 
+    /// `~`-prefix denylist tokens are intrinsically rejected by
+    /// `CAP_RE`'s `^CAP_` anchor — documents the gap that prevents
+    /// systemd's polarity-flip ambiguity for this field; sister to
+    /// `validate_extra_syscalls`' explicit `~`-prefix check.
     #[rstest]
     #[case("not_a_cap")]
     #[case("CAP-SYS-ADMIN")]
     #[case("CAP_!@#")]
     #[case("SYS_ADMIN")]
+    #[case("~CAP_NET_BIND_SERVICE")]
+    #[case("~")]
     fn extra_capabilities_rejects_malformed(#[case] cap: &str) {
         let err = validate_extra_capabilities(&[cap.to_string()])
             .expect_err("must reject malformed cap token");
