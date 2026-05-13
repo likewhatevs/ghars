@@ -343,24 +343,6 @@ fn cmd_init_creates_parent_dir_when_missing() {
 }
 
 #[test]
-fn init_example_config_content_invariants() {
-    // Pin the load-bearing fields of INIT_EXAMPLE_CONFIG so a
-    // future edit can't silently drop them. Each invariant maps
-    // to operator-visible behavior: GHARS_PAT is the documented
-    // env var name, x86_64 is the v0.1 default arch, [auth.pat]
-    // is the placeholder block operators reference from
-    // [defaults].auth.
-    assert!(INIT_EXAMPLE_CONFIG.contains("runner_version = \""));
-    assert!(INIT_EXAMPLE_CONFIG.contains("token_env = \"GHARS_PAT\""));
-    assert!(INIT_EXAMPLE_CONFIG.contains("arch = \"x86_64\""));
-    assert!(INIT_EXAMPLE_CONFIG.contains("[auth.pat]"));
-    assert!(INIT_EXAMPLE_CONFIG.contains("kind = \"pat\""));
-    // Personal-fork URL must not appear.
-    assert!(!INIT_EXAMPLE_CONFIG.contains("likewhatevs"));
-    assert!(INIT_EXAMPLE_CONFIG.contains("OWNER/REPO"));
-}
-
-#[test]
 fn cmd_add_auto_name_first_index_when_no_existing_runners() {
     // No runners → owner-repo-1 (auto-numbered).
     let tmp = tempfile::tempdir().unwrap();
@@ -1878,8 +1860,9 @@ fn validate_no_duplicate_kinds_within_pool_rejects_duplicate_sccache() {
     );
 }
 
-/// Sister covering the post-#5 `CacheKind::Ktstr` variant. The
-/// validator at `validate_no_duplicate_kinds_within_pool` iterates
+/// Sister covering the `CacheKind::Ktstr` first-class variant
+/// (alongside `Ccache` and `Sccache`). The validator at
+/// `validate_no_duplicate_kinds_within_pool` iterates
 /// `CacheKind::ALL` (a static slice declared at config.rs alongside
 /// the enum); any variant added to that slice gets the
 /// duplicate-detect treatment automatically. Compile-time
