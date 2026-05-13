@@ -272,7 +272,38 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                         && !v.is_empty()
                         && crate::validators::validate_version(v).is_ok()
                     {
-                        candidate.runner_version = Some(v.to_owned());
+                        // Gate 4: verify the version named in the
+                        // annotation actually exists on disk before
+                        // accepting it as the in-place inheritance
+                        // value. Adversary F1 mitigation: an
+                        // operator who manually edits
+                        // X-Ghars-Effective-Version to a different
+                        // valid version than what's installed
+                        // (e.g. annotation says 2.500.0 but the
+                        // runner's bin.2.500.0/ directory was
+                        // never created) would otherwise have the
+                        // forged value propagate into the spec,
+                        // produce hash equality (both sides
+                        // post-fill match), skip the recreate,
+                        // and let apply write into a non-existent
+                        // bin dir. The unit would then fail
+                        // ConditionPathExists at restart with no
+                        // operator-visible signal until the
+                        // workflow timed out.
+                        //
+                        // Checking runsvc.sh (not just the bin
+                        // dir) catches the half-cleaned-up case
+                        // where the dir exists but the actions/
+                        // runner tarball was partially extracted
+                        // — the unit's ExecStart= would still
+                        // fail at startup, just one syscall later.
+                        let runner_home =
+                            paths.runner_home(&candidate.trust_zone, &candidate.name);
+                        let runsvc_sh =
+                            runner_home.join(format!("bin.{v}/bin/runsvc.sh"));
+                        if runsvc_sh.as_std_path().exists() {
+                            candidate.runner_version = Some(v.to_owned());
+                        }
                     }
                 }
                 let after_spec = with_hash(candidate);

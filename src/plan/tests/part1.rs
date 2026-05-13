@@ -1529,7 +1529,22 @@ fn plan_in_place_inherits_runner_version_from_discovered_annotation() {
         discovered_for("a", &discovered_spec, Drift::InSync),
     );
 
-    let plan = plan_from(&cfg, &actual, &empty_paths())
+    // Build a tempdir-rooted Paths and pre-stage
+    // `runner_home/bin.2.334.0/bin/runsvc.sh` on disk. The in-place
+    // version-fill at compute.rs:270 verifies the annotation-named
+    // version actually exists before accepting it (adversary F1
+    // mitigation: refuses to fill from a forged annotation pointing
+    // at a non-existent bin dir, which would otherwise produce hash
+    // equality, skip the recreate, and let apply write into a
+    // non-existent bin dir at runtime).
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = paths_at_tempdir(tmp.path());
+    let runner_home = paths.runner_home(&desired_spec.trust_zone, "a");
+    let runsvc_dir = runner_home.join("bin.2.334.0").join("bin");
+    std::fs::create_dir_all(runsvc_dir.as_std_path()).unwrap();
+    std::fs::write(runsvc_dir.join("runsvc.sh").as_std_path(), b"#!/bin/bash\n").unwrap();
+
+    let plan = plan_from(&cfg, &actual, &paths)
         .expect("plan_from must succeed after in-place version fill");
     let updates: Vec<&RunnerDelta> = plan
         .actions
@@ -1558,6 +1573,87 @@ fn plan_in_place_inherits_runner_version_from_discovered_annotation() {
          would emit bin.latest paths and apply would hard-error at \
          runners.rs:646"
     );
+}
+
+/// Gate 4 negative case (adversary F1): when the discovered
+/// X-Ghars-Effective-Version annotation names a version whose
+/// `bin.X.Y.Z/bin/runsvc.sh` does NOT exist on disk (operator
+/// surgery on the annotation, or a half-cleaned-up runner state),
+/// the in-place fill MUST refuse to accept the annotation value.
+/// candidate.runner_version stays None, the plan-time render emits
+/// bin.latest placeholders, and the apply path hard-errors with
+/// the actionable remediation (pin runner_version in TOML to
+/// match the installed bin.X.Y.Z, OR recreate the runner).
+///
+/// Without this gate, a forged annotation propagates into the
+/// spec, produces hash equality (both sides post-fill match),
+/// skips the recreate, and lets apply write into a non-existent
+/// bin dir — the unit fails ConditionPathExists at restart with
+/// no operator-visible signal until the workflow times out.
+#[test]
+fn plan_in_place_refuses_annotation_inheritance_when_bin_dir_absent() {
+    let cfg = config_with_runners(vec![{
+        let mut r = minimal_runner("a");
+        r.memory_max = Some("16G".into());
+        r
+    }]);
+    let desired_spec = merge_defaults(
+        &cfg.runners[0],
+        &cfg.defaults,
+        "pat".into(),
+        vec![],
+        None,
+        None,
+        None,
+        Arch::X86_64,
+        cfg_source_default(),
+    );
+    let mut discovered_spec = desired_spec.clone();
+    discovered_spec.runner_version = Some("2.999.999".into()); // forged
+    discovered_spec.memory_max = None;
+    discovered_spec.spec_hash = spec_hash(&discovered_spec);
+
+    let mut actual = empty_actual();
+    actual.runners.insert(
+        "a".into(),
+        discovered_for("a", &discovered_spec, Drift::InSync),
+    );
+
+    // Use a tempdir-rooted Paths but DO NOT pre-stage the
+    // bin.2.999.999/bin/runsvc.sh file. The Gate 4 check will
+    // reject the annotation value.
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = paths_at_tempdir(tmp.path());
+
+    let plan = plan_from(&cfg, &actual, &paths)
+        .expect("plan_from must succeed (in-place arm just doesn't fill)");
+    let updates: Vec<&RunnerDelta> = plan
+        .actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::UpdateRunner(d) => Some(d),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(updates.len(), 1, "expected one UpdateRunner; got: {:?}", plan.actions);
+    assert!(
+        updates[0].after.spec.runner_version.is_none(),
+        "Gate 4 must refuse the forged annotation; candidate runner_version must stay None; got: {:?}",
+        updates[0].after.spec.runner_version
+    );
+}
+
+/// Build a `Paths` struct rooted at the given tempdir for tests
+/// that need real on-disk filesystem state under the runner home.
+/// Mirrors Paths::default() field shape, redirecting only the
+/// state_dir to the tempdir's `var/lib/ghars` subpath so the
+/// runner_home helper resolves to a writeable tempdir location.
+fn paths_at_tempdir(root: &std::path::Path) -> crate::paths::Paths {
+    let state_dir = camino::Utf8PathBuf::from_path_buf(root.join("var/lib/ghars")).unwrap();
+    std::fs::create_dir_all(state_dir.as_std_path()).unwrap();
+    let mut paths = crate::paths::Paths::default();
+    paths.state_dir = state_dir;
+    paths
 }
 
 /// arch change is recreate-class per Part 3. The X-Ghars-Arch
