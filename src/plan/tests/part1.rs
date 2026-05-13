@@ -1656,6 +1656,253 @@ fn paths_at_tempdir(root: &std::path::Path) -> crate::paths::Paths {
     paths
 }
 
+/// G1: per-runner runner_version pin (no defaults pin) accepted
+/// alongside runner_tarball. Mirror of the defaults-pin acceptance
+/// test but with the pin on the runner block instead.
+#[test]
+fn plan_accepts_runner_tarball_when_runner_pins_runner_version() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tarball_path = camino::Utf8PathBuf::from_path_buf(tmp.path().join("runner.tar.gz")).unwrap();
+    // Write a 2-byte gzip magic header so validate_runner_tarballs
+    // accepts the file at config-load (validator inspects the first
+    // 2 bytes for `1f 8b`).
+    std::fs::write(tarball_path.as_std_path(), [0x1f, 0x8b]).unwrap();
+
+    let runner = {
+        let mut r = minimal_runner("a");
+        r.runner_version = Some("2.334.0".into());
+        r.runner_tarball = Some(tarball_path.clone());
+        r
+    };
+    let defaults = Defaults::default();
+    let eff = merge_defaults(
+        &runner,
+        &defaults,
+        "pat".into(),
+        vec![],
+        None,
+        None,
+        None,
+        Arch::X86_64,
+        cfg_source_default(),
+    );
+    assert_eq!(
+        eff.runner_version.as_deref(),
+        Some("2.334.0"),
+        "runner-level runner_version pin must populate effective spec; got: {:?}",
+        eff.runner_version
+    );
+    assert_eq!(
+        eff.runner_tarball.as_deref().map(|p| p.as_str().to_owned()),
+        Some(tarball_path.as_str().to_owned()),
+        "runner_tarball must survive merge alongside per-runner runner_version pin"
+    );
+}
+
+/// G2: per-runner runner_version pin wins over defaults pin.
+/// Pins the scalar-override precedence Part 3 documents.
+#[test]
+fn plan_runner_version_runner_pin_wins_over_defaults_pin() {
+    let runner = {
+        let mut r = minimal_runner("a");
+        r.runner_version = Some("2.334.0".into());
+        r
+    };
+    let defaults = Defaults {
+        runner_version: Some("1.0.0".into()),
+        ..Defaults::default()
+    };
+    let eff = merge_defaults(
+        &runner,
+        &defaults,
+        "pat".into(),
+        vec![],
+        None,
+        None,
+        None,
+        Arch::X86_64,
+        cfg_source_default(),
+    );
+    assert_eq!(
+        eff.runner_version.as_deref(),
+        Some("2.334.0"),
+        "operator runner-level pin must override defaults pin; got: {:?}",
+        eff.runner_version
+    );
+}
+
+/// G3: in-place fill skips the inheritance when the discovered
+/// annotation value fails the validate_version gate. Covers both
+/// (a) malformed version values (whitespace, traversal segments)
+/// and (b) the empty-string special case (legacy runners that
+/// pre-date X-Ghars-Effective-Version emission emit
+/// `X-Ghars-Effective-Version=` with empty rvalue, which the
+/// classifier parses as `Some("")` and the `!v.is_empty()` gate
+/// must skip).
+#[test]
+fn plan_in_place_leaves_runner_version_none_when_discovered_annotation_is_invalid() {
+    // (a) Malformed version that fails validate_version.
+    {
+        let cfg = config_with_runners(vec![{
+            let mut r = minimal_runner("a");
+            r.memory_max = Some("16G".into());
+            r
+        }]);
+        let desired_spec = merge_defaults(
+            &cfg.runners[0],
+            &cfg.defaults,
+            "pat".into(),
+            vec![],
+            None,
+            None,
+            None,
+            Arch::X86_64,
+            cfg_source_default(),
+        );
+        let mut discovered_spec = desired_spec.clone();
+        discovered_spec.runner_version = Some("../../etc/passwd".into());
+        discovered_spec.memory_max = None;
+        discovered_spec.spec_hash = spec_hash(&discovered_spec);
+        let mut actual = empty_actual();
+        actual.runners.insert(
+            "a".into(),
+            discovered_for("a", &discovered_spec, Drift::InSync),
+        );
+        let plan = plan_from(&cfg, &actual, &empty_paths())
+            .expect("plan_from must succeed even with malformed discovered annotation");
+        let updates: Vec<&RunnerDelta> = plan
+            .actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::UpdateRunner(d) => Some(d),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(updates.len(), 1, "expected one UpdateRunner");
+        assert!(
+            updates[0].after.spec.runner_version.is_none(),
+            "validate_version gate must reject malformed annotation; \
+             after.spec.runner_version must stay None; got: {:?}",
+            updates[0].after.spec.runner_version
+        );
+    }
+
+    // (b) Empty-string annotation (legacy pre-fix runners).
+    {
+        let cfg = config_with_runners(vec![{
+            let mut r = minimal_runner("b");
+            r.memory_max = Some("16G".into());
+            r
+        }]);
+        let desired_spec = merge_defaults(
+            &cfg.runners[0],
+            &cfg.defaults,
+            "pat".into(),
+            vec![],
+            None,
+            None,
+            None,
+            Arch::X86_64,
+            cfg_source_default(),
+        );
+        let mut discovered_spec = desired_spec.clone();
+        discovered_spec.runner_version = Some("".into());
+        discovered_spec.memory_max = None;
+        discovered_spec.spec_hash = spec_hash(&discovered_spec);
+        let mut actual = empty_actual();
+        actual.runners.insert(
+            "b".into(),
+            discovered_for("b", &discovered_spec, Drift::InSync),
+        );
+        let plan = plan_from(&cfg, &actual, &empty_paths())
+            .expect("plan_from must succeed even with empty discovered annotation");
+        let updates: Vec<&RunnerDelta> = plan
+            .actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::UpdateRunner(d) => Some(d),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(updates.len(), 1, "expected one UpdateRunner");
+        assert!(
+            updates[0].after.spec.runner_version.is_none(),
+            "`!v.is_empty()` gate must reject empty annotation; \
+             after.spec.runner_version must stay None; got: {:?}",
+            updates[0].after.spec.runner_version
+        );
+    }
+}
+
+/// G4: in-place fill respects operator pin — when desired
+/// runner_version is Some, the discovered annotation does NOT
+/// overwrite it. Pins the `is_none()` gate at the fill site;
+/// without it, an operator who bumped runner_version in TOML
+/// would have the bump silently overwritten by the discovered
+/// annotation and the recreate-class change wouldn't fire.
+#[test]
+fn plan_in_place_does_not_overwrite_operator_pinned_runner_version() {
+    let cfg = config_with_runners(vec![{
+        let mut r = minimal_runner("a");
+        r.runner_version = Some("3.0.0".into()); // operator pin
+        r.memory_max = Some("16G".into());
+        r
+    }]);
+    let desired_spec = merge_defaults(
+        &cfg.runners[0],
+        &cfg.defaults,
+        "pat".into(),
+        vec![],
+        None,
+        None,
+        None,
+        Arch::X86_64,
+        cfg_source_default(),
+    );
+    assert_eq!(
+        desired_spec.runner_version.as_deref(),
+        Some("3.0.0"),
+        "fixture precondition: desired must carry operator pin"
+    );
+
+    let mut discovered_spec = desired_spec.clone();
+    discovered_spec.runner_version = Some("2.334.0".into()); // older
+    discovered_spec.memory_max = None;
+    discovered_spec.spec_hash = spec_hash(&discovered_spec);
+    let mut actual = empty_actual();
+    actual.runners.insert(
+        "a".into(),
+        discovered_for("a", &discovered_spec, Drift::InSync),
+    );
+
+    let plan = plan_from(&cfg, &actual, &empty_paths())
+        .expect("plan_from must succeed with operator-pinned runner_version");
+    // The plan should classify as recreate because runner_version
+    // changed between discovered (2.334.0) and desired (3.0.0) — it's
+    // a recreate-class field per Part 3.
+    let updates: Vec<&RunnerDelta> = plan
+        .actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::UpdateRunner(d) => Some(d),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(updates.len(), 1, "expected one UpdateRunner");
+    assert_eq!(
+        updates[0].after.spec.runner_version.as_deref(),
+        Some("3.0.0"),
+        "operator pin must survive; the in-place fill MUST NOT overwrite \
+         desired.runner_version with the discovered annotation value; got: {:?}",
+        updates[0].after.spec.runner_version
+    );
+    assert!(
+        updates[0].requires_recreate,
+        "runner_version change must classify as recreate-class; got reasons: {:?}",
+        updates[0].recreate_reasons
+    );
+}
+
 /// arch change is recreate-class per Part 3. The X-Ghars-Arch
 /// annotation makes arch changes Stage 1 detectable — recreate
 /// fires with reason "arch" rather than falling through to the
