@@ -962,17 +962,30 @@ pub struct NetworkSpec {
     pub allowed_egress: Vec<EgressRule>,
 
     /// CIDRs for systemd's `IPAddressAllow=` (cgroup-BPF layer).
-    /// Honored in BOTH modes: under `Netns` emitted alongside the
-    /// nft rules as defense in depth, under `Open` it is the sole
-    /// egress allowlist at the systemd layer (no namespace, no
-    /// nft).
+    /// Honored in BOTH modes: emitted as the `IPAddressAllow=`
+    /// directive which feeds the per-runner cgroup-BPF egress
+    /// allowlist. Under `Netns`, this is one of two independent
+    /// egress gates — the other being the nft rules generated
+    /// from `allowed_egress` above, which enforce port + proto
+    /// at the packet layer inside the namespace. The two gates
+    /// use different input fields (`ip_allow` vs
+    /// `allowed_egress`) and enforce at different layers, so
+    /// they are complementary rather than redundant. Under
+    /// `Open`, the cgroup-BPF layer is the sole egress gate at
+    /// the systemd layer (no namespace, no nft). Runners with
+    /// no `[network.NAME]` reference at all emit no cgroup-BPF
+    /// policy — see the struct-level doc above.
     #[serde(default)]
     pub ip_allow: Vec<IpNet>,
 
     /// CIDRs for systemd's `IPAddressDeny=` (cgroup-BPF layer).
-    /// Honored in both `Netns` and `Open` modes — the directive
-    /// applies at the cgroup layer regardless of whether the
-    /// runner has its own netns.
+    /// Honored in BOTH `Netns` and `Open` modes: emitted as the
+    /// `IPAddressDeny=` directive which feeds the per-runner
+    /// cgroup-BPF egress denylist. cgroup-BPF and netns are
+    /// orthogonal kernel subsystems — the directive applies at
+    /// the cgroup layer regardless of whether the runner has its
+    /// own netns. Not consumed by `nft` rule generation; see
+    /// `ip_allow` above for the cgroup-BPF vs nft layer split.
     #[serde(default)]
     pub ip_deny: Vec<IpNet>,
 

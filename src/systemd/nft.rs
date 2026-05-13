@@ -17,8 +17,12 @@ use crate::config::{EffectiveNetworkBinding, PortSpec, Proto};
 use crate::{GharsError, Result};
 
 /// Pair of nft rule files for one Netns runner. Generated from the
-/// resolved network binding (`allowed_egress` + `ip_allow` + `ip_deny`
-/// + the allocated /30 subnet).
+/// resolved network binding's `allowed_egress` rules + the allocated
+/// /30 subnet. `ip_allow` / `ip_deny` on the same binding are
+/// emitted separately as systemd `IPAddressAllow=` / `IPAddressDeny=`
+/// directives by `render_runner_unit` (cgroup-BPF layer), not by
+/// this function — see the `ip_allow` doc-comment on
+/// `crate::config::NetworkSpec` for the cgroup-BPF vs nft layer split.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NftRules {
     /// Host-side rules. Loaded by `ghars-net@%i.service`'s `nft -f

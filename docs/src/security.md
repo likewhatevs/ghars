@@ -251,7 +251,12 @@ Egress is enforced at two layers:
   `IPAddressDeny=` from `[network.NAME].ip_allow` /
   `ip_deny`.
 
-Both layers run independently; defense in depth.
+Both layers run independently and consume different input
+fields (`allowed_egress` for nft, `ip_allow` / `ip_deny` for
+cgroup-BPF), enforcing at different layers (nft packet-level vs
+cgroup-BPF socket-level). They are complementary rather than
+redundant — operators can express CIDR+port+proto rules at the
+nft layer and a CIDR-only allowlist at the cgroup-BPF layer.
 
 ## Open mode with cgroup-BPF policy
 

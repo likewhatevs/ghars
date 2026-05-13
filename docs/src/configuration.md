@@ -250,9 +250,13 @@ Fields:
   (no namespace, no nft, the rules would be silently dropped).
 - `ip_allow` / `ip_deny` (`Vec<IpNet>`) — feed systemd's
   `IPAddressAllow=` / `IPAddressDeny=` (cgroup-BPF layer).
-  Honored in BOTH modes: under `netns` they're emitted alongside
-  the nft rules as defense in depth, under `open` they are the
-  sole egress gate at the systemd layer. Set-semantic at the
+  Honored in BOTH modes: under `netns` they're one of two
+  independent egress gates (the other being the nft rules from
+  `allowed_egress`); the two use different input fields and
+  enforce at different layers (cgroup-BPF socket-level vs nft
+  packet-level), so they are complementary rather than
+  redundant. Under `open` they are the sole egress gate at the
+  systemd layer (no namespace, no nft). Set-semantic at the
   lowering boundary: both fields are sorted+deduped at
   `canonicalize_network_spec`, so `["192.168.0.0/16", "10.0.0.0/8"]`
   and `["10.0.0.0/8", "192.168.0.0/16"]` produce identical rendered
