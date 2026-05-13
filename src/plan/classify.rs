@@ -295,6 +295,26 @@ fn sorted_set_field_diff<'a>(
     })
 }
 
+/// **AUTHORITATIVE SOURCE** for the recreate-bound field token
+/// vocabulary. Every operator-facing doc reference to recreate
+/// reasons (`docs/src/architecture.md` Plan disruption taxonomy +
+/// `docs/src/operations.md` "Plan shows recreate, operator wants
+/// in-place") MUST mirror the `reasons.push("...")` calls below.
+///
+/// Adding a new recreate-class field family requires THREE edits in
+/// lockstep:
+///   1. New `reasons.push("FIELD_NAME")` here.
+///   2. Add the same `FIELD_NAME` to the bullet list at
+///      `RunnerDelta::recreate_reasons` doc-comment (`plan/types.rs`).
+///   3. Add the same `FIELD_NAME` to the vocabulary line at
+///      `docs/src/operations.md` ("Vocabulary: url, runner_version,
+///      ...") and the trailing-examples line at
+///      `docs/src/architecture.md` Plan disruption section.
+///
+/// A token here without matching doc lines (or vice versa) means
+/// operator-facing docs lie about which changes are recreate-class —
+/// the alerting and runbook patterns operators build on top of plan
+/// output depend on exact-match grepping of the documented vocabulary.
 pub(super) fn classify_recreate_reasons_from_annotations(
     discovered: &DiscoveredAnnotations,
     desired: &EffectiveRunnerSpec,

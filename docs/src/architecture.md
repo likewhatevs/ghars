@@ -107,7 +107,12 @@ reason and no Stage 2 drop-in body diff (the `uncovered` arm
 in `plan_from`) falls through to in-place — recreate is
 destructive, so a coverage-gap diagnostic logs at warn level
 without pushing a recreate reason. The full vocabulary lives
-in `RunnerDelta::recreate_reasons`.
+in `RunnerDelta::recreate_reasons`; the authoritative source
+that emits the tokens is
+`src/plan/classify.rs::classify_recreate_reasons_from_annotations`.
+Any added recreate-class field must update that function, the
+`RunnerDelta::recreate_reasons` doc-comment, and the operator-
+facing vocabulary line in `operations.md` in lockstep.
 
 The renderer schema number (`crate::systemd::RENDERER_SCHEMA`)
 participates in `spec_hash` and `cache_pool_hash`, so a ghars

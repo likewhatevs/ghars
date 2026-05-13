@@ -418,6 +418,11 @@ these are operator-configurable to in-place-only — the recreate
 is structural. To proceed, accept the disruption (or move the
 change behind a maintenance window).
 
+The authoritative source for this vocabulary lives at
+`src/plan/classify.rs::classify_recreate_reasons_from_annotations`;
+any token added there must be reflected in this vocabulary line
+and in `architecture.md`'s Plan disruption section.
+
 A spec-hash mismatch with no field-level explanation no longer
 triggers recreate; the `uncovered` arm in `plan_from` falls
 through to in-place (rewrites the X-Ghars-Spec-Hash annotation
