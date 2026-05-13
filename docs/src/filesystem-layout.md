@@ -52,7 +52,7 @@ order, each behind a "is the operator using this feature?" gate:
 
 | basename                | always emitted?                          | content                                                              |
 |-------------------------|------------------------------------------|----------------------------------------------------------------------|
-| `00-ghars.conf`         | yes                                      | identity annotations: `X-Ghars-Spec-Hash`, `X-Ghars-Runner-Name`, `X-Ghars-Runner-Url`, `X-Ghars-Auth-Name`, `X-Ghars-Labels`, `X-Ghars-Arch`, `X-Ghars-Effective-Version`, `X-Ghars-Runner-Sha256` (when set), `X-Ghars-Runner-Tarball-Hash` (when `runner_tarball` is set), `X-Ghars-Caches`, `X-Ghars-Trust-Zone`, `X-Ghars-Network-Mode`, `X-Ghars-Netns-Subnet` (Netns mode only), `X-Ghars-Config-Source`. Sets `User=ghars-tz-<TRUST_ZONE>`, the `ExecStart=` (versioned `runsvc.sh`), the `WorkingDirectory=`, and HOME |
+| `00-ghars.conf`         | yes                                      | identity annotation cascade (see the [`X-Ghars-*` annotation reference](#x-ghars--annotation-reference) section below for every key, value format, source-of-truth field, and emission gate). Sets `User=ghars-tz-<TRUST_ZONE>`, the `ExecStart=` (versioned `runsvc.sh`), the `WorkingDirectory=`, and HOME |
 | `10-memory.conf`        | when `memory_max` set                    | `MemoryMax=`                                                         |
 | `15-resolv.conf`        | yes                                      | binds `/etc/resolv.conf` from the host's file (Open mode) or the netns-private file at `/run/ghars/netns-resolv/<name>` (Netns mode) |
 | `20-hardening.conf`     | when any field overrides default         | per-field `Hardening` → systemd directives                           |
@@ -69,6 +69,92 @@ state-discovery mechanism: `state.rs` parses them via
 spec for the plan diff. Every annotation field is checked at
 emission via `check_identity_field` for control-character escapes,
 defense-in-depth against unit-text injection.
+
+### `X-Ghars-*` annotation reference
+
+Every `X-Ghars-*` key the renderer writes, across the runner unit's
+`00-ghars.conf` drop-in (per-runner identity), the cache pool unit's
+`00-ghars.conf` drop-in (per-pool identity), and the three managed
+template bodies (`RUNNER_TEMPLATE`, `NETNS_TEMPLATE`,
+`CACHE_TEMPLATE`). Operator-readable via `systemctl cat` for the
+matching unit.
+
+Template markers — same pair emitted by every managed template body
+so a future operator inspecting any ghars-managed unit body via
+`systemctl cat` can identify the unit as ghars-managed and read off
+the schema version:
+
+| key | value format | source | emission gate | location |
+|---|---|---|---|---|
+| `X-Ghars-Managed` | literal `true` | static template marker | always | `RUNNER_TEMPLATE`, `NETNS_TEMPLATE`, `CACHE_TEMPLATE` `[Unit]` |
+| `X-Ghars-Schema-Version` | literal `1` | static template marker | always | `RUNNER_TEMPLATE`, `NETNS_TEMPLATE`, `CACHE_TEMPLATE` `[Unit]` |
+
+Per-runner annotations emitted by `render_identity` (runner unit's
+`00-ghars.conf` drop-in `[Unit]` section). The network-related rows
+read from `EffectiveRunnerSpec.network` (an
+`Option<EffectiveNetworkBinding>`) — the source column shows the
+field path inside the `Some(...)` binding without a map-key
+placeholder since the field is a single optional value, not
+map-keyed.
+
+| key | value format | source | emission gate |
+|---|---|---|---|
+| `X-Ghars-Spec-Hash` | `sha256:<hex>` — computed by `spec_hash()` from canonical-JSON spec + `RENDERER_SCHEMA` | `EffectiveRunnerSpec.spec_hash` (populated by `compute::with_hash`, NOT operator-supplied — value flips on `RENDERER_SCHEMA` bumps) | always |
+| `X-Ghars-Runner-Name` | identifier string | `EffectiveRunnerSpec.name` | always |
+| `X-Ghars-Runner-Url` | URL string | `EffectiveRunnerSpec.url` | always |
+| `X-Ghars-Auth-Name` | identifier string (`[auth.NAME]` key) | `EffectiveRunnerSpec.auth_name` | always |
+| `X-Ghars-Labels` | comma-csv, sorted alphabetically; empty when no labels | `EffectiveRunnerSpec.labels` (sorted at emission) | always (empty when `labels` empty) |
+| `X-Ghars-Arch` | enum `x86_64` \| `aarch64` | `EffectiveRunnerSpec.arch` (`config::Arch`) | always |
+| `X-Ghars-Caches` | comma-csv of cache binding names, sorted alphabetically; empty when no caches | `EffectiveRunnerSpec.caches[].name` (sorted at emission) | always (empty when `caches` empty) |
+| `X-Ghars-Config-Source` | path or identifier string | `EffectiveRunnerSpec.config_source` | always |
+| `X-Ghars-Effective-Version` | version string (`2.319.1`) or empty when `runner_version` unset | `EffectiveRunnerSpec.runner_version` | always (empty when `None`) |
+| `X-Ghars-Runner-Sha256` | sha256 hex (operator-supplied) | `EffectiveRunnerSpec.runner_sha256` | only when `Some(non-empty)` |
+| `X-Ghars-Runner-Tarball-Hash` | `sha256:<hex>` — SHA256 of the tarball PATH string, not the file contents | `EffectiveRunnerSpec.runner_tarball` (path hashed at emission) | only when `runner_tarball.is_some()` |
+| `X-Ghars-Trust-Zone` | identifier string | `EffectiveRunnerSpec.trust_zone` | always |
+| `X-Ghars-Network-Mode` | enum `netns` \| `open` | `EffectiveRunnerSpec.network.spec.mode` (collapses `None` to `open`) | always |
+| `X-Ghars-Netns-Subnet` | CIDR string (e.g. `10.200.0.0/30`) | `EffectiveRunnerSpec.network.subnet` | only when `network.is_some() && net.subnet.is_some()` (Netns mode) |
+| `X-Ghars-Dns` | `forward` \| `static:<comma-csv-of-ip-addrs>` (via `config::dns_to_annotation`) | `EffectiveRunnerSpec.network.spec.dns` (`config::DnsMode`) | only when `network.is_some()` (both Netns and Open) |
+| `X-Ghars-Ipv6` | enum `disabled` \| `enabled` (via `config::ipv6_to_annotation`) | `EffectiveRunnerSpec.network.spec.ipv6` (`config::Ipv6Mode`) | only when `network.is_some()` (both Netns and Open) |
+
+Per-pool annotations emitted by `render_cache_drop_in` into the
+cache pool unit's `00-ghars.conf` drop-in (`ghars-cache@POOL.service.d/`):
+
+| key | value format | source | emission gate |
+|---|---|---|---|
+| `X-Ghars-Spec-Hash` | `sha256:<hex>` — cache pool's per-pool digest (`cache_pool_hash()` output, same format as runner's spec_hash) | composer-supplied at render time | always |
+| `X-Ghars-Pool-Name` | identifier string | `EffectiveCacheBinding.name` | always |
+| `X-Ghars-Pool-Kinds` | comma-csv of `ccache` / `sccache` enum names | `EffectiveCacheBinding.kinds` | always |
+| `X-Ghars-Config-Source` | path or identifier string | composer-supplied at render time | always |
+
+Notes:
+
+- All values pass `check_identity_field` at emission time as
+  defense-in-depth against unit-text injection. The check rejects
+  every `char::is_control()` character (covers `\n`, `\r`, `NUL`,
+  and the broader Unicode control set per std's classification).
+- Labels and caches are sorted alphabetically via `sort_unstable()`
+  at the emission site as defense-in-depth on top of the upstream
+  source-of-truth sort (`merge_defaults` for labels,
+  `lower_to_effective` for caches). The parse boundary
+  (`DiscoveredAnnotations::from_drop_in_body` in `plan/classify.rs`)
+  re-sorts as a third defensive layer so any direct consumer of
+  the parsed annotations gets canonical order.
+- `X-Ghars-Network-Mode` is always emitted: the renderer collapses
+  the no-binding case to `open` rather than omitting the key, so
+  operators auditing `systemctl cat` always see the mode explicitly.
+- `X-Ghars-Dns` and `X-Ghars-Ipv6` are emitted for every
+  network-bound runner including Open mode, where the values are
+  validator-fixed to `forward` / `disabled` per
+  `validate_network_spec`. The uniform emission keeps the
+  annotation surface consistent across modes for plan-time
+  classification and `systemctl cat` audit.
+- The runner-side `00-ghars.conf` body opens a single `[Unit]`
+  section before the per-runner annotation cascade; no `X-Ghars-*`
+  keys are emitted under `[Service]`. The pool-side `00-ghars.conf`
+  body emits its four annotations in `[Unit]` then opens a
+  `[Service]` for `User=ghars-tz-<TRUST_ZONE>` and the cache-kind
+  `Environment=` directives — no further `X-Ghars-*` under
+  `[Service]` there either.
 
 The `99-*.conf` range is reserved for operator-supplied drop-ins
 (NOT validated by ghars; the operator owns those). The
