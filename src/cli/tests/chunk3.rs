@@ -1729,6 +1729,401 @@ fn validate_no_duplicate_cache_kinds_skips_unknown_refs() {
         .expect("unknown refs must not interact with per-kind counts");
 }
 
+// -------- validate_cache_pool_kinds_nonempty ------------------------
+
+/// Reject `[cache_pools.NAME] kinds = []` — empty Vec reaches
+/// render path without contributing any per-pool emission AND fails
+/// at apply-time path resolution. Operator probably meant `kinds =
+/// ["ccache"]` or `kinds = ["sccache"]`. Sibling of the duplicate-
+/// kinds validator; both are operator-typed-wrong-number-of-kinds
+/// failure modes that the deserializer can't catch.
+#[test]
+fn validate_cache_pool_kinds_nonempty_rejects_empty_kinds_vec() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    // Insert pool with empty kinds (cannot go via insert_cache_pool
+    // helper which always sets kinds).
+    cfg.cache_pools.insert(
+        "empty-kinds".into(),
+        crate::config::CachePoolSpec {
+            kinds: vec![],
+            size: "200G".into(),
+            mode: crate::config::CacheMode::default(),
+            trust_zone: "default".into(),
+            sccache_path: Some("/usr/bin/sccache".into()),
+            sleep_path: Some("/usr/bin/sleep".into()),
+        },
+    );
+    let err = validate_cache_pool_kinds_nonempty(&cfg)
+        .expect_err("empty kinds Vec must reject at config-load");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("empty-kinds") && msg.contains("kinds = []"),
+        "error must name the pool and identify the empty-kinds failure: {msg}"
+    );
+}
+
+#[test]
+fn validate_cache_pool_kinds_nonempty_accepts_ccache_only_pool() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    insert_cache_pool(&mut cfg, "obj", vec![crate::config::CacheKind::Ccache]);
+    validate_cache_pool_kinds_nonempty(&cfg)
+        .expect("single-kind ccache pool must pass validation");
+}
+
+#[test]
+fn validate_cache_pool_kinds_nonempty_accepts_sccache_only_pool() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    insert_cache_pool(&mut cfg, "build", vec![crate::config::CacheKind::Sccache]);
+    validate_cache_pool_kinds_nonempty(&cfg)
+        .expect("single-kind sccache pool must pass validation");
+}
+
+#[test]
+fn validate_cache_pool_kinds_nonempty_accepts_combined_kind_pool() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    insert_cache_pool(
+        &mut cfg,
+        "combined",
+        vec![
+            crate::config::CacheKind::Ccache,
+            crate::config::CacheKind::Sccache,
+        ],
+    );
+    validate_cache_pool_kinds_nonempty(&cfg)
+        .expect("combined-kind pool (Ccache + Sccache) must pass validation");
+}
+
+#[test]
+fn validate_cache_pool_kinds_nonempty_accepts_zero_pools() {
+    let cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    // No cache_pools at all — vacuously satisfied (no pools to check).
+    validate_cache_pool_kinds_nonempty(&cfg)
+        .expect("config with zero cache_pools must pass validation vacuously");
+}
+
+// -------- validate_proxy_ca_certs_nonempty --------------------------
+
+/// Build a ProxySpec with one CaCertBinding parameterized by
+/// `env` and `path` for the proxy validator tests below. Both fields
+/// individually testable; default ProxySpec is otherwise empty (no
+/// http/https/no_proxy).
+fn proxy_with_one_ca_cert(env: &str, path: &str) -> crate::config::ProxySpec {
+    crate::config::ProxySpec {
+        http: None,
+        https: None,
+        no_proxy: vec![],
+        ca_certs: vec![crate::config::CaCertBinding {
+            env: env.into(),
+            path: Utf8PathBuf::from(path),
+        }],
+    }
+}
+
+/// Reject defaults.proxy ca_certs entry with empty env. The
+/// rendered systemd directive would be `Environment==<path>` (no
+/// var name), which unit-start parses as malformed.
+#[test]
+fn validate_proxy_ca_certs_nonempty_rejects_defaults_empty_env() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.proxy = Some(proxy_with_one_ca_cert("", "/etc/ssl/certs/ca.pem"));
+    let err = validate_proxy_ca_certs_nonempty(&cfg)
+        .expect_err("defaults.proxy ca_certs with empty env must reject");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("defaults.proxy ca_certs[0]") && msg.contains("empty or whitespace-only `env`"),
+        "error must name defaults.proxy + index + empty-or-whitespace env: {msg}"
+    );
+}
+
+#[test]
+fn validate_proxy_ca_certs_nonempty_rejects_defaults_empty_path() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.proxy = Some(proxy_with_one_ca_cert("NODE_EXTRA_CA_CERTS", ""));
+    let err = validate_proxy_ca_certs_nonempty(&cfg)
+        .expect_err("defaults.proxy ca_certs with empty path must reject");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("defaults.proxy ca_certs[0]") && msg.contains("empty or whitespace-only `path`"),
+        "error must name defaults.proxy + index + empty-or-whitespace path: {msg}"
+    );
+}
+
+#[test]
+fn validate_proxy_ca_certs_nonempty_rejects_runner_empty_env() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.runners[0].proxy = Some(proxy_with_one_ca_cert("", "/etc/ssl/certs/ca.pem"));
+    let err = validate_proxy_ca_certs_nonempty(&cfg)
+        .expect_err("runner.proxy ca_certs with empty env must reject");
+    let msg = err.to_string();
+    // Tightened from substring soup to full scope prefix —
+    // matching only `ca_certs[0]` would falsely accept a regression
+    // that walked defaults.proxy first and reported the wrong scope.
+    assert!(
+        msg.contains("runner \"buckos\" proxy ca_certs[0]"),
+        "error must name full runner-scope prefix: {msg}"
+    );
+}
+
+/// Sibling of `validate_proxy_ca_certs_nonempty_rejects_runner_empty_env`
+/// for the empty-path field — closes the runner-layer × field-class
+/// coverage matrix to 2x2 (defaults gets both env+path branches,
+/// runner now gets both too). A regression that broke the
+/// `binding.path.as_str().trim().is_empty()` check specifically on
+/// the runner layer (without breaking the defaults layer) wouldn't
+/// be caught by the existing tests; this closes the gap.
+#[test]
+fn validate_proxy_ca_certs_nonempty_rejects_runner_empty_path() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.runners[0].proxy = Some(proxy_with_one_ca_cert("NODE_EXTRA_CA_CERTS", ""));
+    let err = validate_proxy_ca_certs_nonempty(&cfg)
+        .expect_err("runner.proxy ca_certs with empty path must reject");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("runner \"buckos\" proxy ca_certs[0]") && msg.contains("empty or whitespace-only `path`"),
+        "error must name full runner-scope prefix + the empty-or-whitespace path failure: {msg}"
+    );
+}
+
+/// Reject CaCertBinding with whitespace-only `env`. systemd's
+/// Environment= grammar requires `[a-zA-Z_][a-zA-Z0-9_]*` for var
+/// names — a space-only `env` would fail at unit-start the same as
+/// an empty `env`. The validator's `trim().is_empty()` check
+/// catches both classes uniformly.
+#[test]
+fn validate_proxy_ca_certs_nonempty_rejects_whitespace_only_env() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.proxy = Some(proxy_with_one_ca_cert("   ", "/etc/ssl/certs/ca.pem"));
+    let err = validate_proxy_ca_certs_nonempty(&cfg)
+        .expect_err("whitespace-only env must reject (same failure mode as empty)");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("empty or whitespace-only `env`"),
+        "error must name the whitespace-or-empty failure mode: {msg}"
+    );
+}
+
+#[test]
+fn validate_proxy_ca_certs_nonempty_rejects_whitespace_only_path() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.proxy = Some(proxy_with_one_ca_cert("NODE_EXTRA_CA_CERTS", "  "));
+    let err = validate_proxy_ca_certs_nonempty(&cfg)
+        .expect_err("whitespace-only path must reject");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("empty or whitespace-only `path`"),
+        "error must name the whitespace-or-empty failure mode: {msg}"
+    );
+}
+
+/// Reject CaCertBinding with non-absolute `path`. systemd's
+/// `BindReadOnlyPaths=` requires absolute paths; a relative path
+/// would resolve against systemd's working directory (`/`) at
+/// unit-start and fail. Parallel to
+/// `validate_cache_pool_binary_paths` enforcing the same gate for
+/// sccache_path / sleep_path.
+#[test]
+fn validate_proxy_ca_certs_nonempty_rejects_non_absolute_path() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.proxy = Some(proxy_with_one_ca_cert("NODE_EXTRA_CA_CERTS", "ca.pem"));
+    let err = validate_proxy_ca_certs_nonempty(&cfg)
+        .expect_err("relative path must reject");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("non-absolute `path`") && msg.contains("ca.pem"),
+        "error must name the non-absolute failure mode and cite the offending path: {msg}"
+    );
+}
+
+// Runner-layer symmetry coverage: the three runner.path tests below
+// mirror the defaults-side tests above (empty / whitespace / non-
+// absolute). Without these, a regression that skipped path
+// validation specifically on the runner-loop branch would not be
+// caught by ANY existing path test — every other path-failure test
+// exercises `cfg.proxy` (the defaults layer). Plus the runner.env
+// whitespace test closes the env coverage matrix to 2x2 (defaults
+// gets empty+whitespace; runner now gets both too).
+
+#[test]
+fn validate_proxy_ca_certs_nonempty_rejects_runner_whitespace_only_env() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.runners[0].proxy = Some(proxy_with_one_ca_cert("\t", "/etc/ssl/certs/ca.pem"));
+    let err = validate_proxy_ca_certs_nonempty(&cfg)
+        .expect_err("runner.proxy ca_certs with whitespace-only env must reject");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("runner \"buckos\" proxy ca_certs[0]") && msg.contains("empty or whitespace-only `env`"),
+        "error must name full runner-scope prefix + whitespace-or-empty env failure: {msg}"
+    );
+}
+
+#[test]
+fn validate_proxy_ca_certs_nonempty_rejects_runner_whitespace_only_path() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.runners[0].proxy = Some(proxy_with_one_ca_cert("NODE_EXTRA_CA_CERTS", "   "));
+    let err = validate_proxy_ca_certs_nonempty(&cfg)
+        .expect_err("runner.proxy ca_certs with whitespace-only path must reject");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("runner \"buckos\" proxy ca_certs[0]") && msg.contains("empty or whitespace-only `path`"),
+        "error must name full runner-scope prefix + whitespace-or-empty path failure: {msg}"
+    );
+}
+
+#[test]
+fn validate_proxy_ca_certs_nonempty_rejects_runner_non_absolute_path() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.runners[0].proxy = Some(proxy_with_one_ca_cert("NODE_EXTRA_CA_CERTS", "ca.pem"));
+    let err = validate_proxy_ca_certs_nonempty(&cfg)
+        .expect_err("runner.proxy ca_certs with relative path must reject");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("runner \"buckos\" proxy ca_certs[0]") && msg.contains("non-absolute `path`") && msg.contains("ca.pem"),
+        "error must name full runner-scope prefix + non-absolute failure + offending path: {msg}"
+    );
+}
+
+#[test]
+fn validate_proxy_ca_certs_nonempty_accepts_fully_populated_binding() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.proxy = Some(proxy_with_one_ca_cert(
+        "NODE_EXTRA_CA_CERTS",
+        "/etc/ssl/certs/ca-bundle.pem",
+    ));
+    validate_proxy_ca_certs_nonempty(&cfg)
+        .expect("fully-populated ca_cert binding must pass");
+}
+
+#[test]
+fn validate_proxy_ca_certs_nonempty_accepts_no_proxy_block() {
+    let cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    // cfg.proxy = None; no runner.proxy either. Validator must
+    // pass vacuously when no proxy block exists.
+    validate_proxy_ca_certs_nonempty(&cfg)
+        .expect("config with no proxy block must pass vacuously");
+}
+
+#[test]
+fn validate_proxy_ca_certs_nonempty_accepts_empty_ca_certs_list() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.proxy = Some(crate::config::ProxySpec::default());
+    // Default ca_certs is `vec![]` — vacuously satisfied (no
+    // bindings to check). Distinct from rejecting one with empty
+    // fields.
+    validate_proxy_ca_certs_nonempty(&cfg)
+        .expect("empty ca_certs Vec must pass (nothing to check)");
+}
+
+// -------- validate_proxy_no_proxy_nonempty_entries ------------------
+
+#[test]
+fn validate_proxy_no_proxy_nonempty_entries_rejects_defaults_empty_entry() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.proxy = Some(crate::config::ProxySpec {
+        http: None,
+        https: None,
+        no_proxy: vec!["".into()],
+        ca_certs: vec![],
+    });
+    let err = validate_proxy_no_proxy_nonempty_entries(&cfg)
+        .expect_err("defaults.proxy no_proxy = [\"\"] must reject");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("defaults.proxy no_proxy[0]") && msg.contains("empty or whitespace-only entry"),
+        "error must name defaults.proxy + index + empty-or-whitespace entry: {msg}"
+    );
+}
+
+#[test]
+fn validate_proxy_no_proxy_nonempty_entries_rejects_middle_empty_entry() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.proxy = Some(crate::config::ProxySpec {
+        http: None,
+        https: None,
+        no_proxy: vec![
+            "host.example.com".into(),
+            "".into(),
+            "other.example.com".into(),
+        ],
+        ca_certs: vec![],
+    });
+    let err = validate_proxy_no_proxy_nonempty_entries(&cfg)
+        .expect_err("mid-list empty no_proxy entry must reject");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("no_proxy[1]"),
+        "error must name the specific index of the empty entry: {msg}"
+    );
+}
+
+#[test]
+fn validate_proxy_no_proxy_nonempty_entries_rejects_runner_empty_entry() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.runners[0].proxy = Some(crate::config::ProxySpec {
+        http: None,
+        https: None,
+        no_proxy: vec!["".into()],
+        ca_certs: vec![],
+    });
+    let err = validate_proxy_no_proxy_nonempty_entries(&cfg)
+        .expect_err("runner.proxy no_proxy = [\"\"] must reject");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("runner \"buckos\"") && msg.contains("no_proxy[0]"),
+        "error must name runner scope + index: {msg}"
+    );
+}
+
+#[test]
+fn validate_proxy_no_proxy_nonempty_entries_accepts_empty_list() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.proxy = Some(crate::config::ProxySpec::default());
+    // Default no_proxy is `vec![]` — vacuously satisfied. The
+    // semantic of "proxy applies to all hosts" is a valid operator
+    // intent and must not be rejected.
+    validate_proxy_no_proxy_nonempty_entries(&cfg)
+        .expect("empty no_proxy Vec must pass (proxy applies to all hosts)");
+}
+
+/// Reject whitespace-only no_proxy entry. systemd's `Environment=`
+/// would render `Environment=NO_PROXY=host,   ,host2` — strict HTTP
+/// clients still reject the adjacent-empty token. The validator's
+/// `trim().is_empty()` check catches both empty and whitespace-only
+/// uniformly.
+#[test]
+fn validate_proxy_no_proxy_nonempty_entries_rejects_whitespace_only_entry() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.proxy = Some(crate::config::ProxySpec {
+        http: None,
+        https: None,
+        no_proxy: vec!["   ".into()],
+        ca_certs: vec![],
+    });
+    let err = validate_proxy_no_proxy_nonempty_entries(&cfg)
+        .expect_err("whitespace-only no_proxy entry must reject");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("empty or whitespace-only entry"),
+        "error must name the whitespace-or-empty failure mode: {msg}"
+    );
+}
+
+#[test]
+fn validate_proxy_no_proxy_nonempty_entries_accepts_populated_entries() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.proxy = Some(crate::config::ProxySpec {
+        http: None,
+        https: None,
+        no_proxy: vec![
+            "host.example.com".into(),
+            "*.internal.example.com".into(),
+            "10.0.0.0/8".into(),
+        ],
+        ca_certs: vec![],
+    });
+    validate_proxy_no_proxy_nonempty_entries(&cfg)
+        .expect("non-empty entries must pass");
+}
+
 // -------- AuthSpec::Pat XOR shape gate ------------------------------
 
 /// Build a fixture Config with a single `[auth.NAME]` entry of

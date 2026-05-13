@@ -83,6 +83,15 @@ pub(super) fn load_config(path: &Utf8Path) -> Result<Config> {
     // CCACHE_DIR / CCACHE_MAXSIZE / SCCACHE_SERVER_UDS via
     // last-writer-wins shell .env and systemd Environment= semantics.
     //
+    // --- validate_cache_pool_kinds_nonempty ---
+    // Reject [cache_pools.NAME] kinds = [] (empty Vec). Empty kinds
+    // produces a silently-dead `ghars-cache@NAME.service` (sleep
+    // infinity stub, no env vars) that operators only notice when
+    // workflows fail to find expected env vars. Sibling of
+    // validate_no_duplicate_cache_kinds at the dual boundary —
+    // duplicates and emptiness are both "wrong number of kinds"
+    // failure modes serde can't catch.
+    //
     // --- validate_cache_pool_names ---
     // Identifier-shape gate on pool keys and runner.caches refs.
     //
@@ -97,6 +106,26 @@ pub(super) fn load_config(path: &Utf8Path) -> Result<Config> {
     // token_file (re-validated by PatToken::new at apply). Shape-only
     // (no filesystem access). PatToken::new runs SEC-25 (mode / owner
     // / symlink) at apply.
+    //
+    // --- validate_proxy_ca_certs_nonempty ---
+    // [proxy] ca_certs entry shape gate. Rejects empty/whitespace-
+    // only `env` (would emit `Environment==<path>` rejected by
+    // systemd's `[a-zA-Z_][a-zA-Z0-9_]*` Environment= grammar),
+    // empty/whitespace-only `path` (would emit `Environment=NAME=`
+    // empty value defeating CA-bundle purpose), and non-absolute
+    // `path` (rejected by BindReadOnlyPaths= which requires
+    // absolute paths). Walks both [defaults] proxy and per-runner
+    // [[runner]].proxy because runner.proxy entirely overrides
+    // defaults via or_else, so a malformed defaults still leaks
+    // into runners that don't override.
+    //
+    // --- validate_proxy_no_proxy_nonempty_entries ---
+    // [proxy] no_proxy entry shape gate. Rejects empty/whitespace-
+    // only string entries that would comma-join into a malformed
+    // NO_PROXY env var (e.g. `host,,host2` or `host,   ,host2`)
+    // that strict-parsing HTTP clients reject. Walks both layers
+    // for the same reason as validate_proxy_ca_certs_nonempty
+    // above.
     //
     // --- validate_runner_tarballs ---
     // O_NOFOLLOW open + fstat regular-file gate on operator-supplied
@@ -121,11 +150,14 @@ pub(super) fn load_config(path: &Utf8Path) -> Result<Config> {
     validate_trust_zone_lengths(&cfg)?;
     validate_no_duplicate_caches(&cfg)?;
     validate_no_duplicate_cache_kinds(&cfg)?;
+    validate_cache_pool_kinds_nonempty(&cfg)?;
     validate_cache_pool_names(&cfg)?;
     validate_cache_pool_binary_paths(&cfg)?;
     validate_runner_names(&cfg)?;
     validate_auth_keys(&cfg)?;
     validate_pat_xor(&cfg)?;
+    validate_proxy_ca_certs_nonempty(&cfg)?;
+    validate_proxy_no_proxy_nonempty_entries(&cfg)?;
     validate_runner_tarballs(&cfg)?;
     validate_netns_runner_name_lengths(&cfg)?;
     crate::config::validate_environments(&cfg)?;
@@ -347,6 +379,48 @@ pub(super) fn validate_no_duplicate_cache_kinds(cfg: &Config) -> Result<()> {
                     ),
                 ));
             }
+        }
+    }
+    Ok(())
+}
+
+// ---------- cache-pool-kinds-nonempty validator -------------------------
+
+/// Reject `[cache_pools.NAME] kinds = []` at config load. An empty
+/// kinds Vec reaches `render_cache_pool` and `render_cache_drop_in`
+/// without contributing any per-pool emission. The pool's
+/// `ghars-cache@NAME.service` still renders, falling through to
+/// `render_cache_drop_in`'s ccache-only else branch which emits
+/// `ExecStart=<sleep_path> infinity` — a silently-dead cache pool
+/// unit that runs but contributes no env vars and serves no
+/// workload. The operator probably meant `kinds = ["ccache"]` or
+/// `kinds = ["sccache"]`; surfacing the error at config load gives
+/// a scoped `cache_pool "NAME":` prefix instead of a silent dead
+/// pool that operators only notice when workflows fail to find
+/// expected env vars.
+///
+/// Sibling of [`validate_no_duplicate_cache_kinds`] at the dual
+/// boundary — duplicates and emptiness are both "operator typed the
+/// wrong number of kinds" failure modes the deserializer can't
+/// catch (the `Vec<CacheKind>` field has no minimum-length
+/// constraint).
+///
+/// # Errors
+///
+/// `GharsError::Validation` naming the pool and recommending the
+/// canonical fixes (specify at least one of `ccache`, `sccache`).
+pub(super) fn validate_cache_pool_kinds_nonempty(cfg: &Config) -> Result<()> {
+    for (name, pool) in &cfg.cache_pools {
+        if pool.kinds.is_empty() {
+            return Err(GharsError::Validation(
+                format!("cache_pool {name:?}: declared empty `kinds = []`"),
+                "specify at least one of `ccache` or `sccache` in [cache_pools.NAME] \
+                 kinds — an empty kinds list contributes no per-pool emissions and \
+                 produces a silently-dead `ghars-cache@NAME.service` unit (ExecStart \
+                 falls through to `sleep infinity` with no env vars) that operators \
+                 only notice when workflows fail to find expected env vars"
+                    .into(),
+            ));
         }
     }
     Ok(())
@@ -1092,6 +1166,157 @@ pub(super) fn validate_trust_zone_lengths(cfg: &Config) -> Result<()> {
         let scope = format!("cache_pool {name:?}");
         validators::validate_trust_zone(&pool.trust_zone)
             .map_err(|e| crate::error::prepend_validation_scope(&scope, e))?;
+    }
+    Ok(())
+}
+
+// ---------- proxy shape validators --------------------------------------
+
+/// Reject `[proxy] ca_certs` entries with empty/whitespace-only
+/// `env`, empty/whitespace-only `path`, or non-absolute `path` at
+/// config load. A `CaCertBinding` with these shapes reaches
+/// `render_proxy`, passes `check_identity_field` (empty/whitespace
+/// strings contain no control chars), and emits a malformed
+/// systemd directive that fails at unit-start time:
+/// - empty/whitespace `env` → `Environment==<path>` (no var name,
+///   fails systemd's `[a-zA-Z_][a-zA-Z0-9_]*` Environment= grammar)
+/// - empty/whitespace `path` → `Environment=NAME=` (empty value,
+///   silently defeats the CA-bundle purpose)
+/// - relative `path` → `BindReadOnlyPaths=<rel>` which systemd
+///   rejects (BindReadOnlyPaths requires absolute paths, parallel
+///   to [`validate_cache_pool_binary_paths`])
+///
+/// Catching at load surfaces the typo with the operator's
+/// `[[proxy.ca_certs]]` block scope before unit-start blows up at
+/// apply.
+///
+/// Both `[defaults] proxy` and per-runner `[[runner]].proxy` are
+/// walked. Per-runner `proxy` entirely overrides `defaults.proxy`
+/// for that runner via `runner.proxy.or_else(|| defaults.proxy)`
+/// at `lower_to_effective`, but a malformed `defaults.proxy` would
+/// still leak into any runner that DOESN'T override — so validating
+/// defaults independently catches the "operator fixed one runner's
+/// override but left defaults broken for other inheriting runners"
+/// case.
+///
+/// # Errors
+///
+/// `GharsError::Validation` with `defaults.proxy.ca_certs[N]:` or
+/// `runner "NAME" proxy.ca_certs[N]:` scope naming the offending
+/// entry index and which field failed.
+pub(super) fn validate_proxy_ca_certs_nonempty(cfg: &Config) -> Result<()> {
+    fn check_one_proxy(
+        proxy: &crate::config::ProxySpec,
+        scope_prefix: &str,
+    ) -> Result<()> {
+        for (idx, binding) in proxy.ca_certs.iter().enumerate() {
+            if binding.env.trim().is_empty() {
+                return Err(GharsError::Validation(
+                    format!(
+                        "{scope_prefix} ca_certs[{idx}]: empty or whitespace-only `env` field"
+                    ),
+                    "set ca_certs[N].env to the env var name systemd should export \
+                     for this CA bundle (e.g. NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE) \
+                     — an empty/whitespace `env` emits a malformed `Environment==<path>` \
+                     directive that systemd rejects at unit-start (Environment= var \
+                     names must match `[a-zA-Z_][a-zA-Z0-9_]*`)"
+                        .into(),
+                ));
+            }
+            if binding.path.as_str().trim().is_empty() {
+                return Err(GharsError::Validation(
+                    format!(
+                        "{scope_prefix} ca_certs[{idx}]: empty or whitespace-only `path` field (env = {:?})",
+                        binding.env
+                    ),
+                    "set ca_certs[N].path to the absolute path of the CA bundle \
+                     file — an empty/whitespace `path` emits a malformed \
+                     `Environment=NAME=` directive (empty value) that defeats the \
+                     CA-bundle purpose"
+                        .into(),
+                ));
+            }
+            if !binding.path.is_absolute() {
+                return Err(GharsError::Validation(
+                    format!(
+                        "{scope_prefix} ca_certs[{idx}]: non-absolute `path` {:?} (env = {:?})",
+                        binding.path.as_str(),
+                        binding.env
+                    ),
+                    "set ca_certs[N].path to an absolute path. Relative paths resolve \
+                     against systemd's working directory at unit-start (root /) and \
+                     would emit a `BindReadOnlyPaths=<rel>` that systemd rejects \
+                     (BindReadOnlyPaths requires absolute paths). Sibling of \
+                     `validate_cache_pool_binary_paths` enforcing the same gate for \
+                     sccache_path / sleep_path"
+                        .into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    if let Some(proxy) = cfg.proxy.as_ref() {
+        check_one_proxy(proxy, "defaults.proxy")?;
+    }
+    for runner in &cfg.runners {
+        if let Some(proxy) = runner.proxy.as_ref() {
+            let scope = format!("runner {:?} proxy", runner.name);
+            check_one_proxy(proxy, &scope)?;
+        }
+    }
+    Ok(())
+}
+
+/// Reject empty/whitespace-only entries in `[proxy] no_proxy` at
+/// config load. An empty or whitespace-only entry comma-joins into
+/// the rendered `Environment=NO_PROXY=` directive as a leading /
+/// trailing / adjacent empty token (e.g.
+/// `Environment=NO_PROXY=host,,host2` or
+/// `Environment=NO_PROXY=host,   ,host2`), which is malformed per
+/// HTTP-proxy convention and silently disabled by curl / Node /
+/// Python clients that strict-parse the list. Operator probably
+/// meant `no_proxy = []` (empty list ⇒ proxy applies to all hosts)
+/// or `no_proxy = ["host"]` (real entry). Both [defaults] and
+/// per-runner proxy layers are walked for the same reason as
+/// [`validate_proxy_ca_certs_nonempty`] — defaults remain a
+/// fallback for runners that don't override.
+///
+/// # Errors
+///
+/// `GharsError::Validation` with `defaults.proxy.no_proxy[N]:` or
+/// `runner "NAME" proxy.no_proxy[N]:` scope naming the offending
+/// entry index.
+pub(super) fn validate_proxy_no_proxy_nonempty_entries(cfg: &Config) -> Result<()> {
+    fn check_one_proxy(
+        proxy: &crate::config::ProxySpec,
+        scope_prefix: &str,
+    ) -> Result<()> {
+        for (idx, entry) in proxy.no_proxy.iter().enumerate() {
+            if entry.trim().is_empty() {
+                return Err(GharsError::Validation(
+                    format!(
+                        "{scope_prefix} no_proxy[{idx}]: empty or whitespace-only entry"
+                    ),
+                    "remove the empty/whitespace entry — it produces a malformed \
+                     comma-separated NO_PROXY env var (leading/trailing/adjacent \
+                     empty token) that strict-parsing HTTP clients reject. If you \
+                     intended `proxy applies to all hosts`, set `no_proxy = []`"
+                        .into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    if let Some(proxy) = cfg.proxy.as_ref() {
+        check_one_proxy(proxy, "defaults.proxy")?;
+    }
+    for runner in &cfg.runners {
+        if let Some(proxy) = runner.proxy.as_ref() {
+            let scope = format!("runner {:?} proxy", runner.name);
+            check_one_proxy(proxy, &scope)?;
+        }
     }
     Ok(())
 }
