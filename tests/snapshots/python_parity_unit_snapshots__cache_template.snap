@@ -62,6 +62,10 @@ CacheDirectoryMode=0750
 # not require runner-side traversal of the host /run/ghars/ entry.
 RuntimeDirectory=ghars
 RuntimeDirectoryMode=0700
+# HOME is required by sccache (dirs::config_dir() panics without it).
+# DynamicUser + ProtectHome=yes leaves HOME unset; point it at the
+# cache directory so sccache's config lookup succeeds.
+Environment=HOME=%C/ghars/pools/%i
 
 # Per-kinds env + ExecStart land in the per-pool 00-ghars.conf drop-in
 # (sccache server launches there when kinds includes sccache;
