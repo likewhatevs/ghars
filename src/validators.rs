@@ -1161,7 +1161,7 @@ pub fn validate_restrict_address_families(field_label: &str, families: &[String]
 ///   `UpdateRunner` cascade across cosmetically-equivalent TOML —
 ///   mirroring the byte-equality contract `merge_hardening` enforces
 ///   via sort+dedup for the Vec ordering.
-/// - Non-empty after trim.
+/// - Non-empty.
 /// - Match the systemd capability-token shape `CAP_[A-Z0-9_]+`
 ///   (case-insensitive). Anything else is a typo or a confused
 ///   operator pasting raw `capabilities(7)` text.

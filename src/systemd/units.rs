@@ -4047,11 +4047,12 @@ mod tests {
     /// `bind_readonly_paths` is intentionally NOT sorted at
     /// either the upstream `merge_hardening` boundary or the
     /// renderer (see `merge.rs` for the canonical rationale).
-    /// systemd internally sorts mount entries parent-first via
-    /// `mount_path_compare`
-    /// (systemd/src/core/namespace.c:1003), so
-    /// operator-declared order does NOT affect mount-overlay
-    /// semantics at the kernel layer. The sort abstention is
+    /// systemd's PID 1 user-space sorts mount entries parent-
+    /// first via `mount_path_compare`
+    /// (`systemd/src/core/namespace.c:1003`) BEFORE issuing any
+    /// `mount(2)` syscall, so operator-declared order is
+    /// discarded in user-space and never reaches the kernel's
+    /// mount-overlay state. The sort abstention is
     /// for byte-equality between the operator's TOML and the
     /// rendered `BindReadOnlyPaths=` drop-in line: a sort-
     /// induced reorder would (a) flip `spec_hash` (different

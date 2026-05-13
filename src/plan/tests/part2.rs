@@ -1182,7 +1182,7 @@ fn canonicalize_network_spec_normalizes_host_bits_to_zero() {
 /// thinks they're naming a single network three different ways; the
 /// validator+canonicalizer should collapse to `[10.0.0.0/24]`.
 #[test]
-fn canonicalize_network_spec_normalize_then_dedup_collapses_equivalent_cidrs() {
+fn canonicalize_network_spec_collapses_operator_equivalent_cidrs() {
     let mut cfg = config_with_runners(vec![minimal_runner("a")]);
     cfg.networks.insert(
         "net-a".into(),

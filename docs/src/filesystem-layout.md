@@ -169,10 +169,11 @@ Notes:
   network-side ones for `RestrictAddressFamilies=`. The
   Hardening bind-path fields (`bind_readonly_paths`,
   `extra_bind_paths` → `BindReadOnlyPaths=`) are intentionally
-  NOT sorted at any layer. systemd internally sorts mount
-  entries parent-first via `mount_path_compare` before applying
-  them, so operator-declared order does NOT affect mount-
-  overlay semantics at the kernel layer. The sort abstention
+  NOT sorted at any layer. systemd's PID 1 user-space sorts
+  mount entries parent-first via `mount_path_compare` before
+  issuing any `mount(2)` syscall, so operator-declared order is
+  discarded in user-space and never reaches the kernel's
+  mount-overlay state. The sort abstention
   here is for byte-equality between the operator's TOML and
   the rendered drop-in line — a sort-induced reorder would
   flip `spec_hash` (triggering spurious in-place

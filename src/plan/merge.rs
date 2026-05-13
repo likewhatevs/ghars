@@ -274,13 +274,14 @@ pub(super) fn merge_hardening(runner: &Hardening, defaults: &Hardening) -> Harde
         extra_syscalls: pick_vec(&runner.extra_syscalls, &defaults.extra_syscalls),
         etc_bind_style: runner.etc_bind_style,
         // bind_readonly_paths is Option<Vec>: None ⇒ inherit defaults.
-        // NOT sorted in this layer because systemd internally
+        // NOT sorted in this layer because systemd's PID 1 user-space
         // sorts mount entries parent-first via `mount_path_compare`
-        // (systemd/src/core/namespace.c:1003, called
-        // from `sort_and_drop_unused_mounts` at namespace.c:2306-
-        // 2318), so operator-declared order does NOT affect mount-
-        // overlay semantics at the kernel layer. The sort
-        // abstention here is for byte-equality between the
+        // (`systemd/src/core/namespace.c:1003`, called from
+        // `sort_and_drop_unused_mounts` at namespace.c:2306-2318)
+        // BEFORE issuing any `mount(2)` syscall, so operator-declared
+        // order is discarded in user-space and never reaches the
+        // kernel's mount-overlay state. The sort abstention here is
+        // for byte-equality between the
         // operator's TOML and the rendered `BindReadOnlyPaths=`
         // drop-in line: a sort-induced reorder would (a) flip
         // `spec_hash` (different JSON → different SHA256 →
@@ -294,9 +295,10 @@ pub(super) fn merge_hardening(runner: &Hardening, defaults: &Hardening) -> Harde
             .or_else(|| defaults.bind_readonly_paths.clone()),
         // extra_bind_paths is additive across both sides — both apply.
         // NOT sorted: same byte-equality rationale as
-        // bind_readonly_paths above (systemd parent-first sort
-        // discards operator order at the kernel; the renderer
-        // preserves operator order for spec_hash stability).
+        // bind_readonly_paths above (systemd's PID 1 user-space sort
+        // discards operator order before any `mount(2)` syscall reaches
+        // the kernel; the renderer preserves operator order for
+        // spec_hash stability).
         extra_bind_paths: {
             let mut out = defaults.extra_bind_paths.clone();
             out.extend(runner.extra_bind_paths.iter().cloned());
@@ -360,8 +362,12 @@ pub(super) fn merge_hardening(runner: &Hardening, defaults: &Hardening) -> Harde
     // rendered drop-in body and the spec_hash, re-introducing the same
     // spurious drift class the sort prevents.
     //
-    // Fields explicitly NOT sorted (mount-order-sensitive — see the
-    // bind_readonly_paths and extra_bind_paths comments above).
+    // Fields explicitly NOT sorted (byte-equality between operator
+    // TOML and rendered drop-in line; systemd's own mount-order
+    // normalization runs in user-space — `mount_path_compare`
+    // in `systemd/src/core/namespace.c` — before the kernel sees
+    // any mount syscall — see the bind_readonly_paths and
+    // extra_bind_paths comments above).
     merged.restrict_address_families.sort();
     merged.restrict_address_families.dedup();
     merged.extra_syscalls.sort();
