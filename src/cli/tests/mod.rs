@@ -111,6 +111,7 @@ fn skip(name: &str) -> preflight::CheckResult {
 
 fn fake_effective_spec(name: &str) -> crate::config::EffectiveRunnerSpec {
     crate::config::EffectiveRunnerSpec {
+        environment: crate::config::EnvironmentSpec::default(),
         name: name.into(),
         url: format!("https://github.com/example/{name}"),
         arch: crate::config::Arch::X86_64,
@@ -256,6 +257,7 @@ fn assert_explicit_collision_precedence(
     cfg.runners[0].count = Some(3);
     cfg.runners[0].memory_max = count_block_memory_max.clone();
     let explicit = crate::config::RunnerSpec {
+        environment: crate::config::EnvironmentSpec::default(),
         name: "ci-1".into(),
         count: None,
         url: "https://github.com/example/ci-1".into(),
@@ -371,6 +373,7 @@ fn parse_command(argv: &[&str]) -> Command {
 /// reject the literal escape sequences.
 fn cfg_with_runner_trust_zone(name: &str, trust_zone: String) -> Config {
     let runner = crate::config::RunnerSpec {
+        environment: crate::config::EnvironmentSpec::default(),
         name: name.into(),
         count: None,
         url: format!("https://github.com/example/{name}"),

@@ -2590,6 +2590,7 @@ fn plan_from_discovered_only_runner_populates_remove_runner_identity() {
     // drop_ins["00-ghars.conf"] (which DiscoveredAnnotations::
     // from_discovered reads for url + auth_name).
     let discovered_spec = crate::config::EffectiveRunnerSpec {
+        environment: crate::config::EnvironmentSpec::default(),
         name: "old-web".into(),
         url: "https://github.com/example/old-web".into(),
         arch: crate::config::Arch::X86_64,

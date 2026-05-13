@@ -537,3 +537,44 @@ but not the only one.
 
 Default off precisely so the secret-bearing body never reaches
 stdout unless the operator opts in.
+
+## Setting environment variables for workflow steps
+
+Use `[defaults.environment]` / `[[runner]].environment` in
+`ghars.toml` to declare env vars and PATH additions that
+workflow steps see. **Do not edit `bin.X.Y.Z/.env` directly** —
+ghars overwrites it on every apply (the file is ghars-owned).
+
+```toml
+[defaults.environment]
+vars = { MY_TEAM_VAR = "production" }
+path_prepend = ["/opt/company-tools/bin"]
+
+[[runner]]
+name = "buckos"
+[runner.environment]
+vars = { DEPLOY_TARGET = "buckos-ci" }
+path_append = ["/opt/buckos-specific/bin"]
+```
+
+Operator vars land in BOTH `bin.X.Y.Z/.env` (consumed by
+`Runner.Listener::LoadAndSetEnv` for workflow steps) AND
+`00-ghars.conf` (`Environment=` directives, consumed by systemd
+for the runner unit process). Both layers carry the same merged
+keys — operator's `MY_TEAM_VAR` is visible to the runner daemon
+AND to every workflow step.
+
+Field-by-field validation rejects security-critical names
+(`LD_PRELOAD` and the LD\_\* family, shell-hijack vars like
+`BASH_ENV` / `IFS` / `PS4`), ghars-owned names (`PATH`, `HOME`,
+`CCACHE_DIR`, `KTSTR_*`, `SCCACHE_*`, `HTTP_PROXY` family,
+`ACTIONS_RUNNER_*`), and any name that does not match the
+POSIX env-var-name regex `^[A-Z_][A-Z0-9_]*$`. See
+`configuration.md` → `EnvironmentSpec` → Validation for the
+full deny-list and rationale per tier.
+
+PATH entries must be absolute paths. `path_prepend` lands
+BETWEEN the framework ccache wrappers and the per-runner
+`.cargo/bin` segment (so operator paths cannot shadow `gcc` /
+`cc` and break compile-cache hits). `path_append` lands AFTER
+the system tail.

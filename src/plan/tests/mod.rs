@@ -57,6 +57,7 @@ pub(super) fn pat_auth() -> IndexMap<String, AuthSpec> {
 
 pub(super) fn minimal_runner(name: &str) -> RunnerSpec {
     RunnerSpec {
+        environment: crate::config::EnvironmentSpec::default(),
         name: name.into(),
         count: None,
         url: format!("https://github.com/example/{name}"),

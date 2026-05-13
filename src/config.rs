@@ -9,6 +9,7 @@
 //! Forward-evolving schema is handled by adding fields with
 //! `#[serde(default)]`, not by tolerating unknown keys.
 
+use std::collections::BTreeMap;
 use std::net::IpAddr;
 
 use camino::Utf8PathBuf;
@@ -119,6 +120,13 @@ pub struct Defaults {
     /// targets). Set to a non-zero value; zero would prune the
     /// just-installed bin dir.
     pub keep_versions: Option<u32>,
+    /// Default operator-declared environment composition (env vars +
+    /// PATH additions). Inherited by every runner; per-runner
+    /// `environment` overrides per-key for `vars` (runner-set keys win)
+    /// and appends additively for `path_prepend` / `path_append`
+    /// (defaults entries first, then runner entries, dedup).
+    #[serde(default)]
+    pub environment: EnvironmentSpec,
     // No `slice` field. All ghars-managed units use
     // `Slice=system.slice` unconditionally.
 }
@@ -211,6 +219,15 @@ pub struct RunnerSpec {
     pub allowed_cpus: Option<String>,
     /// `AllowedMemoryNodes=` (cgroup v2 cpuset).
     pub allowed_memory_nodes: Option<String>,
+    /// Per-runner operator-declared environment composition. Merges
+    /// with `[defaults.environment]` per-key for `vars` (runner-set
+    /// keys override defaults), additively for `path_prepend` /
+    /// `path_append` (defaults entries first, then runner entries,
+    /// dedup). Operator-set keys are validated against a deny-list
+    /// (security + ghars-owned keys) and a POSIX env-var-name regex
+    /// at config-load.
+    #[serde(default)]
+    pub environment: EnvironmentSpec,
     // No `slice` field. All units use Slice=system.slice
     // unconditionally.
 }
@@ -285,6 +302,27 @@ pub struct EffectiveRunnerSpec {
     pub allowed_cpus: Option<String>,
     /// `AllowedMemoryNodes=` (cgroup v2 cpuset).
     pub allowed_memory_nodes: Option<String>,
+    /// Effective operator-declared environment composition after the
+    /// `[defaults]` ⇒ `[[runner]]` merge. `vars` is `BTreeMap<String,
+    /// String>` so iteration is alphabetical — operator key reorders
+    /// in TOML produce identical .env bytes (no spurious in-place
+    /// rewrite + restart on cosmetic edits). `path_prepend` and
+    /// `path_append` preserve operator source order (defaults entries
+    /// first, runner entries appended, dedup defense-in-depth).
+    ///
+    /// Renders into Sites A (.env file) and B (00-ghars.conf
+    /// `Environment=` directives) APPENDED after framework-emitted
+    /// keys (LAYER 3 of the composition pipeline). Operator keys that
+    /// collide with framework keys (CCACHE_DIR, KTSTR_*, LANG, HOME,
+    /// PATH, TMPDIR, SCCACHE_*, HTTP_PROXY etc.) are rejected at
+    /// config-load via the deny-list — operator overrides cannot
+    /// reach LAYER 3 because they fail validation. See
+    /// `crate::validators::validate_environment_spec`.
+    ///
+    /// Single source of truth for CCACHE_DIR / KTSTR_* / SCCACHE_*
+    /// emission lives in `crate::systemd::units` renderers — do not
+    /// add a second construction site for framework keys.
+    pub environment: EnvironmentSpec,
     /// Spec hash (sha256 of canonical JSON). The generator emits
     /// this verbatim into the X-Ghars-Spec-Hash annotation; computing
     /// it is the loader's responsibility.
@@ -529,6 +567,69 @@ pub struct Hardening {
     /// Additional `CapabilityBoundingSet=` entries (rarely needed).
     #[serde(default)]
     pub extra_capabilities: Vec<String>,
+}
+
+/// Operator-declared environment composition for runners. Operator-
+/// supplied env vars and PATH additions, merged with framework-emitted
+/// built-ins (LANG / CCACHE_DIR / KTSTR_* / SCCACHE_* / HOME / PATH /
+/// TMPDIR / HTTP_PROXY family / ACTIONS_RUNNER_HOOK_* and per-binding
+/// cache vars). Precedence is framework < defaults < runner, enforced
+/// at composition time; framework-owned keys are additionally rejected
+/// at config-load via the deny-list in
+/// `crate::validators::validate_environment_spec` so operator overrides
+/// never reach the renderer.
+///
+/// The merged result lands in BOTH Site A (.env file consumed by
+/// Runner.Listener::LoadAndSetEnv for workflow steps) AND Site B
+/// (00-ghars.conf `Environment=` directives consumed by systemd for
+/// the runner unit process). The two layers carry the same merged
+/// keys; without the both-sites pin a future renderer refactor could
+/// silently drop one layer and re-create the LAYER 1/2 drift class.
+///
+/// Map type rationale: `BTreeMap` for `vars` gives alphabetical
+/// iteration order so operator key reorders in TOML produce identical
+/// `.env` bytes — no spurious in-place rewrite + restart cycle on
+/// cosmetic edits. `spec_hash` is already invariant under reorder via
+/// `serde_json::Value`'s BTreeMap-backed Object (see
+/// `EffectiveRunnerSpec` doc-comment above), but `.env` byte stability
+/// also needs the BTreeMap directly because the renderer iterates in
+/// type order.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EnvironmentSpec {
+    /// Operator-supplied env vars. Per-key overlay across the
+    /// defaults / runner merge: runner-set keys win, then defaults,
+    /// then framework built-ins. Validated at config-load against
+    /// the deny-list (security-critical LD_*, shell-hijack BASH_ENV
+    /// etc., ghars-owned CCACHE_DIR etc., HTTP_PROXY family,
+    /// ACTIONS_RUNNER_INPUT_TOKEN, etc.) and the POSIX env-var-name
+    /// regex `^[A-Z_][A-Z0-9_]*$`. Values are checked for control
+    /// characters (`\n` / `\r` / `\0`) at config-load via the same
+    /// `check_identity_field` gate the renderer uses for systemd
+    /// directive interpolation. Values containing `%` are
+    /// double-escaped (`%%`) in the 00-ghars.conf `Environment=`
+    /// emission so systemd's specifier expansion does not consume
+    /// operator-literal data; the `.env` emission carries the value
+    /// verbatim (Runner.Listener LoadAndSetEnv does not interpret
+    /// `%`).
+    #[serde(default)]
+    pub vars: BTreeMap<String, String>,
+    /// Paths prepended to the runner's PATH. Lands BETWEEN the
+    /// framework ccache wrappers (`/usr/lib64/ccache`,
+    /// `/usr/lib/ccache`) and the per-runner `.cargo/bin` segment.
+    /// ccache stays at position 0 unconditionally — operator paths
+    /// cannot shadow `gcc` / `cc` and break the compile cache.
+    /// Additive across defaults + runner (defaults entries first,
+    /// then runner entries, dedup defense-in-depth). Each entry must
+    /// be an absolute path (validator rejects relative paths, paths
+    /// containing `:` (PATH separator), and control characters).
+    #[serde(default)]
+    pub path_prepend: Vec<Utf8PathBuf>,
+    /// Paths appended to the runner's PATH AFTER the system tail
+    /// (`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:
+    /// /bin`). Additive across defaults + runner.
+    #[serde(default)]
+    pub path_append: Vec<Utf8PathBuf>,
 }
 
 /// `BindReadOnlyPaths=` template style — Curated keeps the narrow
@@ -921,6 +1022,33 @@ pub(crate) fn validate_networks(cfg: &Config) -> Result<()> {
     for (name, spec) in &cfg.networks {
         crate::validators::validate_network_spec(spec)
             .map_err(|e| crate::error::prepend_validation_scope(&format!("[network.{name}]"), e))?;
+    }
+    Ok(())
+}
+
+/// Validate every operator-declared environment block in `config` —
+/// `[defaults.environment]` and every `[[runner]].environment`. Calls
+/// `crate::validators::validate_environment_spec` per block, prepending
+/// the scope (`[defaults.environment]:` / `[runner.NAME.environment]:`)
+/// so the operator can locate the offending block.
+///
+/// # Errors
+///
+/// Returns `GharsError::Validation` on the first failing key / value /
+/// path entry. The error names the offending input + tier rationale
+/// (security-critical / shell-hijack / ghars-owned / POSIX-shape /
+/// path-syntax) so the operator learns the security model from the
+/// rejection.
+pub(crate) fn validate_environments(cfg: &Config) -> Result<()> {
+    crate::validators::validate_environment_spec(&cfg.defaults.environment)
+        .map_err(|e| crate::error::prepend_validation_scope("[defaults.environment]", e))?;
+    for runner in &cfg.runners {
+        crate::validators::validate_environment_spec(&runner.environment).map_err(|e| {
+            crate::error::prepend_validation_scope(
+                &format!("[runner.{}.environment]", runner.name),
+                e,
+            )
+        })?;
     }
     Ok(())
 }

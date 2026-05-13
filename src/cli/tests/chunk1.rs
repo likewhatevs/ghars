@@ -696,6 +696,7 @@ fn cli_global_no_color_flag_set() {
 fn render_action_line_uses_sigil_per_kind() {
     let create = Action::CreateRunner(plan::RunnerPlan {
         spec: crate::config::EffectiveRunnerSpec {
+            environment: crate::config::EnvironmentSpec::default(),
             name: "buckos".into(),
             url: "https://github.com/example/buckos".into(),
             arch: crate::config::Arch::X86_64,

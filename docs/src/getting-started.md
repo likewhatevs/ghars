@@ -250,3 +250,29 @@ sudo -E ghars status                                    # confirm
 `--auth pat` and `GHARS_PAT` set, it is non-interactive end-to-end.
 The `-E` is required for `sudo` to preserve `GHARS_PAT` past the
 default `env_reset` policy.
+
+## Custom env vars for workflow steps
+
+To set environment variables that workflow steps see (the
+classic "I need `MY_TEAM_VAR` available to `actions/checkout`
+and my scripts"), declare them under `[defaults.environment]`
+or `[[runner]].environment`:
+
+```toml
+[defaults.environment]
+vars = { MY_TEAM_VAR = "production" }
+path_prepend = ["/opt/company-tools/bin"]
+
+[[runner]]
+name = "buckos"
+[runner.environment]
+vars = { DEPLOY_TARGET = "buckos-ci" }   # adds to defaults.vars
+```
+
+ghars renders these into both `bin.X.Y.Z/.env` (workflow-step
+env, read by `Runner.Listener::LoadAndSetEnv`) and
+`00-ghars.conf` (runner unit env, `Environment=` directives).
+**Do NOT edit `bin.X.Y.Z/.env` manually** — ghars overwrites it
+on every apply. See `configuration.md` → `EnvironmentSpec` for
+the full field reference, validation rules, and security
+deny-list.

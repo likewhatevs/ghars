@@ -672,6 +672,25 @@ pub(crate) fn render_runner_env_file(spec: &EffectiveRunnerSpec) -> Result<Strin
             );
         }
     }
+    // LAYER 3: operator-declared env vars (BTreeMap alphabetical
+    // iteration → deterministic .env bytes regardless of operator's
+    // TOML key order). Appended AFTER framework keys so existing
+    // runners with empty `[runner.environment].vars` produce
+    // byte-identical .env (no spurious in-place rewrite on the #7
+    // deploy). Operator keys colliding with framework keys are
+    // rejected at config-load via the deny-list in
+    // crate::validators::validate_environment_spec, so values
+    // reaching here are validation-clean.
+    //
+    // Defense-in-depth re-validation: check the value via
+    // check_identity_field at render time too — config-load is the
+    // primary gate but direct construct sites (test fixtures) might
+    // bypass the load path.
+    for (key, value) in &spec.environment.vars {
+        check("environment.vars[].key", key)?;
+        check("environment.vars[].value", value)?;
+        let _ = writeln!(s, "{key}={value}");
+    }
     Ok(s)
 }
 
@@ -699,10 +718,60 @@ pub(crate) fn render_runner_path_file(spec: &EffectiveRunnerSpec) -> Result<Stri
     };
     check("trust_zone", &spec.trust_zone)?;
     check("name", &spec.name)?;
+    for p in &spec.environment.path_prepend {
+        check("environment.path_prepend[]", p.as_str())?;
+    }
+    for p in &spec.environment.path_append {
+        check("environment.path_append[]", p.as_str())?;
+    }
     Ok(format!(
-        "/usr/lib64/ccache:/usr/lib/ccache:/var/lib/ghars/{tz}/ghars-{name}/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n",
-        tz = spec.trust_zone, name = spec.name
+        "{path}\n",
+        path = compose_runner_path(spec)
     ))
+}
+
+/// Compose the runner's PATH string from framework segments and
+/// operator additions. OPTION C layering:
+///   ccache_wrappers → operator path_prepend → .cargo/bin →
+///   system_tail → operator path_append
+/// ccache wrappers stay at position 0 unconditionally — operator
+/// path_prepend cannot shadow `gcc` / `cc` and break the compile
+/// cache (which would miss 100% if ccache wrappers were not first
+/// in PATH). Shared between `render_runner_path_file` and
+/// `render_identity`'s `Environment=PATH=` line so both sites emit
+/// the identical PATH string (eliminates the LAYER 1/2 PATH drift
+/// class).
+pub(crate) fn compose_runner_path(spec: &EffectiveRunnerSpec) -> String {
+    let mut segments: Vec<String> = Vec::with_capacity(
+        2 + spec.environment.path_prepend.len() + 1 + 6 + spec.environment.path_append.len(),
+    );
+    // ccache wrappers ALWAYS first.
+    segments.push("/usr/lib64/ccache".into());
+    segments.push("/usr/lib/ccache".into());
+    // Operator path_prepend lands BETWEEN ccache and .cargo/bin so
+    // operator paths cannot shadow the ccache wrappers.
+    for p in &spec.environment.path_prepend {
+        segments.push(p.as_str().into());
+    }
+    // Per-runner .cargo/bin.
+    segments.push(format!(
+        "/var/lib/ghars/{tz}/ghars-{name}/.cargo/bin",
+        tz = spec.trust_zone,
+        name = spec.name
+    ));
+    // System tail (sbin-before-bin order).
+    segments.push("/usr/local/sbin".into());
+    segments.push("/usr/local/bin".into());
+    segments.push("/usr/sbin".into());
+    segments.push("/usr/bin".into());
+    segments.push("/sbin".into());
+    segments.push("/bin".into());
+    // Operator path_append lands AFTER system tail (typical
+    // "fallback paths" semantics).
+    for p in &spec.environment.path_append {
+        segments.push(p.as_str().into());
+    }
+    segments.join(":")
 }
 
 /// Defense-in-depth: reject any value about to be interpolated
@@ -1005,11 +1074,12 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
         "Environment=HOME=/var/lib/ghars/{}/ghars-{}",
         spec.trust_zone, spec.name
     );
-    let _ = writeln!(
-        s,
-        "Environment=PATH=/usr/lib64/ccache:/usr/lib/ccache:/var/lib/ghars/{tz}/ghars-{name}/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        tz = spec.trust_zone, name = spec.name
-    );
+    // Shared with render_runner_path_file via compose_runner_path so
+    // Site B (Environment=PATH= here) and Site A (.path file) emit
+    // the identical PATH string — eliminates the LAYER 1/2 PATH-drift
+    // class. Operator environment.path_prepend / path_append land in
+    // the composed string per OPTION C.
+    let _ = writeln!(s, "Environment=PATH={}", compose_runner_path(spec));
     // TMPDIR under the runner home so the sccache server (separate unit
     // with its own PrivateTmp) can hash input files. Without this, cargo
     // builds in /tmp which is private to the runner unit and invisible
@@ -1029,6 +1099,31 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
         "Environment=KTSTR_CACHE_DIR=/var/lib/ghars/{}/.ktstr",
         spec.trust_zone
     );
+    // LAYER 3 (Site B): operator-declared env vars appended after
+    // framework Environment= directives. Same BTreeMap iteration as
+    // render_runner_env_file (Site A) — operator's MY_VAR lands in
+    // BOTH 00-ghars.conf (here) and .env (Site A) per the api-reviewer
+    // HARD REQ: a future renderer refactor that drops one layer would
+    // re-create the LAYER 1/2 drift class #24 fixed for built-ins.
+    //
+    // %-escape: operator values containing `%` must be emitted as
+    // `%%` here because systemd parses %-specifiers in Environment=
+    // values (per `systemd.exec(5)`). Site A (.env) carries the same
+    // operator value VERBATIM because Runner.Listener's LoadAndSetEnv
+    // (.NET) does not interpret `%`. Escape-on-Site-B + verbatim-on-
+    // Site-A yields IDENTICAL effective values seen by both consumers
+    // (operator's literal value preserved end-to-end).
+    //
+    // Defense-in-depth re-validation: check the value via
+    // check_identity_field at render time too — config-load is the
+    // primary gate but direct construct sites (test fixtures) might
+    // bypass the load path.
+    for (key, value) in &spec.environment.vars {
+        check_identity_field("environment.vars[].key", key)?;
+        check_identity_field("environment.vars[].value", value)?;
+        let escaped = value.replace('%', "%%");
+        let _ = writeln!(s, "Environment={key}={escaped}");
+    }
     // ConditionPathExists is a [Unit]-section directive; emit a
     // separate [Unit] section AFTER [Service] (drop-in sections can
     // appear in any order — systemd merges by section name). The path
@@ -1818,6 +1913,7 @@ mod tests {
 
     fn minimal_spec() -> EffectiveRunnerSpec {
         EffectiveRunnerSpec {
+            environment: crate::config::EnvironmentSpec::default(),
             name: "buckos".into(),
             url: "https://github.com/example/buckos".into(),
             arch: Arch::X86_64,

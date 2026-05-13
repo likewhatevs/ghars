@@ -364,6 +364,7 @@ pub(super) fn make_paths(tmp: &tempfile::TempDir) -> Paths {
 
 pub(super) fn make_spec(name: &str, _prefix: &Utf8Path) -> EffectiveRunnerSpec {
     EffectiveRunnerSpec {
+        environment: crate::config::EnvironmentSpec::default(),
         name: name.into(),
         url: "https://github.com/example/repo".into(),
         arch: Arch::X86_64,

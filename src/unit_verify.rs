@@ -695,6 +695,7 @@ mod tests {
             hardening: crate::config::Hardening::default(),
             allowed_cpus: None,
             allowed_memory_nodes: None,
+            environment: crate::config::EnvironmentSpec::default(),
             spec_hash: "sha256:abcd".into(),
             config_source: "/etc/ghars/ghars.toml".into(),
             renderer_schema: crate::systemd::RENDERER_SCHEMA,

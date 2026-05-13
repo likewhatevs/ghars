@@ -7,8 +7,8 @@
 use std::collections::HashSet;
 
 use crate::config::{
-    Arch, Defaults, EffectiveCacheBinding, EffectiveNetworkBinding, EffectiveRunnerSpec, Hardening,
-    RunnerSpec,
+    Arch, Defaults, EffectiveCacheBinding, EffectiveNetworkBinding, EffectiveRunnerSpec,
+    EnvironmentSpec, Hardening, RunnerSpec,
 };
 
 use super::DEFAULT_TRUST_ZONE;
@@ -182,10 +182,63 @@ pub fn merge_defaults(
         hardening: merge_hardening(&runner.hardening, &defaults.hardening),
         allowed_cpus: runner.allowed_cpus.clone(),
         allowed_memory_nodes: runner.allowed_memory_nodes.clone(),
+        environment: merge_environment(&runner.environment, &defaults.environment),
         spec_hash: String::new(),
         config_source,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     }
+}
+
+/// Merge `[defaults.environment]` into `[[runner]].environment`:
+///   - `vars`: per-key overlay — defaults BTreeMap is the base, runner
+///     entries extend AND override on collision (runner-set keys win
+///     per the standard scalar-override semantic mirrored from
+///     `memory_max` etc.).
+///   - `path_prepend` / `path_append`: additive — defaults entries
+///     first, then runner entries; dedup preserves first-occurrence
+///     order to keep PATH search-order semantics intact while
+///     stripping duplicate segments (mirrors `extra_bind_paths`'s
+///     additive pattern with added dedup since PATH lookups would
+///     repeat the second hit but waste cycles re-searching the same
+///     dir).
+///
+/// Note: this helper does NOT consult the framework-emitted env vars
+/// (LANG / CCACHE_DIR / KTSTR_* / SCCACHE_* / HOME / PATH / TMPDIR /
+/// HTTP_PROXY family / ACTIONS_RUNNER_HOOK_*). Framework < operator
+/// precedence is enforced by (a) renderer composition order (framework
+/// emitted first, operator vars appended) and (b) config-load
+/// validation that rejects operator keys colliding with framework-
+/// emitted ones (see `crate::validators::validate_environment_spec`).
+pub(super) fn merge_environment(
+    runner: &EnvironmentSpec,
+    defaults: &EnvironmentSpec,
+) -> EnvironmentSpec {
+    let mut vars = defaults.vars.clone();
+    for (k, v) in &runner.vars {
+        vars.insert(k.clone(), v.clone());
+    }
+    let path_prepend = additive_path_merge(&defaults.path_prepend, &runner.path_prepend);
+    let path_append = additive_path_merge(&defaults.path_append, &runner.path_append);
+    EnvironmentSpec {
+        vars,
+        path_prepend,
+        path_append,
+    }
+}
+
+fn additive_path_merge(
+    defaults: &[camino::Utf8PathBuf],
+    runner: &[camino::Utf8PathBuf],
+) -> Vec<camino::Utf8PathBuf> {
+    let mut out: Vec<camino::Utf8PathBuf> =
+        Vec::with_capacity(defaults.len() + runner.len());
+    let mut seen: HashSet<camino::Utf8PathBuf> = HashSet::new();
+    for p in defaults.iter().chain(runner.iter()) {
+        if seen.insert(p.clone()) {
+            out.push(p.clone());
+        }
+    }
+    out
 }
 
 pub(super) fn merge_hardening(runner: &Hardening, defaults: &Hardening) -> Hardening {

@@ -177,8 +177,9 @@ mod tests {
     /// upgrade.
     #[test]
     fn spec_hash_includes_renderer_schema() {
-        use crate::config::{EffectiveRunnerSpec, Hardening};
+        use crate::config::{EffectiveRunnerSpec, EnvironmentSpec, Hardening};
         let base = EffectiveRunnerSpec {
+            environment: EnvironmentSpec::default(),
             name: "a".into(),
             url: "https://github.com/example/a".into(),
             arch: crate::config::Arch::X86_64,

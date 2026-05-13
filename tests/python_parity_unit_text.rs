@@ -23,7 +23,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use ghars::config::{Arch, EffectiveRunnerSpec, Hardening};
+use ghars::config::{Arch, EffectiveRunnerSpec, EnvironmentSpec, Hardening};
 use ghars::systemd::{render_runner_unit, runner_template_text};
 
 fn minimal_spec(name: &str) -> EffectiveRunnerSpec {
@@ -45,6 +45,7 @@ fn minimal_spec(name: &str) -> EffectiveRunnerSpec {
         hardening: Hardening::default(),
         allowed_cpus: None,
         allowed_memory_nodes: None,
+        environment: EnvironmentSpec::default(),
         spec_hash: "sha256:dead".into(),
         config_source: "/etc/ghars/ghars.toml".into(),
         renderer_schema: ghars::systemd::RENDERER_SCHEMA,

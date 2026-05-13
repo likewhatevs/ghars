@@ -483,10 +483,104 @@ Selected fields:
 - `allowed_cpus` / `allowed_memory_nodes` (`Option<String>`) —
   systemd cgroup v2 cpuset values. None ≡ no `50-numa.conf`
   drop-in.
+- `environment` (`EnvironmentSpec`) — operator-declared env vars
+  and PATH additions; merged with `[defaults.environment]`. See
+  the `EnvironmentSpec` section below.
 
 `RunnerGroupSpec` and `RunnerOverride` are NOT part of the schema.
 Operators that need divergent config in a counted set declare a
 new `[[runner]]` block with the matching auto-skipped name.
+
+## EnvironmentSpec
+
+`EnvironmentSpec` declares per-runner env vars and PATH additions.
+Both `[defaults.environment]` and `[[runner]].environment` carry
+the same shape; the merge is per-key for `vars` (runner wins on
+key collision) and additive for `path_prepend` / `path_append`
+(defaults entries first, then runner entries, dedup
+defense-in-depth).
+
+```toml
+[defaults.environment]
+vars = { MY_TEAM_VAR = "production", RUST_BACKTRACE = "1" }
+path_prepend = ["/opt/company-tools/bin"]
+
+[[runner]]
+name = "buckos"
+[runner.environment]
+vars = { DEPLOY_TARGET = "buckos-ci" }   # adds to defaults.vars
+path_append = ["/opt/buckos-specific/bin"]
+```
+
+Fields:
+
+- `vars` (`BTreeMap<String, String>`) — operator-declared env
+  vars. Iterated alphabetically when rendered into both `.env`
+  (LAYER 2, consumed by `Runner.Listener::LoadAndSetEnv` for
+  workflow steps) AND `00-ghars.conf`'s `Environment=`
+  directives (LAYER 1, consumed by systemd for the runner unit
+  process). Both layers carry the same merged keys. Operator
+  TOML key reorders produce identical `.env` bytes (no spurious
+  in-place rewrite + restart on cosmetic edits).
+- `path_prepend` (`Vec<Utf8PathBuf>`) — paths inserted between
+  the framework ccache wrappers (`/usr/lib64/ccache`,
+  `/usr/lib/ccache`) and the per-runner `.cargo/bin` segment.
+  ccache wrappers stay at position 0 unconditionally — operator
+  paths cannot shadow `gcc` / `cc` and break the compile cache.
+- `path_append` (`Vec<Utf8PathBuf>`) — paths appended after the
+  system tail (`/usr/local/sbin:/usr/local/bin:/usr/sbin:
+  /usr/bin:/sbin:/bin`).
+
+### Validation (config-load)
+
+Operator-declared env var names are rejected against a deny-list
+with per-tier rationale:
+
+- **Tier 1 (LD\_\* injection)**: `LD_PRELOAD`, `LD_LIBRARY_PATH`,
+  `LD_AUDIT`, `LD_DEBUG`, `LD_BIND_NOW`, `LD_PROFILE`,
+  `LD_TRACE_LOADED_OBJECTS`, `GLIBC_TUNABLES`, `MALLOC_TRACE` —
+  dynamic-loader attack surface.
+- **Tier 2 (shell hijack)**: `IFS`, `BASH_ENV`, `ENV`, `BASHOPTS`,
+  `SHELLOPTS`, `PS4`, `PROMPT_COMMAND` — shell-execution
+  hijacking before workflow steps see env.
+- **Tier 3 (ghars-owned)**: `PATH`, `HOME`, `USER`, `LOGNAME`,
+  `SHELL`, `TMPDIR`, `LANG`, `CCACHE_*`, `KTSTR_*`, `SCCACHE_*`,
+  `HTTP_PROXY` family, `ACTIONS_RUNNER_*`, `RUNNER_ALLOW_RUNASROOT`
+  — set by ghars from `trust_zone` / cache bindings / `[proxy]`
+  / `[[runner.hooks]]`. Use those config surfaces instead.
+- **Tier 4 (POSIX shape)**: env var names must match
+  `^[A-Z_][A-Z0-9_]*$`.
+
+Values containing control characters (`\n`, `\r`, `\0`) are
+rejected (multi-line values would inject a second
+`Environment=` directive into `00-ghars.conf` and a second
+`KEY=VALUE` line into `.env`).
+
+PATH entries must be absolute paths; relative paths, embedded
+`:` (PATH separator), and control characters are all rejected.
+
+### `%`-character handling
+
+Operator values containing `%` are emitted verbatim in `.env`
+(Runner.Listener's `LoadAndSetEnv` does not interpret `%`) and
+double-escaped to `%%` in `00-ghars.conf`'s `Environment=`
+directives (systemd would otherwise expand `%C`, `%t`, `%i`,
+`%h` as its own specifiers). Both consumers see the operator's
+literal value end-to-end.
+
+If you need systemd specifier expansion in your env vars, do it
+inside a wrapper script your workflow step invokes — the
+operator-declared surface treats `%` as data.
+
+### `.env` is ghars-owned
+
+The `.env` file at `bin.X.Y.Z/.env` is overwritten by ghars on
+every apply. **Do not edit it directly** — your changes will be
+lost on the next `ghars apply` (overwritten unconditionally by
+`execute_create_runner` + in-place by `execute_update_runner`).
+Use `[[runner]].environment.vars` / `[defaults.environment].vars`
+in `ghars.toml` instead; ghars will then maintain the `.env`
+file in sync with config.
 
 ## Hardening
 

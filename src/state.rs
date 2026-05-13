@@ -1126,6 +1126,7 @@ mod tests {
         // basename omissions, and it does so for 9 of the 10 managed
         // basenames.
         let spec = EffectiveRunnerSpec {
+            environment: crate::config::EnvironmentSpec::default(),
             name: "regguard".into(),
             url: "https://github.com/example/regguard".into(),
             arch: Arch::X86_64,

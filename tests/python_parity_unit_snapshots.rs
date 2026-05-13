@@ -78,6 +78,7 @@ fn base_spec() -> EffectiveRunnerSpec {
         hardening: Hardening::default(),
         allowed_cpus: None,
         allowed_memory_nodes: None,
+        environment: ghars::config::EnvironmentSpec::default(),
         spec_hash: "sha256:0000000000000000000000000000000000000000000000000000000000000000".into(),
         config_source: "/etc/ghars/ghars.toml".into(),
         renderer_schema: ghars::systemd::RENDERER_SCHEMA,

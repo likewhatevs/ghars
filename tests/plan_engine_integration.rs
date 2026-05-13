@@ -66,6 +66,7 @@ fn make_runner(name: &str) -> RunnerSpec {
         hardening: Hardening::default(),
         allowed_cpus: None,
         allowed_memory_nodes: None,
+        environment: ghars::config::EnvironmentSpec::default(),
     }
 }
 

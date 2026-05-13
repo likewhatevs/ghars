@@ -21,7 +21,7 @@ use camino::Utf8Path;
 use ipnet::IpNet;
 use regex::Regex;
 
-use crate::config::{IDENTIFIER_MAX_LEN, IDENTIFIER_REGEX};
+use crate::config::{EnvironmentSpec, IDENTIFIER_MAX_LEN, IDENTIFIER_REGEX};
 use crate::{GharsError, Result};
 
 /// Path-component prefix used in `<state_dir>/<trust_zone>/ghars-<name>/`,
@@ -1397,6 +1397,203 @@ pub fn validate_hook_script(path: &Utf8Path) -> Result<()> {
             format!("hook script {path}: mode {mode:o} has group/world-writable bits set (SEC-12)",),
             "chmod go-w <path> so only root can modify the script",
         ));
+    }
+    Ok(())
+}
+
+/// Tier 1 env var names: shared-library injection class. Operators
+/// setting `LD_PRELOAD` etc. would let arbitrary `.so` files load into
+/// every workflow step.
+const RESERVED_LD_FAMILY: &[&str] = &[
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "LD_AUDIT",
+    "LD_DEBUG",
+    "LD_DEBUG_OUTPUT",
+    "LD_BIND_NOW",
+    "LD_BIND_NOT",
+    "LD_PROFILE",
+    "LD_TRACE_LOADED_OBJECTS",
+    "GLIBC_TUNABLES",
+    "MALLOC_TRACE",
+];
+
+/// Tier 2 env var names: shell-execution hijacking. `BASH_ENV` /
+/// `ENV` source a script at non-interactive bash/sh start; `IFS`
+/// hijacks word splitting; `PS4` / `PROMPT_COMMAND` execute on prompt.
+const RESERVED_SHELL_HIJACK: &[&str] = &[
+    "IFS",
+    "BASH_ENV",
+    "ENV",
+    "BASHOPTS",
+    "SHELLOPTS",
+    "PS4",
+    "PROMPT_COMMAND",
+];
+
+/// Tier 3 env var names: ghars-owned. The renderer emits these from
+/// `trust_zone` / `name` / cache bindings / proxy / hooks; operator
+/// override would shadow framework-emitted values and silently break
+/// the layered configuration. Use the dedicated config surfaces
+/// instead (`[defaults] trust_zone`, `[[cache_pools.NAME]]`,
+/// `[proxy]`, `[[runner.hooks]]`).
+const RESERVED_GHARS_OWNED: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TMPDIR",
+    "LANG",
+    "CCACHE_DIR",
+    "CCACHE_MAXSIZE",
+    "KTSTR_LOCK_DIR",
+    "KTSTR_CACHE_DIR",
+    "SCCACHE_SERVER_UDS",
+    "SCCACHE_DIR",
+    "SCCACHE_NO_DAEMON",
+    "SCCACHE_CACHE_SIZE",
+    "HTTP_PROXY",
+    "http_proxy",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "NO_PROXY",
+    "no_proxy",
+    "ACTIONS_RUNNER_INPUT_TOKEN",
+    "ACTIONS_RUNNER_HOOK_JOB_STARTED",
+    "ACTIONS_RUNNER_HOOK_JOB_COMPLETED",
+    "RUNNER_ALLOW_RUNASROOT",
+];
+
+/// POSIX env-var-name shape regex: leading letter or underscore, then
+/// uppercase letters / digits / underscores. `systemd.exec(5)`'s
+/// `Environment=` parser accepts a broader set, but `Runner.Listener`'s
+/// `.env` consumer and most workflow shell scripts treat lowercase /
+/// punctuated names as suspicious. Strict-uppercase is the principled
+/// shape for operator-declared env vars.
+static ENV_VAR_NAME_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Z_][A-Z0-9_]*$").expect("env var name regex compiles"));
+
+/// Validate operator-declared `[defaults.environment]` /
+/// `[runner.environment]` block at config-load. Iterates over `vars`,
+/// `path_prepend`, `path_append` calling the per-field helpers.
+///
+/// # Errors
+///
+/// Returns `GharsError::Validation` on the first failing key / value /
+/// path entry. Each error names the offending input and the rationale
+/// (security-tier, ghars-owned, POSIX-shape, or path-syntax) so the
+/// operator learns the security model from the rejection.
+pub fn validate_environment_spec(spec: &EnvironmentSpec) -> Result<()> {
+    for (key, value) in &spec.vars {
+        validate_env_var_name(key)?;
+        validate_env_var_value(key, value)?;
+    }
+    for p in &spec.path_prepend {
+        validate_path_segment("path_prepend", p)?;
+    }
+    for p in &spec.path_append {
+        validate_path_segment("path_append", p)?;
+    }
+    Ok(())
+}
+
+/// Reject empty / non-POSIX / deny-listed env-var names with per-tier
+/// rationale.
+fn validate_env_var_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        return Err(validation(
+            "operator-declared env var name is empty".to_string(),
+            "every entry in [defaults.environment].vars / [runner.environment].vars must have a non-empty key",
+        ));
+    }
+    if RESERVED_LD_FAMILY.iter().any(|&r| r == name) {
+        return Err(validation(
+            format!("env var name `{name}` is rejected (LD_* env vars enable shared-library injection — dynamic-loader attack surface)"),
+            "pick a different name; if you need to override loader behavior for a specific workflow, do it inside a wrapper script the step invokes",
+        ));
+    }
+    if RESERVED_SHELL_HIJACK.iter().any(|&r| r == name) {
+        return Err(validation(
+            format!("env var name `{name}` is rejected (BASH_ENV / IFS / etc. enable shell-execution hijacking before workflow steps see env)"),
+            "pick a different name; shell behavior should be configured inside the step's script, not via cross-step env",
+        ));
+    }
+    if RESERVED_GHARS_OWNED.iter().any(|&r| r == name) {
+        let dedicated = match name {
+            "PATH" => "use environment.path_prepend / environment.path_append",
+            "HOME" | "USER" | "LOGNAME" | "SHELL" | "TMPDIR" => "set by the runner unit per trust_zone — not operator-configurable",
+            "LANG" => "fixed to C.UTF-8 by ghars",
+            "CCACHE_DIR" | "CCACHE_MAXSIZE" => "set via [[cache_pools.NAME]] kinds = [\"ccache\"]",
+            "KTSTR_LOCK_DIR" | "KTSTR_CACHE_DIR" => "set per trust_zone by ghars (will become operator-configurable via cache_pools kind=\"ktstr\" in a future release)",
+            n if n.starts_with("SCCACHE_") => "set via [[cache_pools.NAME]] kinds = [\"sccache\"]",
+            "HTTP_PROXY" | "http_proxy" | "HTTPS_PROXY" | "https_proxy" | "NO_PROXY" | "no_proxy" => "set via [proxy] / [[runner.proxy]]",
+            "ACTIONS_RUNNER_INPUT_TOKEN" => "set by the runner-registration flow; operator override would corrupt registration",
+            "ACTIONS_RUNNER_HOOK_JOB_STARTED" | "ACTIONS_RUNNER_HOOK_JOB_COMPLETED" => "set via [[runner.hooks]]",
+            "RUNNER_ALLOW_RUNASROOT" => "ghars never runs the runner as root; operator override would not change that",
+            _ => "use the dedicated config surface for this key",
+        };
+        return Err(validation(
+            format!("env var name `{name}` is rejected (rendered into Environment= and .env from ghars internal state — use a different key)"),
+            dedicated,
+        ));
+    }
+    if !ENV_VAR_NAME_REGEX.is_match(name) {
+        return Err(validation(
+            format!("env var name `{name}` does not match POSIX env-var-name shape `^[A-Z_][A-Z0-9_]*$`"),
+            "operator-declared env var names must use uppercase letters, digits, and underscores only, with a leading letter or underscore",
+        ));
+    }
+    Ok(())
+}
+
+/// Reject env-var values containing control characters (`\n` / `\r` /
+/// `\0` would inject a second `Environment=` directive line in
+/// 00-ghars.conf or a second `KEY=VALUE` line in .env, allowing
+/// operator-supplied data to escape its value position and forge a
+/// new env var).
+fn validate_env_var_value(key: &str, value: &str) -> Result<()> {
+    for c in value.chars() {
+        if c == '\n' || c == '\r' || c == '\0' || c.is_control() {
+            return Err(validation(
+                format!("env var `{key}` value contains a control character (newline / carriage return / NUL / other control char)"),
+                "values must be single-line printable text; multi-line values would inject a second Environment= directive into 00-ghars.conf and a second KEY=VALUE line into .env",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Reject empty / non-absolute / `:`-containing / control-char-
+/// containing path segments. The `:` character is the PATH separator;
+/// embedding it in a single segment would silently split the entry.
+fn validate_path_segment(field: &str, p: &camino::Utf8PathBuf) -> Result<()> {
+    let s = p.as_str();
+    if s.is_empty() {
+        return Err(validation(
+            format!("{field} entry is empty"),
+            "every entry must be a non-empty absolute path",
+        ));
+    }
+    if !p.is_absolute() {
+        return Err(validation(
+            format!("{field} entry `{s}` is not an absolute path"),
+            "PATH segments must be absolute (relative paths are workflow-step CWD-dependent and would silently resolve unpredictably)",
+        ));
+    }
+    for c in s.chars() {
+        if c == ':' {
+            return Err(validation(
+                format!("{field} entry `{s}` contains `:`"),
+                "`:` is the PATH separator; embed it in a single segment and the entry silently splits — use multiple entries instead",
+            ));
+        }
+        if c == '\n' || c == '\r' || c == '\0' || c.is_control() {
+            return Err(validation(
+                format!("{field} entry `{s}` contains a control character"),
+                "PATH segments must be single-line printable text — multi-line entries would corrupt the rendered .path file and 00-ghars.conf Environment=PATH= line",
+            ));
+        }
     }
     Ok(())
 }

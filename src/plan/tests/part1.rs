@@ -2678,6 +2678,7 @@ proptest::proptest! {
         // Build the [[runner]] spec. trust_zone is pinned non-
         // empty so merge_defaults doesn't substitute "default".
         let runner = RunnerSpec {
+            environment: crate::config::EnvironmentSpec::default(),
             name: "rt".into(),
             count: None,
             url: format!("https://github.com/{url_path}"),
