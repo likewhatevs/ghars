@@ -896,10 +896,13 @@ fn canonicalize_network_spec(spec: &NetworkSpec) -> NetworkSpec {
     // `spec_hash` are byte-stable across cosmetically-equivalent TOML.
     //
     // The systemd parser at `systemd/src/shared/in-addr-prefix-util.c`
-    // (`in_addr_prefix_add`) calls `in_addr_mask` on every entry
-    // before the kernel-side BPF map insert, so the kernel layer
-    // already sees the masked network — operator host bits are pure
-    // ghars-side spec_hash drift risk. Mirrors the byte-equality
+    // (`in_addr_prefix_add` at line 91) calls `in_addr_mask` on
+    // every entry in PID 1 user-space at line 102 BEFORE issuing
+    // the `bpf(2)` `BPF_MAP_UPDATE_ELEM` syscall that inserts the
+    // entry into the kernel-side LPM trie, so the kernel BPF map
+    // already sees the masked network — operator host bits are
+    // discarded in user-space and never reach the kernel. They are
+    // pure ghars-side spec_hash drift risk. Mirrors the byte-equality
     // pattern established for the Hardening Vec<String> fields:
     // sort+dedup canonicalizes ORDER+ELEMENT-COUNT, trunc canonicalizes
     // each ELEMENT's CONTENT.

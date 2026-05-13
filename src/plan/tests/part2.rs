@@ -1102,12 +1102,13 @@ fn render_unchanged_on_ip_allow_ip_deny_reorder_post_merge() {
 /// Property: operator-supplied CIDRs with host bits set
 /// (`10.0.0.5/24`) get normalized to network address
 /// (`10.0.0.0/24`) by `canonicalize_network_spec` before sort+dedup.
-/// systemd's kernel-side BPF map insert already masks host bits via
-/// `in_addr_mask` (see `systemd/src/shared/in-addr-prefix-util.c`
-/// `in_addr_prefix_add`), so an operator's host bits are functionally
-/// meaningless at the kernel layer; ghars-side normalization
-/// preserves `spec_hash` byte-stability across cosmetically-
-/// equivalent TOML.
+/// systemd's PID 1 user-space masks host bits via `in_addr_mask`
+/// at `systemd/src/shared/in-addr-prefix-util.c` `in_addr_prefix_add`
+/// (line 102) BEFORE issuing the `bpf(2)` `BPF_MAP_UPDATE_ELEM`
+/// syscall that inserts the entry into the kernel-side LPM trie,
+/// so operator host bits are discarded in user-space and never
+/// reach the kernel. ghars-side normalization preserves `spec_hash`
+/// byte-stability across cosmetically-equivalent TOML.
 ///
 /// Cases cover IPv4 (mid-octet, max host bits, cross-octet,
 /// non-octet-aligned prefix, small-subnet boundary), the idempotent
