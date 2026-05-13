@@ -40,6 +40,29 @@ jobs:
       - uses: taiki-e/install-action@nextest
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: taiki-e/install-action@just
+      - name: Fail on committed insta .snap.new files
+        # Reject snapshot updates that were not reviewed + accepted
+        # before commit. `*.snap.new` are insta's pending-review
+        # marker; a snapshot change must land as the corresponding
+        # `*.snap` (operator ran `cargo insta review` and chose
+        # accept), not as the unreviewed `*.snap.new`. Pre-fix, a
+        # committer could accidentally `git add tests/snapshots/`
+        # and ship pending updates that subsequent runs would treat
+        # as authoritative. This gate fires on the COMMIT state
+        # (`git ls-files`), not the working tree, so a developer's
+        # local insta run that produces transient `.snap.new` files
+        # without committing them doesn't trip CI.
+        run: |
+          set -eu
+          pending=$(git ls-files 'tests/snapshots/*.snap.new')
+          if [ -n "$pending" ]; then
+            echo "::error::Uncommitted insta snapshot updates were committed (.snap.new files in repo)."
+            echo "$pending" | sed 's/^/  /'
+            echo ""
+            echo "Run 'cargo insta review' locally, accept or reject each pending update, and commit"
+            echo "the resulting '.snap' files (NOT the '.snap.new' files) to the repo."
+            exit 1
+          fi
       - name: just ci-fmt
         run: just ci-fmt
       - name: just ci-clippy
