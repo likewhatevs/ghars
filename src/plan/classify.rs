@@ -2,9 +2,10 @@
 //! the on-disk `X-Ghars-*` annotation set out of a discovered runner's
 //! `00-ghars.conf` drop-in, and classify which of the recreate-class
 //! identity fields differ from the desired effective spec. In-place-
-//! only fields (`auth_name`, `trust_zone`, `caches`) are recorded as
-//! [`super::types::FieldChange`]s without contributing a recreate
-//! reason so the operator-visible diff still shows the change.
+//! only fields (`auth_name`, `trust_zone`, `caches`, `dns`, `ipv6`)
+//! are recorded as [`super::types::FieldChange`]s without contributing
+//! a recreate reason so the operator-visible diff still shows the
+//! change.
 
 use crate::config::EffectiveRunnerSpec;
 use crate::state::{DiscoveredRunner, extract_x_ghars};

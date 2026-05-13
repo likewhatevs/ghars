@@ -174,7 +174,7 @@ impl DriftCause {
 ///
 /// No `Number` variant: every current producer in
 /// `classify_recreate_reasons_from_annotations` emits either a
-/// scalar string (8 paths) or a list of strings (2 paths).
+/// scalar string (10 paths) or a list of strings (2 paths).
 /// Adding `Number` now would be premature — bump schema and add
 /// the variant when a numeric field appears. Likely v0.2
 /// candidates: `count` (pre-expansion runner count),
@@ -186,7 +186,7 @@ impl DriftCause {
 pub enum FieldValue {
     /// Scalar string. Used for: `url`, `runner_version`, `arch`,
     /// `runner_sha256`, `runner_tarball`, `network`, `auth_name`,
-    /// `trust_zone`.
+    /// `trust_zone`, `dns`, `ipv6`.
     String(String),
     /// Ordered list of strings. Used for: `labels` (sorted
     /// alphabetically per canonicalization — `merge_defaults`,
@@ -241,9 +241,9 @@ impl FieldValue {
 /// by `classify_recreate_reasons_from_annotations` for every annotation-
 /// covered field whose value differs — both recreate-class fields (the
 /// emit pushes a matching `recreate_reasons` token) and in-place fields
-/// (`auth_name`, `trust_zone`, `caches` — emit without pushing a token
-/// so the diff is visible without forcing a recreate). CLI consumers
-/// render this as `path: before → after`.
+/// (`auth_name`, `trust_zone`, `caches`, `dns`, `ipv6` — emit without
+/// pushing a token so the diff is visible without forcing a recreate).
+/// CLI consumers render this as `path: before → after`.
 ///
 /// `path` is a stable static identifier — see [`Self::path`] field
 /// doc for the full enumeration. `before` and `after` carry typed
@@ -260,7 +260,7 @@ pub struct FieldChange {
     ///   `runner_tarball`, `network`.
     /// - In-place (apply rewrites the per-runner drop-in body and
     ///   cycles the unit, no remove → create): `auth_name`,
-    ///   `trust_zone`, `caches`.
+    ///   `trust_zone`, `caches`, `dns`, `ipv6`.
     ///
     /// The flat-token list mixes both classes; presence of a
     /// `FieldChange` does NOT imply `requires_recreate=true` — read
@@ -386,11 +386,11 @@ pub struct RunnerDelta {
     /// Populated for both recreate-class diffs (e.g. `url`,
     /// `runner_version`, `labels`, `arch`, `runner_sha256`,
     /// `runner_tarball`, `network`) and in-place diffs that have
-    /// an annotation source (`auth_name`, `trust_zone`, `caches` —
-    /// the apply-time reconciliation rewrites the per-runner drop-in
-    /// body and cycles the unit, not remove → create). The presence
-    /// of a `FieldChange` does NOT imply `requires_recreate=true`;
-    /// check `recreate_reasons` for that.
+    /// an annotation source (`auth_name`, `trust_zone`, `caches`,
+    /// `dns`, `ipv6` — the apply-time reconciliation rewrites the
+    /// per-runner drop-in body and cycles the unit, not remove →
+    /// create). The presence of a `FieldChange` does NOT imply
+    /// `requires_recreate=true`; check `recreate_reasons` for that.
     ///
     /// Empty when:
     /// - the in-place update fired via the `uncovered` arm (no
