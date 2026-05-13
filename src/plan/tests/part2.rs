@@ -2664,6 +2664,592 @@ fn lower_to_effective_collapses_some_empty_proxy_to_none() {
     );
 }
 
+/// End-to-end pin for dns/ipv6 annotation contract: render
+/// emits X-Ghars-Dns + X-Ghars-Ipv6 → DiscoveredAnnotations parser
+/// round-trips them → classifier emits FieldChange (in-place, NOT
+/// a recreate reason) when desired dns differs from discovered.
+///
+/// Pins the full Stage 1 chain so a regression at any layer fails
+/// immediately: render-emission missing → parser sees None →
+/// classifier skips → uncovered warn fires. Parser round-trip
+/// broken → classifier compares None vs Some → skip. Classifier
+/// arm missing → no FieldChange → uncovered warn fires when dns
+/// is the lone change.
+#[test]
+fn dns_ipv6_annotations_round_trip_and_route_in_place() {
+    use crate::config::{
+        DnsMode, EffectiveNetworkBinding, Ipv6Mode, NetworkMode, NetworkSpec,
+    };
+    use crate::plan::FieldChange;
+
+    let defaults = Defaults::default();
+    let mk_spec = |dns: DnsMode| -> EffectiveRunnerSpec {
+        let mut spec = merge_defaults(
+            &minimal_runner("a"),
+            &defaults,
+            "pat".into(),
+            vec![],
+            None,
+            None,
+            None,
+            Arch::X86_64,
+            "/etc/ghars/ghars.toml".into(),
+        );
+        spec.network = Some(EffectiveNetworkBinding {
+            name: "isolated".into(),
+            spec: NetworkSpec {
+                mode: NetworkMode::Netns,
+                allowed_egress: vec![],
+                ip_allow: vec![],
+                ip_deny: vec![],
+                restrict_address_families: vec![],
+                dns,
+                ipv6: Ipv6Mode::Disabled,
+            },
+            subnet: None,
+        });
+        spec.spec_hash = spec_hash(&spec);
+        spec
+    };
+
+    let discovered_spec = mk_spec(DnsMode::Forward);
+    let desired_spec = mk_spec(DnsMode::Static {
+        servers: vec!["1.1.1.1".parse().unwrap()],
+    });
+
+    let rendered = crate::systemd::render_runner_unit(&discovered_spec).unwrap();
+    let body = rendered.drop_ins.get("00-ghars.conf").unwrap();
+
+    let anns = DiscoveredAnnotations::from_drop_in_body(body);
+    assert_eq!(
+        anns.dns,
+        Some(DnsMode::Forward),
+        "X-Ghars-Dns must round-trip through render → parse"
+    );
+    assert_eq!(
+        anns.ipv6,
+        Some(Ipv6Mode::Disabled),
+        "X-Ghars-Ipv6 must round-trip through render → parse"
+    );
+
+    let mut out_changes: Vec<FieldChange> = Vec::new();
+    let recreate_reasons =
+        classify_recreate_reasons_from_annotations(&anns, &desired_spec, &mut out_changes);
+
+    assert!(
+        !recreate_reasons.iter().any(|r| *r == "dns" || *r == "ipv6"),
+        "dns/ipv6 changes must NOT push recreate reasons (in-place only); got: {recreate_reasons:?}"
+    );
+    let dns_change = out_changes.iter().find(|c| c.path == "dns");
+    assert!(
+        dns_change.is_some(),
+        "dns change must emit a FieldChange (in-place signal); got: {out_changes:?}"
+    );
+}
+
+/// Round-trip pin for `DnsMode::Static { servers }` — the
+/// non-trivial annotation shape carrying a server-list payload.
+/// `DnsMode::Forward` renders as the literal `forward` (no payload);
+/// `Static` renders as `static:<comma-csv-of-ips>` via
+/// `crate::config::dns_to_annotation`. A parser bug that handles
+/// Forward but not Static would slip through the sibling test
+/// which only covers Forward → Static (Forward is the discovered
+/// value there). Discovered = Static here forces the parser to
+/// read back the payload vec.
+#[test]
+fn dns_static_with_servers_round_trips_through_render_parse_classify() {
+    use crate::config::{
+        DnsMode, EffectiveNetworkBinding, Ipv6Mode, NetworkMode, NetworkSpec,
+    };
+    use crate::plan::FieldChange;
+
+    let defaults = Defaults::default();
+    let mk_spec = |dns: DnsMode| -> EffectiveRunnerSpec {
+        let mut spec = merge_defaults(
+            &minimal_runner("a"),
+            &defaults,
+            "pat".into(),
+            vec![],
+            None,
+            None,
+            None,
+            Arch::X86_64,
+            "/etc/ghars/ghars.toml".into(),
+        );
+        spec.network = Some(EffectiveNetworkBinding {
+            name: "isolated".into(),
+            spec: NetworkSpec {
+                mode: NetworkMode::Netns,
+                allowed_egress: vec![],
+                ip_allow: vec![],
+                ip_deny: vec![],
+                restrict_address_families: vec![],
+                dns,
+                ipv6: Ipv6Mode::Disabled,
+            },
+            subnet: None,
+        });
+        spec.spec_hash = spec_hash(&spec);
+        spec
+    };
+
+    let discovered_static = DnsMode::Static {
+        servers: vec!["8.8.8.8".parse().unwrap(), "8.8.4.4".parse().unwrap()],
+    };
+    let desired_static = DnsMode::Static {
+        servers: vec!["1.1.1.1".parse().unwrap()],
+    };
+    let discovered_spec = mk_spec(discovered_static.clone());
+    let desired_spec = mk_spec(desired_static);
+
+    let rendered = crate::systemd::render_runner_unit(&discovered_spec).unwrap();
+    let body = rendered.drop_ins.get("00-ghars.conf").unwrap();
+    assert!(
+        body.contains("\nX-Ghars-Dns=static:8.8.8.8,8.8.4.4\n"),
+        "DnsMode::Static must emit `static:<comma-csv>` form; got:\n{body}"
+    );
+
+    let anns = DiscoveredAnnotations::from_drop_in_body(body);
+    assert_eq!(
+        anns.dns,
+        Some(discovered_static),
+        "X-Ghars-Dns Static payload must round-trip through render → parse with servers preserved"
+    );
+
+    let mut out_changes: Vec<FieldChange> = Vec::new();
+    let recreate_reasons =
+        classify_recreate_reasons_from_annotations(&anns, &desired_spec, &mut out_changes);
+
+    assert!(
+        !recreate_reasons.iter().any(|r| *r == "dns" || *r == "ipv6"),
+        "Static→Static dns change must NOT push recreate reasons; got: {recreate_reasons:?}"
+    );
+    let dns_change = out_changes
+        .iter()
+        .find(|c| c.path == "dns")
+        .expect("Static→Static change must emit a dns FieldChange");
+    assert!(
+        matches!(
+            &dns_change.before,
+            FieldValue::String(s) if s == "static:8.8.8.8,8.8.4.4"
+        ),
+        "dns FieldChange.before must use operator-facing static:csv form; got: {:?}",
+        dns_change.before
+    );
+    assert!(
+        matches!(
+            &dns_change.after,
+            FieldValue::String(s) if s == "static:1.1.1.1"
+        ),
+        "dns FieldChange.after must use operator-facing static:csv form; got: {:?}",
+        dns_change.after
+    );
+}
+
+/// Coverage for the ipv6 classifier arm — the sibling
+/// `dns_ipv6_annotations_round_trip_and_route_in_place` only flips
+/// dns, leaving ipv6 identical between discovered and desired, so
+/// the ipv6 FieldChange branch never executes there. A future
+/// regression that breaks the ipv6 comparator (e.g. wrong variant
+/// match) would pass that test. Constructs the EffectiveRunnerSpec
+/// directly so the v0.1 apply-time `Ipv6Mode::Enabled` hard-error
+/// (config-load gate) doesn't fire — the classifier arm itself
+/// must work in both directions for the v0.2-future case.
+#[test]
+fn ipv6_classifier_arm_routes_in_place_field_change() {
+    use crate::config::{
+        DnsMode, EffectiveNetworkBinding, Ipv6Mode, NetworkMode, NetworkSpec,
+    };
+    use crate::plan::FieldChange;
+
+    let defaults = Defaults::default();
+    let mk_spec = |ipv6: Ipv6Mode| -> EffectiveRunnerSpec {
+        let mut spec = merge_defaults(
+            &minimal_runner("a"),
+            &defaults,
+            "pat".into(),
+            vec![],
+            None,
+            None,
+            None,
+            Arch::X86_64,
+            "/etc/ghars/ghars.toml".into(),
+        );
+        spec.network = Some(EffectiveNetworkBinding {
+            name: "isolated".into(),
+            spec: NetworkSpec {
+                mode: NetworkMode::Netns,
+                allowed_egress: vec![],
+                ip_allow: vec![],
+                ip_deny: vec![],
+                restrict_address_families: vec![],
+                dns: DnsMode::Forward,
+                ipv6,
+            },
+            subnet: None,
+        });
+        spec.spec_hash = spec_hash(&spec);
+        spec
+    };
+
+    let discovered_spec = mk_spec(Ipv6Mode::Disabled);
+    let desired_spec = mk_spec(Ipv6Mode::Enabled);
+
+    let rendered = crate::systemd::render_runner_unit(&discovered_spec).unwrap();
+    let body = rendered.drop_ins.get("00-ghars.conf").unwrap();
+
+    let anns = DiscoveredAnnotations::from_drop_in_body(body);
+    assert_eq!(anns.ipv6, Some(Ipv6Mode::Disabled));
+
+    let mut out_changes: Vec<FieldChange> = Vec::new();
+    let recreate_reasons =
+        classify_recreate_reasons_from_annotations(&anns, &desired_spec, &mut out_changes);
+
+    assert!(
+        !recreate_reasons.iter().any(|r| *r == "dns" || *r == "ipv6"),
+        "ipv6 change must NOT push recreate reasons; got: {recreate_reasons:?}"
+    );
+    let ipv6_change = out_changes
+        .iter()
+        .find(|c| c.path == "ipv6")
+        .expect("ipv6 change must emit a FieldChange (in-place signal)");
+    assert!(
+        matches!(
+            &ipv6_change.before,
+            FieldValue::String(s) if s == "disabled"
+        ),
+        "ipv6 FieldChange.before must be snake_case enum string; got: {:?}",
+        ipv6_change.before
+    );
+    assert!(
+        matches!(
+            &ipv6_change.after,
+            FieldValue::String(s) if s == "enabled"
+        ),
+        "ipv6 FieldChange.after must be snake_case enum string; got: {:?}",
+        ipv6_change.after
+    );
+}
+
+/// Legacy-runner contract: a drop-in body without `X-Ghars-Dns` /
+/// `X-Ghars-Ipv6` lines (the on-disk state of any runner created
+/// before those annotations were emitted) yields
+/// `DiscoveredAnnotations { dns: None, ipv6: None, .. }`. The
+/// classifier MUST skip its dns/ipv6 arms in that case — otherwise
+/// every legacy runner would emit a spurious dns/ipv6 FieldChange on
+/// the first post-upgrade plan.
+///
+/// Routes the missing annotations into the uncovered arm (which is
+/// in-place — see `compute::plan_from`'s fallback), so the in-place
+/// rewrite re-establishes the drop-in including the new annotations;
+/// the second plan classifies cleanly with full annotation coverage.
+#[test]
+fn legacy_runner_without_dns_ipv6_annotations_skips_classifier_arms() {
+    use crate::config::{
+        DnsMode, EffectiveNetworkBinding, Ipv6Mode, NetworkMode, NetworkSpec,
+    };
+    use crate::plan::FieldChange;
+
+    // Simulate a legacy drop-in body: every annotation the older
+    // renderer would write EXCEPT X-Ghars-Dns and X-Ghars-Ipv6.
+    let legacy_body = "\
+[Unit]
+X-Ghars-Managed=true
+X-Ghars-Schema-Version=1
+X-Ghars-Renderer-Schema=3
+X-Ghars-Runner-Url=https://github.com/owner/repo
+X-Ghars-Auth-Name=pat
+X-Ghars-Trust-Zone=default
+X-Ghars-Network-Mode=netns
+X-Ghars-Labels=
+X-Ghars-Caches=
+";
+    let anns = DiscoveredAnnotations::from_drop_in_body(legacy_body);
+    assert_eq!(anns.dns, None, "annotation-absent body must yield dns=None");
+    assert_eq!(anns.ipv6, None, "annotation-absent body must yield ipv6=None");
+
+    let defaults = Defaults::default();
+    let mut desired_spec = merge_defaults(
+        &minimal_runner("a"),
+        &defaults,
+        "pat".into(),
+        vec![],
+        None,
+        None,
+        None,
+        Arch::X86_64,
+        "/etc/ghars/ghars.toml".into(),
+    );
+    desired_spec.network = Some(EffectiveNetworkBinding {
+        name: "isolated".into(),
+        spec: NetworkSpec {
+            mode: NetworkMode::Netns,
+            allowed_egress: vec![],
+            ip_allow: vec![],
+            ip_deny: vec![],
+            restrict_address_families: vec![],
+            dns: DnsMode::Static {
+                servers: vec!["1.1.1.1".parse().unwrap()],
+            },
+            ipv6: Ipv6Mode::Enabled,
+        },
+        subnet: None,
+    });
+    desired_spec.spec_hash = spec_hash(&desired_spec);
+
+    let mut out_changes: Vec<FieldChange> = Vec::new();
+    let _ = classify_recreate_reasons_from_annotations(&anns, &desired_spec, &mut out_changes);
+
+    assert!(
+        !out_changes.iter().any(|c| c.path == "dns"),
+        "pre-fix runner (dns annotation absent) must NOT emit a dns FieldChange; got: {out_changes:?}"
+    );
+    assert!(
+        !out_changes.iter().any(|c| c.path == "ipv6"),
+        "pre-fix runner (ipv6 annotation absent) must NOT emit an ipv6 FieldChange; got: {out_changes:?}"
+    );
+}
+
+/// Graceful degradation: malformed `X-Ghars-Dns` (unknown prefix
+/// or unparseable IP) and `X-Ghars-Ipv6` (unknown string) parse to
+/// `None`, matching the absent-annotation behavior. Operator-edited
+/// drop-ins or a future schema bump that writes an incompatible
+/// shape must not crash the planner or emit a spurious change —
+/// they degrade to the legacy-runner path (skip → uncovered →
+/// in-place rewrite re-establishes correct annotations on next
+/// apply).
+///
+/// Non-empty unparseable input also emits a `tracing::warn!` so
+/// the operator gets a journal hint instead of a silent skip; the
+/// warning is asserted via `tracing-test`. Empty input stays silent
+/// (treated identically to absent annotation — the legacy-runner
+/// path emits no diagnostic so a fresh upgrade doesn't flood the
+/// log with warns for every legacy runner discovered).
+#[test]
+#[tracing_test::traced_test]
+fn malformed_dns_ipv6_annotations_degrade_to_none_parse() {
+    let unknown_prefix_body = "\
+[Unit]
+X-Ghars-Dns=forwarding
+X-Ghars-Ipv6=on
+";
+    let anns = DiscoveredAnnotations::from_drop_in_body(unknown_prefix_body);
+    assert_eq!(
+        anns.dns, None,
+        "unknown dns prefix (`forwarding`) must parse to None, not crash"
+    );
+    assert_eq!(
+        anns.ipv6, None,
+        "unknown Ipv6Mode string (`on`) must parse to None, not crash"
+    );
+    assert!(
+        logs_contain("unrecognized prefix"),
+        "unknown dns prefix must emit a tracing::warn so operators see the malformed value"
+    );
+    assert!(
+        logs_contain("expected `disabled` or `enabled`"),
+        "unknown ipv6 value must emit a tracing::warn so operators see the malformed value"
+    );
+
+    let bad_ip_body = "\
+[Unit]
+X-Ghars-Dns=static:1.1.1.1,not-an-ip
+X-Ghars-Ipv6=
+";
+    let anns = DiscoveredAnnotations::from_drop_in_body(bad_ip_body);
+    assert_eq!(
+        anns.dns, None,
+        "`static:` with an unparseable IP token must parse to None (one bad token rejects the whole list)"
+    );
+    assert_eq!(
+        anns.ipv6, None,
+        "empty X-Ghars-Ipv6 must parse to None (no false-default to Disabled)"
+    );
+    assert!(
+        logs_contain("unparseable IP"),
+        "bad-IP-in-static-list must emit a tracing::warn so operators see the malformed value"
+    );
+}
+
+/// Inverse: empty annotation value (`X-Ghars-Dns=` or `X-Ghars-Ipv6=`
+/// with no payload) MUST stay silent — no `tracing::warn!`. Empty
+/// is the legacy-runner / annotation-absent path; warning on every
+/// legacy runner would flood the log during the first plan after
+/// upgrade.
+#[test]
+#[tracing_test::traced_test]
+fn empty_dns_ipv6_annotation_values_silent_no_warn() {
+    let empty_body = "\
+[Unit]
+X-Ghars-Dns=
+X-Ghars-Ipv6=
+";
+    let anns = DiscoveredAnnotations::from_drop_in_body(empty_body);
+    assert_eq!(anns.dns, None);
+    assert_eq!(anns.ipv6, None);
+    // Assert the precise warn-substring shapes that the malformed
+    // test pins as present — survives a future warn-text rephrase
+    // that drops `X-Ghars-Dns` / `X-Ghars-Ipv6` literals from the
+    // message text (the broader substring would silently pass even
+    // if the warn DID emit).
+    assert!(
+        !logs_contain("unrecognized prefix"),
+        "empty X-Ghars-Dns must NOT emit the unrecognized-prefix warn (legacy-runner contract)"
+    );
+    assert!(
+        !logs_contain("unparseable IP"),
+        "empty X-Ghars-Dns must NOT emit the unparseable-IP warn (legacy-runner contract)"
+    );
+    assert!(
+        !logs_contain("expected `disabled` or `enabled`"),
+        "empty X-Ghars-Ipv6 must NOT emit the unknown-value warn (legacy-runner contract)"
+    );
+}
+
+/// Asymmetry-guard pin: when desired removes the network ref
+/// entirely (`desired.network = None`), the dns + ipv6 classifier
+/// arms MUST skip — they're NetworkSpec sub-fields and don't exist
+/// without a network binding. Without this guard the dns arm would
+/// emit `before=<discovered> → after=""` (empty-string fallback via
+/// `unwrap_or_default()`) while the ipv6 arm would emit `before=
+/// <discovered> → after="disabled"` (Disabled default via
+/// `unwrap_or`) — asymmetric ghost-FieldChanges representing the
+/// same "network removed" semantic in two different ways. The
+/// network-mode classifier is the real signal for network removal;
+/// dns/ipv6 are sub-field noise once network is gone.
+#[test]
+fn classifier_skips_dns_ipv6_when_desired_removes_network() {
+    use crate::config::{DnsMode, Ipv6Mode};
+    use crate::plan::FieldChange;
+
+    let defaults = Defaults::default();
+    let mut desired_spec = merge_defaults(
+        &minimal_runner("a"),
+        &defaults,
+        "pat".into(),
+        vec![],
+        None,
+        None,
+        None,
+        Arch::X86_64,
+        "/etc/ghars/ghars.toml".into(),
+    );
+    assert!(
+        desired_spec.network.is_none(),
+        "minimal_runner has no network binding — desired.network = None"
+    );
+    desired_spec.spec_hash = spec_hash(&desired_spec);
+
+    // Simulate a prior-state drop-in carrying dns + ipv6 annotations
+    // (operator HAD a netns network with custom dns, now removed
+    // the network ref entirely). Parses via the production
+    // `from_drop_in_body` path so the discovered values match what
+    // the renderer would have written on disk.
+    let prior_body = "\
+[Unit]
+X-Ghars-Network-Mode=netns
+X-Ghars-Dns=static:1.1.1.1
+X-Ghars-Ipv6=enabled
+";
+    let anns = DiscoveredAnnotations::from_drop_in_body(prior_body);
+    assert_eq!(
+        anns.dns,
+        Some(DnsMode::Static {
+            servers: vec!["1.1.1.1".parse().unwrap()]
+        }),
+        "prior body must round-trip to Some(DnsMode::Static{{...}})"
+    );
+    assert_eq!(
+        anns.ipv6,
+        Some(Ipv6Mode::Enabled),
+        "prior body must round-trip to Some(Ipv6Mode::Enabled)"
+    );
+
+    let mut out_changes: Vec<FieldChange> = Vec::new();
+    let _ = classify_recreate_reasons_from_annotations(&anns, &desired_spec, &mut out_changes);
+
+    assert!(
+        !out_changes.iter().any(|c| c.path == "dns"),
+        "dns FieldChange MUST NOT emit when desired.network = None (avoid ghost `→ \"\"`); got: {out_changes:?}"
+    );
+    assert!(
+        !out_changes.iter().any(|c| c.path == "ipv6"),
+        "ipv6 FieldChange MUST NOT emit when desired.network = None (avoid ghost `→ disabled`); got: {out_changes:?}"
+    );
+}
+
+/// Inverse-direction pin: when discovered dns/ipv6 match desired,
+/// the classifier MUST NOT emit FieldChange entries. A bug that
+/// always-pushes regardless of equality would surface a noisy
+/// no-op plan and pollute `out_changes`; a bug in the equality
+/// check (e.g. comparing `Option<&DnsMode>` against the wrong
+/// reference) would also slip in here.
+#[test]
+fn identical_dns_ipv6_emit_no_field_change() {
+    use crate::config::{
+        DnsMode, EffectiveNetworkBinding, Ipv6Mode, NetworkMode, NetworkSpec,
+    };
+    use crate::plan::FieldChange;
+
+    let defaults = Defaults::default();
+    let mk_spec = || -> EffectiveRunnerSpec {
+        let mut spec = merge_defaults(
+            &minimal_runner("a"),
+            &defaults,
+            "pat".into(),
+            vec![],
+            None,
+            None,
+            None,
+            Arch::X86_64,
+            "/etc/ghars/ghars.toml".into(),
+        );
+        spec.network = Some(EffectiveNetworkBinding {
+            name: "isolated".into(),
+            spec: NetworkSpec {
+                mode: NetworkMode::Netns,
+                allowed_egress: vec![],
+                ip_allow: vec![],
+                ip_deny: vec![],
+                restrict_address_families: vec![],
+                dns: DnsMode::Static {
+                    servers: vec!["1.1.1.1".parse().unwrap()],
+                },
+                ipv6: Ipv6Mode::Disabled,
+            },
+            subnet: None,
+        });
+        spec.spec_hash = spec_hash(&spec);
+        spec
+    };
+
+    let discovered_spec = mk_spec();
+    let desired_spec = mk_spec();
+
+    let rendered = crate::systemd::render_runner_unit(&discovered_spec).unwrap();
+    let body = rendered.drop_ins.get("00-ghars.conf").unwrap();
+    let anns = DiscoveredAnnotations::from_drop_in_body(body);
+    assert_eq!(
+        anns.dns,
+        Some(DnsMode::Static {
+            servers: vec!["1.1.1.1".parse().unwrap()]
+        })
+    );
+    assert_eq!(anns.ipv6, Some(Ipv6Mode::Disabled));
+
+    let mut out_changes: Vec<FieldChange> = Vec::new();
+    let _ = classify_recreate_reasons_from_annotations(&anns, &desired_spec, &mut out_changes);
+
+    assert!(
+        !out_changes.iter().any(|c| c.path == "dns"),
+        "identical dns must NOT emit FieldChange; got: {out_changes:?}"
+    );
+    assert!(
+        !out_changes.iter().any(|c| c.path == "ipv6"),
+        "identical ipv6 must NOT emit FieldChange; got: {out_changes:?}"
+    );
+}
+
 /// Parallel pin for hooks normalization at lower_to_effective —
 /// `is_empty` predicate must be plumbed into the resolver via the
 /// `.filter(|h| !h.is_empty())` call.

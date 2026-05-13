@@ -1084,6 +1084,118 @@ pub enum DnsMode {
     },
 }
 
+/// Render `DnsMode` to the operator-facing annotation form used in
+/// `X-Ghars-Dns=` (00-ghars.conf drop-in) and `FieldChange` before/
+/// after values: `forward` for `Forward`, `static:<comma-csv>` for
+/// `Static { servers }`. Matches the plain-string convention of
+/// every other `X-Ghars-*` annotation (`X-Ghars-Network-Mode=netns`,
+/// `X-Ghars-Labels=foo,bar`) rather than serde-JSON — JSON for
+/// `Static` produces a nested `{"mode":"static","servers":{"servers":
+/// [...]}}` shape (struct-variant + tag+content serde quirk) that
+/// is ugly in `systemctl cat` and inconsistent with the rest of the
+/// annotation surface.
+///
+/// Free fn (not `impl DnsMode` method) so `.map(dns_to_annotation)`
+/// composition at [`crate::plan::classify`] works without closure
+/// indirection.
+#[must_use]
+pub(crate) fn dns_to_annotation(dns: &DnsMode) -> String {
+    match dns {
+        DnsMode::Forward => "forward".to_owned(),
+        DnsMode::Static { servers } => {
+            let joined: Vec<String> = servers.iter().map(|ip| ip.to_string()).collect();
+            format!("static:{}", joined.join(","))
+        }
+    }
+}
+
+/// Inverse of [`dns_to_annotation`] for the on-disk
+/// `X-Ghars-Dns=` annotation: `forward` → `Forward`,
+/// `static:<comma-csv>` → `Static { servers }`. Returns `None` for
+/// malformed input (unknown prefix, unparseable IP), matching the
+/// absent-annotation semantics in [`crate::plan::classify`] — the
+/// classifier skips its dns comparison rather than crashing on a
+/// hand-edited drop-in or a future schema mismatch.
+///
+/// `static:` with an empty server list parses to `Static { servers:
+/// vec![] }`, but validators reject that at config-load
+/// ([`crate::validators::validate_dns_mode`]) — round-trip safety
+/// here matches whatever the renderer emitted.
+///
+/// Non-empty unparseable input emits a `tracing::warn!` so an
+/// operator who hand-edited the drop-in or upgraded across an
+/// incompatible annotation format gets a journal hint rather than
+/// a silent skip. Exactly empty input (`""`) is silent — treated
+/// identically to absent annotation, the legacy-runner path.
+/// Whitespace-only input (e.g. `" "`) is NOT empty and DOES warn;
+/// whitespace IS a value, just an unrecognized one.
+#[must_use]
+pub(crate) fn dns_from_annotation(s: &str) -> Option<DnsMode> {
+    if s == "forward" {
+        return Some(DnsMode::Forward);
+    }
+    let Some(rest) = s.strip_prefix("static:") else {
+        if !s.is_empty() {
+            tracing::warn!(
+                value = %s,
+                "X-Ghars-Dns: unrecognized prefix; expected `forward` or `static:<csv>` — skipping dns comparison"
+            );
+        }
+        return None;
+    };
+    if rest.is_empty() {
+        return Some(DnsMode::Static { servers: Vec::new() });
+    }
+    let parsed: Option<Vec<IpAddr>> =
+        rest.split(',').map(|t| t.parse::<IpAddr>().ok()).collect();
+    if parsed.is_none() {
+        tracing::warn!(
+            value = %s,
+            "X-Ghars-Dns: `static:` payload contains an unparseable IP — skipping dns comparison"
+        );
+    }
+    parsed.map(|servers| DnsMode::Static { servers })
+}
+
+/// Render `Ipv6Mode` to the operator-facing annotation form used in
+/// `X-Ghars-Ipv6=` (00-ghars.conf drop-in): `disabled` / `enabled`.
+/// Plain snake_case enum string matching the X-Ghars-Network-Mode
+/// convention.
+///
+/// Free fn (symmetric with [`dns_to_annotation`]) — keeps the
+/// dns/ipv6 helper pair shaped uniformly.
+#[must_use]
+pub(crate) fn ipv6_to_annotation(ipv6: Ipv6Mode) -> &'static str {
+    match ipv6 {
+        Ipv6Mode::Disabled => "disabled",
+        Ipv6Mode::Enabled => "enabled",
+    }
+}
+
+/// Inverse of [`ipv6_to_annotation`] for the on-disk
+/// `X-Ghars-Ipv6=` annotation: `disabled` → `Disabled`,
+/// `enabled` → `Enabled`. Returns `None` for malformed input.
+///
+/// Non-empty unparseable input emits a `tracing::warn!`; exactly
+/// empty input (`""`) is silent (the legacy-runner path).
+/// Whitespace-only input warns — it's a value, just an
+/// unrecognized one.
+#[must_use]
+pub(crate) fn ipv6_from_annotation(s: &str) -> Option<Ipv6Mode> {
+    match s {
+        "disabled" => Some(Ipv6Mode::Disabled),
+        "enabled" => Some(Ipv6Mode::Enabled),
+        "" => None,
+        other => {
+            tracing::warn!(
+                value = %other,
+                "X-Ghars-Ipv6: expected `disabled` or `enabled` — skipping ipv6 comparison"
+            );
+            None
+        }
+    }
+}
+
 /// IPv6 inside the netns. Default `Disabled`. v0.2 will support
 /// `Enabled` with ULA allocation (#56).
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]

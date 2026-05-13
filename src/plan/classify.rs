@@ -71,6 +71,23 @@ pub(super) struct DiscoveredAnnotations {
     /// pool list verbatim. Cache reach is materialized by the
     /// `BindPaths=` entries in that drop-in.
     pub(super) caches: Option<Vec<String>>,
+    /// `X-Ghars-Dns` value — plain-string `DnsMode` via
+    /// [`crate::config::dns_to_annotation`] / `dns_from_annotation`
+    /// (`forward` for Forward, `static:<csv>` for Static). Routes
+    /// as in-place FieldChange (no recreate): a dns mode change
+    /// re-runs `ghars _netns-setup` on the next netns side-unit
+    /// restart that the in-place rewrite triggers; no GitHub
+    /// registration impact, no provision/teardown asymmetry. Pre-
+    /// fix runners (annotation absent) skip the comparison.
+    pub(super) dns: Option<crate::config::DnsMode>,
+    /// `X-Ghars-Ipv6` value — simple snake_case enum string
+    /// (`disabled` / `enabled`). v0.1 only `Disabled` is reachable
+    /// (Enabled hard-errors at apply per `Ipv6Mode::Enabled` doc),
+    /// so the annotation is defensive forward-compat. Routes as
+    /// in-place FieldChange when the day comes that Enabled is
+    /// supported. Reconsider recreate-vs-in-place when v0.2 lands
+    /// ipv6=Enabled (subnet provisioning may need recreate).
+    pub(super) ipv6: Option<crate::config::Ipv6Mode>,
 }
 
 impl DiscoveredAnnotations {
@@ -183,6 +200,19 @@ impl DiscoveredAnnotations {
                     };
                     parsed.sort_unstable();
                     out.caches = Some(parsed);
+                }
+                "X-Ghars-Dns" => {
+                    // Round-trip via `dns_from_annotation` — the
+                    // emission site uses `dns_to_annotation`
+                    // (plain-string form, not JSON). Malformed
+                    // values (e.g. older ghars wrote a different
+                    // shape, or operator-edited drop-in) parse to
+                    // None and the classifier skips the comparison
+                    // (same as the absent-annotation case).
+                    out.dns = crate::config::dns_from_annotation(&v);
+                }
+                "X-Ghars-Ipv6" => {
+                    out.ipv6 = crate::config::ipv6_from_annotation(&v);
                 }
                 _ => {}
             }
@@ -548,6 +578,64 @@ pub(super) fn classify_recreate_reasons_from_annotations(
         desired.caches.iter().map(|c| c.name.as_str()),
     ) {
         out_changes.push(change);
+    }
+    // dns change is in-place: the dns mode drives
+    // `/run/ghars/netns-resolv/<name>` written by `ghars _netns-setup`
+    // at the ghars-net@ side-unit's ExecStart. A dns mode change
+    // re-runs _netns-setup on the next netns side-unit restart that
+    // the in-place rewrite triggers; no GitHub registration impact,
+    // no provision/teardown asymmetry. Recording a FieldChange
+    // (without pushing to `reasons`) keeps the change visible in
+    // plan output AND prevents the uncovered warn-log from firing
+    // on a dns-only edit.
+    //
+    // Operator-facing format mirrors X-Ghars-Network-Mode's plain
+    // enum-string convention: `forward` for Forward, `static:<csv>`
+    // for Static{servers}. Both the on-disk X-Ghars-Dns annotation
+    // and the FieldChange render share `dns_to_annotation` so the
+    // diff strings match what `systemctl cat` shows verbatim.
+    //
+    // Both dns and ipv6 arms only emit when desired ALSO has a
+    // network binding (`desired.network.is_some()`). dns and ipv6
+    // are NetworkSpec sub-fields — they don't exist without a
+    // network. A transition from `Some(NetworkSpec)` → `None`
+    // (operator removed the network ref) is a network-mode change
+    // that the network classifier already surfaces; this arm would
+    // otherwise emit asymmetric ghost-FieldChanges (dns: forward →
+    // `""`; ipv6: enabled → `disabled`) where one shows the absent
+    // network as empty-string and the other as the Disabled
+    // default. Skip both when desired.network is None.
+    if let (Some(dns), Some(desired_net)) =
+        (discovered.dns.as_ref(), desired.network.as_ref())
+    {
+        let desired_dns = &desired_net.spec.dns;
+        if dns != desired_dns {
+            out_changes.push(FieldChange {
+                path: "dns",
+                before: FieldValue::String(crate::config::dns_to_annotation(dns)),
+                after: FieldValue::String(crate::config::dns_to_annotation(desired_dns)),
+            });
+        }
+    }
+    // ipv6 change is in-place (defensive forward-compat — v0.1 only
+    // Disabled is reachable; Enabled hard-errors at apply per
+    // `Ipv6Mode::Enabled` doc-comment). Recording a FieldChange
+    // suppresses the uncovered warn on ipv6-only edits (rare in
+    // v0.1) and surfaces the change in plan output if it ever
+    // happens. Same `desired.network.is_some()` guard as dns above.
+    if let (Some(ipv6), Some(desired_net)) =
+        (discovered.ipv6, desired.network.as_ref())
+    {
+        let desired_ipv6 = desired_net.spec.ipv6;
+        if ipv6 != desired_ipv6 {
+            out_changes.push(FieldChange {
+                path: "ipv6",
+                before: FieldValue::String(crate::config::ipv6_to_annotation(ipv6).to_owned()),
+                after: FieldValue::String(
+                    crate::config::ipv6_to_annotation(desired_ipv6).to_owned(),
+                ),
+            });
+        }
     }
 
     reasons

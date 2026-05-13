@@ -126,7 +126,7 @@ pub struct RenderedUnit {
 /// false negatives (a missed bump) leave operators stranded on stale
 /// drop-ins requiring manual `rm -rf` to force convergence (the bug
 /// this constant exists to prevent).
-pub const RENDERER_SCHEMA: u32 = 3;
+pub const RENDERER_SCHEMA: u32 = 4;
 
 // --- Runner template body (Part 9) ---------------------------------------
 
@@ -1026,6 +1026,28 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
         && let Some(subnet) = net.subnet
     {
         let _ = writeln!(s, "X-Ghars-Netns-Subnet={subnet}");
+    }
+    // X-Ghars-Dns + X-Ghars-Ipv6: surface network sub-fields that
+    // the runner unit's body doesn't otherwise carry (dns drives
+    // /run/ghars/netns-resolv/<name> via `ghars _netns-setup`; ipv6
+    // is v0.2-future). Without these annotations the classifier
+    // sees a spec_hash flip on dns/ipv6 edit but no Stage 1
+    // FieldChange — falls through to the uncovered arm. Emitting
+    // them here gives the classifier a recreate/in-place signal +
+    // gives operators a `systemctl cat` view of which dns/ipv6
+    // mode the runner currently has. Both are gated on
+    // `spec.network.is_some()` since they're NetworkSpec
+    // sub-fields. Routed as in-place (FieldChange, no recreate
+    // reason) per classifier — dns mode change re-runs netns
+    // _netns-setup on the next side-unit restart that the in-place
+    // rewrite triggers; ipv6 stays Disabled in v0.1 (Enabled
+    // hard-errors at apply per config.rs `Ipv6Mode::Enabled`
+    // comment), so the annotation is defensive forward-compat.
+    if let Some(net) = &spec.network {
+        let dns_str = crate::config::dns_to_annotation(&net.spec.dns);
+        let _ = writeln!(s, "X-Ghars-Dns={dns_str}");
+        let ipv6_str = crate::config::ipv6_to_annotation(net.spec.ipv6);
+        let _ = writeln!(s, "X-Ghars-Ipv6={ipv6_str}");
     }
     // [Service] is always emitted: User=ghars-tz-<TRUST_ZONE> binds
     // the runner unit to the trust_zone's DynamicUser allocation
@@ -2497,6 +2519,71 @@ mod tests {
         assert!(
             id.contains("\nX-Ghars-Labels=alpha,middle,zebra\n"),
             "X-Ghars-Labels= must emit values in alphabetical order; got drop-in:\n{id}"
+        );
+    }
+
+    /// `render_identity` emits `X-Ghars-Dns` + `X-Ghars-Ipv6`
+    /// annotations when `spec.network` is `Some`. Without these the
+    /// classifier sees a spec_hash flip on dns/ipv6 edit but no
+    /// Stage 1 FieldChange — falls through to the uncovered arm.
+    /// Both annotations use the plain-string convention shared with
+    /// every other `X-Ghars-*` line: dns via
+    /// `crate::config::dns_to_annotation` (`forward` / `static:<csv>`)
+    /// and ipv6 via `crate::config::ipv6_to_annotation` (`disabled`
+    /// / `enabled`). Both must be parseable by
+    /// `DiscoveredAnnotations::from_drop_in_body`.
+    #[test]
+    fn render_identity_emits_x_ghars_dns_and_ipv6_for_netns_runner() {
+        use crate::config::{
+            DnsMode, EffectiveNetworkBinding, Ipv6Mode, NetworkMode, NetworkSpec,
+        };
+        let mut spec = minimal_spec();
+        spec.network = Some(EffectiveNetworkBinding {
+            name: "isolated".into(),
+            spec: NetworkSpec {
+                mode: NetworkMode::Netns,
+                allowed_egress: vec![],
+                ip_allow: vec![],
+                ip_deny: vec![],
+                restrict_address_families: vec![],
+                dns: DnsMode::Forward,
+                ipv6: Ipv6Mode::Disabled,
+            },
+            subnet: None,
+        });
+        let r = render_runner_unit(&spec).expect("clean spec must render");
+        let id = r.drop_ins.get("00-ghars.conf").unwrap();
+        // Dns renders via `dns_to_annotation` — plain-string form
+        // matching the convention of other X-Ghars-* annotations
+        // (X-Ghars-Network-Mode=netns, X-Ghars-Labels=...). Forward
+        // emits the literal `forward`.
+        assert!(
+            id.contains("\nX-Ghars-Dns=forward\n"),
+            "00-ghars.conf must contain X-Ghars-Dns=forward when spec.network is Some + dns=Forward; got drop-in:\n{id}"
+        );
+        assert!(
+            id.contains("\nX-Ghars-Ipv6=disabled\n"),
+            "00-ghars.conf must contain X-Ghars-Ipv6=disabled for default Ipv6Mode; got drop-in:\n{id}"
+        );
+    }
+
+    /// Inverse: when `spec.network` is `None` (Open-mode runner or
+    /// no network ref), the dns/ipv6 annotations MUST NOT be emitted
+    /// — they're NetworkSpec sub-fields and have no meaning without
+    /// a network binding.
+    #[test]
+    fn render_identity_omits_x_ghars_dns_and_ipv6_when_no_network() {
+        let spec = minimal_spec();
+        assert!(spec.network.is_none(), "minimal_spec must have no network");
+        let r = render_runner_unit(&spec).expect("clean spec must render");
+        let id = r.drop_ins.get("00-ghars.conf").unwrap();
+        assert!(
+            !id.contains("X-Ghars-Dns="),
+            "00-ghars.conf must NOT contain X-Ghars-Dns= when spec.network is None; got drop-in:\n{id}"
+        );
+        assert!(
+            !id.contains("X-Ghars-Ipv6="),
+            "00-ghars.conf must NOT contain X-Ghars-Ipv6= when spec.network is None; got drop-in:\n{id}"
         );
     }
 
