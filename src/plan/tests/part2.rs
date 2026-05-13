@@ -340,7 +340,7 @@ fn render_unchanged_on_labels_reorder_post_merge() {
 }
 
 /// Site-3 of the labels triple-sort coupling: parse-boundary defensive
-/// sort in `DiscoveredAnnotations::from_drop_in_body` (classify.rs:161).
+/// sort in `DiscoveredAnnotations::from_drop_in_body`'s labels parse arm.
 /// `render_unchanged_on_labels_reorder_post_merge` covers sites 1 + 2
 /// (merge_defaults source-of-truth sort + render_identity defensive
 /// re-sort). This pair pins site 3 — the parse boundary's
@@ -363,8 +363,9 @@ fn render_unchanged_on_labels_reorder_post_merge() {
 /// Block 2 (hand-crafted bypass): constructs a drop-in body bytes
 /// with `X-Ghars-Labels=gamma,beta,alpha` directly, bypassing render
 /// entirely. The parser must re-sort to canonical alpha,beta,gamma.
-/// A regression that removed classify.rs:161's `parsed.sort_unstable()`
-/// would fail this block while passing Block 1.
+/// A regression that removed the labels parse-boundary
+/// `parsed.sort_unstable()` would fail this block while passing
+/// Block 1.
 #[test]
 fn discovered_annotations_label_round_trip_canonical_sort() {
     let mut runner = minimal_runner("a");
@@ -415,14 +416,15 @@ fn discovered_annotations_label_round_trip_canonical_sort() {
 }
 
 /// Site-3 parity for caches: parse-boundary defensive sort in
-/// `DiscoveredAnnotations::from_drop_in_body` (classify.rs:202).
+/// `DiscoveredAnnotations::from_drop_in_body`'s caches parse arm.
 /// `render_unchanged_on_caches_reorder_post_merge` covers sites
-/// 1 + 2 (lower_to_effective sort at compute.rs:1092 +
-/// render_identity defensive re-sort at units.rs:949-951). This
+/// 1 + 2 (lower_to_effective's caches.sort_by site +
+/// render_identity's defensive cache_names sort). This
 /// pair pins site 3 — the parse boundary's `parsed.sort_unstable()`
 /// that runs after splitting the on-disk `X-Ghars-Caches=` CSV.
 /// Sister of `discovered_annotations_label_round_trip_canonical_sort`
-/// which pins the labels parse-boundary sort at classify.rs:161.
+/// which pins the labels parse-boundary sort in
+/// `DiscoveredAnnotations::from_drop_in_body`.
 ///
 /// Block 1 (render → parse round-trip): builds a runner with
 /// non-canonical-order cache refs ["pool-z", "pool-a"], lowers via
@@ -435,9 +437,9 @@ fn discovered_annotations_label_round_trip_canonical_sort() {
 /// Block 2 (hand-crafted bypass): constructs a drop-in body bytes
 /// with `X-Ghars-Caches=zebra,alpha,middle` directly, bypassing
 /// render entirely. The parser must re-sort to canonical
-/// alpha,middle,zebra. A regression that removed classify.rs:202's
-/// `parsed.sort_unstable()` would fail this block while passing
-/// Block 1.
+/// alpha,middle,zebra. A regression that removed the caches
+/// parse-boundary `parsed.sort_unstable()` would fail this block
+/// while passing Block 1.
 #[test]
 fn discovered_annotations_caches_round_trip_canonical_sort() {
     use crate::config::{CacheKind, CacheMode, CachePoolSpec};
@@ -490,11 +492,11 @@ fn discovered_annotations_caches_round_trip_canonical_sort() {
     );
 
     // Block 2: hand-crafted body bypasses render. The pipeline's
-    // sites 1+2 (compute.rs:1092 + units.rs:949-951) pre-canonicalize
-    // the input the parser sees in the render path, so Block 1 alone
-    // cannot isolate a parser-side sort regression. Construct a body
-    // with non-canonical CSV directly, parse it, and assert the
-    // result is canonical.
+    // sites 1+2 (lower_to_effective's caches.sort_by + render_identity's
+    // defensive cache_names sort) pre-canonicalize the input the parser
+    // sees in the render path, so Block 1 alone cannot isolate a
+    // parser-side sort regression. Construct a body with non-canonical
+    // CSV directly, parse it, and assert the result is canonical.
     let bypass_body = "[Unit]\nX-Ghars-Caches=zebra,alpha,middle\n";
     let bypass_anns = DiscoveredAnnotations::from_drop_in_body(bypass_body);
     assert_eq!(
@@ -509,12 +511,13 @@ fn discovered_annotations_caches_round_trip_canonical_sort() {
 
 /// Sister regression pin to `render_unchanged_on_labels_reorder_post_merge`.
 /// Caches have the same two-site defensive-sort architecture as labels:
-/// site 1 sorts at the lowering layer (`lower_to_effective` at
-/// compute.rs:1092 sorts the resolved Vec<EffectiveCacheBinding> by
-/// binding name); site 2 sorts at the rendering layer
-/// (`render_identity` builds `cache_names: Vec<&str>` and calls
-/// `sort_unstable()` at units.rs:949-951) as defense against
-/// direct-construct callers bypassing the lowering sort.
+/// site 1 sorts at the lowering layer (`lower_to_effective`'s
+/// `caches.sort_by(|a, b| a.name.cmp(&b.name))` block sorts the
+/// resolved Vec<EffectiveCacheBinding> by binding name); site 2
+/// sorts at the rendering layer (`render_identity` builds
+/// `cache_names: Vec<&str>` and calls `sort_unstable()` before
+/// emit) as defense against direct-construct callers bypassing
+/// the lowering sort.
 ///
 /// Block 1 (site 1): construct a Config with 2 cache_pools `pool-a`
 /// (ccache) + `pool-z` (sccache) — capped at 1 binding per kind per
@@ -523,8 +526,8 @@ fn discovered_annotations_caches_round_trip_canonical_sort() {
 /// lex-descending order); call `lower_to_effective` directly; assert
 /// the resulting EffectiveRunnerSpec.caches binding names come out
 /// as `["pool-a", "pool-z"]` (lex-ascending). A regression that
-/// removes compute.rs:1092's sort produces the non-canonical order
-/// here.
+/// removes `lower_to_effective`'s caches.sort_by produces the
+/// non-canonical order here.
 ///
 /// Block 2 (site 2): direct-construct bypass. `merge_defaults`
 /// threads the caches Vec verbatim (pinned by
@@ -535,22 +538,22 @@ fn discovered_annotations_caches_round_trip_canonical_sort() {
 /// lex-descending and renders. This exercises site 2 in
 /// isolation: the renderer must re-sort regardless of input
 /// order. Assert the emitted `X-Ghars-Caches=` CSV is byte-order
-/// ascending. A regression that removes units.rs:949-951's sort
-/// emits the unsorted CSV here — the classifier's set-semantic
-/// sorted comparison would silently mask the divergence at plan
-/// time, but `systemctl cat` would show the unsorted CSV to
-/// operators.
+/// ascending. A regression that removes `render_identity`'s
+/// defensive cache_names sort emits the unsorted CSV here — the
+/// classifier's set-semantic sorted comparison would silently mask
+/// the divergence at plan time, but `systemctl cat` would show the
+/// unsorted CSV to operators.
 #[test]
 fn render_unchanged_on_caches_reorder_post_merge() {
     use crate::config::{CacheKind, CacheMode, CachePoolSpec, EffectiveCacheBinding};
 
-    // Block 1: site 1 (lower_to_effective sort at compute.rs:1092).
+    // Block 1: site 1 (lower_to_effective's caches.sort_by site).
     // Operator TOML places caches in non-canonical order; the
     // lowering layer must sort them by binding name. Constrained
-    // to 2 pools (1 ccache + 1 sccache) by the post-#38
-    // per-runner-per-kind validator; lex-descending TOML order
-    // [pool-z (sccache), pool-a (ccache)] must lower to ascending
-    // [pool-a (ccache), pool-z (sccache)].
+    // to 2 pools (1 ccache + 1 sccache) by the per-runner-per-kind
+    // validator; lex-descending TOML order [pool-z (sccache),
+    // pool-a (ccache)] must lower to ascending [pool-a (ccache),
+    // pool-z (sccache)].
     let mut cfg = config_with_runners(vec![minimal_runner("a")]);
     cfg.cache_pools.insert(
         "pool-a".into(),
@@ -589,7 +592,7 @@ fn render_unchanged_on_caches_reorder_post_merge() {
     assert_eq!(
         lowered_names,
         vec!["pool-a", "pool-z"],
-        "site 1 (lower_to_effective sort at compute.rs:1092) regressed: \
+        "site 1 (lower_to_effective's caches.sort_by) regressed: \
          non-canonical TOML order [pool-z, pool-a] did not sort to \
          [pool-a, pool-z]; got: {lowered_names:?}"
     );
@@ -623,7 +626,7 @@ fn render_unchanged_on_caches_reorder_post_merge() {
          field other than caches order regressed)"
     );
 
-    // Block 2: site 2 (render_identity defensive sort at units.rs:949-951).
+    // Block 2: site 2 (render_identity's defensive cache_names sort).
     // Direct-construct bypass — merge_defaults threads caches verbatim
     // (see merge_defaults_caches_threaded_verbatim in part1.rs), so
     // hand-feed sorted EffectiveCacheBinding values, then mutate the
@@ -666,8 +669,8 @@ fn render_unchanged_on_caches_reorder_post_merge() {
 
     // Bypass site 1's sort by directly reversing the Vec to put
     // "test" before "build" (lex-descending). A renderer that
-    // dropped the defensive sort at units.rs:949-951 would emit
-    // `X-Ghars-Caches=test,build` here.
+    // dropped render_identity's defensive cache_names sort would
+    // emit `X-Ghars-Caches=test,build` here.
     let mut bypass = spec.clone();
     bypass.caches.reverse();
     bypass.spec_hash = spec_hash(&bypass);
@@ -3497,8 +3500,8 @@ fn identical_dns_ipv6_emit_no_field_change() {
 
 /// Group A: helper-level pins for the documented but untested
 /// whitespace-warn contract on `dns_from_annotation` /
-/// `ipv6_from_annotation`. Doc-comments at config.rs:1125-1144 +
-/// 1179-1197 promise non-empty unparseable input fires
+/// `ipv6_from_annotation`. The doc-comments on both helpers in
+/// `crate::config` promise non-empty unparseable input fires
 /// `tracing::warn!` regardless of whitespace shape — pin that with
 /// direct helper calls. Empty input stays silent (already pinned by
 /// `empty_dns_ipv6_annotation_values_silent_no_warn`).

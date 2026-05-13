@@ -514,12 +514,13 @@ fn merge_defaults_hardening_field_by_field() {
 
 /// `merge_defaults` threads the caller-supplied `caches` Vec into
 /// `EffectiveRunnerSpec.caches` verbatim — no sort, no dedup, no
-/// reordering. The lowering layer (`lower_to_effective` at
-/// compute.rs:1092) is the source-of-truth sort site for caches;
-/// merge_defaults is just the bind-bag assembler called from below
-/// the sort. Direct merge_defaults callers (test fixtures, future
-/// synthetic spec builders) must sort their own caches Vec if they
-/// care about hash stability across operator-supplied orderings.
+/// reordering. The lowering layer (`lower_to_effective`'s
+/// `caches.sort_by(|a, b| a.name.cmp(&b.name))` block) is the
+/// source-of-truth sort site for caches; merge_defaults is just
+/// the bind-bag assembler called from below the sort. Direct
+/// merge_defaults callers (test fixtures, future synthetic spec
+/// builders) must sort their own caches Vec if they care about
+/// hash stability across operator-supplied orderings.
 ///
 /// Pins both shape and order:
 /// - Single-element fixture catches Vec-corrupting regressions
@@ -1514,10 +1515,11 @@ fn plan_rejects_runner_tarball_without_runner_version() {
 
 /// Sibling to `plan_rejects_runner_tarball_without_runner_version`:
 /// the same tarball-pinned runner WITH `defaults.runner_version`
-/// MUST be accepted. The defaults inheritance at merge.rs:170 fills
-/// the per-runner `runner_version` from `[defaults]`, satisfying
-/// the lower_to_effective validation gate without requiring the
-/// operator to repeat the version on every runner.
+/// MUST be accepted. `merge_defaults`'s `runner_version`
+/// `or_else(|| defaults.runner_version.clone())` inheritance block
+/// fills the per-runner `runner_version` from `[defaults]`,
+/// satisfying the lower_to_effective validation gate without
+/// requiring the operator to repeat the version on every runner.
 #[test]
 fn plan_accepts_runner_tarball_when_defaults_pin_runner_version() {
     let mut cfg = config_with_runners(vec![{
@@ -1554,11 +1556,13 @@ fn plan_accepts_runner_tarball_when_defaults_pin_runner_version() {
 /// In-place UpdateRunner with `runner_version=None` on the desired
 /// spec (operator's implicit-latest pattern) MUST inherit
 /// `runner_version` from the discovered `X-Ghars-Effective-Version`
-/// annotation. Without this, the in-place apply path at
-/// runners.rs:646 hard-errors trying to locate the bin dir for
-/// the .env/.path rewrite — every binary upgrade (which flips
-/// spec_hash via RENDERER_SCHEMA) would then break every
-/// "implicit-latest" runner.
+/// annotation. Without this, the in-place apply path
+/// (`execute_update_runner`'s `ok_or_else` over
+/// `delta.after.spec.runner_version.as_deref()`) hard-errors
+/// trying to locate the bin dir for the .env/.path rewrite —
+/// every binary upgrade (which flips spec_hash via
+/// RENDERER_SCHEMA) would then break every "implicit-latest"
+/// runner.
 ///
 /// The fill is gated on:
 ///   - `candidate.runner_version.is_none()` so operator-pinned
@@ -1613,12 +1617,12 @@ fn plan_in_place_inherits_runner_version_from_discovered_annotation() {
 
     // Build a tempdir-rooted Paths and pre-stage
     // `runner_home/bin.2.334.0/bin/runsvc.sh` on disk. The in-place
-    // version-fill at compute.rs:270 verifies the annotation-named
-    // version actually exists before accepting it (adversary F1
-    // mitigation: refuses to fill from a forged annotation pointing
-    // at a non-existent bin dir, which would otherwise produce hash
-    // equality, skip the recreate, and let apply write into a
-    // non-existent bin dir at runtime).
+    // version-fill block in `lower_to_effective`'s intersection arm
+    // verifies the annotation-named version actually exists before
+    // accepting it (adversary F1 mitigation: refuses to fill from a
+    // forged annotation pointing at a non-existent bin dir, which
+    // would otherwise produce hash equality, skip the recreate, and
+    // let apply write into a non-existent bin dir at runtime).
     let tmp = tempfile::tempdir().unwrap();
     let paths = paths_at_tempdir(tmp.path());
     let runner_home = paths.runner_home(&desired_spec.trust_zone, "a");
@@ -1653,7 +1657,7 @@ fn plan_in_place_inherits_runner_version_from_discovered_annotation() {
         "after.spec.runner_version must be inherited from the discovered \
          X-Ghars-Effective-Version annotation; without the fill, render \
          would emit bin.latest paths and apply would hard-error at \
-         runners.rs:646"
+         execute_update_runner's missing-runner_version ok_or_else"
     );
 }
 

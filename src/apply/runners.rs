@@ -846,8 +846,8 @@ pub(super) fn execute_create_runner(
     // hash-vs-bytes mismatch breaks the invariant downstream plan
     // classifiers rely on, with consequences that depend on the
     // discovered X-Ghars-Effective-Version annotation state: the
-    // intersection-arm fill at compute.rs:270-308 fires when the
-    // annotation is well-formed, producing a spurious in-place
+    // intersection-arm version-fill in `lower_to_effective` fires
+    // when the annotation is well-formed, producing a spurious in-place
     // UpdateRunner cycle because the candidate hash (computed against
     // the annotation-filled runner_version) and the on-disk hash
     // (frozen at plan-time None) disagree; skips when the annotation

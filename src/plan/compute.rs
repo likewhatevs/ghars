@@ -257,16 +257,17 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                 // not pin AND annotation is absent/empty/invalid): the
                 // candidate stays at runner_version=None. The renderer
                 // emits a "latest" placeholder for the plan-time preview;
-                // the apply path then hard-errors at runners.rs:646
-                // ("in-place delta missing runner_version") with the
-                // actionable remediation (set runner_version in TOML
-                // to match the installed bin.X.Y.Z, OR recreate the
-                // runner by removing it from TOML + apply + re-add).
-                // This is the legacy-edge case captured by task #57;
-                // pre-fix runners that emitted empty Effective-Version
-                // annotations or operator-stripped runners hit this
-                // path until the operator manually corrects the
-                // discovered state.
+                // the apply path then hard-errors at
+                // execute_update_runner's missing-runner_version
+                // ok_or_else ("in-place delta missing runner_version")
+                // with the actionable remediation (set runner_version
+                // in TOML to match the installed bin.X.Y.Z, OR recreate
+                // the runner by removing it from TOML + apply + re-add).
+                // This is the legacy-edge case the in-place apply path's
+                // missing-runner_version hard-error captures; pre-fix
+                // runners that emitted empty Effective-Version annotations
+                // or operator-stripped runners hit this path until the
+                // operator manually corrects the discovered state.
                 if candidate.runner_version.is_none() {
                     if let Some(v) = discovered_annotations.runner_version.as_deref()
                         && !v.is_empty()

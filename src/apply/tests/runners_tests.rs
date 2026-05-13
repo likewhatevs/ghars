@@ -187,7 +187,7 @@ fn create_runner_writes_unit_and_drop_ins_and_starts() {
 /// etc.) — this test is the dedicated regression guard.
 ///
 /// The contract pin matters because the next plan's intersection-arm
-/// fill (compute.rs:270-308) reads the on-disk hash as
+/// version-fill in `lower_to_effective` reads the on-disk hash as
 /// `discovered.spec_hash` and compares it against a candidate hash
 /// computed against an annotation-filled spec. A hash-vs-bytes
 /// mismatch on disk breaks the invariant downstream classifier
@@ -1264,8 +1264,8 @@ fn create_runner_chmod_loop_tolerates_missing_credential_files() {
 
 /// fchown_record_undo on a path the test process already owns
 /// (chown-to-self) succeeds without EPERM and — critically —
-/// records NO `UndoStep::SetOwner` because the no-op gate at
-/// runners.rs:320 (`if (prior_uid, prior_gid) != (uid, gid)`)
+/// records NO `UndoStep::SetOwner` because the no-op gate inside
+/// `fchown_record_undo` (`if (prior_uid, prior_gid) != (uid, gid)`)
 /// fires. Regression catch: a future change that flipped the
 /// gate to always-record would pollute the rollback advisory
 /// with no-op chown-restore entries on every re-apply.

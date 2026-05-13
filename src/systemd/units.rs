@@ -1093,10 +1093,10 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
     // the candidate stays None — plan-time-rendered drop-ins (with
     // literal "latest" in WorkingDirectory) get written to disk via
     // read_then_write_if_changed BEFORE the .env/.path rewrite at
-    // runners.rs:646 hard-errors. Task #57 tracks moving that
-    // hard-error to plan time so the write-then-error ordering
-    // closes; until then, the legacy-edge case lands broken-from-
-    // birth bytes before failing the apply.
+    // execute_update_runner's missing-runner_version ok_or_else
+    // hard-errors. Moving the hard-error to plan time would close
+    // the write-then-error ordering; until then, the legacy-edge
+    // case lands broken-from-birth bytes before failing the apply.
     let version = spec.runner_version.as_deref().unwrap_or("latest");
     let _ = writeln!(
         s,
