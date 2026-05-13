@@ -158,8 +158,9 @@ impl Systemd for TestSystemd {
     fn lookup_dynamic_user_by_name(&self, _name: &str) -> ghars::Result<Option<u32>> {
         // Default to the test process's UID so the production
         // post-start chown succeeds (chown-to-self requires no
-        // CAP_CHOWN). Tests that exercise polling explicitly can
-        // be added once #4 lands.
+        // CAP_CHOWN). Tests that exercise polling explicitly are
+        // covered by the post-StartUnit DynamicUser chown+tighten
+        // dedicated test files.
         use std::os::unix::fs::MetadataExt;
         let uid = std::fs::metadata("/proc/self")
             .map(|m| m.uid())
@@ -326,7 +327,7 @@ fn make_runner_plan(name: &str, prefix: &Utf8Path) -> RunnerPlan {
         "00-ghars.conf".into(),
         "[Unit]\nX-Ghars-Spec-Hash=sha256:dead\n".into(),
     );
-    // Populate via real renderers (#44 uniformity). The env_file
+    // Populate via real renderers (post-snapshot-coverage uniformity). The env_file
     // and path_file pre-renderers are `pub(crate)`; integration
     // tests reach them via `render_runner_unit` which calls them
     // internally and exposes the bytes on `RenderedUnit.env_file`

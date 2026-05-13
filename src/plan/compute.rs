@@ -462,9 +462,9 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                     // would stop the unit, unregister with GitHub, and
                     // run config.sh again — destructive when the
                     // diagnostic says nothing actually changed. The
-                    // upcoming RENDERER_SCHEMA bump path (planned task
-                    // #1) lands renderer-only deltas in exactly this
-                    // arm: spec_hash flips because the schema number
+                    // RENDERER_SCHEMA bump path lands renderer-only
+                    // deltas in exactly this arm: spec_hash flips
+                    // because the schema number
                     // changed, but no operator-visible field or
                     // drop-in body diff exists. Recreating every runner
                     // on a binary upgrade would be the wrong behavior
@@ -1115,8 +1115,9 @@ pub(super) fn lower_to_effective(
     // Same KINDS tuple shape as the config-load validator: append a
     // new variant IFF its renderer emits per-pool / per-binding env
     // vars that clobber under last-writer-wins. A future kind with
-    // no per-pool emissions (e.g. ktstr per pending task #5 if it
-    // remains metadata-only) should NOT be added.
+    // no per-pool emissions (e.g. a hypothetical metadata-only
+    // future kind like ktstr if it stays metadata-only) should
+    // NOT be added.
     {
         use crate::config::CacheKind;
         for &kind in CacheKind::ALL {

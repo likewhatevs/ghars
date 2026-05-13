@@ -497,9 +497,9 @@ fn undo_one(step: &UndoStep, deps: &Deps<'_>) -> Result<()> {
             // refusal AND the chmod are atomic with the open: no
             // path-resolution race between the lstat-equivalent
             // (the open with O_NOFOLLOW) and the chmod. fchmod
-            // operates directly on the fd (post-#64) -- no
-            // /proc/self/fd round-trip, one fewer syscall, no
-            // dependency on /proc being mounted.
+            // operates directly on the fd -- no /proc/self/fd
+            // round-trip, one fewer syscall, no dependency on /proc
+            // being mounted.
             match std::fs::OpenOptions::new()
                 .read(true)
                 .custom_flags(libc::O_NOFOLLOW)

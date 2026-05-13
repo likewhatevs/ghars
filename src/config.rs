@@ -134,11 +134,11 @@ pub struct Defaults {
     /// policy block (Netns or Open with cgroup-BPF directives).
     pub network: Option<String>,
     /// Default CPU architecture for tarball selection. None ≡ host
-    /// arch (uname -m) (#39).
+    /// arch (uname -m).
     pub arch: Option<Arch>,
     /// Default per-field hardening overrides. Each runner can override
     /// further; `Hardening`'s `Default` impl is "all None" → inherit
-    /// the canonical Python-tool profile (#41).
+    /// the canonical Python-tool profile.
     #[serde(default)]
     pub hardening: Hardening,
     /// How many `bin.X.Y.Z/` directories to retain under each runner
@@ -212,8 +212,7 @@ pub struct RunnerSpec {
     /// Path to a pre-downloaded tarball; bypasses release-API lookup.
     pub runner_tarball: Option<Utf8PathBuf>,
 
-    /// CPU architecture override. None ≡ defaults.arch ≡ host arch
-    /// (#39).
+    /// CPU architecture override. None ≡ defaults.arch ≡ host arch.
     pub arch: Option<Arch>,
 
     /// References to keys in `[cache_pools.NAME]`. Ordered, dedup-on-
@@ -241,7 +240,7 @@ pub struct RunnerSpec {
     pub hooks: Option<HooksSpec>,
 
     /// Per-runner hardening overrides; merged field-by-field over
-    /// `defaults.hardening` (#41).
+    /// `defaults.hardening`.
     #[serde(default)]
     pub hardening: Hardening,
 
@@ -558,7 +557,7 @@ impl EffectiveNetworkBinding {
     }
 }
 
-/// CPU architecture marker for tarball selection (#39).
+/// CPU architecture marker for tarball selection.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Arch {
@@ -571,8 +570,7 @@ pub enum Arch {
 /// Per-field hardening overrides. Each field is `Option<bool>` (or
 /// equivalent) so `None` ≡ "inherit ghars's canonical profile" and
 /// `Some(...)` ≡ "explicit override". Driven by the user's real
-/// configs being STRICTER than the Python tool in 7+ directives
-/// (#41).
+/// configs being STRICTER than the Python tool in 7+ directives.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Hardening {
@@ -688,7 +686,7 @@ pub struct EnvironmentSpec {
 }
 
 /// `BindReadOnlyPaths=` template style — Curated keeps the narrow
-/// /etc list, Broad binds the whole /etc tree (#41).
+/// /etc list, Broad binds the whole /etc tree.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum EtcBindStyle {
@@ -754,8 +752,7 @@ pub struct CaCertBinding {
 }
 
 /// Job hooks. Maps to `ACTIONS_RUNNER_HOOK_JOB_STARTED` and
-/// `ACTIONS_RUNNER_HOOK_JOB_COMPLETED` env vars on the runner
-/// (#40).
+/// `ACTIONS_RUNNER_HOOK_JOB_COMPLETED` env vars on the runner.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct HooksSpec {
@@ -1215,7 +1212,7 @@ pub(crate) fn ipv6_from_annotation(s: &str) -> Option<Ipv6Mode> {
 }
 
 /// IPv6 inside the netns. Default `Disabled`. v0.2 will support
-/// `Enabled` with ULA allocation (#56).
+/// `Enabled` with ULA allocation.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Ipv6Mode {

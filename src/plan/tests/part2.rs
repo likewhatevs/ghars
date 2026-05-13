@@ -520,8 +520,8 @@ fn discovered_annotations_caches_round_trip_canonical_sort() {
 /// the lowering sort.
 ///
 /// Block 1 (site 1): construct a Config with 2 cache_pools `pool-a`
-/// (ccache) + `pool-z` (sccache) — capped at 1 binding per kind per
-/// #38's per-runner-per-kind validator; build a RunnerSpec whose
+/// (ccache) + `pool-z` (sccache) — capped at 1 binding per kind by
+/// the per-runner-per-kind validator; build a RunnerSpec whose
 /// `caches` field is `["pool-z", "pool-a"]` (operator TOML in
 /// lex-descending order); call `lower_to_effective` directly; assert
 /// the resulting EffectiveRunnerSpec.caches binding names come out

@@ -45,8 +45,8 @@ pub(super) fn cmd_validate(
     let actual = state::ActualState::default();
     let plan = plan::plan_from(&cfg, &actual, &paths)?;
     // `cmd_plan` / `cmd_apply` route through `compute_plan`, which runs
-    // `unit_verify::verify_plan` on the rendered drop-ins (audit #18 /
-    // Part 13 Tier 5). `cmd_validate` ALSO renders drop-ins (via
+    // `unit_verify::verify_plan` on the rendered drop-ins (Part 13
+    // Tier 5: `systemd-analyze verify` gate). `cmd_validate` ALSO renders drop-ins (via
     // `plan_from` above), so without the same gate here, an operator
     // running `ghars validate` and getting "config OK" would still see
     // a `systemd-analyze verify` failure on `ghars plan` / `ghars
@@ -144,8 +144,8 @@ pub(super) fn compute_plan(cfg: &Config, paths: &Paths, only: &[String]) -> Resu
     if !only.is_empty() {
         plan.actions.retain(|a| action_matches_filter(a, only));
     }
-    // Plan-time `systemd-analyze verify` gate (audit #18 / Part 13
-    // Tier 5). Run AFTER the `--only` filter so operators who scope
+    // Plan-time `systemd-analyze verify` gate (Part 13 Tier 5).
+    // Run AFTER the `--only` filter so operators who scope
     // a partial apply only pay the verification cost for the actions
     // they're actually going to apply. Errors propagate as
     // GharsError::Validation; cmd_plan / cmd_apply surface them

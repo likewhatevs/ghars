@@ -206,9 +206,9 @@ fn plan_update_falls_through_to_in_place_on_hash_mismatch_alone() {
     // re-register with GitHub); in-place is non-destructive
     // (rewrites X-Ghars-Spec-Hash in 00-ghars.conf and restarts the
     // unit to pick up any byte-changed drop-ins). The renderer-only
-    // deploy path planned for #1 lands every runner in exactly this
-    // arm — recreating every runner on a binary upgrade would be
-    // wrong behavior.
+    // RENDERER_SCHEMA-bump deploy path lands every runner in exactly
+    // this arm — recreating every runner on a binary upgrade would
+    // be wrong behavior.
     let mut cfg = make_config();
     cfg.runners = vec![make_runner("buckos")];
 

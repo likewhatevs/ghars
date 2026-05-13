@@ -33,13 +33,13 @@
 //!   canonical operator shapes (no-caches, ccache-only, sccache-only,
 //!   combined-kind, multi-binding direct-construct, operator env vars,
 //!   non-default trust_zone). `env_file_ccache_only_binding` /
-//!   `env_file_non_default_trust_zone` pin the #10 `has_ccache` gate
-//!   on the positive side (CCACHE_DIR line present);
+//!   `env_file_non_default_trust_zone` pin the `has_ccache` binding
+//!   gate on the positive side (CCACHE_DIR line present);
 //!   `env_file_no_caches_no_operator_env` / `env_file_sccache_only_binding`
 //!   pin the negative side (no CCACHE_DIR line).
 //! - `path_file_*`                — `bin.X.Y.Z/.path` body for the
 //!   minimal, operator-augmented, and non-default name+trust_zone
-//!   shapes (#39 PATH composition pipeline).
+//!   shapes.
 //! - `nft_rules_minimal`/`_full`  — nft rule pair (host + ns) per
 //!   Part 9c.
 //!
@@ -433,8 +433,9 @@ fn cache_drop_in_unified_snapshot() {
 // operator env vars, non-default trust_zone, minimal PATH,
 // operator-augmented PATH, non-default name+trust_zone PATH).
 //
-// Per #10's gate, `CCACHE_DIR=` emission and `.ccache` dir creation
-// are both gated on at-least-one-ccache-kind-binding. These
+// Per the has_ccache binding gate, `CCACHE_DIR=` emission and
+// `.ccache` dir creation are both gated on at-least-one-ccache-
+// kind-binding. These
 // snapshots are the byte-level pin that guards the renderer side of
 // that symmetry.
 
@@ -481,7 +482,7 @@ fn env_file_combined_kind_binding_snapshot() {
 #[test]
 fn env_file_sccache_only_binding_snapshot() {
     // Pins the sccache-only env_file shape: NO CCACHE_DIR (gated on
-    // Ccache kind per #10), NO CCACHE_MAXSIZE, all 4 SCCACHE_* lines
+    // Ccache kind), NO CCACHE_MAXSIZE, all 4 SCCACHE_* lines
     // emitted. The combined-kind snapshot does NOT prove the
     // CCACHE_DIR gate because that fixture INCLUDES Ccache in kinds
     // by design — only an sccache-only fixture catches a regression
@@ -527,10 +528,11 @@ fn env_file_non_default_trust_zone_snapshot() {
 
 #[test]
 fn env_file_multi_binding_direct_construct_snapshot() {
-    // Two ccache bindings on one runner. Post-#38, this is rejected
-    // at config-load + plan-time; direct-construct test paths (this
-    // fixture) bypass both gates so the renderer's per-binding
-    // emission contract is still observable. Byte-level pin of the
+    // Two ccache bindings on one runner. Per the per-runner-per-kind
+    // validator, this is rejected at config-load + plan-time;
+    // direct-construct test paths (this fixture) bypass both gates
+    // so the renderer's per-binding emission contract is still
+    // observable. Byte-level pin of the
     // existing unit-test `_emits_one_ccache_maxsize_per_binding_in_source_order`
     // contract — turns the line-level assertion into a full-body
     // snapshot guard. Catches regressions like `caches.first()`

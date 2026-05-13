@@ -376,7 +376,7 @@ pub(super) fn fchown_record_undo(
 ///     ccache binding presence: skipped entirely when ccache_dir is
 ///     None, see body. Callers pass None for runners with no
 ///     `[cache_pools.NAME]` binding of `kinds = ["ccache"]`, per
-///     #10's gating)
+///     the `has_ccache` binding gate in `execute_create_runner`)
 ///   - .runner / .credentials* → 0o600 (owner-only read; world
 ///     no longer sees OAuth credentials or the RSA private key)
 ///
@@ -1575,15 +1575,14 @@ pub(super) fn execute_update_runner(
     // avoids cross-runner racy rmdir (another runner in the same
     // trust_zone may still need the dir).
     //
-    // KNOWN GAP (task #73): the freshly-created `.ccache` here stays
-    // root-owned at 0o777 because `execute_update_runner` does NOT
-    // call `chown_and_tighten_runner_state` post-StartUnit (only
+    // KNOWN GAP: the freshly-created `.ccache` here stays root-owned
+    // at 0o777 because `execute_update_runner` does NOT call
+    // `chown_and_tighten_runner_state` post-StartUnit (only
     // `execute_create_runner` does, at the chown call-site below).
     // The dir is functionally writable by the DynamicUser via the
     // world bit, but the ownership posture diverges from the
     // CreateRunner path (which produces DynamicUser-owned 0o770).
     // Self-heals on the next CreateRunner in the same trust_zone.
-    // Task #73 tracks closing the asymmetry.
     let after_has_ccache = delta
         .after
         .spec

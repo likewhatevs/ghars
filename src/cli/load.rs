@@ -313,10 +313,11 @@ pub(super) fn validate_no_duplicate_caches(cfg: &Config) -> Result<()> {
 /// `SCCACHE_SERVER_UDS`. Multi-pool-of-same-kind silently reduces to
 /// "one effective pool, last-wins on `*_MAXSIZE`".
 ///
-/// Adding a new `CacheKind` variant (e.g. ktstr per pending task #5):
-/// append a tuple to `KINDS` IFF the variant's renderer emits per-
-/// pool `Environment=KEY=value` or per-binding `.env KEY=value`
-/// entries that would clash with another binding of the same kind.
+/// Adding a new `CacheKind` variant (e.g. a hypothetical future
+/// ktstr first-class kind): append a tuple to `KINDS` IFF the
+/// variant's renderer emits per-pool `Environment=KEY=value` or
+/// per-binding `.env KEY=value` entries that would clash with
+/// another binding of the same kind.
 /// Singleton-per-kind enforcement is correct only when the per-pool
 /// emissions actually exist — a future kind that emits no per-pool
 /// env entries doesn't need this gate.

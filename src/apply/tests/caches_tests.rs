@@ -158,7 +158,8 @@ fn execute_update_runner_in_place_populates_pool_name_vecs() {
     assert_eq!(
         mode_inplace_add, 0o777,
         ".ccache must be 0o777 in in-place path (matches CreateRunner apply-time mode; \
-         post-StartUnit tightening to 0o770 is task #73's territory)"
+         post-StartUnit tightening to 0o770 is a known gap on the in-place add-ccache \
+         path — execute_update_runner does not call chown_and_tighten_runner_state)"
     );
 
     // Sibling: pre-existing .ccache from a sibling runner's prior

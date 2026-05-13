@@ -2561,20 +2561,20 @@ fn plan_renders_ccache_only_pool_with_sleep_infinity_execstart() {
         .expect("CreateCachePool emitted");
     let body = &pool_action.drop_in_body;
     assert!(body.contains("ExecStart=/usr/bin/sleep infinity"));
-    // Post-#70: ccache-only pool drop-in does NOT emit
-    // `Environment=CCACHE_DIR=` or `Environment=CCACHE_MAXSIZE=`. The
-    // cache pool unit's ExecStart is `sleep infinity` (the stub) —
-    // it never reads either env var. CCACHE_DIR / CCACHE_MAXSIZE
-    // that ccache actually consumes are emitted by
-    // `render_runner_env_file` (LAYER 2 .env on the runner unit,
-    // trust-zone-shared path).
+    // Per the per-binding CCACHE_DIR audit removal: ccache-only pool
+    // drop-in does NOT emit `Environment=CCACHE_DIR=` or
+    // `Environment=CCACHE_MAXSIZE=`. The cache pool unit's
+    // ExecStart is `sleep infinity` (the stub) — it never reads
+    // either env var. CCACHE_DIR / CCACHE_MAXSIZE that ccache
+    // actually consumes are emitted by `render_runner_env_file`
+    // (LAYER 2 .env on the runner unit, trust-zone-shared path).
     assert!(
         !body.contains("Environment=CCACHE_DIR="),
-        "ccache-only pool drop-in must not emit CCACHE_DIR (#70): {body}"
+        "ccache-only pool drop-in must not emit CCACHE_DIR (dead-code removal): {body}"
     );
     assert!(
         !body.contains("Environment=CCACHE_MAXSIZE="),
-        "ccache-only pool drop-in must not emit CCACHE_MAXSIZE (#70): {body}"
+        "ccache-only pool drop-in must not emit CCACHE_MAXSIZE (dead-code removal): {body}"
     );
     assert!(!body.contains("--start-server"));
 }

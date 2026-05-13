@@ -333,8 +333,9 @@ fn delta_before_caches_is_sorted_for_display() {
     // cache_kinds` gate), render its discovered drop-in, then
     // overwrite the X-Ghars-Caches annotation to a non-canonical
     // order (`pool-z,pool-a,pool-m`). The annotation is the BEFORE
-    // state — a snapshot of what was on disk, possibly from a
-    // pre-#38-validator config that allowed multi-ccache. The
+    // state — a snapshot of what was on disk, possibly from a config
+    // predating the per-runner-per-kind validator that allowed
+    // multi-ccache. The
     // intersection branch in plan_from reads this annotation and
     // populates `delta.before_caches` after `sort_unstable()` at
     // the population site.
@@ -362,9 +363,9 @@ fn delta_before_caches_is_sorted_for_display() {
             sleep_path: Some("/usr/bin/sleep".into()),
         },
     );
-    // OLD spec: 3 ccache bindings synthesized directly. This pre-
-    // dates the #38 validator (which would reject 3 ccache pools
-    // per runner); merge_defaults takes bindings as-is without
+    // OLD spec: 3 ccache bindings synthesized directly. This predates
+    // the per-runner-per-kind validator (which would reject 3 ccache
+    // pools per runner); merge_defaults takes bindings as-is without
     // validation, simulating an on-disk runner deployed under an
     // older ghars binary.
     let mut old_runner = cfg.runners[0].clone();

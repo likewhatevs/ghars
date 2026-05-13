@@ -353,8 +353,9 @@ fn create_runner_does_not_world_writable_bin_tree() {
     // (NOT world-writable). A compromised workflow could otherwise
     // inject PATH/env overrides that take effect on next runner-
     // process restart. execute_create_runner always writes both
-    // files via write_record_undo post-#24, so this is a hard-
-    // assert existence + mode check, not a conditional.
+    // files via write_record_undo unconditionally post-elevation
+    // of .env/.path, so this is a hard-assert existence + mode
+    // check, not a conditional.
     let env_file = runner_home.join("bin.2.334.0/.env");
     let path_file = runner_home.join("bin.2.334.0/.path");
     assert!(
@@ -583,7 +584,7 @@ fn create_runner_refuses_planted_symlink_at_runner_tmp() {
 /// - tz_dir/.ktstr 0o777: shared cross-runner KTSTR coordination
 ///   (always created).
 /// - tz_dir/.ccache: NOT created for no-ccache-binding runners
-///   (gated per #10). For the binding-present case see
+///   (gated on at-least-one-ccache-binding). For the binding-present case see
 ///   `create_runner_with_ccache_binding_creates_ccache_dir`. For
 ///   the binding-absent skip case see
 ///   `create_runner_without_ccache_binding_skips_ccache_dir`. This
@@ -722,7 +723,7 @@ fn create_runner_with_sccache_only_binding_skips_ccache_dir() {
 /// Sibling of `create_runner_with_ccache_binding_creates_ccache_dir`
 /// covering combined-kind pools (`kinds = ["ccache", "sccache"]`).
 /// The gate at execute_create_runner uses `.kinds.contains(&Ccache)`
-/// (which #38's validator accepts for combined-kind pools too), so a
+/// (which the per-runner-per-kind validator accepts for combined-kind pools too), so a
 /// combined-kind pool must trigger `.ccache` creation. Regression
 /// guard against `.kinds == &[Ccache]` equality matching.
 #[test]
@@ -910,10 +911,11 @@ fn create_runner_pushes_set_mode_undo_step_for_every_chmod_site() {
     // Add a ccache binding so the .ccache dir is created + chmodded
     // (and so the assertion below that .ccache is in the expected
     // chmod-site set holds). Without this binding the
-    // .ccache-creation block is skipped per #10's gating. The
-    // chmod-site contract being tested is per-chmod-call, not per-
-    // spec, so the right test posture is "spec with all chmod sites
-    // active" → all SetMode pushes observable.
+    // .ccache-creation block is skipped per the `has_ccache` binding
+    // gate in `execute_create_runner`. The chmod-site contract being
+    // tested is per-chmod-call, not per-spec, so the right test
+    // posture is "spec with all chmod sites active" → all SetMode
+    // pushes observable.
     plan.spec.caches.push(crate::config::EffectiveCacheBinding {
         name: "obj".into(),
         kinds: vec![crate::config::CacheKind::Ccache],
@@ -989,8 +991,9 @@ fn create_runner_pushes_set_mode_undo_step_for_every_chmod_site() {
 
     // tz_dir, runner_tmp, .ktstr: each chmodded ONCE.
     // .ccache: chmodded ONCE because this fixture's plan includes a
-    // ccache binding (per #10's gating, .ccache is only created +
-    // chmodded when the runner spec has at least one ccache binding).
+    // ccache binding (per the `has_ccache` binding gate in
+    // `execute_create_runner`, .ccache is only created + chmodded
+    // when the runner spec has at least one ccache binding).
     // runner_home: chmodded TWICE (Stage 1 0o755, Stage 2 0o777).
     // .runner / .credentials / .credentials_rsaparams: each chmodded
     // ONCE post-config.sh.
@@ -1340,7 +1343,8 @@ fn fchown_record_undo_refuses_planted_symlink() {
 /// chown_and_tighten_runner_state is the production helper that
 /// runs after the post-StartUnit DynamicUser UID query. The
 /// helper chowns runner_home, runner_tmp, .ktstr, optionally
-/// .ccache (per #10's gating — this test passes Some; see
+/// .ccache (per the `has_ccache` binding gate in
+/// `execute_create_runner` — this test passes Some; see
 /// `chown_and_tighten_runner_state_skips_ccache_when_none` for
 /// the None branch), and the credential files to the DynamicUser
 /// UID, then tightens modes (0o700 dirs, 0o770 shared, 0o600
@@ -1354,8 +1358,9 @@ fn fchown_record_undo_refuses_planted_symlink() {
 /// each chmod/chown produced its expected UndoLog entries (with
 /// no-op gates correctly skipping no-change pushes).
 ///
-/// Adversary F3 regression guard for #4: catches a future
-/// refactor that flips the chown-then-chmod ordering (breaks
+/// Adversary F3 regression guard for the post-StartUnit
+/// DynamicUser chown+tighten path: catches a future refactor
+/// that flips the chown-then-chmod ordering (breaks
 /// DynamicUser access during the window), drops a mode-tighten
 /// site (leaves runner_home or credentials at world-readable
 /// modes after the runner is started), or changes a target
@@ -1387,7 +1392,8 @@ fn chown_and_tighten_runner_state_chowns_and_tightens_all_paths() {
     for d in [&tz_dir, &runner_home, &runner_tmp, &ktstr_dir, &ccache_dir] {
         std::fs::create_dir_all(d.as_std_path()).unwrap();
     }
-    // Plant the 3 credential files at 0o644 (post-#14 normalize state).
+    // Plant the 3 credential files at 0o644 (matches post-fix
+    // DynamicUser-readable normalize state).
     for basename in [".runner", ".credentials", ".credentials_rsaparams"] {
         let p = runner_home.join(basename);
         std::fs::write(p.as_std_path(), b"{}").unwrap();
@@ -1489,7 +1495,8 @@ fn chown_and_tighten_runner_state_chowns_and_tightens_all_paths() {
 }
 
 /// Sibling of `chown_and_tighten_runner_state_chowns_and_tightens_all_paths`
-/// for the `ccache_dir: None` branch (#10 gating). The helper must:
+/// for the `ccache_dir: None` branch (the `has_ccache` binding
+/// gate in `execute_create_runner`). The helper must:
 /// - succeed with no `.ccache` path on disk + `None` arg
 /// - skip fchown AND chmod-tighten for `.ccache`
 /// - still tighten runner_home / runner_tmp / .ktstr / creds as usual
@@ -1507,8 +1514,8 @@ fn chown_and_tighten_runner_state_skips_ccache_when_none() {
     let our_uid = our_meta.uid();
     let our_gid = our_meta.gid();
 
-    // Construct the runner tree WITHOUT `.ccache` (matches the post-
-    // #10 no-ccache-binding runner shape).
+    // Construct the runner tree WITHOUT `.ccache` (matches the
+    // no-ccache-binding runner shape per the `has_ccache` binding gate in `execute_create_runner`).
     let tz_dir = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
         .unwrap()
         .join("default");
@@ -1892,8 +1899,9 @@ fn update_runner_in_place_propagates_eacces_on_managed_dropin_remove() {
             effective_unit_text: crate::systemd::runner_template_text(),
             drop_ins: BTreeMap::new(),
             // Populate via the real renderers so test inputs match
-            // bytes the apply layer would actually write (#44
-            // uniformity cleanup; the EACCES assertion below
+            // bytes the apply layer would actually write
+            // (post-snapshot-coverage uniformity cleanup; the EACCES
+            // assertion below
             // targets drop-in deletion, not .env/.path bytes).
             env_file: crate::systemd::render_runner_env_file(&after).unwrap(),
             path_file: crate::systemd::render_runner_path_file(&after).unwrap(),
@@ -2076,7 +2084,7 @@ fn execute_create_runner_invokes_prune_with_keep_versions() {
 
 #[test]
 fn update_runner_in_place_rewrites_env_and_path_when_content_differs() {
-    // #24 regression: in-place updates must rewrite bin.X.Y.Z/.env
+    // Pre-fix regression: in-place updates must rewrite bin.X.Y.Z/.env
     // AND bin.X.Y.Z/.path when the rendered bodies differ from
     // on-disk content. Pre-fix, execute_update_runner only touched
     // the systemd drop-ins and left .env/.path stale — workflow steps

@@ -697,8 +697,9 @@ pub(crate) fn render_runner_env_file(spec: &EffectiveRunnerSpec) -> Result<Strin
     // iteration → deterministic .env bytes regardless of operator's
     // TOML key order). Appended AFTER framework keys so existing
     // runners with empty `[runner.environment].vars` produce
-    // byte-identical .env (no spurious in-place rewrite on the #7
-    // deploy). Operator keys colliding with framework keys are
+    // byte-identical .env (no spurious in-place rewrite on the
+    // .env/.path-elevation deploy). Operator keys colliding with
+    // framework keys are
     // rejected at config-load via the deny-list in
     // crate::validators::validate_environment_spec, so values
     // reaching here are validation-clean.
@@ -1157,7 +1158,8 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
     // render_runner_env_file (Site A) — operator's MY_VAR lands in
     // BOTH 00-ghars.conf (here) and .env (Site A) per the api-reviewer
     // HARD REQ: a future renderer refactor that drops one layer would
-    // re-create the LAYER 1/2 drift class #24 fixed for built-ins.
+    // re-create the LAYER 1/2 drift class the in-place .env/.path
+    // rewrite fixed for framework-emitted built-ins.
     //
     // %-escape: operator values containing `%` must be emitted as
     // `%%` here because systemd parses %-specifiers in Environment=
@@ -2099,9 +2101,11 @@ mod tests {
     fn render_runner_env_file_emits_unconditional_keys_for_empty_caches() {
         // LANG + KTSTR_LOCK_DIR + KTSTR_CACHE_DIR always emitted.
         // CCACHE_DIR is GATED on having at least one ccache-kind
-        // binding (#10 fix — symmetric with apply-layer .ccache dir
-        // creation gating). Empty caches = no ccache binding = no
-        // CCACHE_DIR emission. Pin byte-exact output so any drift
+        // binding (the `has_ccache` binding gate in
+        // `execute_create_runner` — symmetric with apply-layer
+        // .ccache dir creation gating). Empty caches = no ccache
+        // binding = no CCACHE_DIR emission. Pin byte-exact output
+        // so any drift
         // (extra blank line, key reorder, missing newline, or a
         // regression to unconditional CCACHE_DIR emission) is caught.
         let spec = minimal_spec();  // caches = vec![]
@@ -2123,9 +2127,10 @@ mod tests {
     /// trust-zone `.ccache` dir that wasn't created by apply.
     ///
     /// Symmetric with `execute_create_runner`'s `.ccache` dir
-    /// creation gate (src/apply/runners.rs has_ccache check). The
-    /// two are load-bearing for the post-#10 invariant: dir presence
-    /// ⇔ env var presence ⇔ at-least-one-ccache-binding.
+    /// creation gate (`has_ccache` check in apply/runners.rs).
+    /// The two are load-bearing for the `has_ccache` binding gate
+    /// invariant: dir presence ⇔ env var presence ⇔
+    /// at-least-one-ccache-binding.
     #[test]
     fn render_runner_env_file_gates_ccache_dir_on_ccache_binding() {
         // Use line-start match (CCACHE_DIR=... is a full env-file
@@ -3978,14 +3983,15 @@ mod tests {
         // Sanity: the prior hardcoded /usr/bin/sleep is no longer
         // emitted when the binding pins a different location.
         assert!(!body.contains("/usr/bin/sleep"));
-        // Post-#70: CCACHE_DIR is NO LONGER emitted on the cache
-        // pool unit drop-in for ccache-only pools. The cache pool
-        // unit's ExecStart is `sleep infinity` (the stub) — it
-        // never reads CCACHE_DIR. The prior emission was dead code
-        // that misled `systemctl cat` readers.
+        // Per the per-binding CCACHE_DIR audit removal: CCACHE_DIR
+        // is NO LONGER emitted on the cache pool unit drop-in for
+        // ccache-only pools. The cache pool unit's ExecStart is
+        // `sleep infinity` (the stub) — it never reads CCACHE_DIR.
+        // The prior emission was dead code that misled
+        // `systemctl cat` readers.
         assert!(
             !body.lines().any(|l| l.starts_with("Environment=CCACHE_DIR=")),
-            "no `Environment=CCACHE_DIR=` expected on ccache-only cache pool unit (#70): {body}"
+            "no `Environment=CCACHE_DIR=` expected on ccache-only cache pool unit (dead-code removal): {body}"
         );
         assert!(!body.contains("--start-server"));
     }

@@ -1,4 +1,4 @@
-//! Plan-time `systemd-analyze verify` gate (audit #18 / Part 13 Tier 5).
+//! Plan-time `systemd-analyze verify` gate (Part 13 Tier 5).
 //!
 //! Renders every plan-emitted unit + drop-in into a temporary directory
 //! arranged the way systemd expects (`<unit>.service` next to its

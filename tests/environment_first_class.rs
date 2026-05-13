@@ -49,7 +49,8 @@ fn base_spec() -> EffectiveRunnerSpec {
 /// for workflow steps) AND the 00-ghars.conf `Environment=` directive
 /// (LAYER 1, consumed by systemd for the runner unit). Without this
 /// pin a future renderer refactor could quietly drop one layer and
-/// re-create the LAYER 1/2 drift class #24 fixed for built-ins.
+/// re-create the LAYER 1/2 drift class the in-place .env/.path
+/// rewrite fixed for framework-emitted built-ins.
 #[test]
 fn operator_env_var_lands_in_both_env_file_and_identity_drop_in() {
     let mut spec = base_spec();
@@ -191,8 +192,8 @@ fn operator_path_append_lands_after_system_tail_in_path_file() {
 }
 
 /// Empty `[defaults.environment]` / `[runner.environment]` produces
-/// byte-identical .env and .path output as pre-#7 (adversary D7
-/// byte-identical-when-empty guarantee). Regression guard against a
+/// byte-identical .env and .path output to the pre-elevation baseline
+/// (adversary D7 byte-identical-when-empty guarantee). Regression guard against a
 /// future renderer refactor that injects spurious output for empty
 /// operator config.
 #[test]
@@ -202,7 +203,7 @@ fn empty_operator_environment_produces_no_extra_emission() {
 
     // .env should ONLY contain LANG + KTSTR_LOCK_DIR + KTSTR_CACHE_DIR
     // (3 framework lines for a spec with no caches). CCACHE_DIR is
-    // gated on has_ccache binding per #10 — empty caches → no
+    // gated on has_ccache binding — empty caches → no
     // CCACHE_DIR emission.
     let line_count = unit.env_file.lines().count();
     assert_eq!(
