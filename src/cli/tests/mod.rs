@@ -130,6 +130,7 @@ fn fake_effective_spec(name: &str) -> crate::config::EffectiveRunnerSpec {
         allowed_memory_nodes: None,
         spec_hash: "sha256:0".into(),
         config_source: "/etc/ghars/ghars.toml".into(),
+        renderer_schema: crate::systemd::RENDERER_SCHEMA,
     }
 }
 
@@ -163,6 +164,7 @@ fn fake_cache_binding(name: &str) -> crate::config::EffectiveCacheBinding {
         trust_zone: "default".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep".into()),
+        renderer_schema: crate::systemd::RENDERER_SCHEMA,
     }
 }
 

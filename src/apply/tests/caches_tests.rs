@@ -33,6 +33,7 @@ pub(super) fn make_caches_delta(
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
         })
         .collect();
     let rendered = render_runner_unit(&spec).unwrap();

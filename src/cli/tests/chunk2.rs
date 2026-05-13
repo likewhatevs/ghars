@@ -2609,6 +2609,7 @@ fn plan_from_discovered_only_runner_populates_remove_runner_identity() {
         allowed_memory_nodes: None,
         spec_hash: "sha256:0".into(),
         config_source: "/etc/ghars/ghars.toml".into(),
+        renderer_schema: crate::systemd::RENDERER_SCHEMA,
     };
     let rendered = crate::systemd::render_runner_unit(&discovered_spec)
         .expect("render_runner_unit must succeed for valid spec");

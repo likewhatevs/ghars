@@ -109,6 +109,16 @@ destructive, so a coverage-gap diagnostic logs at warn level
 without pushing a recreate reason. The full vocabulary lives
 in `RunnerDelta::recreate_reasons`.
 
+The renderer schema number (`crate::systemd::RENDERER_SCHEMA`)
+participates in `spec_hash` and `cache_pool_hash`, so a ghars
+binary upgrade that bumps the constant flips every managed
+runner's and pool's hash, driving the in-place rewrite path
+described above. This is the intended deploy → apply → fleet
+auto-convergence cascade — see
+[Operations](./operations.md#why-did-my-fleet-restart-on-a-ghars-binary-upgrade)
+for the operator-facing semantics and in-flight workload
+impact.
+
 `plan_from` itself emits actions in alphabetical name order;
 `apply::sort_into_phases` re-orders into the canonical execution
 order.

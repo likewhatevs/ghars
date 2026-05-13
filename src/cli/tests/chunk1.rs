@@ -715,6 +715,7 @@ fn render_action_line_uses_sigil_per_kind() {
             allowed_memory_nodes: None,
             spec_hash: "sha256:0".into(),
             config_source: "/etc/ghars/ghars.toml".into(),
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
         },
         resolved_release: None,
         effective_unit_text: String::new(),

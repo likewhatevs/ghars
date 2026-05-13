@@ -47,6 +47,7 @@ fn minimal_spec(name: &str) -> EffectiveRunnerSpec {
         allowed_memory_nodes: None,
         spec_hash: "sha256:dead".into(),
         config_source: "/etc/ghars/ghars.toml".into(),
+        renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     }
 }
 

@@ -80,6 +80,7 @@ fn base_spec() -> EffectiveRunnerSpec {
         allowed_memory_nodes: None,
         spec_hash: "sha256:0000000000000000000000000000000000000000000000000000000000000000".into(),
         config_source: "/etc/ghars/ghars.toml".into(),
+        renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     }
 }
 
@@ -194,6 +195,7 @@ fn dropin_30_cache_pool_ccache_only_snapshot() {
         trust_zone: "default".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep".into()),
+        renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     });
     let r = render_runner_unit(&spec).unwrap();
     insta::assert_snapshot!(
@@ -213,6 +215,7 @@ fn dropin_30_cache_pool_sccache_only_snapshot() {
         trust_zone: "default".into(),
         sccache_path: Some("/usr/bin/sccache".into()),
         sleep_path: None,
+        renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     });
     let r = render_runner_unit(&spec).unwrap();
     insta::assert_snapshot!(
@@ -235,6 +238,7 @@ fn dropin_30_cache_pool_unified_snapshot() {
         trust_zone: "default".into(),
         sccache_path: Some("/usr/bin/sccache".into()),
         sleep_path: None,
+        renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     });
     let r = render_runner_unit(&spec).unwrap();
     insta::assert_snapshot!(
@@ -374,6 +378,7 @@ fn cache_drop_in_ccache_only_snapshot() {
         trust_zone: "default".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep".into()),
+        renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     };
     let body = render_cache_drop_in(
         &binding,
@@ -394,6 +399,7 @@ fn cache_drop_in_sccache_only_snapshot() {
         trust_zone: "default".into(),
         sccache_path: Some("/usr/bin/sccache".into()),
         sleep_path: None,
+        renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     };
     let body = render_cache_drop_in(
         &binding,
@@ -414,6 +420,7 @@ fn cache_drop_in_unified_snapshot() {
         trust_zone: "default".into(),
         sccache_path: Some("/usr/bin/sccache".into()),
         sleep_path: None,
+        renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     };
     let body = render_cache_drop_in(
         &binding,

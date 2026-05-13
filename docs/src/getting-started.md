@@ -221,6 +221,20 @@ After a successful apply for a single-runner config:
 The full filesystem layout is in
 [Filesystem Layout](./filesystem-layout.md).
 
+### On your next ghars binary upgrade
+
+When you reinstall the `ghars` binary at a newer version, the
+next `ghars apply` will restart every managed runner. This is
+the intended fleet auto-convergence path — apply rewrites each
+runner's `00-ghars.conf` annotation to match the new binary's
+internal renderer schema and restarts the systemd unit to pick
+up any byte-changed drop-ins. GitHub registration stays intact;
+only the systemd unit cycles. In-flight workflows are sent
+SIGTERM with `TimeoutStopSec=5min` before SIGKILL — see
+[Operations](./operations.md#why-did-my-fleet-restart-on-a-ghars-binary-upgrade)
+for the full restart semantics and the planned `--no-restart`
+opt-out for protected-workload windows.
+
 ## Quickstart, condensed
 
 ```sh

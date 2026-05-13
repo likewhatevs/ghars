@@ -1377,6 +1377,7 @@ fn plan_update_runner_caches_change_is_in_place_with_field_change() {
         trust_zone: "default".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep".into()),
+        renderer_schema: crate::systemd::RENDERER_SCHEMA,
     };
     let mut old_spec = merge_defaults(
         &old_runner,

@@ -46,6 +46,7 @@ fn spec_with_cache_names(names: &[&str]) -> EffectiveRunnerSpec {
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
         })
         .collect();
     spec
@@ -378,6 +379,7 @@ fn delta_before_caches_is_sorted_for_display() {
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
         })
         .collect();
     let mut old_spec = merge_defaults(
@@ -911,6 +913,7 @@ fn discovered_annotations_round_trip_for_all_fields() {
             trust_zone: "audited".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
         },
         EffectiveCacheBinding {
             name: "rust".into(),
@@ -920,6 +923,7 @@ fn discovered_annotations_round_trip_for_all_fields() {
             trust_zone: "audited".into(),
             sccache_path: Some("/usr/bin/sccache".into()),
             sleep_path: None,
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
         },
     ];
     let mut spec = merge_defaults(
@@ -1689,6 +1693,7 @@ fn build_caches_in_place_plan() -> Plan {
         trust_zone: "default".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep".into()),
+        renderer_schema: crate::systemd::RENDERER_SCHEMA,
     };
     let mut old_spec = merge_defaults(
         &old_runner,

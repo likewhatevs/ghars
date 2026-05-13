@@ -184,6 +184,7 @@ pub fn merge_defaults(
         allowed_memory_nodes: runner.allowed_memory_nodes.clone(),
         spec_hash: String::new(),
         config_source,
+        renderer_schema: crate::systemd::RENDERER_SCHEMA,
     }
 }
 

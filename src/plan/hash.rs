@@ -49,6 +49,14 @@ use crate::config::{EffectiveCacheBinding, EffectiveRunnerSpec};
 ///   different files is intentionally treated as different (drives
 ///   X-Ghars-Config-Source). Operators who want stable hashes across
 ///   path moves are using the wrong input.
+/// - The `renderer_schema` field is INCLUDED — populated by
+///   `merge_defaults` from [`crate::systemd::RENDERER_SCHEMA`] so a
+///   ghars binary upgrade that bumps the constant flips every managed
+///   runner's hash, triggering the in-place rewrite + restart cascade
+///   described at the RENDERER_SCHEMA constant. See
+///   `docs/src/operations.md` "Why did my fleet restart on a ghars
+///   binary upgrade?" for operator-facing semantics + in-flight
+///   workload impact.
 ///
 /// Output: `sha256:HEX` lowercase 64-hex. Prefix matches the value
 /// emitted into the X-Ghars-Spec-Hash annotation.
@@ -114,6 +122,7 @@ mod tests {
             trust_zone: "default".into(),
             sccache_path: Some("/usr/bin/sccache".into()),
             sleep_path: None,
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
         };
         let other = EffectiveCacheBinding {
             sccache_path: Some("/usr/local/bin/sccache".into()),
@@ -124,6 +133,83 @@ mod tests {
             cache_pool_hash(&other),
             "sccache_path must not feed cache_pool_hash; hash drift on \
              host-resolved value would flip spec_hash between hosts"
+        );
+    }
+
+    /// `cache_pool_hash` MUST include `renderer_schema` in its hash
+    /// domain. The whole point of the field is that a ghars binary
+    /// upgrade bumping `RENDERER_SCHEMA` flips every managed pool's
+    /// hash so the apply path detects the renderer-output change and
+    /// rewrites the drop-in. A future regression that added
+    /// `#[serde(skip)]` to `renderer_schema` would silently break
+    /// this contract; this test catches that by constructing two
+    /// bindings differing ONLY in `renderer_schema` and asserting
+    /// distinct hashes.
+    #[test]
+    fn cache_pool_hash_includes_renderer_schema() {
+        let base = EffectiveCacheBinding {
+            name: "build".into(),
+            kinds: vec![CacheKind::Sccache],
+            size: "200G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: None,
+            renderer_schema: 1,
+        };
+        let bumped = EffectiveCacheBinding {
+            renderer_schema: 2,
+            ..base.clone()
+        };
+        assert_ne!(
+            cache_pool_hash(&base),
+            cache_pool_hash(&bumped),
+            "renderer_schema MUST participate in cache_pool_hash so a \
+             ghars binary upgrade that bumps RENDERER_SCHEMA forces an \
+             apply-time pool drop-in rewrite"
+        );
+    }
+
+    /// Mirror of `cache_pool_hash_includes_renderer_schema` for
+    /// `spec_hash`. Two `EffectiveRunnerSpec` values identical except
+    /// for `renderer_schema` MUST produce distinct hashes — that's
+    /// what drives the in-place rewrite cascade on a ghars binary
+    /// upgrade.
+    #[test]
+    fn spec_hash_includes_renderer_schema() {
+        use crate::config::{EffectiveRunnerSpec, Hardening};
+        let base = EffectiveRunnerSpec {
+            name: "a".into(),
+            url: "https://github.com/example/a".into(),
+            arch: crate::config::Arch::X86_64,
+            labels: vec!["a".into()],
+            memory_max: None,
+            runner_version: None,
+            runner_sha256: None,
+            runner_tarball: None,
+            auth_name: "pat".into(),
+            caches: vec![],
+            trust_zone: "default".into(),
+            network: None,
+            proxy: None,
+            hooks: None,
+            hardening: Hardening::default(),
+            allowed_cpus: None,
+            allowed_memory_nodes: None,
+            spec_hash: String::new(),
+            config_source: "/etc/ghars/ghars.toml".into(),
+            renderer_schema: 1,
+        };
+        let bumped = EffectiveRunnerSpec {
+            renderer_schema: 2,
+            ..base.clone()
+        };
+        assert_ne!(
+            spec_hash(&base),
+            spec_hash(&bumped),
+            "renderer_schema MUST participate in spec_hash so a ghars \
+             binary upgrade that bumps RENDERER_SCHEMA forces an \
+             apply-time drop-in rewrite + restart"
         );
     }
 }

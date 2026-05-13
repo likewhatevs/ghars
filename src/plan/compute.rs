@@ -715,6 +715,7 @@ pub(super) fn into_cache_pool_plan(
         trust_zone: pool.trust_zone.clone(),
         sccache_path,
         sleep_path,
+        renderer_schema: crate::systemd::RENDERER_SCHEMA,
     };
     let spec_hash = cache_pool_hash(&binding);
     let drop_in_body = crate::systemd::render_cache_drop_in(&binding, config_source, &spec_hash)?;
@@ -953,6 +954,7 @@ pub(super) fn lower_to_effective(
             trust_zone: pool.trust_zone.clone(),
             sccache_path,
             sleep_path,
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
         });
     }
     // Caches form an unordered set (group memberships are

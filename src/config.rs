@@ -285,6 +285,16 @@ pub struct EffectiveRunnerSpec {
     /// Source path that produced this spec (e.g.
     /// `"/etc/ghars/ghars.toml"`). Drives X-Ghars-Config-Source.
     pub config_source: String,
+    /// Renderer schema number captured at `lower_to_effective` time
+    /// from [`crate::systemd::RENDERER_SCHEMA`]. Participates in the
+    /// canonical-JSON `spec_hash` so a ghars binary upgrade that
+    /// bumps the constant flips every managed runner's spec_hash,
+    /// driving the `apply` in-place rewrite path (which is what
+    /// rewrites the on-disk drop-ins to match the new renderer
+    /// output). Operators never set this directly. NOT
+    /// `#[serde(skip)]` — its participation in the hash domain is
+    /// the entire point of the field.
+    pub renderer_schema: u32,
 }
 
 /// One cache pool reference resolved against `[cache_pools.NAME]`. The
@@ -337,6 +347,22 @@ pub struct EffectiveCacheBinding {
     /// `spec_hash`.
     #[serde(skip, default)]
     pub sleep_path: Option<Utf8PathBuf>,
+    /// Renderer schema number captured at binding-resolution time
+    /// from [`crate::systemd::RENDERER_SCHEMA`]. Mirror of
+    /// `EffectiveRunnerSpec::renderer_schema` for the cache-pool
+    /// hash domain — a renderer change that flips
+    /// `render_cache_drop_in` output for the same `(name, kinds,
+    /// size, mode, trust_zone)` bumps the constant, which flips
+    /// `cache_pool_hash` and drives the in-place pool-rewrite path.
+    ///
+    /// NOT `#[serde(skip)]` — participation in the `cache_pool_hash`
+    /// domain is the entire point of the field. Contrast with
+    /// `sccache_path` / `sleep_path` above (host-resolved binary
+    /// paths whose value depends on host filesystem layout, not
+    /// renderer behavior; those MUST stay `#[serde(skip)]` so the
+    /// hash doesn't flip between hosts whose sccache lives at
+    /// different prefixes).
+    pub renderer_schema: u32,
 }
 
 /// One network reference resolved against `[network.NAME]`.

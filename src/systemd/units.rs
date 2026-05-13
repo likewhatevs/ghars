@@ -97,6 +97,37 @@ pub struct RenderedUnit {
     pub warnings: Vec<String>,
 }
 
+/// Monotonic schema number for the renderer output surface. Bumped
+/// when any byte of any drop-in, template, env_file, or path_file
+/// emitted by `render_*` could change across upgrades for the same
+/// `EffectiveRunnerSpec` input — even if the operator's TOML is
+/// byte-identical.
+///
+/// Fed into `spec_hash` and `cache_pool_hash` via dedicated
+/// `renderer_schema` fields on `EffectiveRunnerSpec` and
+/// `EffectiveCacheBinding` so the on-disk `X-Ghars-Spec-Hash`
+/// annotation captures the schema. A ghars binary upgrade that
+/// changes renderer behavior MUST bump this number; otherwise plan
+/// emits NoOp on every runner and operators must `rm -rf` drop-in
+/// dirs to force convergence (the bug this constant exists to
+/// prevent).
+///
+/// Cosmetic refactors (comment edits, internal helper renames,
+/// formatting) do NOT bump this number — only behavior changes that
+/// would alter the bytes a downstream consumer (systemd, runsvc.sh,
+/// Runner.Listener) reads from the rendered files.
+///
+/// Decision rule for contributors: if your change requires re-
+/// accepting any `.snap` under `tests/snapshots/python_parity_unit_*`
+/// AND the byte change reflects observable systemd / runner behavior
+/// (not pure formatting or comment shuffling), bump this constant.
+/// If unsure, bump — false positives (an unnecessary bump) cost one
+/// cycle of in-place rewrites per managed runner on the next apply;
+/// false negatives (a missed bump) leave operators stranded on stale
+/// drop-ins requiring manual `rm -rf` to force convergence (the bug
+/// this constant exists to prevent).
+pub const RENDERER_SCHEMA: u32 = 1;
+
 // --- Runner template body (Part 9) ---------------------------------------
 
 /// Canonical `ghars-runner@.service` template body. Pure function:
@@ -1775,6 +1806,7 @@ mod tests {
             allowed_memory_nodes: None,
             spec_hash: "sha256:dead".into(),
             config_source: "/etc/ghars/ghars.toml".into(),
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
         }
     }
 
@@ -1874,6 +1906,7 @@ mod tests {
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
         });
         let env = render_runner_env_file(&spec).unwrap();
         assert!(env.contains("CCACHE_MAXSIZE=50G\n"), "missing CCACHE_MAXSIZE: {env}");
@@ -1889,6 +1922,7 @@ mod tests {
             trust_zone: "default".into(),
             sccache_path: Some("/usr/bin/sccache".into()),
             sleep_path: None,
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
         });
         let env2 = render_runner_env_file(&spec2).unwrap();
         assert!(!env2.contains("CCACHE_MAXSIZE"),
@@ -2024,6 +2058,7 @@ mod tests {
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
         });
         assert_render_identity_rejects(&spec, "caches[].name", "newline", '\n');
     }
@@ -2250,6 +2285,7 @@ mod tests {
             trust_zone: "default".into(),
             sccache_path: Some("/usr/bin/sccache".into()),
             sleep_path: None,
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
         }];
         let err = render_runner_unit(&spec).unwrap_err();
         assert!(
@@ -2401,6 +2437,7 @@ mod tests {
             trust_zone: "default".into(),
             sccache_path: Some("/usr/bin/sccache".into()),
             sleep_path: None,
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
         };
         let err = render_cache_drop_in(&binding, "/etc/ghars/ghars.toml", "sha256:abcd")
             .expect_err("must reject newline");
@@ -2430,6 +2467,7 @@ mod tests {
             trust_zone: "default".into(),
             sccache_path: Some("/usr/bin/sccache\nINJECTED=1".into()),
             sleep_path: None,
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
         };
         let err = render_cache_drop_in(&binding, "/etc/ghars/ghars.toml", "sha256:abcd")
             .expect_err("must reject newline in sccache_path");
@@ -2460,6 +2498,7 @@ mod tests {
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep\nINJECTED=1".into()),
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
         };
         let err = render_cache_drop_in(&binding, "/etc/ghars/ghars.toml", "sha256:abcd")
             .expect_err("must reject newline in sleep_path");
@@ -2495,6 +2534,7 @@ mod tests {
             trust_zone: "default".into(),
             sccache_path: Some("/usr/bin/sccache\0attacker".into()),
             sleep_path: None,
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
         };
         let err = render_cache_drop_in(&binding, "/etc/ghars/ghars.toml", "sha256:abcd")
             .expect_err("must reject NUL byte in sccache_path");
@@ -2709,6 +2749,7 @@ mod tests {
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
         });
         let r = render_runner_unit(&spec).unwrap();
         let c = r.drop_ins.get("30-cache-pool.conf").unwrap();
@@ -2734,6 +2775,7 @@ mod tests {
             trust_zone: "default".into(),
             sccache_path: Some("/usr/bin/sccache".into()),
             sleep_path: None,
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
         });
         let r = render_runner_unit(&spec).unwrap();
         let c = r.drop_ins.get("30-cache-pool.conf").unwrap();
@@ -3339,6 +3381,7 @@ mod tests {
             // resolved value rather than re-hardcoding.
             sccache_path: Some("/usr/local/bin/sccache".into()),
             sleep_path: None,
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
         };
         let body = render_cache_drop_in(&binding, "/etc/ghars/ghars.toml", "sha256:abcd").unwrap();
         assert!(body.contains("X-Ghars-Pool-Kinds=sccache"));
@@ -3373,6 +3416,7 @@ mod tests {
             // rather than the previous hardcoded /usr/bin/sleep.
             sccache_path: None,
             sleep_path: Some("/bin/sleep".into()),
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
         };
         let body = render_cache_drop_in(&binding, "/etc/ghars/ghars.toml", "sha256:abcd").unwrap();
         assert!(body.contains("X-Ghars-Pool-Kinds=ccache"));
@@ -3397,6 +3441,7 @@ mod tests {
             // reads sleep for sccache-serving pools).
             sccache_path: Some("/usr/bin/sccache".into()),
             sleep_path: None,
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
         };
         let body = render_cache_drop_in(&binding, "/etc/ghars/ghars.toml", "sha256:abcd").unwrap();
         // Both env sets emit; the sccache server is the ExecStart.
@@ -3452,6 +3497,7 @@ mod tests {
                 trust_zone: "default".into(),
                 sccache_path: serves_sccache.then(|| "/usr/bin/sccache".into()),
                 sleep_path: (!serves_sccache).then(|| "/usr/bin/sleep".into()),
+                renderer_schema: crate::systemd::RENDERER_SCHEMA,
             };
             let body =
                 render_cache_drop_in(&binding, "/etc/ghars/ghars.toml", "sha256:abcd").unwrap();

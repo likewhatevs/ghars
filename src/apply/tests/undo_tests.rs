@@ -508,6 +508,7 @@ fn apply_with_rollback_on_does_not_undo_already_succeeded_actions() {
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
         },
         drop_in_body: "[Service]\n".into(),
         spec_hash: "sha256:0".into(),

@@ -1139,6 +1139,7 @@ mod tests {
                 trust_zone: "default".into(),
                 sccache_path: Some("/usr/bin/sccache".into()),
                 sleep_path: None,
+                renderer_schema: crate::systemd::RENDERER_SCHEMA,
             }],
             trust_zone: "default".into(),
             network: None,
@@ -1160,6 +1161,7 @@ mod tests {
             allowed_memory_nodes: Some("0".into()),
             spec_hash: "sha256:dead".into(),
             config_source: "/etc/ghars/ghars.toml".into(),
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
         };
 
         let rendered = render_runner_unit(&spec).unwrap();

@@ -303,6 +303,7 @@ fn make_spec(name: &str, _prefix: &Utf8Path) -> EffectiveRunnerSpec {
         allowed_memory_nodes: None,
         spec_hash: "sha256:dead".into(),
         config_source: "/etc/ghars/ghars.toml".into(),
+        renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     }
 }
 
@@ -334,6 +335,7 @@ fn make_pool_plan(name: &str) -> CachePoolPlan {
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            renderer_schema: ghars::systemd::RENDERER_SCHEMA,
         },
         drop_in_body: "[Service]\nExecStart=/usr/bin/sleep infinity\n".into(),
         spec_hash: "sha256:abcd".into(),
@@ -810,6 +812,7 @@ fn _references_to_keep_imports() -> CachePoolDelta {
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            renderer_schema: ghars::systemd::RENDERER_SCHEMA,
         },
         drop_in_body: String::new(),
         spec_hash: String::new(),

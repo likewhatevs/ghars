@@ -428,6 +428,47 @@ warn-level log line in the planner — switch alerts to grep for
 "uncovered" in `ghars plan` stderr (the warn log) rather than
 stdout.
 
+### Why did my fleet restart on a ghars binary upgrade?
+
+A ghars binary upgrade that bumps the internal
+`crate::systemd::RENDERER_SCHEMA` constant flips every managed
+runner's and cache pool's `spec_hash`. On the next `ghars apply`,
+every managed unit falls through the in-place arm — apply rewrites
+`X-Ghars-Spec-Hash` in `00-ghars.conf` and restarts the unit to
+pick up any byte-changed drop-ins. This is the intended fleet
+auto-convergence cascade.
+
+What does NOT happen:
+- GitHub registration stays intact — no token re-mint, no
+  `config.sh` re-run, no runner re-registration.
+- Runner identity (UID, runner-home, network namespace) is
+  preserved.
+
+In-flight workload impact:
+- Currently-running workflows on a restarted runner are sent
+  SIGTERM at unit-stop time. systemd waits `TimeoutStopSec=5min`
+  before SIGKILL. Workflows that drain cleanly in under 5 min
+  finish; longer-running ones get killed.
+- Restarts are sequential across the fleet on the host the apply
+  ran on (no parallelism today).
+- Task tracking the opt-out flag for protected-workload windows:
+  `--no-restart` is planned but not yet implemented.
+
+Cross-host invariant:
+- Each host independently computes its own local hash against its
+  own discovered annotation. Heterogeneous fleets (some hosts on
+  the new binary, some on the old) apply cleanly without
+  interfering — each host converges to the binary it's running.
+
+When to bump `RENDERER_SCHEMA`:
+- Any byte change to the rendered template, drop-ins, env_file,
+  or path_file for the same `EffectiveRunnerSpec` input — the
+  reviewer checklist requires the bump in the same commit as the
+  renderer change. Cosmetic refactors (comment edits, formatting)
+  do NOT bump; only behavior changes that alter what systemd /
+  `runsvc.sh` / `Runner.Listener` reads from the rendered files
+  do.
+
 ## --diff and credential leakage
 
 Both `ghars plan --diff` and `ghars apply --diff` render full

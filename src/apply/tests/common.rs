@@ -305,6 +305,7 @@ pub(super) fn make_spec(name: &str, _prefix: &Utf8Path) -> EffectiveRunnerSpec {
         allowed_memory_nodes: None,
         spec_hash: "sha256:dead".into(),
         config_source: "/etc/ghars/ghars.toml".into(),
+        renderer_schema: crate::systemd::RENDERER_SCHEMA,
     }
 }
 
@@ -366,6 +367,7 @@ pub(super) fn make_pool_plan(name: &str, kinds: Vec<crate::config::CacheKind>) -
         // binding holds None.
         sccache_path: serves_sccache.then(|| "/usr/bin/sccache".into()),
         sleep_path: (!serves_sccache).then(|| "/usr/bin/sleep".into()),
+        renderer_schema: crate::systemd::RENDERER_SCHEMA,
     };
     let body =
         crate::systemd::render_cache_drop_in(&binding, "/etc/ghars/ghars.toml", "sha256:abcd")

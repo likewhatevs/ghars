@@ -36,8 +36,8 @@ mod units;
 pub use dbus::{DbusSystemd, OwnedObjectPath, Systemd, UnitListEntry, validate_drop_in};
 pub use nft::{NftRules, render_nft_rules};
 pub use units::{
-    RenderedUnit, cache_template_text, netns_template_text, render_cache_drop_in,
-    render_runner_unit, runner_template_text,
+    RENDERER_SCHEMA, RenderedUnit, cache_template_text, netns_template_text,
+    render_cache_drop_in, render_runner_unit, runner_template_text,
 };
 
 // `check_identity_field` is `pub(crate)` in `units`; re-export at the

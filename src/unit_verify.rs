@@ -697,6 +697,7 @@ mod tests {
             allowed_memory_nodes: None,
             spec_hash: "sha256:abcd".into(),
             config_source: "/etc/ghars/ghars.toml".into(),
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
         }
     }
 
@@ -709,6 +710,7 @@ mod tests {
             trust_zone: "default".into(),
             sccache_path: Some("/usr/bin/sccache".into()),
             sleep_path: None,
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
         }
     }
 }

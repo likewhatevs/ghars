@@ -212,6 +212,42 @@ fn merge_defaults_label_concat_dedup_sorted() {
     assert_eq!(eff.labels, vec!["buck2", "linux", "self-hosted"]);
 }
 
+/// `merge_defaults` MUST populate `renderer_schema` from
+/// `crate::systemd::RENDERER_SCHEMA` at runtime — not from a
+/// hardcoded literal. The hash-inclusion regression test at
+/// `hash.rs::spec_hash_includes_renderer_schema` only verifies
+/// that DIFFERENT renderer_schema values produce DIFFERENT
+/// hashes; it does NOT verify the production spec-construction
+/// site reads the runtime constant. A refactor that hardcoded
+/// `renderer_schema: 1` in `merge_defaults` would silently break
+/// the post-fix hash-participation contract (RENDERER_SCHEMA
+/// bumps would no longer flip the hash because the spec was
+/// always constructed with 1).
+#[test]
+fn merge_defaults_populates_renderer_schema_from_runtime_constant() {
+    let runner = minimal_runner("a");
+    let defaults = Defaults::default();
+    let eff = merge_defaults(
+        &runner,
+        &defaults,
+        "pat".into(),
+        vec![],
+        None,
+        None,
+        None,
+        Arch::X86_64,
+        "/etc/ghars/ghars.toml".into(),
+    );
+    assert_eq!(
+        eff.renderer_schema,
+        crate::systemd::RENDERER_SCHEMA,
+        "merge_defaults must populate renderer_schema from the runtime \
+         crate::systemd::RENDERER_SCHEMA constant; a hardcoded literal \
+         would silently break the post-fix hash-participation contract \
+         (RENDERER_SCHEMA bumps would not flip spec_hash)"
+    );
+}
+
 #[test]
 fn merge_defaults_empty_labels_falls_back_to_name() {
     let runner = minimal_runner("solo");
@@ -388,6 +424,7 @@ fn merge_defaults_caches_threaded_verbatim() {
         trust_zone: "default".into(),
         sccache_path: Some("/usr/bin/sccache".into()),
         sleep_path: None,
+        renderer_schema: crate::systemd::RENDERER_SCHEMA,
     }];
     let eff = merge_defaults(
         &runner,
@@ -2373,6 +2410,7 @@ proptest::proptest! {
                 trust_zone: "default".into(),
                 sccache_path: Some("/usr/bin/sccache".into()),
                 sleep_path: None,
+                renderer_schema: crate::systemd::RENDERER_SCHEMA,
             })
             .collect();
         let runner = minimal_runner("a");
@@ -2506,6 +2544,7 @@ proptest::proptest! {
                 trust_zone: "default".into(),
                 sccache_path: Some("/usr/bin/sccache".into()),
                 sleep_path: None,
+                renderer_schema: crate::systemd::RENDERER_SCHEMA,
             })
             .collect();
         let mut spec = merge_defaults(
