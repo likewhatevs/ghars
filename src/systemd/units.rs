@@ -891,7 +891,9 @@ fn check_no_whitespace_padding(field: &str, value: &str) -> Result<()> {
                  hardening list entries must be unpadded — whitespace-padded \
                  tokens render to different drop-in bytes than the equivalent \
                  unpadded form and trigger a spurious in-place UpdateRunner \
-                 cascade across cosmetically-equivalent specs"
+                 cascade across cosmetically-equivalent specs (the next \
+                 `ghars apply` would restart your runners even though \
+                 systemd's runtime effect is identical to the unpadded form)"
             ),
             "remove the leading/trailing whitespace from the token".into(),
         ));

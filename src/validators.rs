@@ -1188,7 +1188,9 @@ pub fn validate_extra_capabilities(caps: &[String]) -> Result<()> {
                      would produce different on-disk bytes (and a different \
                      spec_hash) from the equivalent unpadded form, triggering \
                      a spurious in-place UpdateRunner cascade across \
-                     cosmetically-equivalent TOML"
+                     cosmetically-equivalent TOML (the next `ghars apply` \
+                     would restart your runners even though systemd's \
+                     runtime effect is identical to the unpadded form)"
                 ),
                 "remove the leading/trailing whitespace from the token",
             ));
@@ -1285,7 +1287,10 @@ pub fn validate_extra_syscalls(syscalls: &[String]) -> Result<()> {
                      would produce different on-disk bytes (and a different \
                      spec_hash) from the equivalent unpadded form, \
                      triggering a spurious in-place UpdateRunner cascade \
-                     across cosmetically-equivalent TOML"
+                     across cosmetically-equivalent TOML (the next \
+                     `ghars apply` would restart your runners even though \
+                     systemd's runtime effect is identical to the unpadded \
+                     form)"
                 ),
                 "remove the leading/trailing whitespace from the token",
             ));
