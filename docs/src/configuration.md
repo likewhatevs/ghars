@@ -220,7 +220,7 @@ allowed_egress            = [
 ]
 ip_allow                  = ["192.0.2.10/32"]    # IPAddressAllow (cgroup-BPF)
 ip_deny                   = ["0.0.0.0/0"]        # IPAddressDeny
-restrict_address_families = ["AF_UNIX", "AF_INET"]
+restrict_address_families = ["AF_INET", "AF_UNIX"]
 dns                       = "forward"            # default; or { mode = "static", servers = [...] }
 ipv6                      = "disabled"           # default; "enabled" reserved for v0.2
 
@@ -259,7 +259,12 @@ Fields:
   in the per-runner cgroup, not the namespace, so it applies
   regardless of whether the runner has its own netns. Field name
   mirrors the systemd directive and the parallel
-  `Hardening.restrict_address_families` field.
+  `Hardening.restrict_address_families` field; both fields are
+  canonicalized (sort+dedup) at the lowering boundary, so
+  `["AF_UNIX", "AF_INET"]` and `["AF_INET", "AF_UNIX"]` produce
+  identical rendered output and identical plan output — operators
+  who want their TOML to match the rendered drop-in byte-for-byte
+  should write the list in alphabetical order.
 - `dns` (`DnsMode`) — default `forward` (use the host's
   systemd-resolved via the veth IP). `{ mode = "static", servers
   = [...] }` lists explicit upstream nameservers and bypasses
@@ -735,7 +740,7 @@ network        = "isolated"
 [defaults.hardening]
 protect_control_groups    = true
 restrict_realtime         = true
-restrict_address_families = ["AF_UNIX", "AF_INET"]
+restrict_address_families = ["AF_INET", "AF_UNIX"]
 extra_syscalls            = ["clone3", "rseq", "close_range", "memfd_create", "membarrier"]
 
 [auth.pat]
@@ -763,7 +768,7 @@ allowed_egress            = [
 ]
 ip_allow                  = ["192.0.2.10/32"]
 ip_deny                   = ["0.0.0.0/0"]
-restrict_address_families = ["AF_UNIX", "AF_INET"]
+restrict_address_families = ["AF_INET", "AF_UNIX"]
 
 # Open-mode policy block: host netns + cgroup-BPF egress filter.
 # Useful when the operator needs IP/family restrictions but cannot

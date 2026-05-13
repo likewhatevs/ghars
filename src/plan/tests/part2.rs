@@ -694,6 +694,183 @@ fn render_unchanged_on_caches_reorder_post_merge() {
     );
 }
 
+/// Mirror of `render_unchanged_on_caches_reorder_post_merge` for
+/// `NetworkSpec.restrict_address_families`. Two block structure:
+///
+/// Block 1 (site 1, `canonicalize_network_spec` in
+/// `lower_to_effective`): operator TOML places families in
+/// non-canonical order; the lowering layer must sort+dedup them.
+/// Without this sort, the `EffectiveRunnerSpec.network.spec`
+/// field flows into `spec_hash` via `serde_json` in operator order,
+/// flipping the hash on cosmetic TOML reorders even though the
+/// rendered drop-in body is identical (the renderer-site sort
+/// fires regardless). This is the phantom-UpdateRunner gap
+/// `canonicalize_network_spec` closes — sister of the
+/// `canonicalize_kinds` sort that fixed the same defect class for
+/// `pool.kinds`.
+///
+/// Block 2 (site 2, renderer-site `sort_unstable()` in
+/// `render_network`): direct-construct bypass — hand-build an
+/// `EffectiveNetworkBinding` with families in lex-descending
+/// order. The renderer must re-sort before emit. This is the
+/// defense-in-depth gate against test fixtures that bypass
+/// `lower_to_effective`.
+#[test]
+fn render_unchanged_on_restrict_address_families_reorder_post_merge() {
+    // Block 1: site 1 (canonicalize_network_spec in lower_to_effective).
+    // Operator TOML places families in non-canonical order; lowering
+    // must canonicalize before spec_hash sees the Vec.
+    let mut cfg = config_with_runners(vec![minimal_runner("a")]);
+    cfg.networks.insert(
+        "net-a".into(),
+        NetworkSpec {
+            mode: NetworkMode::Netns,
+            allowed_egress: vec![],
+            ip_allow: vec![],
+            ip_deny: vec![],
+            restrict_address_families: vec![
+                "AF_UNIX".into(),
+                "AF_INET".into(),
+                "AF_NETLINK".into(),
+            ],
+            dns: DnsMode::default(),
+            ipv6: Ipv6Mode::default(),
+        },
+    );
+    cfg.runners[0].network = Some("net-a".into());
+
+    let expanded = expand_counts(&cfg).expect("count expansion must succeed");
+    let eff_site1 = lower_to_effective(
+        &expanded[0],
+        &cfg,
+        Arch::X86_64,
+        cfg_source_default(),
+        0,
+    )
+    .expect("lower_to_effective must succeed");
+    let lowered_families: Vec<&str> = eff_site1
+        .network
+        .as_ref()
+        .expect("netns binding must be Some")
+        .spec
+        .restrict_address_families
+        .iter()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        lowered_families,
+        vec!["AF_INET", "AF_NETLINK", "AF_UNIX"],
+        "site 1 (canonicalize_network_spec) regressed: non-canonical \
+         TOML order [AF_UNIX, AF_INET, AF_NETLINK] did not sort to \
+         canonical [AF_INET, AF_NETLINK, AF_UNIX]; got: {lowered_families:?}"
+    );
+
+    // Also pin spec_hash permutation invariance — same shape as
+    // the caches sister test. Lower a second cfg whose families are
+    // in canonical order and assert spec_hash equality. Without the
+    // upstream sort, an operator cosmetic reorder of the TOML Vec
+    // would flip spec_hash and trigger a spurious in-place
+    // UpdateRunner cycle with an empty drop-in body diff.
+    let mut cfg_canonical = cfg.clone();
+    cfg_canonical
+        .networks
+        .get_mut("net-a")
+        .unwrap()
+        .restrict_address_families = vec![
+        "AF_INET".into(),
+        "AF_NETLINK".into(),
+        "AF_UNIX".into(),
+    ];
+    let expanded_canonical =
+        expand_counts(&cfg_canonical).expect("count expansion must succeed");
+    let eff_canonical = lower_to_effective(
+        &expanded_canonical[0],
+        &cfg_canonical,
+        Arch::X86_64,
+        cfg_source_default(),
+        0,
+    )
+    .expect("lower_to_effective must succeed");
+    assert_eq!(
+        spec_hash(&eff_site1),
+        spec_hash(&eff_canonical),
+        "spec_hash differs across NetworkSpec.restrict_address_families \
+         TOML permutations — canonicalize_network_spec lost permutation \
+         invariance in a way that survives the lowered_families sort \
+         assertion above (some spec_hash input field other than \
+         restrict_address_families order regressed)"
+    );
+
+    // Also dedup behavior: operator-supplied duplicates must collapse.
+    let mut cfg_dup = cfg.clone();
+    cfg_dup
+        .networks
+        .get_mut("net-a")
+        .unwrap()
+        .restrict_address_families = vec![
+        "AF_UNIX".into(),
+        "AF_INET".into(),
+        "AF_UNIX".into(),
+    ];
+    let expanded_dup = expand_counts(&cfg_dup).expect("count expansion must succeed");
+    let eff_dup = lower_to_effective(
+        &expanded_dup[0],
+        &cfg_dup,
+        Arch::X86_64,
+        cfg_source_default(),
+        0,
+    )
+    .expect("lower_to_effective must succeed");
+    let dedup_families: Vec<&str> = eff_dup
+        .network
+        .as_ref()
+        .expect("netns binding must be Some")
+        .spec
+        .restrict_address_families
+        .iter()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        dedup_families,
+        vec!["AF_INET", "AF_UNIX"],
+        "canonicalize_network_spec must dedup operator-supplied duplicates, \
+         got: {dedup_families:?}"
+    );
+
+    // Block 2: site 2 (renderer-site defensive sort in render_network).
+    // Direct-construct bypass — hand-feed EffectiveNetworkBinding
+    // with families in lex-descending order; the renderer must
+    // re-sort before emit.
+    let mut bypass = eff_site1.clone();
+    bypass
+        .network
+        .as_mut()
+        .unwrap()
+        .spec
+        .restrict_address_families = vec![
+        "AF_UNIX".into(),
+        "AF_NETLINK".into(),
+        "AF_INET".into(),
+    ];
+    bypass.spec_hash = spec_hash(&bypass);
+
+    let rendered_bypass = crate::systemd::render_runner_unit(&bypass).unwrap();
+    let bypass_body = rendered_bypass
+        .drop_ins
+        .get("40-network.conf")
+        .expect("40-network.conf must emit for netns binding");
+    let bypass_families_line = bypass_body
+        .lines()
+        .find(|l| l.starts_with("RestrictAddressFamilies="))
+        .expect("40-network.conf must emit RestrictAddressFamilies=");
+    assert_eq!(
+        bypass_families_line, "RestrictAddressFamilies=AF_INET AF_NETLINK AF_UNIX",
+        "site 2 (render_network defensive sort) regressed: direct-construct \
+         bypass with non-canonical Vec produced unsorted directive: \
+         {bypass_families_line:?}"
+    );
+}
+
 /// Property: two TOML files that produce semantically-identical
 /// configs (but with formatting differences — comments,
 /// whitespace, key order across runner blocks) must lower to the

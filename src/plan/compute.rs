@@ -14,7 +14,7 @@ use camino::Utf8PathBuf;
 use crate::Result;
 use crate::config::{
     Arch, CacheKind, CachePoolSpec, Config, EffectiveCacheBinding, EffectiveNetworkBinding,
-    EffectiveRunnerSpec, NetworkMode, RunnerSpec,
+    EffectiveRunnerSpec, NetworkMode, NetworkSpec, RunnerSpec,
 };
 use crate::error::GharsError;
 use crate::paths::Paths;
@@ -823,6 +823,55 @@ pub(super) fn into_runner_plan(
     })
 }
 
+/// Canonicalize a `NetworkSpec` for storage in `EffectiveNetworkBinding.spec`
+/// by sorting+deduping `restrict_address_families`. Mirror of
+/// `merge_hardening`'s sort+dedup at `merge.rs::merge_hardening`
+/// (applied to `Hardening.restrict_address_families`), applied here
+/// at the lowering boundary so `spec_hash` (which canonical-JSONs
+/// the `EffectiveRunnerSpec`) sees the canonical Vec.
+///
+/// Without this canonicalization, an operator-cosmetic reorder of
+/// `[network.NAME].restrict_address_families` flips `spec_hash`
+/// even though the rendered drop-in body is identical (the
+/// renderer-side sort at `render_network` already canonicalizes the
+/// rendered bytes). That produces a phantom `UpdateRunner` plan
+/// action with an empty drop-in body diff — the same defect class
+/// closed for `pool.kinds` by [`canonicalize_kinds`] and for
+/// labels/caches by `merge_defaults`.
+///
+/// Once this upstream sort is in place, the renderer-side sort at
+/// `render_network` becomes pure defense-in-depth for
+/// direct-construct callers (test fixtures bypassing
+/// `lower_to_effective`) — mirror of the labels/caches/pool-kinds
+/// 2-site sort pattern.
+///
+/// Other `NetworkSpec` Vec fields (`ip_allow`, `ip_deny`,
+/// `allowed_egress`) are deliberately NOT touched here — their
+/// canonical-sort semantics are tracked separately as open work
+/// orders.
+///
+/// SORT SAFETY: systemd's `RestrictAddressFamilies=` parser treats
+/// a `~` prefix on the FIRST TOKEN as an allowlist↔denylist mode
+/// switch. Sorting tokens lexicographically would reorder any
+/// `~`-prefixed token away from the first position, silently
+/// flipping interpretation — but `validate_restrict_address_families`
+/// in `validators.rs` rejects any token that doesn't match
+/// `AF_FAMILY_RE = ^AF_[A-Z0-9_]+$` at config-load (applies to
+/// BOTH `NetworkSpec.restrict_address_families` and
+/// `Hardening.restrict_address_families`), so no `~`-prefix token
+/// can reach this sort. The analogous gate exists for
+/// `Hardening.extra_capabilities` via `CAP_RE`. The same defect
+/// class IS still open at the upstream `merge_hardening` sort for
+/// `Hardening.extra_syscalls` — that field has no token-shape
+/// validator today, and a config-load validator rejecting
+/// `~`-prefix syscall tokens is tracked as a separate work order.
+fn canonicalize_network_spec(spec: &NetworkSpec) -> NetworkSpec {
+    let mut s = spec.clone();
+    s.restrict_address_families.sort();
+    s.restrict_address_families.dedup();
+    s
+}
+
 /// Canonicalize a `kinds` Vec by sorting alphabetically via
 /// [`CacheKind::label()`]. Used at both production
 /// `EffectiveCacheBinding` construction sites so `cache_pool_hash`,
@@ -1249,7 +1298,7 @@ pub(super) fn lower_to_effective(
                     let subnet = netns_subnet_for_slot(slot_idx, &runner.name)?;
                     Some(EffectiveNetworkBinding {
                         name: network_name,
-                        spec: spec.clone(),
+                        spec: canonicalize_network_spec(spec),
                         subnet: Some(subnet),
                     })
                 }
@@ -1263,7 +1312,7 @@ pub(super) fn lower_to_effective(
                         // Subnet stays None (Open mode owns no /30).
                         Some(EffectiveNetworkBinding {
                             name: network_name,
-                            spec: spec.clone(),
+                            spec: canonicalize_network_spec(spec),
                             subnet: None,
                         })
                     } else {

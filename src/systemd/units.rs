@@ -1620,11 +1620,24 @@ fn render_network(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
         let _ = writeln!(s, "IPAddressDeny={cidr}");
     }
     if !net.spec.restrict_address_families.is_empty() {
-        let _ = writeln!(
-            s,
-            "RestrictAddressFamilies={}",
-            net.spec.restrict_address_families.join(" ")
-        );
+        // Canonical-lex-order sort. Defense-in-depth for
+        // direct-construct callers that bypass `lower_to_effective`
+        // (test fixtures). The production path canonicalizes
+        // upstream at `canonicalize_network_spec` in `compute.rs`,
+        // so `spec_hash` and the rendered drop-in body are both
+        // permutation-invariant across operator-supplied
+        // `[network.NAME].restrict_address_families` TOML reorders.
+        // Mirror of the labels + caches defensive sorts at
+        // `render_identity` and the X-Ghars-Pool-Kinds sort at
+        // `render_cache_drop_in`.
+        let mut families: Vec<&str> = net
+            .spec
+            .restrict_address_families
+            .iter()
+            .map(String::as_str)
+            .collect();
+        families.sort_unstable();
+        let _ = writeln!(s, "RestrictAddressFamilies={}", families.join(" "));
     }
 
     Ok(Some(s))
@@ -3375,10 +3388,111 @@ mod tests {
         assert!(n.contains("NetworkNamespacePath=/var/run/netns/ghars-buckos"));
         assert!(n.contains("IPAddressAllow=192.168.2.84/32"));
         assert!(n.contains("IPAddressDeny=0.0.0.0/0"));
-        assert!(n.contains("RestrictAddressFamilies=AF_UNIX AF_INET"));
+        // Renderer-site canonical-lex-order sort: operator fixture
+        // [AF_UNIX, AF_INET] emits `AF_INET AF_UNIX`. Exact-line
+        // match resists false-positive on substring extension
+        // (e.g. a future regression emitting trailing tokens).
+        assert!(
+            n.lines()
+                .any(|l| l == "RestrictAddressFamilies=AF_INET AF_UNIX"),
+            "network drop-in missing canonical RestrictAddressFamilies, got:\n{n}"
+        );
         // Identity drop-in must record the netns subnet.
         let id = r.drop_ins.get("00-ghars.conf").unwrap();
         assert!(id.contains("X-Ghars-Netns-Subnet=10.200.0.0/30"));
+    }
+
+    /// Defense-in-depth pin for the renderer-site
+    /// canonical-lex-order sort in `render_network`. The production
+    /// path canonicalizes `NetworkSpec.restrict_address_families`
+    /// upstream at `canonicalize_network_spec` in
+    /// `lower_to_effective`; the renderer-site sort is defense-in-
+    /// depth for direct-construct callers (test fixtures). Sister
+    /// of `render_identity_emits_labels_sorted` and the post-
+    /// X-Ghars-Pool-Kinds sort pin in `render_cache_drop_in`.
+    ///
+    /// Three NetworkSpec fixtures with the SAME family set in
+    /// opposing orders must produce byte-identical `40-network.conf`
+    /// bodies. A regression that replaced `sort_unstable()` with a
+    /// partial canonicalization (dedup-only, or a comparator that
+    /// is lex-stable for [INET, UNIX] but unstable across NETLINK)
+    /// would survive the four existing assertions (all of which
+    /// use only the [AF_UNIX, AF_INET] fixture) but flunk here.
+    #[test]
+    fn render_network_emits_canonical_address_families_regardless_of_input_order() {
+        let mk_spec = |families: Vec<String>| {
+            let mut s = minimal_spec();
+            s.network = Some(EffectiveNetworkBinding {
+                name: "buck2-isolated".into(),
+                spec: NetworkSpec {
+                    mode: NetworkMode::Netns,
+                    allowed_egress: vec![],
+                    ip_allow: vec![],
+                    ip_deny: vec![],
+                    restrict_address_families: families,
+                    dns: DnsMode::default(),
+                    ipv6: Ipv6Mode::default(),
+                },
+                subnet: Some("10.200.0.0/30".parse::<IpNet>().unwrap()),
+            });
+            s
+        };
+
+        // Three permutations of {AF_INET, AF_NETLINK, AF_UNIX}.
+        // Lex-ascending canonical: AF_INET AF_NETLINK AF_UNIX
+        // (I=0x49 < N=0x4E < U=0x55).
+        let body_a = render_runner_unit(&mk_spec(vec![
+            "AF_UNIX".into(),
+            "AF_INET".into(),
+            "AF_NETLINK".into(),
+        ]))
+        .unwrap()
+        .drop_ins
+        .get("40-network.conf")
+        .unwrap()
+        .clone();
+        let body_b = render_runner_unit(&mk_spec(vec![
+            "AF_NETLINK".into(),
+            "AF_INET".into(),
+            "AF_UNIX".into(),
+        ]))
+        .unwrap()
+        .drop_ins
+        .get("40-network.conf")
+        .unwrap()
+        .clone();
+        let body_c = render_runner_unit(&mk_spec(vec![
+            "AF_INET".into(),
+            "AF_NETLINK".into(),
+            "AF_UNIX".into(),
+        ]))
+        .unwrap()
+        .drop_ins
+        .get("40-network.conf")
+        .unwrap()
+        .clone();
+
+        // Positive: all three emit the exact canonical line.
+        for (label, body) in [("a", &body_a), ("b", &body_b), ("c", &body_c)] {
+            assert!(
+                body.lines()
+                    .any(|l| l == "RestrictAddressFamilies=AF_INET AF_NETLINK AF_UNIX"),
+                "{label} must emit canonical RestrictAddressFamilies (renderer-site sort regressed); got:\n{body}"
+            );
+        }
+
+        // Strong invariance: same set in opposing orders renders
+        // byte-identical bodies. A partial-canonicalization
+        // regression survives the positive assertions but flunks
+        // here.
+        assert_eq!(
+            body_a, body_b,
+            "permutation invariance regressed (a vs b); left:\n{body_a}\nright:\n{body_b}"
+        );
+        assert_eq!(
+            body_a, body_c,
+            "permutation invariance regressed (a vs c); left:\n{body_a}\nright:\n{body_c}"
+        );
     }
 
     /// Defense-in-depth gate: an Open-mode binding with no
@@ -3443,7 +3557,14 @@ mod tests {
         // Cgroup-BPF directives present.
         assert!(n.contains("IPAddressAllow=10.0.0.0/8"));
         assert!(n.contains("IPAddressDeny=0.0.0.0/0"));
-        assert!(n.contains("RestrictAddressFamilies=AF_UNIX AF_INET"));
+        // Renderer-site canonical-lex-order sort: operator
+        // [AF_UNIX, AF_INET] renders as `AF_INET AF_UNIX`.
+        // Exact-line match (resists substring-extension regressions).
+        assert!(
+            n.lines()
+                .any(|l| l == "RestrictAddressFamilies=AF_INET AF_UNIX"),
+            "open-mode network drop-in missing canonical RestrictAddressFamilies, got:\n{n}"
+        );
         // Namespace-scoped scaffolding absent.
         assert!(
             !n.contains("Requires=ghars-net@"),
@@ -3696,9 +3817,25 @@ mod tests {
                 .any(|l| l == "RestrictAddressFamilies=AF_UNIX AF_NETLINK"),
             "hardening drop-in missing RestrictAddressFamilies, got:\n{h}"
         );
+        // Network drop-in: NetworkSpec.restrict_address_families
+        // renders in canonical lex order via the renderer-site
+        // sort in `render_network`, so operator [AF_UNIX, AF_INET]
+        // emits as "AF_INET AF_UNIX". Hardening drop-in's own
+        // RestrictAddressFamilies= line uses Hardening's separate
+        // emission inside `render_hardening` which does NOT sort
+        // at the renderer (rescope of the Hardening renderer-side
+        // defensive-sort work is pending — see queue notes).
+        // In the production lowering path, `merge_hardening`
+        // sorts+dedups `Hardening.restrict_address_families`, but
+        // THIS test bypasses `merge_defaults` by mutating
+        // `spec.hardening.restrict_address_families` directly on a
+        // `minimal_spec()`, so the operator-supplied Vec order
+        // survives verbatim to the Hardening emission site —
+        // which is why the hardening assertion above observes
+        // operator order.
         assert!(
             n.lines()
-                .any(|l| l == "RestrictAddressFamilies=AF_UNIX AF_INET"),
+                .any(|l| l == "RestrictAddressFamilies=AF_INET AF_UNIX"),
             "network drop-in missing RestrictAddressFamilies, got:\n{n}"
         );
         // Neither drop-in emits a bare `RestrictAddressFamilies=` reset
@@ -3753,9 +3890,12 @@ mod tests {
                 .any(|l| l == "RestrictAddressFamilies=AF_UNIX AF_NETLINK"),
             "hardening drop-in missing RestrictAddressFamilies, got:\n{h}"
         );
+        // Open-mode network drop-in: same canonical-lex-order sort
+        // as the netns sister test above; operator [AF_UNIX, AF_INET]
+        // renders as "AF_INET AF_UNIX".
         assert!(
             n.lines()
-                .any(|l| l == "RestrictAddressFamilies=AF_UNIX AF_INET"),
+                .any(|l| l == "RestrictAddressFamilies=AF_INET AF_UNIX"),
             "open network drop-in missing RestrictAddressFamilies, got:\n{n}"
         );
         // Neither drop-in emits a bare reset.
