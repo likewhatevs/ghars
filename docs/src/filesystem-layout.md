@@ -167,10 +167,18 @@ Notes:
   lines for all three directives at unit-load time, so the
   Hardening-side drop-in's tokens compose additively with the
   network-side ones for `RestrictAddressFamilies=`. The
-  mount-order-sensitive Hardening fields
-  (`bind_readonly_paths`, `extra_bind_paths` →
-  `BindReadOnlyPaths=`) are intentionally NOT sorted — operator
-  order is load-bearing for mount-overlay semantics.
+  Hardening bind-path fields (`bind_readonly_paths`,
+  `extra_bind_paths` → `BindReadOnlyPaths=`) are intentionally
+  NOT sorted at any layer. systemd internally sorts mount
+  entries parent-first via `mount_path_compare` before applying
+  them, so operator-declared order does NOT affect mount-
+  overlay semantics at the kernel layer. The sort abstention
+  here is for byte-equality between the operator's TOML and
+  the rendered drop-in line — a sort-induced reorder would
+  flip `spec_hash` (triggering spurious in-place
+  UpdateRunner cascades) and would make the operator's TOML
+  order non-canonical (re-deploy with the original ordering
+  would not produce a NoOp).
 - `X-Ghars-Network-Mode` is always emitted: the renderer collapses
   the no-binding case to `open` rather than omitting the key, so
   operators auditing `systemctl cat` always see the mode explicitly.

@@ -4042,6 +4042,89 @@ mod tests {
         }
     }
 
+    /// Byte-equality regression pin for `bind_readonly_paths`.
+    ///
+    /// `bind_readonly_paths` is intentionally NOT sorted at
+    /// either the upstream `merge_hardening` boundary or the
+    /// renderer (see `merge.rs` for the canonical rationale).
+    /// systemd internally sorts mount entries parent-first via
+    /// `mount_path_compare`
+    /// (systemd/src/core/namespace.c:1003), so
+    /// operator-declared order does NOT affect mount-overlay
+    /// semantics at the kernel layer. The sort abstention is
+    /// for byte-equality between the operator's TOML and the
+    /// rendered `BindReadOnlyPaths=` drop-in line: a sort-
+    /// induced reorder would (a) flip `spec_hash` (different
+    /// JSON → different SHA256 → spurious in-place
+    /// UpdateRunner cascade per RENDERER_SCHEMA semantics) and
+    /// (b) make the operator's TOML order non-canonical (re-
+    /// deploy with the original ordering would not produce a
+    /// NoOp).
+    ///
+    /// Fixture uses child-before-parent path ordering
+    /// (`/etc/ssl/certs/custom.pem` before `/etc/ssl`)
+    /// specifically because alphabetical sort would reverse it
+    /// (parent < child lex), producing a concrete byte-shift
+    /// the assertion catches.
+    #[test]
+    fn bind_readonly_paths_render_preserves_operator_order_for_colliding_paths() {
+        let mut spec = minimal_spec();
+        spec.hardening.bind_readonly_paths = Some(vec![
+            Utf8PathBuf::from("/etc/ssl/certs/custom.pem"),
+            Utf8PathBuf::from("/etc/ssl"),
+        ]);
+        let r = render_runner_unit(&spec).unwrap();
+        let h = r
+            .drop_ins
+            .get("20-hardening.conf")
+            .expect("hardening drop-in present");
+        // Operator order preserved verbatim: child first, parent
+        // second. Alphabetical sort would emit "/etc/ssl
+        // /etc/ssl/certs/custom.pem" instead (parent first).
+        assert!(
+            h.lines()
+                .any(|l| l == "BindReadOnlyPaths=/etc/ssl/certs/custom.pem /etc/ssl"),
+            "bind_readonly_paths render did not preserve operator order \
+             — a sort-induced reorder would flip `spec_hash` and trigger \
+             spurious in-place UpdateRunner cascades, and would make the \
+             operator's TOML order non-canonical. The renderer must emit \
+             the operator's path order verbatim. Got:\n{h}"
+        );
+    }
+
+    /// Sister to `bind_readonly_paths_render_preserves_operator_order_for_colliding_paths`.
+    /// `extra_bind_paths` shares the same byte-equality
+    /// invariant — both fields emit to `BindReadOnlyPaths=` and
+    /// both are intentionally NOT sorted at any layer. See the
+    /// sister test above + `merge.rs` for the full byte-equality
+    /// rationale (`spec_hash` stability + canonical TOML
+    /// ordering).
+    #[test]
+    fn extra_bind_paths_render_preserves_operator_order_for_colliding_paths() {
+        let mut spec = minimal_spec();
+        spec.hardening.extra_bind_paths = vec![
+            Utf8PathBuf::from("/opt/runner/cache"),
+            Utf8PathBuf::from("/opt/runner"),
+        ];
+        let r = render_runner_unit(&spec).unwrap();
+        let h = r
+            .drop_ins
+            .get("20-hardening.conf")
+            .expect("hardening drop-in present");
+        // Operator order preserved verbatim: child cache dir
+        // first, then parent. Alphabetical sort would emit
+        // "/opt/runner /opt/runner/cache" instead (parent first).
+        assert!(
+            h.lines()
+                .any(|l| l == "BindReadOnlyPaths=/opt/runner/cache /opt/runner"),
+            "extra_bind_paths render did not preserve operator order \
+             — a sort-induced reorder would flip `spec_hash` and trigger \
+             spurious in-place UpdateRunner cascades, and would make the \
+             operator's TOML order non-canonical. The renderer must emit \
+             the operator's path order verbatim. Got:\n{h}"
+        );
+    }
+
     #[test]
     fn system_call_filter_composes_across_template_and_hardening() {
         // SystemCallFilter is emitted by:

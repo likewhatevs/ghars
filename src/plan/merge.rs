@@ -274,16 +274,29 @@ pub(super) fn merge_hardening(runner: &Hardening, defaults: &Hardening) -> Harde
         extra_syscalls: pick_vec(&runner.extra_syscalls, &defaults.extra_syscalls),
         etc_bind_style: runner.etc_bind_style,
         // bind_readonly_paths is Option<Vec>: None ⇒ inherit defaults.
-        // NOT sorted: BindReadOnlyPaths= entries are mount-order-sensitive
-        // when paths overlap (systemd processes them sequentially; a later
-        // mount over an earlier ro mount can override or fail), so the
-        // operator's source order is load-bearing.
+        // NOT sorted in this layer because systemd internally
+        // sorts mount entries parent-first via `mount_path_compare`
+        // (systemd/src/core/namespace.c:1003, called
+        // from `sort_and_drop_unused_mounts` at namespace.c:2306-
+        // 2318), so operator-declared order does NOT affect mount-
+        // overlay semantics at the kernel layer. The sort
+        // abstention here is for byte-equality between the
+        // operator's TOML and the rendered `BindReadOnlyPaths=`
+        // drop-in line: a sort-induced reorder would (a) flip
+        // `spec_hash` (different JSON → different SHA256 →
+        // spurious in-place UpdateRunner cascade per
+        // RENDERER_SCHEMA semantics) and (b) make the operator's
+        // TOML order non-canonical (re-deploy with the original
+        // ordering would not produce a NoOp).
         bind_readonly_paths: runner
             .bind_readonly_paths
             .clone()
             .or_else(|| defaults.bind_readonly_paths.clone()),
         // extra_bind_paths is additive across both sides — both apply.
-        // NOT sorted: same mount-ordering rationale as bind_readonly_paths.
+        // NOT sorted: same byte-equality rationale as
+        // bind_readonly_paths above (systemd parent-first sort
+        // discards operator order at the kernel; the renderer
+        // preserves operator order for spec_hash stability).
         extra_bind_paths: {
             let mut out = defaults.extra_bind_paths.clone();
             out.extend(runner.extra_bind_paths.iter().cloned());
