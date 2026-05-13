@@ -148,7 +148,7 @@ impl DiscoveredAnnotations {
                     // parse boundary: labels are byte-sorted on emission
                     // (render_identity defense-in-depth at systemd.rs)
                     // and on classifier comparison (sorted_set_field_diff
-                    // upstream). Sorting here makes those downstream
+                    // downstream). Sorting here makes those sibling
                     // sorts true defense-in-depth — every caller that
                     // reads `out.labels` sees canonical order, so a
                     // future caller that skips its own sort still gets

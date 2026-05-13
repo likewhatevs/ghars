@@ -338,6 +338,81 @@ fn render_unchanged_on_labels_reorder_post_merge() {
     );
 }
 
+/// Site-3 of the labels triple-sort coupling: parse-boundary defensive
+/// sort in `DiscoveredAnnotations::from_drop_in_body` (classify.rs:161).
+/// `render_unchanged_on_labels_reorder_post_merge` covers sites 1 + 2
+/// (merge_defaults source-of-truth sort + render_identity defensive
+/// re-sort). This pair pins site 3 — the parse boundary's
+/// `parsed.sort_unstable()` that runs after splitting the on-disk
+/// `X-Ghars-Labels=` CSV. Without it, `DiscoveredAnnotations.labels`
+/// would surface the on-disk byte order; the classifier's downstream
+/// `sorted_set_field_diff` re-sorts before comparison so the
+/// plan would still be correct, BUT any direct consumer that reads
+/// `anns.labels` and doesn't re-sort gets non-canonical data — a
+/// foot-gun for future code paths that touch the parsed annotations
+/// outside the comparison hot path.
+///
+/// Block 1 (render → parse round-trip): renders a spec with
+/// non-canonical-order labels, parses the resulting body via
+/// `DiscoveredAnnotations::from_drop_in_body`, asserts `anns.labels`
+/// comes back canonical-sorted. Because site 2 (render_identity)
+/// emits canonical order, this block alone wouldn't isolate site 3 —
+/// the parser would see already-sorted input.
+///
+/// Block 2 (hand-crafted bypass): constructs a drop-in body bytes
+/// with `X-Ghars-Labels=gamma,beta,alpha` directly, bypassing render
+/// entirely. The parser must re-sort to canonical alpha,beta,gamma.
+/// A regression that removed classify.rs:161's `parsed.sort_unstable()`
+/// would fail this block while passing Block 1.
+#[test]
+fn discovered_annotations_label_round_trip_canonical_sort() {
+    let mut runner = minimal_runner("a");
+    runner.labels = vec!["gamma".into(), "alpha".into(), "beta".into()];
+    let defaults = Defaults::default();
+    let mut spec = merge_defaults(
+        &runner,
+        &defaults,
+        "pat".into(),
+        vec![],
+        None,
+        None,
+        None,
+        Arch::X86_64,
+        "/etc/ghars/ghars.toml".into(),
+    );
+    spec.spec_hash = spec_hash(&spec);
+
+    // Block 1: render → parse round-trip.
+    let rendered = crate::systemd::render_runner_unit(&spec).unwrap();
+    let body = rendered.drop_ins.get("00-ghars.conf").unwrap();
+    let anns = DiscoveredAnnotations::from_drop_in_body(body);
+    assert_eq!(
+        anns.labels.as_deref(),
+        Some(&["alpha".to_owned(), "beta".to_owned(), "gamma".to_owned()][..]),
+        "site 3 (DiscoveredAnnotations defensive sort at parse boundary) \
+         regressed in the render→parse path: rendered body parsed back to \
+         non-canonical labels order; got: {:?}",
+        anns.labels
+    );
+
+    // Block 2: hand-crafted body bypasses render. The renderer's
+    // canonical emission (site 2) makes the round-trip block above
+    // unable to detect a parser-side sort regression in isolation —
+    // the parser would see already-sorted input. Construct a body
+    // with non-canonical CSV order directly, parse it, and assert
+    // the result is canonical.
+    let bypass_body = "[Unit]\nX-Ghars-Labels=gamma,beta,alpha\n";
+    let bypass_anns = DiscoveredAnnotations::from_drop_in_body(bypass_body);
+    assert_eq!(
+        bypass_anns.labels.as_deref(),
+        Some(&["alpha".to_owned(), "beta".to_owned(), "gamma".to_owned()][..]),
+        "site 3 (DiscoveredAnnotations defensive sort at parse boundary) \
+         regressed: hand-crafted non-canonical body `X-Ghars-Labels=gamma,beta,alpha` \
+         parsed without re-sort; got: {:?}",
+        bypass_anns.labels
+    );
+}
+
 /// Sister regression pin to `render_unchanged_on_labels_reorder_post_merge`.
 /// Caches have the same two-site defensive-sort architecture as labels:
 /// site 1 sorts at the lowering layer (`lower_to_effective` at
