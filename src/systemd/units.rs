@@ -75,6 +75,21 @@ pub struct RenderedUnit {
     /// Drop-in basename → contents. Installed under the per-instance
     /// drop-in directory (`ghars-runner@NAME.service.d/`).
     pub drop_ins: BTreeMap<String, String>,
+    /// Body of the runner's `.env` file (`<bin_dir>/.env`).
+    /// `Runner.Listener::LoadAndSetEnv` reads this ONCE at runner-process
+    /// start and sets each `KEY=VALUE` via
+    /// `Environment.SetEnvironmentVariable`; worker / workflow-step
+    /// subprocesses inherit through fork+exec. Distinct from systemd
+    /// `Environment=` directives, which bind to the systemd unit
+    /// process and are inherited the same way once
+    /// Runner.Listener spawns — `.env` keys ride a separate
+    /// LoadAndSetEnv pathway.
+    pub env_file: String,
+    /// Body of the runner's `.path` file (`<bin_dir>/.path`).
+    /// `runsvc.sh` runs `export PATH=\`cat .path\`` ONCE at script
+    /// start; inherited across exec by every subprocess. Single line,
+    /// newline-terminated.
+    pub path_file: String,
     /// Render-time advisories surfaced to the plan engine. The plan
     /// engine concatenates these into `Plan.warnings` so apply prints
     /// them before executing. Examples: "kvm=false drops /dev/kvm rw
@@ -121,37 +136,14 @@ Type=simple
 # sccache UDS). No `Group=` line — DynamicUser allocates the matching
 # transient GID alongside the UID.
 #
-# ExecStart= has NO prefix. The runsvc-wrapper trampoline runs at the
-# DynamicUser-allocated identity (no setuid/setgid needed) WHILE the
-# unit's full sandbox stays applied — TemporaryFileSystem=/:ro,
-# BindReadOnlyPaths, PrivateDevices, the SystemCallFilter allowlist,
-# NetworkNamespacePath, etc. The trampoline opens
-# /var/lib/ghars/<TRUST_ZONE>/ghars-%i/runsvc.sh via O_NOFOLLOW,
-# recomputes sha256, compares against the X-Ghars-Runsvc-Sha256
-# annotation in the 00-ghars.conf drop-in (file read with
-# O_NOFOLLOW), and fexecve()s the verified file descriptor on match
-# — closing the open-then-rename TOCTOU window. On mismatch:
-# refuse with a diagnostic.
-#
-# The trampoline is a separately-packaged compiled binary at
-# /usr/lib/ghars/runsvc-wrapper (root:root mode 0755) — NOT a shell
-# script. With no setuid/setgid step, CapabilityBoundingSet below is
-# empty (no CAP_SETUID, no CAP_SETGID).
-#
-# Path stays absolute (no PATH lookup) because ghars OWNS the install
-# location for this binary: `sudo install -Dm755` deposits it at
-# `/usr/lib/ghars/runsvc-wrapper` regardless of how ghars itself was
-# installed (cargo-install, distro package, sidecar /opt prefix). The
-# path is a packaging-controlled FHS location under /usr/lib/, not a
-# binary on PATH — there is no $PATH directory that should resolve it
-# and no operator-pinnable alternate landing site. Contrast with the
-# cache + netns template binaries, which can land at /usr/local/bin
-# (cargo-install) or /usr/bin (distro packaging) and therefore use
-# plan-time path resolution or PATH lookup. runsvc-wrapper is
-# single-source: ghars writes it during install, ghars reads it from
-# the same place.
+# ExecStart= is set in the per-runner 00-ghars.conf drop-in. The
+# template cannot express it because the path includes the trust_zone
+# and the resolved runner version (bin.X.Y.Z), neither of which the
+# template-level `%i` specifier can produce. The drop-in resets the
+# (absent) template ExecStart with an empty assignment and then sets
+# the absolute path to the tarball's runsvc.sh under the versioned
+# bin dir.
 DynamicUser=yes
-ExecStart=/usr/lib/ghars/runsvc-wrapper %i
 # WorkingDirectory + StateDirectory + HOME and the per-runner cache
 # env vars are set in the per-runner 00-ghars.conf drop-in. The
 # template-level `%i` specifier expands to the runner-name only, so
@@ -192,8 +184,8 @@ KillMode=control-group
 KillSignal=SIGTERM
 TimeoutStopSec=5min
 
-# Privilege isolation. CapabilityBoundingSet is empty: the trampoline
-# does not setuid/setgid (DynamicUser= handles the identity), so no
+# Privilege isolation. CapabilityBoundingSet is empty: ExecStart does
+# not setuid/setgid (DynamicUser= handles the identity), so no
 # CAP_SETUID/CAP_SETGID are needed; runsvc.sh is a script with no file
 # capabilities, so per capabilities(7) its post-exec permitted set is
 # empty regardless. AmbientCapabilities stays empty so the kernel
@@ -215,14 +207,6 @@ BindReadOnlyPaths=-/etc/protocols -/etc/services
 BindReadOnlyPaths=-/etc/alternatives
 BindReadOnlyPaths=-/etc/os-release
 BindReadOnlyPaths=-/etc/gitconfig
-# The runsvc-wrapper trampoline reads
-# /etc/systemd/system/ghars-runner@%i.service.d/00-ghars.conf inside
-# the sandbox to fetch X-Ghars-Runsvc-Sha256 + X-Ghars-Trust-Zone
-# annotations before fexecve()'ing runsvc.sh. With TemporaryFileSystem=/:ro
-# above, this directory is otherwise invisible to the unit. No `-` prefix:
-# the drop-in MUST exist for the trampoline to work, fail-fast at unit-start
-# is preferable to ENOENT at trampoline-runtime.
-BindReadOnlyPaths=/etc/systemd/system/ghars-runner@%i.service.d
 PrivateTmp=yes
 UMask=0077
 
@@ -587,11 +571,107 @@ pub fn render_runner_unit(spec: &EffectiveRunnerSpec) -> Result<RenderedUnit> {
         validate_drop_in(name, body)?;
     }
 
+    let env_file = render_runner_env_file(spec)?;
+    let path_file = render_runner_path_file(spec)?;
     Ok(RenderedUnit {
         template: runner_template_text(),
         drop_ins,
+        env_file,
+        path_file,
         warnings,
     })
+}
+
+/// Body of the runner's `.env` file. actions/runner's
+/// `Runner.Listener` calls `LoadAndSetEnv` ONCE at process start
+/// (`src/Runner.Listener/Program.cs` Main), reads `.env`, and sets each
+/// `KEY=VALUE` into the process environment via
+/// `Environment.SetEnvironmentVariable`. Worker processes that
+/// `Runner.Listener` forks inherit those env vars across exec, so
+/// workflow steps see them.
+///
+/// Distinct from the systemd `Environment=` directives in
+/// `00-ghars.conf` / `30-cache-pool.conf`: those bind to the systemd
+/// unit's process tree and are present in the runner process's
+/// environment when `Runner.Listener` starts. `.env` adds the env vars
+/// that need to land specifically in workflow steps via
+/// `LoadAndSetEnv`'s explicit propagation path (some keys, like
+/// `CCACHE_DIR`, ride both layers for redundancy). The runner unit's
+/// next stop+start picks up `.env` changes — see
+/// `render_identity` (LAYER 1) and this function (LAYER 2).
+///
+/// Output is deterministic: framework lines are fixed-order
+/// (LANG → trust_zone-derived → per-cache loop). The per-cache loop
+/// iterates `spec.caches` in source order; `lower_to_effective` sorts
+/// `caches` by name before the spec reaches this renderer, so two
+/// runners with the same caches produce byte-identical `.env` content.
+#[must_use]
+pub(crate) fn render_runner_env_file(spec: &EffectiveRunnerSpec) -> Result<String> {
+    let check = |field: &str, value: &str| -> Result<()> {
+        check_identity_field(field, value)
+            .map_err(|e| crate::error::prepend_validation_scope("render_runner_env_file", e))
+    };
+    check("trust_zone", &spec.trust_zone)?;
+    for binding in &spec.caches {
+        check("caches[].name", &binding.name)?;
+        check("caches[].size", &binding.size)?;
+    }
+
+    let mut s = String::new();
+    s.push_str("LANG=C.UTF-8\n");
+    let _ = writeln!(s, "CCACHE_DIR=/var/lib/ghars/{}/.ccache", spec.trust_zone);
+    let _ = writeln!(s, "KTSTR_LOCK_DIR=/var/lib/ghars/{}/.ktstr", spec.trust_zone);
+    let _ = writeln!(s, "KTSTR_CACHE_DIR=/var/lib/ghars/{}/.ktstr", spec.trust_zone);
+    for binding in &spec.caches {
+        if binding.kinds.contains(&CacheKind::Ccache) {
+            let _ = writeln!(s, "CCACHE_MAXSIZE={}", binding.size);
+        }
+        if binding.kinds.contains(&CacheKind::Sccache) {
+            let _ = writeln!(
+                s,
+                "SCCACHE_SERVER_UDS=/run/ghars/cache-{}.sock",
+                binding.name
+            );
+            s.push_str("SCCACHE_NO_DAEMON=1\n");
+            let _ = writeln!(s, "SCCACHE_CACHE_SIZE={}", binding.size);
+            let _ = writeln!(
+                s,
+                "SCCACHE_DIR=/var/cache/ghars/pools/{}/sccache",
+                binding.name
+            );
+        }
+    }
+    Ok(s)
+}
+
+/// Body of the runner's `.path` file. `runsvc.sh` runs at runner-
+/// process start (the unit's `ExecStart=`) and executes
+/// `export PATH=\`cat .path\`` once per process — `Runner.Listener`
+/// and every worker process inherit this PATH. Subsequent runs of
+/// upstream `env.sh` (only invoked at runner re-config time, not at
+/// every job) would `echo $PATH >.path` and overwrite this file with
+/// the runner process's `$PATH`, which would NOT include the ccache
+/// wrappers or `.cargo/bin`. ghars writes this file pre-emptively so
+/// workflow steps get the correct PATH from the first job onwards.
+///
+/// The framework prefix `/usr/lib64/ccache:/usr/lib/ccache` must come
+/// FIRST so that bare `gcc` / `cc` invocations resolve to the ccache
+/// wrappers (otherwise ccache misses 100% of compile calls). The
+/// per-runner `.cargo/bin` segment is included so cargo-installed
+/// binaries land on PATH for workflow steps. System path tail comes
+/// last in the standard sbin-before-bin order.
+#[must_use]
+pub(crate) fn render_runner_path_file(spec: &EffectiveRunnerSpec) -> Result<String> {
+    let check = |field: &str, value: &str| -> Result<()> {
+        check_identity_field(field, value)
+            .map_err(|e| crate::error::prepend_validation_scope("render_runner_path_file", e))
+    };
+    check("trust_zone", &spec.trust_zone)?;
+    check("name", &spec.name)?;
+    Ok(format!(
+        "/usr/lib64/ccache:/usr/lib/ccache:/var/lib/ghars/{tz}/ghars-{name}/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n",
+        tz = spec.trust_zone, name = spec.name
+    ))
 }
 
 /// Defense-in-depth: reject any value about to be interpolated
@@ -687,9 +767,6 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
     // The path string itself never appears in the unit. No check
     // needed here.
     check("trust_zone", &spec.trust_zone)?;
-    if !spec.runsvc_sha256.is_empty() {
-        check("runsvc_sha256", &spec.runsvc_sha256)?;
-    }
 
     let mut s = String::new();
     s.push_str("[Unit]\n");
@@ -812,18 +889,6 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
     // (template body declares DynamicUser=yes; this drop-in pins the
     // name so runners with the same trust_zone share the transient
     // UID/GID systemd allocates per User= name).
-    //
-    // X-Ghars-Runsvc-Sha256 lives in the same [Service] section per
-    // Part 17's authoritative annotation table. Emitted only when
-    // populated; before the install phase records the digest the
-    // field is empty and we omit the line so the wrapper's own
-    // "annotation missing" error path stays the single signal that
-    // apply hasn't completed yet (rather than a confusing
-    // "annotation present but empty" half-state). The wrapper reads
-    // this key out of /etc/systemd/system/ghars-runner@INSTANCE
-    // .service.d/00-ghars.conf, since systemd's conf-parser silently
-    // drops X-* keys (`shared/conf-parser.c:160`) and never exposes
-    // them as D-Bus properties.
     s.push('\n');
     s.push_str("[Service]\n");
     let _ = writeln!(s, "User=ghars-tz-{}", spec.trust_zone);
@@ -846,6 +911,25 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
     let _ = writeln!(
         s,
         "WorkingDirectory=/var/lib/ghars/{}/ghars-{}/bin.{}",
+        spec.trust_zone, spec.name, version
+    );
+    // ExecStart reset-then-set: the template intentionally omits
+    // ExecStart= because the path includes the runner version (only
+    // known at apply time after install). The empty assignment clears
+    // any inherited ExecStart= (defense in depth — the template
+    // currently has none, but operators may add one via 99-*.conf);
+    // the second line provides the canonical absolute path to the
+    // tarball's runsvc.sh under the versioned bin dir's `bin/`
+    // subdir. Upstream layout: actions/runner's `Misc/layoutbin/`
+    // files install into `_layout/bin/` per the project's build
+    // target (`<Copy SourceFiles="@(LayoutBinFiles)"
+    // DestinationFolder=".../_layout/bin/..."/>`), so the published
+    // tarball ships runsvc.sh at `bin.X.Y.Z/bin/runsvc.sh`, NOT at
+    // `bin.X.Y.Z/runsvc.sh`.
+    let _ = writeln!(s, "ExecStart=");
+    let _ = writeln!(
+        s,
+        "ExecStart=/bin/bash /var/lib/ghars/{}/ghars-{}/bin.{}/bin/runsvc.sh",
         spec.trust_zone, spec.name, version
     );
     let _ = writeln!(
@@ -877,24 +961,18 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
         "Environment=KTSTR_CACHE_DIR=/var/lib/ghars/{}/.ktstr",
         spec.trust_zone
     );
-    // Trust-zone tree permissions: apply creates dirs and runs config.sh
-    // as root, producing root-owned files. The DynamicUser UID is not
-    // resolvable via NSS (systemd-userdb, not /etc/passwd) so chown by
-    // name fails on systemd 252. chmod 0777 at apply time instead;
-    // trust-zone isolation is at the UID/BindPaths layer.
     // ConditionPathExists is a [Unit]-section directive; emit a
     // separate [Unit] section AFTER [Service] (drop-in sections can
-    // appear in any order — systemd merges by section name).
+    // appear in any order — systemd merges by section name). The path
+    // mirrors the ExecStart= target above — the tarball's runsvc.sh
+    // at `bin.X.Y.Z/bin/runsvc.sh` (upstream `Misc/layoutbin/`
+    // installs into `_layout/bin/`).
     s.push_str("\n[Unit]\n");
     let _ = writeln!(
         s,
-        "ConditionPathExists=/var/lib/ghars/{}/ghars-{}/runsvc.sh",
-        spec.trust_zone, spec.name
+        "ConditionPathExists=/var/lib/ghars/{}/ghars-{}/bin.{}/bin/runsvc.sh",
+        spec.trust_zone, spec.name, version
     );
-    if !spec.runsvc_sha256.is_empty() {
-        s.push_str("\n[Service]\n");
-        let _ = writeln!(s, "X-Ghars-Runsvc-Sha256={}", spec.runsvc_sha256);
-    }
     Ok(s)
 }
 
@@ -1690,7 +1768,6 @@ mod tests {
             allowed_cpus: None,
             allowed_memory_nodes: None,
             spec_hash: "sha256:dead".into(),
-            runsvc_sha256: String::new(),
             config_source: "/etc/ghars/ghars.toml".into(),
         }
     }
@@ -1705,15 +1782,10 @@ mod tests {
         assert!(!t.contains("ConditionPathExists=/var/lib/ghars/%i/runsvc.sh"));
         assert!(!t.contains("WorkingDirectory=/var/lib/ghars/%i"));
         assert!(!t.contains("\nStateDirectory=ghars/%i\n"));
-        // ExecStart= has NO prefix. The trampoline runs at the
-        // DynamicUser-allocated identity (no setuid/setgid step), and
-        // the unit's full sandbox stays applied because no prefix is
-        // present. `!` would have bypassed User=/Group= (no longer
-        // needed under DynamicUser) and `+` would have bypassed the
-        // sandbox entirely.
-        assert!(t.contains("\nExecStart=/usr/lib/ghars/runsvc-wrapper %i\n"));
-        assert!(!t.contains("ExecStart=!/usr/lib/ghars/runsvc-wrapper"));
-        assert!(!t.contains("ExecStart=+/usr/lib/ghars/runsvc-wrapper"));
+        // ExecStart= lives only in the per-runner drop-in because the
+        // path includes the resolved runner version (bin.X.Y.Z) which
+        // the template-level `%i` specifier cannot express.
+        assert!(!t.contains("\nExecStart="));
         // DynamicUser=yes replaces the static `User=ghars-%i` /
         // `Group=ghars-%i` from the prior model; the User= name itself
         // is set by the per-runner 00-ghars.conf drop-in to
@@ -1722,7 +1794,7 @@ mod tests {
         assert!(t.contains("\nDynamicUser=yes\n"));
         assert!(!t.contains("\nUser=ghars-%i\n"));
         assert!(!t.contains("\nGroup=ghars-%i\n"));
-        // Capability bounding set is empty: the trampoline does not
+        // Capability bounding set is empty: ExecStart does not
         // setuid/setgid (DynamicUser= handles the identity), so no
         // CAP_SETUID/CAP_SETGID are required.
         assert!(t.contains("\nCapabilityBoundingSet=\n"));
@@ -1731,63 +1803,117 @@ mod tests {
     }
 
     #[test]
-    fn template_binds_drop_in_dir_for_trampoline_to_read() {
-        // The runsvc-wrapper trampoline opens
-        // /etc/systemd/system/ghars-runner@<INSTANCE>.service.d/00-ghars.conf
-        // inside the unit's sandbox to read X-Ghars-Runsvc-Sha256 and
-        // X-Ghars-Trust-Zone annotations. With TemporaryFileSystem=/:ro
-        // establishing a tmpfs root, only directories listed in
-        // BindReadOnlyPaths= are visible. The drop-in directory is NOT
-        // covered by any of the curated /etc/* entries (hosts/passwd/ssl/
-        // ld.so.cache/etc.) so it must be re-bound explicitly. No `-`
-        // prefix: the drop-in MUST exist for the trampoline to function,
-        // and a missing drop-in is a fail-fast condition at unit-start
-        // rather than ENOENT inside the trampoline.
-        let t = runner_template_text();
-        assert!(t.contains("\nBindReadOnlyPaths=/etc/systemd/system/ghars-runner@%i.service.d\n"));
-        // Defense in depth: ensure no `-` prefix accidentally landed.
-        assert!(!t.contains("BindReadOnlyPaths=-/etc/systemd/system/ghars-runner@%i.service.d"));
-    }
-
-    #[test]
-    fn render_identity_emits_runsvc_sha_in_service_section_when_set() {
-        // The trampoline reads the X-Ghars-Runsvc-Sha256 annotation
-        // from /etc/systemd/system/ghars-runner@INSTANCE.service.d/
-        // 00-ghars.conf. The annotation table in Part 17 places it
-        // under [Service]; the renderer must emit a [Service] section
-        // header before the line so the trampoline's section-aware
-        // parser finds it. The [Service] section now also carries the
-        // User=ghars-tz-<TRUST_ZONE> directive that pins the runner
-        // unit's DynamicUser allocation to the trust_zone, so the
-        // X-Ghars-Runsvc-Sha256 line follows User= within the same
-        // section.
-        let mut spec = minimal_spec();
-        spec.runsvc_sha256 = "sha256:abcdef".into();
+    fn render_identity_emits_exec_start_with_reset_and_versioned_path() {
+        // The drop-in provides ExecStart= because the path depends on
+        // trust_zone + resolved runner version. The empty `ExecStart=`
+        // resets any inherited value (defense against 99-*.conf
+        // ExecStart= overrides) and the second line names the
+        // tarball's runsvc.sh under the versioned bin dir.
+        let spec = minimal_spec();
         let r = render_runner_unit(&spec).unwrap();
         let id = r.drop_ins.get("00-ghars.conf").unwrap();
-        assert!(id.contains("[Service]\n"));
-        assert!(id.contains("X-Ghars-Runsvc-Sha256=sha256:abcdef"));
-        // The X-Ghars-Runsvc-Sha256 line lives inside the [Service]
-        // section (after User=), not bare at the top of the drop-in.
+        assert!(id.contains("\nExecStart=\n"));
+        assert!(id.contains(
+            "\nExecStart=/bin/bash /var/lib/ghars/default/ghars-buckos/bin.2.334.0/bin/runsvc.sh\n"
+        ));
+        // Both lines are inside [Service].
         let service_idx = id.find("[Service]").unwrap();
-        let runsvc_idx = id.find("X-Ghars-Runsvc-Sha256=").unwrap();
-        assert!(service_idx < runsvc_idx);
-        // The [Unit] annotations still come first.
-        let unit_idx = id.find("[Unit]").unwrap();
-        assert!(unit_idx < service_idx);
+        let reset_idx = id.find("\nExecStart=\n").unwrap();
+        let path_idx = id
+            .find("ExecStart=/bin/bash")
+            .unwrap();
+        assert!(service_idx < reset_idx);
+        assert!(reset_idx < path_idx);
     }
 
     #[test]
-    fn render_identity_omits_runsvc_sha_when_empty() {
-        // Pre-install: spec carries the empty string and the renderer
-        // must drop the line entirely so the wrapper sees a single
-        // failure mode ("annotation missing") rather than the
-        // confusing "annotation present but empty" half-state.
+    fn render_identity_does_not_emit_x_ghars_runsvc_sha256() {
+        // The X-Ghars-Runsvc-Sha256 annotation was the runsvc-wrapper
+        // trampoline's integrity-check input — both the wrapper and
+        // the annotation have been removed. Pin that no future renderer
+        // change resurrects the annotation.
         let spec = minimal_spec();
-        assert!(spec.runsvc_sha256.is_empty());
         let r = render_runner_unit(&spec).unwrap();
         let id = r.drop_ins.get("00-ghars.conf").unwrap();
         assert!(!id.contains("X-Ghars-Runsvc-Sha256"));
+    }
+
+    #[test]
+    fn render_runner_env_file_emits_unconditional_keys_for_empty_caches() {
+        // LANG + three trust-zone-derived dirs always emitted; empty
+        // caches means NO per-binding lines. Pin byte-exact output so
+        // any drift (extra blank line, key reorder, missing newline)
+        // is caught.
+        let spec = minimal_spec();  // caches = vec![]
+        let env = render_runner_env_file(&spec).unwrap();
+        assert_eq!(
+            env,
+            "LANG=C.UTF-8\n\
+             CCACHE_DIR=/var/lib/ghars/default/.ccache\n\
+             KTSTR_LOCK_DIR=/var/lib/ghars/default/.ktstr\n\
+             KTSTR_CACHE_DIR=/var/lib/ghars/default/.ktstr\n",
+            "byte-exact empty-caches output drift detected",
+        );
+    }
+
+    #[test]
+    fn render_runner_env_file_emits_per_binding_lines_by_kind() {
+        // Ccache-only binding: CCACHE_MAXSIZE only, no SCCACHE_*.
+        let mut spec = minimal_spec();
+        spec.caches.push(crate::config::EffectiveCacheBinding {
+            name: "build".into(),
+            kinds: vec![CacheKind::Ccache],
+            size: "50G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
+        });
+        let env = render_runner_env_file(&spec).unwrap();
+        assert!(env.contains("CCACHE_MAXSIZE=50G\n"), "missing CCACHE_MAXSIZE: {env}");
+        assert!(!env.contains("SCCACHE_"), "ccache-only must not emit SCCACHE_*: {env}");
+
+        // Sccache-only binding: SCCACHE_* yes, no CCACHE_MAXSIZE.
+        let mut spec2 = minimal_spec();
+        spec2.caches.push(crate::config::EffectiveCacheBinding {
+            name: "build".into(),
+            kinds: vec![CacheKind::Sccache],
+            size: "200G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+            sccache_path: Some("/usr/bin/sccache".into()),
+            sleep_path: None,
+        });
+        let env2 = render_runner_env_file(&spec2).unwrap();
+        assert!(!env2.contains("CCACHE_MAXSIZE"),
+                "sccache-only must not emit CCACHE_MAXSIZE: {env2}");
+        assert!(env2.contains("SCCACHE_SERVER_UDS=/run/ghars/cache-build.sock\n"),
+                "missing SCCACHE_SERVER_UDS: {env2}");
+        assert!(env2.contains("SCCACHE_NO_DAEMON=1\n"),
+                "missing SCCACHE_NO_DAEMON: {env2}");
+        assert!(env2.contains("SCCACHE_CACHE_SIZE=200G\n"),
+                "missing SCCACHE_CACHE_SIZE: {env2}");
+        assert!(env2.contains("SCCACHE_DIR=/var/cache/ghars/pools/build/sccache\n"),
+                "missing SCCACHE_DIR: {env2}");
+    }
+
+    #[test]
+    fn render_runner_path_file_contains_ccache_wrappers_and_cargo_bin() {
+        // Single line, newline-terminated. ccache wrappers FIRST so
+        // bare `gcc`/`cc` resolve to wrappers (otherwise 100% ccache
+        // misses). Per-runner .cargo/bin segment included. System path
+        // tail in sbin-before-bin order.
+        let spec = minimal_spec();  // trust_zone=default, name=buckos
+        let p = render_runner_path_file(&spec).unwrap();
+        assert!(p.ends_with('\n'), "path_file must end with newline: {p:?}");
+        assert_eq!(p.matches('\n').count(), 1,
+                   "path_file must be exactly one line: {p:?}");
+        assert!(p.starts_with("/usr/lib64/ccache:/usr/lib/ccache:"),
+                "ccache wrappers must come first: {p}");
+        assert!(p.contains("/var/lib/ghars/default/ghars-buckos/.cargo/bin"),
+                "missing per-runner .cargo/bin: {p}");
+        assert!(p.ends_with(":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"),
+                "system path tail wrong: {p}");
     }
 
     // ---- render_identity defense-in-depth rejection tests ------------

@@ -169,8 +169,7 @@ fn plan_update_with_recreate_when_url_changes_via_annotations() {
         "00-ghars.conf".into(),
         "[Unit]\nX-Ghars-Spec-Hash=sha256:stale\n\
              X-Ghars-Runner-Url=https://github.com/example/buckos\n\
-             X-Ghars-Auth-Name=pat\n\
-             [Service]\nX-Ghars-Runsvc-Sha256=sha256:fake\n"
+             X-Ghars-Auth-Name=pat\n"
             .into(),
     );
     actual.runners.insert(
@@ -224,22 +223,7 @@ fn plan_update_conservative_recreate_on_hash_mismatch_alone() {
             _ => None,
         })
         .expect("CreateRunner expected from bootstrap plan");
-    // Bootstrap renders BEFORE install records the runsvc
-    // digest, so its 00-ghars.conf body has no X-Ghars-Runsvc-Sha256
-    // annotation. The plan path now treats missing annotation as a
-    // recreate trigger ("runsvc_integrity"). To test the uncovered
-    // path SPECIFICALLY, inject the trampoline annotation into the
-    // bootstrap drop-in body so the planner reaches the Stage 1 + 2
-    // diff cleanly.
-    let mut rendered_drop_ins = create.drop_ins.clone();
-    let body_with_digest = format!(
-        "{}\n[Service]\nX-Ghars-Runsvc-Sha256=sha256:fake\n",
-        rendered_drop_ins
-            .get("00-ghars.conf")
-            .expect("bootstrap CreateRunner must include 00-ghars.conf")
-            .trim_end()
-    );
-    rendered_drop_ins.insert("00-ghars.conf".into(), body_with_digest);
+    let rendered_drop_ins = create.drop_ins.clone();
 
     let mut actual = ActualState::default();
     actual.runners.insert(

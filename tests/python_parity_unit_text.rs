@@ -46,7 +46,6 @@ fn minimal_spec(name: &str) -> EffectiveRunnerSpec {
         allowed_cpus: None,
         allowed_memory_nodes: None,
         spec_hash: "sha256:dead".into(),
-        runsvc_sha256: String::new(),
         config_source: "/etc/ghars/ghars.toml".into(),
     }
 }
@@ -320,7 +319,7 @@ fn unit_filesystem_allowlist_curated_etc_paths() {
     // /usr root + optional merged-usr `-/lib /lib64` paths.
     let t = runner_template_text();
     assert!(t.contains("TemporaryFileSystem=/:ro"));
-    assert!(t.contains("BindReadOnlyPaths=/usr -/lib -/lib64 -/bin -/sbin"));
+    assert!(t.contains("BindReadOnlyPaths=/usr /bin /sbin -/lib -/lib64"));
     // /etc/resolv.conf is intentionally OUTSIDE the curated /etc list:
     // netns-mode runners bind-mount a generated resolv.conf via
     // `ghars _netns-setup` (Part 9c Challenge 1, DnsMode::Forward) so
@@ -331,7 +330,7 @@ fn unit_filesystem_allowlist_curated_etc_paths() {
     // through of /etc bind targets that ARE in the list below.
     assert!(t.contains("BindReadOnlyPaths=/etc/hosts /etc/nsswitch.conf"));
     assert!(t.contains("BindReadOnlyPaths=/etc/passwd /etc/group"));
-    assert!(t.contains("BindReadOnlyPaths=/etc/ssl /etc/ca-certificates -/etc/pki"));
+    assert!(t.contains("BindReadOnlyPaths=-/etc/ssl -/etc/ca-certificates -/etc/pki"));
     assert!(t.contains("BindReadOnlyPaths=-/etc/locale.conf /etc/localtime"));
     assert!(t.contains("BindReadOnlyPaths=/etc/ld.so.cache -/etc/ld.so.conf.d"));
     assert!(t.contains("BindReadOnlyPaths=-/etc/protocols -/etc/services"));
@@ -422,19 +421,17 @@ fn render_runner_unit_no_memory_drop_in_when_unset() {
 }
 
 #[test]
-fn render_runner_unit_state_directory_paths_per_trust_zone() {
-    // ConditionPathExists / WorkingDirectory / StateDirectory / HOME
-    // live in the per-runner drop-in because the path components
-    // depend on the runner's trust_zone (a render-time substitution
-    // the systemd `%i` specifier cannot express alone). The template
-    // body contains only the `StateDirectoryMode=0700` directive.
+fn render_runner_unit_trust_zone_paths() {
+    // ConditionPathExists / WorkingDirectory / HOME live in the
+    // per-runner drop-in because the path components depend on the
+    // runner's trust_zone and the resolved runner version (`%i`
+    // alone cannot express either).
     let spec = minimal_spec("buckos");
     let r = render_runner_unit(&spec).unwrap();
     let body = r.drop_ins.get("00-ghars.conf").expect("00-ghars.conf");
-    assert!(body.contains("ConditionPathExists=/var/lib/ghars/default/ghars-buckos/runsvc.sh"));
-    assert!(body.contains("WorkingDirectory=/var/lib/ghars/default/ghars-buckos"));
+    assert!(body.contains(
+        "ConditionPathExists=/var/lib/ghars/default/ghars-buckos/bin.2.334.0/bin/runsvc.sh"
+    ));
+    assert!(body.contains("WorkingDirectory=/var/lib/ghars/default/ghars-buckos/bin.2.334.0"));
     assert!(body.contains("Environment=HOME=/var/lib/ghars/default/ghars-buckos"));
-    assert!(body.contains("StateDirectory=ghars/default/ghars-buckos"));
-    let t = runner_template_text();
-    assert!(t.contains("StateDirectoryMode=0700"));
 }

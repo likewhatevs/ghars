@@ -1,9 +1,9 @@
 # Security
 
-ghars's security envelope rests on four pillars: **DynamicUser
-isolation**, **trust zones**, **runtime integrity**, and **systemd
-sandbox hardening**. Each is enforced at multiple layers; failure
-of one layer does not collapse the whole envelope.
+ghars's security envelope rests on three pillars: **DynamicUser
+isolation**, **trust zones**, and **systemd sandbox hardening**.
+Each is enforced at multiple layers; failure of one layer does not
+collapse the whole envelope.
 
 ## DynamicUser isolation
 
@@ -42,56 +42,15 @@ configurable per-block). The validator enforces:
 The shared HOME for a trust zone is `/var/lib/ghars/<TRUST_ZONE>/`
 (see `Paths::trust_zone_home`). Each runner gets its own subdir
 `/var/lib/ghars/<TRUST_ZONE>/ghars-<NAME>/` for its config.sh
-output, runsvc.sh, and versioned `bin.X.Y.Z/` directories. Within
-a zone, runners can read each other's state via DAC; across zones,
-the kernel returns EACCES.
+output (`.runner`, `.credentials`, etc.) and one or more
+versioned `bin.X.Y.Z/` directories. The upstream actions/runner
+tarball ships `runsvc.sh` at `bin.X.Y.Z/bin/runsvc.sh`, not in
+the runner home itself. Within a zone, runners can read each
+other's state via DAC; across zones, the kernel returns EACCES.
 
 Operators who don't care about cross-repo poisoning leave the field
 unset — every runner and pool stays in `"default"`. The capability
 remains available for deployments that need it (the SEC-03 fix).
-
-## Runtime integrity: runsvc-wrapper
-
-The `[Service]` section of `ghars-runner@.service` sets
-`ExecStart=/usr/lib/ghars/runsvc-wrapper %i` — no `+`/`-`/`!`
-prefix. The wrapper is a separately-packaged compiled Rust binary
-(the `runsvc-wrapper` `[[bin]]` target in `Cargo.toml`), installed
-at `/usr/lib/ghars/runsvc-wrapper` (root:root mode 0755). It is
-NOT a shell script.
-
-The wrapper runs at the `DynamicUser`-allocated identity (no
-setuid/setgid step required because `DynamicUser` already handles
-the identity). The unit's full sandbox stays applied to the
-wrapper and to whatever it execs into:
-`TemporaryFileSystem=/:ro`, `BindReadOnlyPaths=`,
-`PrivateDevices=yes`, `NetworkNamespacePath=`, the
-`SystemCallFilter` allowlist, etc.
-
-What the wrapper does:
-
-1. Opens `/var/lib/ghars/<TRUST_ZONE>/ghars-%i/runsvc.sh` with
-   `O_NOFOLLOW` (kernel rejects symlinks at `open(2)` time).
-2. Reads the per-runner `00-ghars.conf` drop-in (also via
-   `O_NOFOLLOW`) to fetch the `X-Ghars-Runsvc-Sha256` and
-   `X-Ghars-Trust-Zone` annotations.
-3. Recomputes SHA-256 of the on-disk `runsvc.sh` from the open
-   file descriptor.
-4. Compares against the annotation. On mismatch: refuses to exec,
-   diagnostic to stderr, exits non-zero.
-5. On match: `fexecve()` the verified file descriptor (via the
-   `nix` crate, since the workspace forbids `unsafe_code`).
-   `fexecve` execs the file the fd points at, not the path —
-   closing the open-then-rename TOCTOU window where an attacker
-   could swap `runsvc.sh` between digest computation and exec.
-
-`unsafe_code = "forbid"` is set workspace-wide. The `nix` crate
-provides safe wrappers for `fexecve(2)` (in `nix::unistd`) and
-`renameat2(2)` (in `nix::fcntl`); the `fs` operations the apply
-path needs route through std + `libc` flag constants
-(`O_NOFOLLOW` / `O_NONBLOCK`) without raw FFI.
-`CapabilityBoundingSet=` on the runner unit is empty: with no
-setuid/setgid step (DynamicUser= establishes identity), the
-wrapper needs no capabilities.
 
 ## Systemd sandbox hardening
 
@@ -99,17 +58,14 @@ The runner template (`runner_template_text()` in `systemd/units.rs`)
 emits these directives unconditionally:
 
 - `NoNewPrivileges=yes`
-- `CapabilityBoundingSet=` (empty — the wrapper needs none)
+- `CapabilityBoundingSet=` (empty — `ExecStart` does no
+  setuid/setgid step; `DynamicUser=` handles identity)
 - `AmbientCapabilities=` (empty — kernel raises nothing into
   permitted at exec)
 - `TemporaryFileSystem=/:ro` — root is a tmpfs, read-only.
 - `BindReadOnlyPaths=` — narrow allowlist of `/usr`, `/lib`,
   `/lib64`, `/bin`, `/sbin`, plus `/etc/hosts`, `/etc/passwd`,
-  `/etc/group`, `/etc/ssl`, `/etc/ca-certificates`, etc. The
-  per-runner `00-ghars.conf` drop-in directory at
-  `/etc/systemd/system/ghars-runner@%i.service.d` is also
-  bound (no `-` prefix — the wrapper requires it; fail-fast at
-  unit-start is preferable to ENOENT at trampoline-runtime).
+  `/etc/group`, `/etc/ssl`, `/etc/ca-certificates`, etc.
 - `PrivateTmp=yes`
 - `UMask=0077` — restrictive default mode for any file the
   runner creates (inherited across exec to the workflow process).
@@ -249,28 +205,24 @@ goes through one of these gates:
 
 - `O_NOFOLLOW` at the open site — kernel rejects symlinks at
   `open(2)` time, no lstat-then-open race. Used for
-  `runner_tarball`, hook scripts, the GitHub App `private_key_path`
-  PEM, and `runsvc.sh` integrity checks. `O_NONBLOCK` is also set
-  to prevent fifo hangs (`open_no_follow_with_meta` in
-  `validators.rs`).
+  `runner_tarball`, hook scripts, and the GitHub App
+  `private_key_path` PEM. `O_NONBLOCK` is also set to prevent fifo
+  hangs (`open_no_follow_with_meta` in `validators.rs`).
 - `renameat2` with `RENAME_EXCHANGE` for atomic publish — see
   [Internals](./internals.md#renameat2-atomicity).
 - `fsync` after rename to ensure durability across crash — see
   [Internals](./internals.md#fsync-durability).
-- `fexecve` instead of `execve` — exec what the fd points at,
-  not what the path resolves to at exec time.
 
 ## SEC-* model
 
 The codebase tracks security concerns under stable SEC-* labels in
 doc comments and commit messages. Every label maps to a specific
 attack surface and the gate that closes it. Operators reading the
-source for review will see references like SEC-02 (runsvc.sh
-integrity), SEC-03 (trust zones), SEC-09 (root-owned runner home),
-SEC-10 (tar safe-member filter), SEC-12 (hooks ownership), SEC-19
-(apply.lock PID liveness), SEC-25 (token_file mode), SEC-30
-(egress comment sanitization), SEC-33 (root-owned staging),
-SEC-36 (apply audit log).
+source for review will see references like SEC-03 (trust zones),
+SEC-09 (root-owned runner home), SEC-10 (tar safe-member filter),
+SEC-12 (hooks ownership), SEC-19 (apply.lock PID liveness), SEC-25
+(token_file mode), SEC-30 (egress comment sanitization), SEC-33
+(root-owned staging), SEC-36 (apply audit log).
 
 The labels are stable identifiers: a code reader who finds
 SEC-09 in a comment can grep the codebase for every other site

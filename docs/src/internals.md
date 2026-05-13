@@ -25,7 +25,6 @@ lstat-then-open. Used for:
   opens with `O_NOFOLLOW` and checks regular-file + executable +
   root-owned.
 - The GitHub App `private_key_path` PEM.
-- `runsvc.sh` integrity checks at runtime by the trampoline.
 
 The canonical helper `validators::open_no_follow_with_meta`
 takes a `&std::path::Path`, opens it with the relevant flags,
@@ -57,24 +56,14 @@ When ghars needs to swap a directory in place (e.g. publishing a
 freshly-extracted `bin.X.Y.Z/` over an existing one during an
 upgrade), it uses `renameat2` with the `RENAME_EXCHANGE` flag
 instead of a 2-step `remove + rename`. RENAME_EXCHANGE atomically
-swaps two paths; an observer (the runsvc-wrapper re-running, a
-concurrent apply reading state) never sees a window where the
-path is missing or partially written.
+swaps two paths; a concurrent apply reading state never sees a
+window where the path is missing or partially written.
 
 Used by `extract_and_swap_from_file` to swap the staging dir
 with the live `bin.X.Y.Z/` (after which the old tree, now sitting
 at the staging path, is removed). The `nix` crate's safe wrapper
 around `renameat2` is the implementation seam (the workspace
 forbids `unsafe_code`).
-
-### `fexecve` instead of `execve`
-
-The runsvc-wrapper execs the integrity-checked fd (not the path),
-closing the open-then-rename TOCTOU window. The `nix` crate
-provides `fexecve` in `nix::unistd` (gated by the `process`
-feature in `Cargo.toml`). Full integrity protocol (open, SHA-256,
-annotation compare, fexecve, refusal on mismatch) is documented in
-[Security](./security.md#runtime-integrity-runsvc-wrapper).
 
 ## fsync durability
 
@@ -382,10 +371,9 @@ expect_used = "warn"
 Effects:
 
 - `unsafe_code = "forbid"` — every place that needs a syscall
-  goes through a safe wrapper crate (`nix` for `fexecve` and
-  `renameat2`; `libc` for `O_NOFOLLOW` / `O_NONBLOCK` constants
-  threaded through `OpenOptionsExt::custom_flags`; `fs2` for
-  `flock`).
+  goes through a safe wrapper crate (`nix` for `renameat2`;
+  `libc` for `O_NOFOLLOW` / `O_NONBLOCK` constants threaded
+  through `OpenOptionsExt::custom_flags`; `fs2` for `flock`).
 - `missing_docs = "warn"` — every public item has a doc comment.
 - `pedantic` clippy is warn-level; `unwrap_used` and
   `expect_used` are warn-level so production code paths cannot
@@ -400,7 +388,6 @@ Each section above maps to a specific module:
 |--------------------------------|-----------------------------------------|
 | `O_NOFOLLOW` open patterns     | `validators.rs`, `extract.rs`           |
 | `renameat2` exchange           | `extract.rs`                            |
-| `fexecve` trampoline           | `src/bin/runsvc_wrapper.rs`             |
 | fsync durability               | `apply::writes::write_root_owned`, `extract.rs` |
 | apply lock                     | `apply::lock::acquire_lock`             |
 | GC passes                      | `apply::gc::gc_stale_temp_files`, `apply::gc::gc_stale_staging_dirs` |

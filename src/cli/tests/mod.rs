@@ -38,24 +38,6 @@ pub(crate) use crate::plan::{self, Action, Plan};
 pub(crate) use crate::preflight;
 pub(crate) use crate::state;
 
-/// Placeholder runsvc.sh SHA-256 digest for discovered-runner
-/// fixtures. Concrete value is irrelevant to assertions —
-/// `execute_remove_runner` does not consult the digest, and the
-/// `runsvc_wrapper` trampoline runs only at runner start time. What
-/// matters is that the value is non-empty: a populated annotation
-/// mirrors the post-install steady state (a prior
-/// `apply.rs::execute_create_runner` would have computed the
-/// runsvc.sh digest and written it into the X-Ghars-Runsvc-Sha256
-/// annotation in `00-ghars.conf`), distinct from the empty-
-/// fallback path that `DiscoveredAnnotations::default` produces
-/// when the drop-in is missing entirely.
-///
-/// 64 ones is a syntactically-valid 256-bit hex digest with no
-/// collision risk against any real digest (no real runsvc.sh
-/// hashes to all 1s).
-const FIXTURE_RUNSVC_SHA256: &str =
-    "sha256:1111111111111111111111111111111111111111111111111111111111111111";
-
 fn add_args_for(repo: &str, name: Option<&str>, auth: Option<&str>) -> AddArgs {
     AddArgs {
         repo: repo.into(),
@@ -147,7 +129,6 @@ fn fake_effective_spec(name: &str) -> crate::config::EffectiveRunnerSpec {
         allowed_cpus: None,
         allowed_memory_nodes: None,
         spec_hash: "sha256:0".into(),
-        runsvc_sha256: String::new(),
         config_source: "/etc/ghars/ghars.toml".into(),
     }
 }
@@ -158,6 +139,8 @@ fn fake_runner_plan(name: &str) -> plan::RunnerPlan {
         resolved_release: None,
         effective_unit_text: String::new(),
         drop_ins: std::collections::BTreeMap::new(),
+        env_file: String::new(),
+        path_file: String::new(),
         spec_hash: "sha256:0".into(),
     }
 }

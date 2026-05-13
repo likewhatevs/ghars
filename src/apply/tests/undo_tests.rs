@@ -287,6 +287,12 @@ fn undo_github_registration_calls_run_remove_with_fresh_token() {
     let paths = make_paths(&tmp);
     let runner_home = paths.runner_home("default", "a");
     std::fs::create_dir_all(runner_home.as_std_path()).unwrap();
+    // find_active_bin_dir scans for bin.X.Y.Z/ containing config.sh;
+    // pre-stage one so the undo reaches config_shell.run_remove
+    // (the assertion below counts config_shell.removed).
+    let bin_dir = runner_home.join("bin.2.334.0");
+    std::fs::create_dir_all(bin_dir.as_std_path()).unwrap();
+    std::fs::write(bin_dir.join("config.sh").as_std_path(), b"#!/bin/sh\n").unwrap();
     let mut log = UndoLog::new();
     log.push(UndoStep::GitHubRegistration {
         name: "a".into(),

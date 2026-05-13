@@ -33,7 +33,7 @@
 //!   Part 9c.
 //!
 //! The fixture builder uses pinned, deterministic field values
-//! (`spec_hash`, `config_source`, `runsvc_sha256`) so the snapshot bytes
+//! (`spec_hash`, `config_source`) so the snapshot bytes
 //! don't shift across runs. Operator-supplied paths and IPs in the
 //! fixtures are documentation examples lifted from the design spec —
 //! `/var/lib/ghars`, `192.168.2.84` (squid proxy example), `10.200.0.0/30`
@@ -79,8 +79,6 @@ fn base_spec() -> EffectiveRunnerSpec {
         allowed_cpus: None,
         allowed_memory_nodes: None,
         spec_hash: "sha256:0000000000000000000000000000000000000000000000000000000000000000".into(),
-        runsvc_sha256: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-            .into(),
         config_source: "/etc/ghars/ghars.toml".into(),
     }
 }

@@ -1389,11 +1389,9 @@ fn render_action_line_recreate_multi_element_reasons_join_format() {
 
 // ---------- opaque recreate-reason gloss ----------------------------
 
-/// `recreate_reason_note` returns `Some` for the two opaque
-/// classifier tokens (`uncovered`, `runsvc_integrity`). These are
-/// internal triggers — `uncovered` fires for spec-hash-mismatch
-/// fallback, `runsvc_integrity` for missing/stale runsvc.sh
-/// digest — and look meaningless in the
+/// `recreate_reason_note` returns `Some` for the `uncovered` opaque
+/// classifier token. This is an internal trigger — `uncovered` fires
+/// for spec-hash-mismatch fallback — and looks meaningless in the
 /// `! runner NAME (… recreate (uncovered)) [recreate]` plan line
 /// without context. The note text feeds the indented `note: TOKEN
 /// — explanation` line `render_action_line` emits beneath the
@@ -1409,19 +1407,6 @@ fn recreate_reason_note_glosses_opaque_tokens() {
         uncovered.contains("coverage"),
         "uncovered gloss must name the coverage-gap fallback nature; \
          got: {uncovered}",
-    );
-    let integrity =
-        recreate_reason_note("runsvc_integrity").expect("runsvc_integrity must have a gloss");
-    assert!(
-        integrity.contains("runsvc.sh"),
-        "runsvc_integrity gloss must mention the runsvc.sh wrapper; \
-         got: {integrity}",
-    );
-    assert!(
-        integrity.contains("SEC-02"),
-        "runsvc_integrity gloss must cite the SEC-02 lineage so a \
-         future reader can trace the trigger to the security finding; \
-         got: {integrity}",
     );
 }
 
@@ -1497,30 +1482,6 @@ fn render_action_line_recreate_uncovered_emits_note_line() {
     );
 }
 
-/// same contract as the uncovered test, for the
-/// `runsvc_integrity` token. Pins both opaque tokens so a future
-/// change to one but not the other is caught.
-#[test]
-fn render_action_line_recreate_runsvc_integrity_emits_note_line() {
-    let action = Action::UpdateRunner(recreate_delta("buckos", vec!["runsvc_integrity"]));
-    let line = render_action_line(&action, ColorMode { enabled: false }, false);
-    let lines: Vec<&str> = line.split('\n').collect();
-    assert!(
-        lines[0].contains("update: recreate (runsvc_integrity)"),
-        "header line must carry the raw `runsvc_integrity` token; \
-         got: {}",
-        lines[0],
-    );
-    let note_line = lines
-        .iter()
-        .find(|l| l.starts_with("    note: runsvc_integrity "))
-        .unwrap_or_else(|| panic!("missing `note: runsvc_integrity ` line; got: {line}"));
-    assert!(
-        note_line.contains("runsvc.sh"),
-        "note line must reference runsvc.sh; got: {note_line}",
-    );
-}
-
 /// field-name tokens (`url`, `runner_version`, …) MUST NOT
 /// emit a `note:` line — the `field_changes` loop renders the
 /// before→after pair already, and a redundant gloss would clutter
@@ -1537,40 +1498,26 @@ fn render_action_line_recreate_field_name_reasons_emit_no_note_line() {
     );
 }
 
-/// mixed reasons render the gloss for ONLY the opaque tokens,
-/// and emit one note per opaque token in the order they appear in
-/// `recreate_reasons`. Header line carries the full
-/// `recreate_reasons.join(",")` regardless. Pin the per-token
-/// emission so a future renderer change that emits one combined
-/// note (instead of per-token) is caught.
+/// mixed reasons render the gloss for ONLY the opaque token, and
+/// the field-name token's `note:` line is suppressed because the
+/// `field_changes` loop already shows its before→after pair.
 #[test]
 fn render_action_line_recreate_mixed_reasons_emits_note_per_opaque_token() {
     let action = Action::UpdateRunner(recreate_delta(
         "buckos",
-        vec!["url", "uncovered", "runsvc_integrity"],
+        vec!["url", "uncovered"],
     ));
     let line = render_action_line(&action, ColorMode { enabled: false }, false);
     let lines: Vec<&str> = line.split('\n').collect();
     assert!(
-        lines[0].contains("update: recreate (url,uncovered,runsvc_integrity)"),
+        lines[0].contains("update: recreate (url,uncovered)"),
         "header must carry the full join(\",\")  payload; got: {}",
         lines[0],
     );
-    // Two distinct note lines, one per opaque token.
-    let pos_uncovered = line
-        .find("    note: uncovered ")
-        .expect("uncovered note must appear");
-    let pos_runsvc = line
-        .find("    note: runsvc_integrity ")
-        .expect("runsvc_integrity note must appear");
-    // Order pin: uncovered (index 1) precedes runsvc_integrity
-    // (index 2) per the input Vec ordering.
     assert!(
-        pos_uncovered < pos_runsvc,
-        "note order must follow recreate_reasons Vec order \
-         (uncovered before runsvc_integrity); got: {line}",
+        line.contains("    note: uncovered "),
+        "uncovered note must appear; got: {line}",
     );
-    // url is a field-name token; it must NOT emit a note line.
     assert!(
         !line.contains("note: url "),
         "url is self-explanatory; must NOT emit a note line; got: {line}",

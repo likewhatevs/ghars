@@ -67,17 +67,15 @@ ci-coverage:
         --output-path lcov.info \
         --fail-under-lines 70
 
-# Musl static build + link assertion for both binaries
+# Musl static build + link assertion for the ghars binary
 ci-musl:
     #!/usr/bin/env bash
     set -euo pipefail
     rustup target add x86_64-unknown-linux-musl
     cargo build --release --target x86_64-unknown-linux-musl
-    for BIN in ghars runsvc-wrapper; do
-        P="target/x86_64-unknown-linux-musl/release/$BIN"
-        file "$P"
-        file "$P" | grep -qE "statically linked|static-pie linked"
-    done
+    P="target/x86_64-unknown-linux-musl/release/ghars"
+    file "$P"
+    file "$P" | grep -qE "statically linked|static-pie linked"
 
 # cargo deny check (advisories, bans, sources, licenses)
 ci-audit:

@@ -403,6 +403,8 @@ mod tests {
                     resolved_release: None,
                     effective_unit_text: "[Unit]\nDescription=test\n".into(),
                     drop_ins: BTreeMap::new(),
+                    env_file: String::new(),
+                    path_file: String::new(),
                     spec_hash: "sha256:abcd".into(),
                 }),
                 Action::CreateRunner(crate::plan::RunnerPlan {
@@ -410,6 +412,8 @@ mod tests {
                     resolved_release: None,
                     effective_unit_text: "[Unit]\nDescription=test\n".into(),
                     drop_ins: BTreeMap::new(),
+                    env_file: String::new(),
+                    path_file: String::new(),
                     spec_hash: "sha256:abcd".into(),
                 }),
             ],
@@ -444,6 +448,8 @@ mod tests {
                     resolved_release: None,
                     effective_unit_text: "[Unit]\nDescription=test\n".into(),
                     drop_ins: BTreeMap::new(),
+                    env_file: String::new(),
+                    path_file: String::new(),
                     spec_hash: "sha256:abcd".into(),
                 }),
                 Action::CreateRunner(crate::plan::RunnerPlan {
@@ -451,6 +457,8 @@ mod tests {
                     resolved_release: None,
                     effective_unit_text: "[Unit]\nDescription=test\n".into(),
                     drop_ins: BTreeMap::new(),
+                    env_file: String::new(),
+                    path_file: String::new(),
                     spec_hash: "sha256:abcd".into(),
                 }),
             ],
@@ -529,51 +537,57 @@ mod tests {
     }
 
     #[test]
-    fn verify_writes_drop_ins_alongside_unit_for_systemd_analyze_to_resolve() {
-        // The verifier receives the unit path; before the call,
-        // verify_plan must have written 00-ghars.conf to
-        // <staging>/<unit>.d/00-ghars.conf so systemd-analyze can
-        // resolve drop-ins. Inspect the staging dir at verify time
-        // to confirm.
+    fn verify_merges_drop_in_bodies_into_instance_unit_file() {
+        // The verifier receives a per-instance unit path with the
+        // template body PLUS every drop-in body merged inline.
+        // systemd-analyze verify on systemd 252 cannot resolve
+        // template instances or drop-ins from staging directories
+        // even with SYSTEMD_UNIT_PATH set, so rendered_runner_unit
+        // builds a self-contained merged body. Pin the merge so a
+        // future refactor that goes back to separate-dropins staging
+        // fails here.
         let tmp = tempfile::tempdir().unwrap();
         let runtime = camino::Utf8Path::from_path(tmp.path()).unwrap();
-        struct PeekingVerifier {
-            seen_dropin: Mutex<bool>,
+        struct CapturingVerifier {
+            seen_body: Mutex<Option<String>>,
         }
-        impl UnitVerifier for PeekingVerifier {
+        impl UnitVerifier for CapturingVerifier {
             fn verify(&self, unit_path: &Path) -> std::result::Result<(), String> {
-                let parent = unit_path.parent().unwrap();
-                let fname = unit_path.file_name().unwrap().to_string_lossy().to_string();
-                let dropin = parent.join(format!("{fname}.d")).join("00-ghars.conf");
-                if dropin.exists() {
-                    *self.seen_dropin.lock().unwrap() = true;
-                }
+                let body = std::fs::read_to_string(unit_path)
+                    .unwrap_or_else(|e| panic!("read merged unit {unit_path:?}: {e}"));
+                *self.seen_body.lock().unwrap() = Some(body);
                 Ok(())
             }
         }
-        let verifier = PeekingVerifier {
-            seen_dropin: Mutex::new(false),
+        let verifier = CapturingVerifier {
+            seen_body: Mutex::new(None),
         };
         let mut drop_ins = BTreeMap::new();
-        drop_ins.insert(
-            "00-ghars.conf".into(),
-            "[Service]\nUser=ghars-tz-default\n".into(),
-        );
+        let dropin_marker = "[Service]\nUser=ghars-tz-default\n";
+        drop_ins.insert("00-ghars.conf".into(), dropin_marker.into());
         let plan = Plan {
             actions: vec![Action::CreateRunner(crate::plan::RunnerPlan {
                 spec: minimal_effective_spec("buckos"),
                 resolved_release: None,
                 effective_unit_text: "[Unit]\nDescription=test\n".into(),
                 drop_ins,
+                env_file: String::new(),
+                path_file: String::new(),
                 spec_hash: "sha256:abcd".into(),
             })],
             warnings: vec![],
             keep_versions: 2,
         };
         verify_plan(&plan, runtime, &verifier).unwrap();
+        let body = verifier
+            .seen_body
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("verifier must have been invoked");
         assert!(
-            *verifier.seen_dropin.lock().unwrap(),
-            "drop-in must be written to <unit>.d/ before verify is invoked"
+            body.contains(dropin_marker),
+            "merged unit body must contain drop-in content; got:\n{body}"
         );
     }
 
@@ -682,7 +696,6 @@ mod tests {
             allowed_cpus: None,
             allowed_memory_nodes: None,
             spec_hash: "sha256:abcd".into(),
-            runsvc_sha256: String::new(),
             config_source: "/etc/ghars/ghars.toml".into(),
         }
     }

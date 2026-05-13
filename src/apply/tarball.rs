@@ -1,9 +1,4 @@
-//! [`Tarball`] trait + [`RealTarball`] production implementation,
-//! plus the SEC-02 [`sha256_of_runsvc`] helper.
-
-use std::fs::OpenOptions;
-use std::io::Read;
-use std::os::unix::fs::OpenOptionsExt;
+//! [`Tarball`] trait + [`RealTarball`] production implementation.
 
 use camino::{Utf8Path, Utf8PathBuf};
 
@@ -112,42 +107,4 @@ impl Tarball for RealTarball {
 
 pub(super) fn spawn_err(prog: &str, e: &std::io::Error) -> GharsError {
     GharsError::Io(std::io::Error::new(e.kind(), format!("spawn {prog}: {e}")))
-}
-
-/// SHA256 the on-disk runsvc.sh script after `config.sh` writes it,
-/// for the `X-Ghars-Runsvc-Sha256` annotation in 00-ghars.conf.
-///
-/// `path` is opened with `O_NOFOLLOW` so the kernel rejects a
-/// symlink-swap between the time `config.sh` finishes and we hash —
-/// the same TOCTOU primitive `auth.rs::read_root_owned_0600` and
-/// `runsvc-wrapper`'s `open_no_follow_rdonly` use. Output format
-/// `"sha256:HEX"` matches the wrapper's own `sha256_of_reader` so the
-/// annotation comparison at unit-start time is byte-equal.
-///
-/// # Errors
-///
-/// `GharsError::Io` for any open / read failure (including `ELOOP`
-/// from the `O_NOFOLLOW` symlink rejection — surfaced with the
-/// wrapping kind so `apply.rs` callers can distinguish).
-pub(super) fn sha256_of_runsvc(path: &Utf8Path) -> Result<String> {
-    use sha2::{Digest, Sha256};
-    let mut opts = OpenOptions::new();
-    opts.read(true).custom_flags(libc::O_NOFOLLOW);
-    let mut f = opts.open(path.as_std_path())?;
-    let mut hasher = Sha256::new();
-    // 64 KiB read window: small enough to live on the stack (default
-    // Linux thread stack is 8 MiB), large enough to keep syscall
-    // count low for typical runsvc.sh sizes (~1-2 KiB) while still
-    // amortizing for any future unusually-large runner-self-config
-    // output. Mirrors `runsvc_wrapper::sha256_of_reader`.
-    #[allow(clippy::large_stack_arrays)]
-    let mut buf = [0u8; 64 * 1024];
-    loop {
-        let n = f.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    Ok(format!("sha256:{}", hex::encode(hasher.finalize())))
 }

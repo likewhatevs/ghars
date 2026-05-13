@@ -44,11 +44,9 @@ and `cargo build --tests` on every commit and aborts on failure. The
 clippy invocation matches CI exactly so lint regressions surface
 locally before the push.
 
-The `runsvc-wrapper` binary is a SEC-02 root-owned trampoline. It builds
-as part of `cargo build`. Tests that exercise privileged paths (chown,
-fexecve, real systemd D-Bus) are gated on running as root and do not
-run in default unprivileged CI; integration coverage for those paths
-runs in a separate root-only job.
+Tests that exercise privileged paths (chown, real systemd D-Bus) are
+gated on running as root and do not run in default unprivileged CI;
+integration coverage for those paths runs in a separate root-only job.
 
 ## Architectural rules (load-bearing)
 
@@ -90,14 +88,14 @@ back out into zbus.
 ## Module overview
 
 Source tree: `src/lib.rs`, `src/main.rs`, the modules listed in
-`lib.rs`, and the `runsvc-wrapper` binary under `src/bin/`.
+`lib.rs`.
 
 | File | Responsibility |
 |---|---|
 | `lib.rs` | Public surface. Re-exports `GharsError`, `Result`, `Paths`. Defines the crate-wide `USER_AGENT` constant. |
 | `main.rs` | Binary entrypoint. Initializes `tracing_subscriber`, parses `Cli`, dispatches, maps errors to exit code 1. |
 | `error.rs` | `GharsError` enum (Config / Validation / Interactive / Preflight / GitHub / Systemd / Auth / Apply / Io / Tarball / Sha256Mismatch / ApplyLocked) + `Result<T>` alias. Every variant carries an actionable hint. |
-| `paths.rs` | `Paths` struct. Centralizes `/etc/ghars/`, `/var/lib/ghars/`, `/usr/lib/ghars/`, runner-home, unit-file, drop-in-dir, cache-unit-file, cache-drop-in-dir, resolved-drop-in resolution. Test code redirects via constructor. |
+| `paths.rs` | `Paths` struct. Centralizes `/etc/ghars/`, `/var/lib/ghars/`, runner-home, unit-file, drop-in-dir, cache-unit-file, cache-drop-in-dir, resolved-drop-in resolution. Test code redirects via constructor. |
 | `validators.rs` | All regex/range validators ported from the Python tool: identifier, URL, sha256, semver, memory_max, label charset, hook script (lstat-based), CIDR, capability denylist, bind-path denylist. |
 | `config.rs` | Top-level `Config` plus `Defaults`, `RunnerSpec`, `EffectiveRunnerSpec`, `Hardening`, `AuthSpec`, `CachePoolSpec`, `NetworkSpec`, `ProxySpec`, `HooksSpec`, `Arch`. `serde(deny_unknown_fields)` everywhere. |
 | `state.rs` | `discover()` reads systemd's view of the world (managed `ghars-runner@*.service` units, drop-ins, drift status) into `ActualState`. `Drift` tracks whether the unit text or drop-ins were edited out-of-band. |
@@ -110,7 +108,6 @@ Source tree: `src/lib.rs`, `src/main.rs`, the modules listed in
 | `preflight.rs` | OS / kernel / systemd-version / `/dev/kvm` / D-Bus / required-tools / root checks. Returns a `Vec<CheckResult>` for `ghars status`. |
 | `netns.rs` | Network namespace lifecycle: `setup` (create netns, veth, addresses, routes, nft rules), `teardown`, `run_in_netns` (nsenter wrapper for the hidden `_netns-veth` subcommand). |
 | `cli/` | `Cli`, `Command`, all `*Args` structs, dispatch logic, color/quiet handling, plan/status/metrics rendering (table + JSON), `init` scaffold contents, `add` TOML appender. Submodules: `args`, `load`, `render`, `json`, `cmd_apply`, `cmd_plan`, `cmd_status`, `cmd_metrics`, `cmd_misc`, `exit_codes`. |
-| `bin/runsvc_wrapper.rs` | Verify-only trampoline running at the unit's `DynamicUser`-allocated identity. Verifies `runsvc.sh` against the `X-Ghars-Runsvc-Sha256` annotation by file descriptor, then `fexecve`s the verified fd. No `setuid`/`setgid`/`setgroups` — `DynamicUser=yes` establishes runner identity before the wrapper starts. SEC-02. |
 
 ## PR process
 
@@ -147,7 +144,7 @@ implementation.
 
 Do not file public issues for security findings. Email
 `patso@likewhatevs.io` with the details. ghars touches privileged
-operations (root-owned trampoline, network namespaces, systemd unit
-generation, GitHub registration tokens), so the security envelope is a
-first-class concern; we'll prioritize and credit reporters in the
-release notes once a fix has shipped.
+operations (network namespaces, systemd unit generation, GitHub
+registration tokens), so the security envelope is a first-class
+concern; we'll prioritize and credit reporters in the release notes
+once a fix has shipped.

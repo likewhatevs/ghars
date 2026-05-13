@@ -1,6 +1,6 @@
 //! Test split part 2: covers `merge_defaults` `bind_readonly_paths`
 //! Some(empty) semantics, `ParsedUnit` comprehensive parser tests, `spec_hash`
-//! cross-construction / TOML-source / order tests, `runsvc_sha256` preservation,
+//! cross-construction / TOML-source / order tests,
 //! cache pool diff branches + `drift_cause` + recreate-empties-drop-in-changes,
 //! `auth_name` in-place contract, caches in-place contract, and hardening Vec
 //! canonicalization (3 set-semantic fields). Migrated verbatim from plan.rs.
@@ -287,101 +287,6 @@ labels  = ["alpha", "beta"]
         spec_hash(&spec_a),
         spec_hash(&spec_b),
         "comment/whitespace differences in TOML source must not affect spec_hash"
-    );
-}
-
-// ---- runsvc_sha256 preserved across in-place update --------------
-
-/// SEC-02 trampoline contract: the X-Ghars-Runsvc-Sha256 annotation
-/// recorded into 00-ghars.conf at apply-time must survive a
-/// subsequent in-place plan/apply cycle. Otherwise the next runner
-/// restart would observe a 00-ghars.conf without the digest, the
-/// runsvc-wrapper trampoline would exit `ANNOTATION_MISSING`, and
-/// the runner would never start.
-///
-/// Setup: discovered runner has `spec.runsvc_sha256` populated, so
-/// `discovered_for` renders 00-ghars.conf carrying
-/// `X-Ghars-Runsvc-Sha256=sha256:...`. Desired spec is identical
-/// except `memory_max` changes (drives an in-place `UpdateRunner`).
-/// `plan_from` re-renders the desired drop-ins; the `runsvc_sha256`
-/// recovery block in `plan_from`'s (true, true) match arm must
-/// thread the discovered digest into `after_spec.runsvc_sha256`
-/// BEFORE re-render (via `extract_runsvc_sha256` +
-/// `with_hash(strip_hash(...))`) so the freshly-emitted
-/// 00-ghars.conf preserves the annotation.
-#[test]
-fn plan_in_place_preserves_runsvc_sha256_in_drop_in() {
-    let recorded_digest = "sha256:c0ffee".to_string() + &"a".repeat(58); // 6 + 58 = 64 hex chars after "sha256:" (matches typical render)
-    let cfg = config_with_runners(vec![{
-        let mut r = minimal_runner("a");
-        r.memory_max = Some("64G".into());
-        r
-    }]);
-    let mut old_runner = cfg.runners[0].clone();
-    old_runner.memory_max = Some("32G".into());
-    let mut old_spec = merge_defaults(
-        &old_runner,
-        &cfg.defaults,
-        "pat".into(),
-        vec![],
-        None,
-        None,
-        None,
-        Arch::X86_64,
-        cfg_source_default(),
-    );
-    // Inject the install-phase digest BEFORE computing spec_hash so
-    // the discovered drop-ins (rendered from old_spec) carry the
-    // X-Ghars-Runsvc-Sha256 annotation. spec_hash itself excludes
-    // this field via the `#[serde(skip)]` on
-    // `EffectiveRunnerSpec.runsvc_sha256` — pinned by
-    // `prop_spec_hash_ignores_runsvc_sha256`.
-    old_spec.runsvc_sha256 = recorded_digest.clone();
-    old_spec.spec_hash = spec_hash(&old_spec);
-    // Sanity: discovered drop-in carries the digest before plan runs.
-    let discovered = discovered_for("a", &old_spec, Drift::InSync);
-    assert!(
-        discovered
-            .drop_ins
-            .get("00-ghars.conf")
-            .is_some_and(|b| b.contains(&format!("X-Ghars-Runsvc-Sha256={recorded_digest}"))),
-        "fixture invariant: discovered 00-ghars.conf must already carry the digest; \
-         got body: {:?}",
-        discovered.drop_ins.get("00-ghars.conf")
-    );
-
-    let mut actual = empty_actual();
-    actual.runners.insert("a".into(), discovered);
-    let plan = plan_from(&cfg, &actual, &empty_paths()).unwrap();
-    let updates: Vec<&RunnerDelta> = plan
-        .actions
-        .iter()
-        .filter_map(|a| match a {
-            Action::UpdateRunner(d) => Some(d),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(updates.len(), 1, "memory_max-only must emit one update");
-    assert!(
-        !updates[0].requires_recreate,
-        "memory_max-only must be in-place; got reasons {:?}",
-        updates[0].recreate_reasons
-    );
-    // Re-rendered 00-ghars.conf in the in-place payload must carry
-    // the discovered digest verbatim. Without the plan-time
-    // preserve-then-re-hash logic in `plan_from`'s (true, true)
-    // match arm (extract_runsvc_sha256 + with_hash(strip_hash(...))),
-    // the freshly rendered drop-in would be missing the annotation
-    // entirely (render_identity in systemd.rs only emits the line
-    // when spec.runsvc_sha256 is non-empty).
-    let after_dropin = updates[0]
-        .after
-        .drop_ins
-        .get("00-ghars.conf")
-        .expect("00-ghars.conf must be in the after.drop_ins payload");
-    assert!(
-        after_dropin.contains(&format!("X-Ghars-Runsvc-Sha256={recorded_digest}")),
-        "in-place re-render must preserve discovered runsvc digest; got body:\n{after_dropin}"
     );
 }
 

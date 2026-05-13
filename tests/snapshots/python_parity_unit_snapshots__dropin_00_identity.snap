@@ -1,6 +1,6 @@
 ---
 source: tests/python_parity_unit_snapshots.rs
-assertion_line: 125
+assertion_line: 123
 expression: "dropin(&r.drop_ins, \"00-ghars.conf\")"
 ---
 [Unit]
@@ -20,6 +20,8 @@ X-Ghars-Network-Mode=open
 User=ghars-tz-default
 BindPaths=/var/lib/ghars/default
 WorkingDirectory=/var/lib/ghars/default/ghars-buckos/bin.2.334.0
+ExecStart=
+ExecStart=/bin/bash /var/lib/ghars/default/ghars-buckos/bin.2.334.0/bin/runsvc.sh
 Environment=HOME=/var/lib/ghars/default/ghars-buckos
 Environment=PATH=/usr/lib64/ccache:/usr/lib/ccache:/var/lib/ghars/default/ghars-buckos/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=TMPDIR=/var/lib/ghars/default/ghars-buckos/tmp
@@ -27,7 +29,4 @@ Environment=KTSTR_LOCK_DIR=/var/lib/ghars/default/.ktstr
 Environment=KTSTR_CACHE_DIR=/var/lib/ghars/default/.ktstr
 
 [Unit]
-ConditionPathExists=/var/lib/ghars/default/ghars-buckos/runsvc.sh
-
-[Service]
-X-Ghars-Runsvc-Sha256=sha256:1111111111111111111111111111111111111111111111111111111111111111
+ConditionPathExists=/var/lib/ghars/default/ghars-buckos/bin.2.334.0/bin/runsvc.sh

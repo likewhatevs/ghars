@@ -220,6 +220,20 @@ impl Tarball for MockTarball {
         ));
         let bin = runner_home.join(format!("bin.{version}"));
         std::fs::create_dir_all(bin.as_std_path())?;
+        // Mirror real actions/runner tarball layout: upstream
+        // `Misc/layoutbin/runsvc.sh` installs into `_layout/bin/`
+        // per the dir.proj `<Copy SourceFiles="@(LayoutBinFiles)"
+        // DestinationFolder=".../_layout/bin/..."/>` rule, so the
+        // published tarball ships runsvc.sh at
+        // `bin.X.Y.Z/bin/runsvc.sh`, NOT at `bin.X.Y.Z/runsvc.sh`.
+        // The systemd drop-in's ExecStart= and ConditionPathExists=
+        // both point at this nested path.
+        let inner_bin = bin.join("bin");
+        std::fs::create_dir_all(inner_bin.as_std_path())?;
+        std::fs::write(
+            inner_bin.join("runsvc.sh").as_std_path(),
+            b"#!/bin/bash\n# mock runsvc from tarball\nexit 0\n",
+        )?;
         Ok(bin)
     }
     fn prune_old_versions(&self, runner_home: &Utf8Path, keep_versions: u32) -> Result<usize> {
@@ -243,16 +257,11 @@ impl ConfigShell for MockConfigShell {
             .lock()
             .unwrap()
             .push((ctx.name.into(), ctx.url.into(), ctx.token.into()));
-        // The real config.sh writes runsvc.sh into $HOME at
-        // register time (design Part 9f). Mirror that so
-        // execute_create_runner's SEC-02 hash step sees a real
-        // file on disk and the round-trip annotation/hash
-        // assertions are meaningful in unit tests.
+        // Ensure runner_home exists; the real config.sh writes
+        // .runner / .credentials there at register time. We don't
+        // model those files for unit tests — execute_create_runner
+        // doesn't read them in the test code path.
         std::fs::create_dir_all(ctx.runner_home.as_std_path())?;
-        std::fs::write(
-            ctx.runner_home.join("runsvc.sh").as_std_path(),
-            b"#!/bin/sh\n# mock runsvc\nexec ./bin/runsvc.sh \"$@\"\n",
-        )?;
         Ok(())
     }
     fn run_remove(&self, ctx: &ConfigShellCtx<'_>) -> Result<()> {
@@ -295,15 +304,6 @@ pub(super) fn make_spec(name: &str, _prefix: &Utf8Path) -> EffectiveRunnerSpec {
         allowed_cpus: None,
         allowed_memory_nodes: None,
         spec_hash: "sha256:dead".into(),
-        // In-place delta paths in apply refuse to write
-        // a 00-ghars.conf without X-Ghars-Runsvc-Sha256 (would
-        // cause runsvc-wrapper to fail-stop on next start). Test
-        // fixtures that drive UpdateRunner through the in-place
-        // branch must therefore carry a non-empty digest. We use
-        // a stable fake value; tests that specifically exercise
-        // the create path or the recreate path don't read this
-        // field.
-        runsvc_sha256: "sha256:dead".into(),
         config_source: "/etc/ghars/ghars.toml".into(),
     }
 }
@@ -324,11 +324,22 @@ pub(super) fn make_runner_plan(name: &str, prefix: &Utf8Path) -> RunnerPlan {
         "00-ghars.conf".into(),
         "[Unit]\nX-Ghars-Spec-Hash=sha256:dead\n".into(),
     );
+    // Populate env_file/path_file from the actual renderers so tests
+    // that drive execute_update_runner observe the same bytes the
+    // in-place block would write in production. Pre-fix these were
+    // empty strings; the in-place block (runners.rs:653-667)
+    // happily wrote those empty bytes into bin.X.Y.Z/.env|.path on
+    // every UpdateRunner test path, masking a regression where the
+    // helper output diverged from real renderer output.
+    let env_file = crate::systemd::render_runner_env_file(&spec).unwrap();
+    let path_file = crate::systemd::render_runner_path_file(&spec).unwrap();
     RunnerPlan {
         spec,
         resolved_release: Some(make_release()),
         effective_unit_text: "[Unit]\nDescription=mock\n".into(),
         drop_ins,
+        env_file,
+        path_file,
         spec_hash: "sha256:dead".into(),
     }
 }

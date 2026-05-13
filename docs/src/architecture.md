@@ -29,14 +29,10 @@ The library crate (`ghars`) is composed of these modules
 | `unit_verify` | inspect on-disk drop-ins for runtime drift                 |
 | `error`       | `GharsError` enum + exit-code mapping types                |
 
-The two `[[bin]]` targets:
+The crate ships a single `[[bin]]` target:
 
 - `ghars` (`src/main.rs`) — the CLI binary. Calls into the lib
   via `ghars::cli::dispatch`.
-- `runsvc-wrapper` (`src/bin/runsvc_wrapper.rs`) — the
-  integrity-checking trampoline. Installed by packaging at
-  `/usr/lib/ghars/runsvc-wrapper`. Compiled binary, NOT a shell
-  script.
 
 ## Lifecycle: config → plan → apply
 
@@ -106,9 +102,8 @@ The `Action` enum:
 `UpdateRunner` carries `requires_recreate: bool`; the plan
 classifier sets it true when an identity-bound field changed
 (`url`, `runner_version`, `labels`, `arch`, `runner_sha256`,
-`runner_tarball`, `network`), or when `runsvc.sh` integrity is
-missing (no `X-Ghars-Runsvc-Sha256` annotation), or as the
-conservative `"uncovered"` fallback. The full vocabulary lives in
+`runner_tarball`, `network`), or as the conservative
+`"uncovered"` fallback. The full vocabulary lives in
 `RunnerDelta::recreate_reasons`.
 
 `plan_from` itself emits actions in alphabetical name order;
@@ -285,8 +280,8 @@ runtime selection rationale and feature-flag detail.
 
 ## Where to read next
 
-- [Security](./security.md) — DynamicUser, trust zones, runtime
-  integrity, sandbox hardening.
+- [Security](./security.md) — DynamicUser, trust zones, sandbox
+  hardening.
 - [Internals](./internals.md) — `renameat2` atomicity, fsync
   durability, TOCTOU-safe file ops.
 - [Operations](./operations.md) — `validate`, `status`,

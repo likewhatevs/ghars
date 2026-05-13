@@ -189,7 +189,13 @@ fn execute_update_runner_recreate_create_failure_after_remove() {
     std::fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
     std::fs::write(paths.unit_file("a").as_std_path(), b"[Unit]\n").unwrap();
     std::fs::create_dir_all(paths.drop_in_dir("a").as_std_path()).unwrap();
-    std::fs::create_dir_all(paths.runner_home("default", "a").as_std_path()).unwrap();
+    let runner_home = paths.runner_home("default", "a");
+    std::fs::create_dir_all(runner_home.as_std_path()).unwrap();
+    // Pre-stage a bin.X.Y.Z/config.sh so find_active_bin_dir succeeds
+    // inside execute_remove_runner and config_shell.run_remove fires.
+    let bin_dir = runner_home.join("bin.2.334.0");
+    std::fs::create_dir_all(bin_dir.as_std_path()).unwrap();
+    std::fs::write(bin_dir.join("config.sh").as_std_path(), b"#!/bin/sh\n").unwrap();
     std::fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
 
     let systemd = MockSystemd::default();
@@ -228,11 +234,11 @@ fn execute_update_runner_recreate_create_failure_after_remove() {
     );
     // Remove side effects MUST have fired before create errored:
     // run_remove for the runner appears in config_shell.removed.
+    let removed = config_shell.removed.lock().unwrap().clone();
     assert_eq!(
-        config_shell.removed.lock().unwrap().len(),
+        removed.len(),
         1,
-        "remove path's run_remove must have fired before create errored; got: {:?}",
-        config_shell.removed.lock().unwrap(),
+        "remove path's run_remove must have fired before create errored; got: {removed:?}",
     );
     // tarball.install_binary did NOT run (step 2 hit the gate).
     assert!(
@@ -366,78 +372,6 @@ fn execute_update_runner_recreate_returns_recreated_outcome_not_inner() {
         ),
         other => panic!("expected Recreated; got {other:?}"),
     }
-}
-
-/// T6: runsvc_sha256-after-register pin. The recreate
-/// path's create branch hashes `<runner_home>/runsvc.sh` AFTER
-/// `config.sh run_register` writes that file (the
-/// `deps.config_shell.run_register` call inside
-/// `execute_create_runner`), then re-renders the unit text +
-/// drop-ins with the populated
-/// `runsvc_sha256` annotation. Pin that the bytes-on-disk in
-/// `00-ghars.conf` match the SHA256 of the runsvc.sh body the
-/// `MockConfigShell` wrote at register time. A regression where
-/// the hash is computed BEFORE register (or skipped entirely)
-/// would re-introduce SEC-02 — runsvc-wrapper's
-/// annotation comparison would fail at every unit start.
-#[test]
-fn execute_update_runner_recreate_writes_runsvc_sha256_from_post_register_bytes() {
-    use sha2::{Digest, Sha256};
-    let tmp = tempfile::tempdir().unwrap();
-    let paths = make_paths(&tmp);
-    std::fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
-    std::fs::write(paths.unit_file("a").as_std_path(), b"[Unit]\n").unwrap();
-    std::fs::create_dir_all(paths.drop_in_dir("a").as_std_path()).unwrap();
-    std::fs::create_dir_all(paths.runner_home("default", "a").as_std_path()).unwrap();
-    std::fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
-
-    let systemd = MockSystemd::default();
-    let tarball = MockTarball::default();
-    let config_shell = MockConfigShell::default();
-    let mut auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
-    auth_map.insert(
-        "pat".into(),
-        Box::new(MockTokenSource {
-            name: "pat".into(),
-            ..MockTokenSource::default()
-        }),
-    );
-    let deps = Deps {
-        systemd: &systemd,
-        auth: &auth_map,
-        tarball: &tarball,
-        config_shell: &config_shell,
-    };
-    let mut delta = make_caches_delta(&paths, Some(vec![]), vec![]);
-    delta.requires_recreate = true;
-    delta.recreate_reasons = vec!["url"];
-    delta.after.resolved_release = Some(make_release());
-
-    execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2).unwrap();
-
-    // MockConfigShell::run_register writes this exact body to
-    // <runner_home>/runsvc.sh at register time. The expected
-    // sha256 hex digest is `Sha256(MOCK_RUNSVC).hex()`. The
-    // production code computes it via `sha256_of_runsvc()` AFTER
-    // run_register, then renders the 00-ghars.conf drop-in with
-    // `X-Ghars-Runsvc-Sha256=sha256:<hex>`.
-    const MOCK_RUNSVC: &[u8] = b"#!/bin/sh\n# mock runsvc\nexec ./bin/runsvc.sh \"$@\"\n";
-    let mut hasher = Sha256::new();
-    hasher.update(MOCK_RUNSVC);
-    let expected_hex = format!("{:x}", hasher.finalize());
-    let expected_annotation = format!("X-Ghars-Runsvc-Sha256=sha256:{expected_hex}");
-
-    // The 00-ghars.conf drop-in is at
-    // <drop_in_dir>/00-ghars.conf — execute_create_runner re-
-    // renders it after computing the digest.
-    let drop_in_path = paths.drop_in_dir("a").join("00-ghars.conf");
-    let body = std::fs::read_to_string(drop_in_path.as_std_path())
-        .expect("00-ghars.conf must exist after recreate");
-    assert!(
-        body.contains(&expected_annotation),
-        "00-ghars.conf must contain post-register runsvc sha256 annotation \
-         ({expected_annotation}); got body: {body}"
-    );
 }
 
 /// T7: `MockSystemd` `stop_unit` failure

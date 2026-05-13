@@ -1916,32 +1916,6 @@ fn build_baseline_spec() -> EffectiveRunnerSpec {
     )
 }
 
-/// `runsvc_sha256` must NOT participate in `spec_hash`. The field
-/// is `#[serde(skip, default)]` on `EffectiveRunnerSpec` (declared
-/// in `config.rs`) so plan (pre-install) and apply (post-install,
-/// with the digest filled in) hash identically. A mutation that
-/// strips the skip would surface here as a hash change.
-#[test]
-fn spec_hash_excludes_runsvc_sha256_field() {
-    let mut a = build_baseline_spec();
-    let mut b = a.clone();
-    a.runsvc_sha256 = "sha256:".to_string() + &"a".repeat(64);
-    b.runsvc_sha256 = "sha256:".to_string() + &"b".repeat(64);
-    assert_eq!(
-        spec_hash(&a),
-        spec_hash(&b),
-        "runsvc_sha256 must be excluded from spec_hash"
-    );
-
-    // And empty vs populated must hash the same so plan -> apply
-    // doesn't surface a spurious recreate.
-    let mut empty = build_baseline_spec();
-    let mut filled = empty.clone();
-    empty.runsvc_sha256.clear();
-    filled.runsvc_sha256 = "sha256:".to_string() + &"c".repeat(64);
-    assert_eq!(spec_hash(&empty), spec_hash(&filled));
-}
-
 /// `config_source` MUST participate in `spec_hash`. The same spec
 /// loaded from a different `ghars.toml` is intentionally a
 /// different spec (drives the `X-Ghars-Config-Source` annotation
@@ -2059,24 +2033,6 @@ proptest::proptest! {
         let h_base = spec_hash(&baseline);
         let h_mut = spec_hash(&mutated);
         proptest::prop_assert_ne!(h_base, h_mut);
-    }
-
-    // Property: setting `runsvc_sha256` to ANY value must not
-    // change the hash, no matter what other fields look like.
-    // Stronger than the scalar test above: it pins the invariant
-    // across the random mutation surface.
-    #[test]
-    fn prop_spec_hash_ignores_runsvc_sha256(
-        m in mutation_strategy(),
-        sha in "[0-9a-f]{64}",
-    ) {
-        let mut spec = build_baseline_spec();
-        apply_mutation(&mut spec, &m);
-        let h_empty = spec_hash(&spec);
-        let mut filled = spec.clone();
-        filled.runsvc_sha256 = format!("sha256:{sha}");
-        let h_filled = spec_hash(&filled);
-        proptest::prop_assert_eq!(h_empty, h_filled);
     }
 
     // Property: setting `spec_hash` to ANY value must not change
@@ -2561,13 +2517,10 @@ proptest::proptest! {
             Arch::X86_64,
             "/etc/ghars/ghars.toml".into(),
         );
-        // Inject a stable spec_hash + runsvc_sha256 — render_identity
-        // requires both to be non-empty + valid. Without these the
-        // renderer rejects with check_identity_field("spec_hash",..).
+        // Inject a stable spec_hash — render_identity requires it
+        // to be non-empty + valid. Without it the renderer rejects
+        // with check_identity_field("spec_hash",..).
         spec.spec_hash = "sha256:dead".into();
-        spec.runsvc_sha256 =
-            "sha256:9999999999999999999999999999999999999999999999999999999999999999"
-                .into();
         let rendered = match crate::systemd::render_runner_unit(&spec) {
             Ok(r) => r,
             // labels is constrained by the regex but merge_defaults

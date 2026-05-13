@@ -91,8 +91,8 @@ pub(super) fn recreate_removed_basenames(
 
 /// human-readable gloss for opaque
 /// [`plan::RunnerDelta::recreate_reasons`] tokens. Returns `Some` only
-/// for the two tokens that don't name a config field — `uncovered` and
-/// `runsvc_integrity` — both of which look meaningless in the
+/// for the `uncovered` token, which doesn't name a config field and
+/// looks meaningless in the
 /// `! runner NAME (… recreate (uncovered)) [recreate]` plan line
 /// without context. Self-explanatory tokens (`url`, `runner_version`,
 /// `labels`, `arch`, `runner_sha256`, `runner_tarball`, `network`)
@@ -100,10 +100,10 @@ pub(super) fn recreate_removed_basenames(
 ///
 /// Token strings are static `&'static str` constants pushed by
 /// [`plan::classify_recreate_reasons_from_annotations`] (the
-/// field-name set) and the `runsvc_integrity_recreate` /
-/// `uncovered` arms in `plan_from`. The match here mirrors that
-/// vocabulary; the [`plan::RunnerDelta::recreate_reasons`] field doc
-/// is the single source of truth — keep the two in lockstep.
+/// field-name set) and the `uncovered` arm in `plan_from`. The
+/// match here mirrors that vocabulary; the
+/// [`plan::RunnerDelta::recreate_reasons`] field doc is the single
+/// source of truth — keep the two in lockstep.
 ///
 /// Returning `Option` rather than a fallback string keeps the
 /// renderer's `note:` line conditional — only opaque tokens
@@ -116,11 +116,6 @@ pub(super) fn recreate_reason_note(reason: &str) -> Option<&'static str> {
             "spec hash differs but no field-level change was detected; \
              this is a coverage-gap fallback — recreate is safe but \
              disruptive (file a bug if reproducible)",
-        ),
-        "runsvc_integrity" => Some(
-            "the discovered runsvc.sh wrapper digest is missing or stale \
-             (X-Ghars-Runsvc-Sha256 absent); recreate forces config.sh \
-             to mint a fresh trusted digest (SEC-02)",
         ),
         _ => None,
     }
@@ -260,27 +255,20 @@ pub(super) fn render_action_line(action: &Action, color: ColorMode, diff: bool) 
                 fc.after.render_text(),
             ));
         }
-        // under-header gloss for opaque recreate-reason tokens.
-        // The header line shows
-        // `! runner NAME (… recreate (uncovered,runsvc_integrity)) …`
-        // verbatim from `recreate_reasons.join(",")` so operator grep
+        // under-header gloss for the `uncovered` opaque recreate-
+        // reason token. The header line shows
+        // `! runner NAME (… recreate (url,uncovered)) …` verbatim
+        // from `recreate_reasons.join(",")` so operator grep
         // (`grep 'recreate ('`) keeps working unchanged. Self-
         // explanatory field-name tokens (url, labels, arch, …) already
-        // surface as before→after rows above; the two non-field
-        // tokens — `uncovered` and `runsvc_integrity` — name internal
-        // classifier triggers that look meaningless without context.
+        // surface as before→after rows above; `uncovered` is the only
+        // non-field token and looks meaningless without context.
         // Emit one indented `note: TOKEN — explanation` line per
         // opaque token here, matching the 4-space indent used by
         // field_changes above. `recreate_reason_note` returns `None`
         // for self-explanatory tokens, so this loop is a no-op for
         // typical recreates (e.g. label-only recreate emits the
-        // header + `labels: a → b` and stops). The note loop runs
-        // unconditionally on `recreate_reasons` (not gated on
-        // `field_changes` emptiness) because `runsvc_integrity` and
-        // `uncovered` BOTH come with `field_changes.is_empty()` per
-        // RunnerDelta.field_changes doc — gating on the loop above
-        // having emitted lines would suppress the gloss exactly when
-        // it's most needed.
+        // header + `labels: a → b` and stops).
         for reason in &d.recreate_reasons {
             if let Some(note) = recreate_reason_note(reason) {
                 out.push('\n');

@@ -3,9 +3,8 @@
 //! regression (operator 99-*.conf masks recreate), `trust_zone` in-place
 //! contract, network mode recreate contract, missing-annotation tolerance +
 //! empty-value handling, round-trip annotation symmetry, empty-value vs
-//! absent-line annotation contract, `runsvc_integrity` recreate when annotation
-//! missing, and `recreate_reasons` type-level invariant. Migrated verbatim
-//! from plan.rs.
+//! absent-line annotation contract, and `recreate_reasons` type-level
+//! invariant. Migrated verbatim from plan.rs.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -1139,83 +1138,6 @@ fn from_drop_in_body_sorts_labels_and_caches_at_parse_time() {
     );
 }
 
-// ---- runsvc_integrity recreate when annotation missing -----------
-
-/// In-place class change (`memory_max` edit) on a discovered
-/// runner whose 00-ghars.conf is missing X-Ghars-Runsvc-Sha256
-/// MUST route to the recreate path with the `runsvc_integrity`
-/// reason. Hashing runsvc.sh from disk would weaken SEC-02 (the
-/// file lives in the runner-writable home and may be tampered);
-/// recreate forces config.sh to mint a fresh trusted digest
-/// under our control.
-#[test]
-fn plan_update_recreate_on_runsvc_integrity_when_annotation_missing() {
-    let cfg = config_with_runners(vec![{
-        let mut r = minimal_runner("a");
-        r.memory_max = Some("64G".into());
-        r
-    }]);
-    let mut old_runner = cfg.runners[0].clone();
-    old_runner.memory_max = Some("32G".into());
-    let mut old_spec = merge_defaults(
-        &old_runner,
-        &cfg.defaults,
-        "pat".into(),
-        vec![],
-        None,
-        None,
-        None,
-        Arch::X86_64,
-        cfg_source_default(),
-    );
-    old_spec.spec_hash = spec_hash(&old_spec);
-    // The default fixture injects a fake runsvc_sha256 digest so
-    // every other in-place test stays in-place. Here we want to
-    // exercise the MISSING-annotation path (older unit, or
-    // operator-stripped). Rebuild the discovered runner by hand
-    // so the 00-ghars.conf body has NO X-Ghars-Runsvc-Sha256
-    // line — render_identity at systemd.rs only emits the line
-    // when spec.runsvc_sha256 is non-empty, so feeding it the
-    // empty original spec produces exactly the wire format we
-    // want to test.
-    let mut discovered = discovered_for("a", &old_spec, Drift::InSync);
-    let rendered_no_digest = crate::systemd::render_runner_unit(&old_spec).unwrap();
-    discovered.drop_ins = rendered_no_digest.drop_ins;
-    // Sanity: confirm the rebuilt fixture really did omit the digest.
-    let body = discovered
-        .drop_ins
-        .get("00-ghars.conf")
-        .expect("00-ghars.conf in fixture");
-    assert!(
-        !body.contains("X-Ghars-Runsvc-Sha256="),
-        "fixture invariant: discovered 00-ghars.conf must omit the digest \
-         line so the recovery path is exercised; got body:\n{body}"
-    );
-    let mut actual = empty_actual();
-    actual.runners.insert("a".into(), discovered);
-    let plan = plan_from(&cfg, &actual, &empty_paths()).unwrap();
-    let upd = plan
-        .actions
-        .iter()
-        .find_map(|a| match a {
-            Action::UpdateRunner(d) => Some(d),
-            _ => None,
-        })
-        .expect("missing-digest in-place delta must emit UpdateRunner");
-    assert!(
-        upd.requires_recreate,
-        "missing X-Ghars-Runsvc-Sha256 must force recreate (SEC-02); \
-         got reasons {:?}",
-        upd.recreate_reasons
-    );
-    assert!(
-        upd.recreate_reasons.contains(&"runsvc_integrity"),
-        "expected typed `runsvc_integrity` reason for missing-digest path; \
-         got: {:?}",
-        upd.recreate_reasons
-    );
-}
-
 /// Pin that v1 consumers (which read
 /// `field_changes[].before` / `field_changes[].after` as bare
 /// scalar JSON values) fail predictably when reading the v2
@@ -1303,9 +1225,8 @@ fn field_value_to_json_v1_consumer_predictable_failure() {
 
 /// Drive every annotation-detected recreate-class path (url,
 /// `runner_version`, labels, `runner_sha256`, `runner_tarball`, arch,
-/// network) plus the `runsvc_integrity` guard through
-/// `plan_from` end-to-end. For each scenario, assert that the
-/// resulting `RunnerDelta` satisfies the invariant
+/// network) through `plan_from` end-to-end. For each scenario, assert
+/// that the resulting `RunnerDelta` satisfies the invariant
 /// `requires_recreate=true ⇒ !recreate_reasons.is_empty()` AND
 /// pin the expected typed reason token so a regression that
 /// drives recreate via a DIFFERENT classifier branch (e.g. arch
@@ -1567,72 +1488,6 @@ fn plan_invariant_recreate_implies_non_empty_reasons_across_all_field_classes() 
         );
     }
 
-    // Bonus: runsvc_integrity recreate path. The fixture used by
-    // the loop above injects a fake runsvc_sha256 so every
-    // scenario stays in-place on that field. Drive the runsvc-
-    // missing-annotation path explicitly to round out coverage of
-    // every path that pushes a recreate reason.
-    let upd = drive_runsvc_integrity_recreate();
-    assert!(
-        upd.requires_recreate,
-        "[runsvc_integrity] scenario must drive recreate; got \
-         requires_recreate=false with reasons {:?}",
-        upd.recreate_reasons,
-    );
-    assert!(
-        !upd.recreate_reasons.is_empty(),
-        "[runsvc_integrity] invariant violation: requires_recreate=true \
-         MUST imply !recreate_reasons.is_empty()",
-    );
-    assert!(
-        upd.recreate_reasons.contains(&"runsvc_integrity"),
-        "[runsvc_integrity] scenario must surface typed `runsvc_integrity` \
-         recreate reason; got: {:?}",
-        upd.recreate_reasons,
-    );
-}
-
-/// Build a plan that drives the `runsvc_integrity` recreate path
-/// (missing X-Ghars-Runsvc-Sha256 annotation in 00-ghars.conf)
-/// and return the resulting `UpdateRunner` delta. Mirrors the
-/// existing `plan_update_recreate_on_runsvc_integrity_when_annotation_missing`
-/// fixture: `render_identity` at systemd.rs only emits the annotation
-/// when `spec.runsvc_sha256` is non-empty; feeding the empty
-/// original spec produces the wire format that triggers the
-/// `runsvc_integrity` recreate guard.
-fn drive_runsvc_integrity_recreate() -> RunnerDelta {
-    let cfg = config_with_runners(vec![{
-        let mut r = minimal_runner("a");
-        r.memory_max = Some("64G".into());
-        r
-    }]);
-    let mut old_runner = cfg.runners[0].clone();
-    old_runner.memory_max = Some("32G".into());
-    let mut old_spec = merge_defaults(
-        &old_runner,
-        &cfg.defaults,
-        "pat".into(),
-        vec![],
-        None,
-        None,
-        None,
-        Arch::X86_64,
-        cfg_source_default(),
-    );
-    old_spec.spec_hash = spec_hash(&old_spec);
-    let mut discovered = discovered_for("a", &old_spec, Drift::InSync);
-    let rendered_no_digest = crate::systemd::render_runner_unit(&old_spec).unwrap();
-    discovered.drop_ins = rendered_no_digest.drop_ins;
-    let mut actual = empty_actual();
-    actual.runners.insert("a".into(), discovered);
-    let plan = plan_from(&cfg, &actual, &empty_paths()).unwrap();
-    plan.actions
-        .into_iter()
-        .find_map(|a| match a {
-            Action::UpdateRunner(d) => Some(d),
-            _ => None,
-        })
-        .expect("[runsvc_integrity] missing-digest fixture must emit UpdateRunner")
 }
 
 /// Drive every in-place classifier path (`memory_max`, `auth_name`,

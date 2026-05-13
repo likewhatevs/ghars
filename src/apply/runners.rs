@@ -1,6 +1,5 @@
 //! Per-runner action handlers: create / remove / update (in-place + recreate).
 
-use std::fmt::Write;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
@@ -16,14 +15,10 @@ use super::netns::{provision_netns_artifacts, teardown_netns_artifacts, verify_r
 use super::outcome::ApplyOutcome;
 use super::rmrf::guard_home_dir_rmrf;
 use super::shell::ConfigShellCtx;
-use super::tarball::sha256_of_runsvc;
 use super::undo::{Deps, UndoLog, UndoStep};
 use super::writes::{mint_token, read_prior, read_then_write_if_changed, write_record_undo};
 use camino::Utf8PathBuf;
 
-/// Find runsvc.sh inside the extracted bin directory. The runner
-/// tarball may place it at the root (`bin_dir/runsvc.sh`) or inside
-/// the bin subdirectory (`bin_dir/bin/runsvc.sh`).
 fn set_tree_permissions(root: &std::path::Path, mode: u32) -> crate::Result<()> {
     let perms = std::fs::Permissions::from_mode(mode);
     fs::set_permissions(root, perms.clone())?;
@@ -38,22 +33,6 @@ fn set_tree_permissions(root: &std::path::Path, mode: u32) -> crate::Result<()> 
         }
     }
     Ok(())
-}
-
-fn find_runsvc_sh(bin_dir: &camino::Utf8Path) -> crate::Result<Utf8PathBuf> {
-    for candidate in &["runsvc.sh", "bin/runsvc.sh"] {
-        let path = bin_dir.join(candidate);
-        if path.as_std_path().exists() {
-            return Ok(path);
-        }
-    }
-    Err(GharsError::Apply {
-        action: format!("find runsvc.sh under {bin_dir}"),
-        source: Box::new(GharsError::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("no runsvc.sh found under {bin_dir} or {bin_dir}/bin/"),
-        ))),
-    })
 }
 
 /// Find the most recent `bin.X.Y.Z/` directory under runner_home that
@@ -223,37 +202,13 @@ pub(super) fn execute_create_runner(
     // owned by the trust_zone's transient UID and inherits the
     // StateDirectoryMode=0700 from the unit template.
 
-    // 5b) SEC-02: hash the runsvc.sh that `config.sh` wrote into the
-    //     runner home. config.sh (the upstream actions/runner script)
-    //     materialises runsvc.sh + .runner + .credentials in $HOME at
-    //     register time — NOT during `install_runner_binary`, which
-    //     only lays down `bin.X.Y.Z/`. We
-    //     hash AFTER run_register so the path actually exists.
-    //
-    //     The hash flows into a freshly-rendered 00-ghars.conf via the
-    //     `[Service] X-Ghars-Runsvc-Sha256=` annotation; the
-    //     runsvc-wrapper trampoline reads that annotation at every unit
-    //     start and refuses to exec a runsvc.sh whose contents have
-    //     changed (closing the SEC-02 persistent-RCE-on-restart hole).
-    //
-    //     The plan's `drop_ins` and `effective_unit_text` are
-    //     placeholders (plan ran before install, so it could not
-    //     compute the digest). We re-render here with the populated
-    //     spec.
-    // config.sh / the tarball places runsvc.sh somewhere under bin_dir.
-    // Find it, then copy to runner_home/runsvc.sh where the
-    // runsvc-wrapper expects it at runtime (O_NOFOLLOW -- no symlinks).
-    let runsvc_source = find_runsvc_sh(&bin_dir)?;
-    let runsvc_path = runner_home.join("runsvc.sh");
-    fs::copy(runsvc_source.as_std_path(), runsvc_path.as_std_path())?;
-    let runsvc_sha = sha256_of_runsvc(&runsvc_path).map_err(|e| GharsError::Apply {
-        action: format!("CreateRunner({}): hash runsvc.sh", spec.name),
-        source: Box::new(e),
-    })?;
+    // 5b) Re-render the unit text with the resolved runner version.
+    // The plan's `drop_ins` carry the pre-resolution spec (plan.rs
+    // doesn't know which Release the tarball install will produce);
+    // re-rendering here pins the version into ExecStart=,
+    // WorkingDirectory=, and ConditionPathExists= for the on-disk
+    // drop-in.
     let mut populated_spec = spec.clone();
-    populated_spec.runsvc_sha256 = runsvc_sha;
-    // Set runner_version from the resolved release so the rendered
-    // WorkingDirectory points at the correct bin.X.Y.Z/ directory.
     if populated_spec.runner_version.is_none() {
         if let Some(ref release) = plan.resolved_release {
             populated_spec.runner_version = Some(release.version.clone());
@@ -261,59 +216,25 @@ pub(super) fn execute_create_runner(
     }
     let rendered = render_runner_unit(&populated_spec)?;
 
-    // 5c) Write .path so the runner's workflow steps see the correct
-    // PATH (ccache wrappers, $HOME/.cargo/bin). The upstream env.sh
-    // writes .path from the shell's $PATH at startup, which lacks
-    // the ccache and cargo dirs.
-    let dot_path = bin_dir.join(".path");
-    let runner_path = format!(
-        "/usr/lib64/ccache:/usr/lib/ccache:/var/lib/ghars/{tz}/ghars-{name}/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        tz = spec.trust_zone, name = spec.name
-    );
-    fs::write(dot_path.as_std_path(), format!("{runner_path}\n"))?;
-
-    // Write .env with cache env vars so workflow steps (which read .env,
-    // not the systemd Environment= directives) see them. Without this,
-    // ccache wrappers in /usr/lib64/ccache/ fall back to ~/.cache/ccache
-    // which resolves to /root/.cache/ccache (wrong user context).
-    let dot_env = bin_dir.join(".env");
-    let mut env_contents = String::new();
-    env_contents.push_str("LANG=C.UTF-8\n");
-    let _ = writeln!(
-        env_contents,
-        "CCACHE_DIR=/var/lib/ghars/{tz}/.ccache",
-        tz = spec.trust_zone
-    );
-    let _ = writeln!(
-        env_contents,
-        "KTSTR_LOCK_DIR=/var/lib/ghars/{tz}/.ktstr",
-        tz = spec.trust_zone
-    );
-    let _ = writeln!(
-        env_contents,
-        "KTSTR_CACHE_DIR=/var/lib/ghars/{tz}/.ktstr",
-        tz = spec.trust_zone
-    );
-    for binding in &spec.caches {
-        if binding.kinds.contains(&crate::config::CacheKind::Ccache) {
-            let _ = writeln!(env_contents, "CCACHE_MAXSIZE={}", binding.size);
-        }
-        if binding.kinds.contains(&crate::config::CacheKind::Sccache) {
-            let _ = writeln!(
-                env_contents,
-                "SCCACHE_SERVER_UDS=/run/ghars/cache-{}.sock",
-                binding.name
-            );
-            env_contents.push_str("SCCACHE_NO_DAEMON=1\n");
-            let _ = writeln!(env_contents, "SCCACHE_CACHE_SIZE={}", binding.size);
-            let _ = writeln!(
-                env_contents,
-                "SCCACHE_DIR=/var/cache/ghars/pools/{}/sccache",
-                binding.name
-            );
-        }
-    }
-    fs::write(dot_env.as_std_path(), &env_contents)?;
+    // 5c) Write .path and .env into the versioned bin dir.
+    //   - `.path`: read once by runsvc.sh (`export PATH=\`cat .path\``)
+    //     at runner-process start; inherited across exec by every
+    //     worker / workflow-step subprocess.
+    //   - `.env`: read once by Runner.Listener's LoadAndSetEnv
+    //     (`src/Runner.Listener/Program.cs` Main) at process start,
+    //     each `KEY=VALUE` set via Environment.SetEnvironmentVariable;
+    //     workflow steps inherit through worker fork+exec.
+    //
+    // These reach workflow steps via the parent-process env, distinct
+    // from the systemd `Environment=` directives in 00-ghars.conf /
+    // 30-cache-pool.conf (LAYER 1, bind to the systemd unit process).
+    // Bytes are computed by the pure functions
+    // `render_runner_env_file` / `render_runner_path_file` so the
+    // in-place UpdateRunner path produces byte-identical content for
+    // the same spec (no runner_version interpolation in either
+    // producer).
+    write_record_undo(&bin_dir.join(".path"), rendered.path_file.as_bytes(), log)?;
+    write_record_undo(&bin_dir.join(".env"), rendered.env_file.as_bytes(), log)?;
 
     // 5d) chmod the trust-zone tree so the DynamicUser can write.
     // apply runs as root; DynamicUser UID is not resolvable via NSS
@@ -559,36 +480,6 @@ pub(super) fn execute_update_runner(
     // what we would render and (b) the caches-list diff is empty.
     // The byte comparison reuses `read_prior` snapshots that were
     // already needed for rollback.
-    //
-    // When delta.after.spec.runsvc_sha256 is empty here, plan was
-    // unable to recover the digest from the discovered 00-ghars.conf
-    // (annotation missing → older-format runner or operator stripped
-    // the line). Plan must have routed THIS update through the recreate
-    // path with the `runsvc_integrity` reason rather than down here;
-    // hashing runsvc.sh from disk in apply would weaken SEC-02 because
-    // that file lives in the runner-writable home and may be
-    // adversary-controlled. If we still see an empty digest at this
-    // point, plan emitted a malformed in-place delta — we must NOT
-    // silently strip the annotation, so error out and force the
-    // operator to investigate.
-    if delta.after.spec.runsvc_sha256.is_empty() {
-        return Err(GharsError::Apply {
-            action: format!(
-                "UpdateRunner({}): in-place delta missing runsvc_sha256",
-                delta.identity.name
-            ),
-            source: Box::new(GharsError::Validation(
-                "plan-time runsvc_sha256 recovery failed; the recreate \
-                 path is required to mint a fresh trusted digest via \
-                 config.sh"
-                    .into(),
-                "re-run `ghars plan` to refresh; if the issue persists, \
-                 the discovered 00-ghars.conf is missing X-Ghars-Runsvc-\
-                 Sha256 and plan should have emitted a recreate"
-                    .into(),
-            )),
-        });
-    }
     // Track files_changed (count) and pool names
     // (Vec) so the apply outcome row can carry both `files_changed`
     // and the WHICH-pools detail for cmd_apply's per-action line.
@@ -727,6 +618,52 @@ pub(super) fn execute_update_runner(
         if read_then_write_if_changed(&dest, body.as_bytes(), log)? {
             files_changed += 1;
         }
+    }
+
+    // Rewrite .env and .path. CreateRunner writes them once, but
+    // in-place updates that change env-affecting fields (cache binding
+    // flip, future operator-declared env vars) would otherwise leave
+    // the systemd Environment= directives (rewritten in the drop-in
+    // loop above; LAYER 1, reaches the Runner.Listener process) and
+    // the workflow-step env (via Runner.Listener's LoadAndSetEnv at
+    // process start, which reads .env once; LAYER 2) out of sync.
+    //
+    // The pure-function producers `render_runner_env_file` and
+    // `render_runner_path_file` consume only EffectiveRunnerSpec
+    // fields (no runner_version), so the bytes here are byte-identical
+    // to what CreateRunner wrote for the same spec. The byte-compare
+    // in read_then_write_if_changed makes this a no-op when nothing
+    // changed.
+    //
+    // bin_dir is computed from delta.after.spec.runner_version
+    // directly rather than find_active_bin_dir's lex-sort: in-place
+    // updates never change runner_version (that's a recreate-class
+    // field), so the running runner's bin dir matches the desired
+    // spec's version. An empty runner_version here means plan emitted
+    // a malformed in-place delta — fail loudly rather than silently
+    // skip the .env/.path rewrite.
+    let runner_home = paths.runner_home(&delta.identity.trust_zone, &delta.identity.name);
+    let version = delta.after.spec.runner_version.as_deref().ok_or_else(|| GharsError::Apply {
+        action: format!("UpdateRunner({}): rewrite .env/.path", delta.identity.name),
+        source: Box::new(GharsError::Validation(
+            "in-place delta missing runner_version; cannot locate bin dir for .env/.path rewrite".into(),
+            "re-run `ghars plan` to refresh the spec; the runner_version field must be populated for in-place updates".into(),
+        )),
+    })?;
+    let bin_dir = runner_home.join(format!("bin.{version}"));
+    if read_then_write_if_changed(
+        &bin_dir.join(".path"),
+        delta.after.path_file.as_bytes(),
+        log,
+    )? {
+        files_changed += 1;
+    }
+    if read_then_write_if_changed(
+        &bin_dir.join(".env"),
+        delta.after.env_file.as_bytes(),
+        log,
+    )? {
+        files_changed += 1;
     }
 
     // Skip daemon-reload + stop + start when nothing on disk

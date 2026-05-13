@@ -42,6 +42,8 @@ pub(super) fn make_caches_delta(
         resolved_release: None,
         effective_unit_text: rendered.template,
         drop_ins: rendered.drop_ins,
+        env_file: rendered.env_file,
+        path_file: rendered.path_file,
     };
     RunnerDelta {
         identity: RunnerIdentity {
@@ -246,6 +248,8 @@ pub(super) fn delta_with_all_preserved_drop_ins(paths: &Paths) -> RunnerDelta {
         resolved_release: None,
         effective_unit_text: rendered.template,
         drop_ins: rendered.drop_ins,
+        env_file: rendered.env_file,
+        path_file: rendered.path_file,
     };
     RunnerDelta {
         identity: RunnerIdentity {
@@ -268,9 +272,10 @@ pub(super) fn delta_with_all_preserved_drop_ins(paths: &Paths) -> RunnerDelta {
 }
 
 /// Pre-populate `paths.unit_dir` with the rendered unit + every
-/// drop-in body that `delta.after` would emit. Mirrors what
-/// `execute_update_runner` would have written on a successful
-/// prior apply. Used by the skip tests.
+/// drop-in body that `delta.after` would emit, plus `.env` and `.path`
+/// in the versioned bin dir. Mirrors what `execute_update_runner` (and
+/// the prior CreateRunner) would have written on a successful prior
+/// apply. Used by the skip tests.
 pub(super) fn prepopulate_on_disk(paths: &Paths, delta: &RunnerDelta) {
     std::fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
     let unit_file = paths.unit_file(&delta.identity.name);
@@ -284,6 +289,27 @@ pub(super) fn prepopulate_on_disk(paths: &Paths, delta: &RunnerDelta) {
     for (name, body) in &delta.after.drop_ins {
         let dest = drop_in_dir.join(name);
         std::fs::write(dest.as_std_path(), body.as_bytes()).unwrap();
+    }
+    // Pre-stage .env and .path in bin.<runner_version>/ so the in-place
+    // skip path sees byte-identical content. execute_update_runner
+    // computes bin_dir from delta.after.spec.runner_version directly.
+    if let Some(version) = delta.after.spec.runner_version.as_deref() {
+        let runner_home = paths.runner_home(
+            &delta.identity.trust_zone,
+            &delta.identity.name,
+        );
+        let bin_dir = runner_home.join(format!("bin.{version}"));
+        std::fs::create_dir_all(bin_dir.as_std_path()).unwrap();
+        std::fs::write(
+            bin_dir.join(".env").as_std_path(),
+            delta.after.env_file.as_bytes(),
+        )
+        .unwrap();
+        std::fs::write(
+            bin_dir.join(".path").as_std_path(),
+            delta.after.path_file.as_bytes(),
+        )
+        .unwrap();
     }
 }
 

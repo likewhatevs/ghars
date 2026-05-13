@@ -183,12 +183,6 @@ pub fn merge_defaults(
         allowed_cpus: runner.allowed_cpus.clone(),
         allowed_memory_nodes: runner.allowed_memory_nodes.clone(),
         spec_hash: String::new(),
-        // runsvc_sha256 is filled by apply.rs after the tarball install
-        // phase records the on-disk runsvc.sh digest. Plan operates
-        // before install so it cannot know the value; the field is
-        // serde-skipped (config.rs) to keep spec_hash stable across
-        // pre/post install.
-        runsvc_sha256: String::new(),
         config_source,
     }
 }

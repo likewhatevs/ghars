@@ -667,6 +667,7 @@ fn http_get_payload_with_cap(
     let resp = client
         .get(url)
         .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
         .send()
         .map_err(|e| {
             // Walk the reqwest::Error source chain so an operator

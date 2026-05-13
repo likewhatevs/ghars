@@ -8,7 +8,7 @@ the whole tree under a tempdir without per-call plumbing.
 
 | field             | default                          | role                                                          |
 |-------------------|----------------------------------|---------------------------------------------------------------|
-| `state_dir`       | `/var/lib/ghars`                 | per-runner state (config.sh output, runsvc.sh, versioned bin/) |
+| `state_dir`       | `/var/lib/ghars`                 | per-runner state (config.sh output, versioned bin/) |
 | `cache_dir`       | `/var/cache/ghars`               | shared cache pool storage                                     |
 | `logs_dir`        | `/var/log/ghars`                 | persistent log storage outside journald                       |
 | `unit_dir`        | `/etc/systemd/system`            | unit + drop-in installation root                              |
@@ -52,7 +52,7 @@ order, each behind a "is the operator using this feature?" gate:
 
 | basename                | always emitted?                          | content                                                              |
 |-------------------------|------------------------------------------|----------------------------------------------------------------------|
-| `00-ghars.conf`         | yes                                      | identity annotations: `X-Ghars-Spec-Hash`, `X-Ghars-Runner-Name`, `X-Ghars-Runner-Url`, `X-Ghars-Auth-Name`, `X-Ghars-Labels`, `X-Ghars-Arch`, `X-Ghars-Effective-Version`, `X-Ghars-Runner-Sha256` (when set), `X-Ghars-Runner-Tarball-Hash` (when `runner_tarball` is set), `X-Ghars-Caches`, `X-Ghars-Trust-Zone`, `X-Ghars-Network-Mode`, `X-Ghars-Netns-Subnet` (Netns mode only), `X-Ghars-Runsvc-Sha256`, `X-Ghars-Config-Source`. Sets `User=ghars-tz-<TRUST_ZONE>`, the `WorkingDirectory=`, the `StateDirectory=`, and HOME |
+| `00-ghars.conf`         | yes                                      | identity annotations: `X-Ghars-Spec-Hash`, `X-Ghars-Runner-Name`, `X-Ghars-Runner-Url`, `X-Ghars-Auth-Name`, `X-Ghars-Labels`, `X-Ghars-Arch`, `X-Ghars-Effective-Version`, `X-Ghars-Runner-Sha256` (when set), `X-Ghars-Runner-Tarball-Hash` (when `runner_tarball` is set), `X-Ghars-Caches`, `X-Ghars-Trust-Zone`, `X-Ghars-Network-Mode`, `X-Ghars-Netns-Subnet` (Netns mode only), `X-Ghars-Config-Source`. Sets `User=ghars-tz-<TRUST_ZONE>`, the `ExecStart=` (versioned `runsvc.sh`), the `WorkingDirectory=`, and HOME |
 | `10-memory.conf`        | when `memory_max` set                    | `MemoryMax=`                                                         |
 | `15-resolv.conf`        | yes                                      | binds `/etc/resolv.conf` from the host's file (Open mode) or the netns-private file at `/run/ghars/netns-resolv/<name>` (Netns mode) |
 | `20-hardening.conf`     | when any field overrides default         | per-field `Hardening` → systemd directives                           |
@@ -99,19 +99,20 @@ their instances:
 ## Versioned `bin.X.Y.Z/` and rollback
 
 Inside each runner home (`runner_home(zone, name)`), tarball
-extracts land in `bin.X.Y.Z/` (one per version installed). After
-registration, `config.sh` writes `runsvc.sh` directly into the
-runner home as a regular file (not a symlink — the trampoline
-opens the path with `O_NOFOLLOW`, which would `ELOOP` on a
-symlink):
+extracts land in `bin.X.Y.Z/` (one per version installed).
+`runsvc.sh` ships in the tarball at `bin.X.Y.Z/bin/runsvc.sh`
+(upstream `Misc/layoutbin/` installs into `_layout/bin/`); the
+systemd drop-in's `ExecStart=` invokes it from there directly:
 
 ```text
 /var/lib/ghars/default/ghars-build-1/
 ├── bin.2.334.0/                 # current version's extracted tree
 │   ├── config.sh
-│   ├── ...
+│   ├── bin/
+│   │   ├── runsvc.sh            # ExecStart target
+│   │   └── ...
+│   └── ...
 ├── bin.2.333.1/                 # rollback target retained
-├── runsvc.sh                    # regular file written by config.sh; integrity-checked at unit start
 └── ...                          # config.sh outputs (.runner, .credentials, etc.)
 ```
 
@@ -192,7 +193,7 @@ A condensed table of "I'm looking for X — where is it?":
 | the config file                       | `/etc/ghars/ghars.toml`                                           |
 | a runner's home dir                   | `/var/lib/ghars/<TRUST_ZONE>/ghars-<NAME>/`                       |
 | a runner's installed binary           | `/var/lib/ghars/<TRUST_ZONE>/ghars-<NAME>/bin.<VERSION>/`         |
-| a runner's `runsvc.sh`                | `/var/lib/ghars/<TRUST_ZONE>/ghars-<NAME>/runsvc.sh`              |
+| a runner's `runsvc.sh`                | `/var/lib/ghars/<TRUST_ZONE>/ghars-<NAME>/bin.<VERSION>/bin/runsvc.sh` |
 | a runner's unit file (template)       | `/etc/systemd/system/ghars-runner@.service`                       |
 | a runner's drop-ins                   | `/etc/systemd/system/ghars-runner@<NAME>.service.d/*.conf`        |
 | a cache pool's storage                | `/var/cache/ghars/pools/<POOL>/`                                  |
@@ -201,6 +202,5 @@ A condensed table of "I'm looking for X — where is it?":
 | the apply lock                        | `/run/ghars/apply.lock`                                           |
 | the audit log                         | `/var/log/ghars/apply.log`                                        |
 | nft rules for runner X                | `/etc/ghars/nft.d/<NAME>-host.nft`, `/etc/ghars/nft.d/<NAME>-ns.nft` |
-| the runsvc-wrapper trampoline         | `/usr/lib/ghars/runsvc-wrapper`                                   |
 | the netns                             | `/var/run/netns/ghars-<NAME>`                                     |
 | systemd-resolved drop-in              | `/etc/systemd/resolved.conf.d/ghars-<NAME>.conf`                  |

@@ -1003,11 +1003,10 @@ fn renameat2_exchange_with_test_seam(
 /// lint rules out a direct `libc::syscall(SYS_renameat2, ...)`
 /// invocation here, and `libc::renameat2` itself is gated to glibc
 /// in libc 0.2.x — pulling rustix just for this one call would
-/// double the static-link footprint of the runsvc-wrapper binary
-/// for no atomicity benefit on musl: apply.rs holds the global
-/// `apply.lock` and stops the runner unit before
-/// [`extract_and_swap_from_file`] runs, so the brief absent-final
-/// window in the fallback is unobservable.
+/// add a substantial dependency for no atomicity benefit on musl:
+/// apply.rs holds the global `apply.lock` and stops the runner unit
+/// before [`extract_and_swap_from_file`] runs, so the brief
+/// absent-final window in the fallback is unobservable.
 #[cfg(target_env = "gnu")]
 #[inline]
 fn renameat2_exchange_real(
@@ -1467,7 +1466,10 @@ mod tests {
     fn filter_rejects_absolute_symlink_target() {
         let gz = build_tar_gz(&[(b"link", tar::EntryType::Symlink, b"/etc/shadow", 0o777, b"")]);
         let err = first_entry_filter(&gz).unwrap_err();
-        assert!(err.to_string().contains("unsafe link target"));
+        assert!(
+            err.to_string().contains("absolute link target"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -1487,7 +1489,10 @@ mod tests {
     fn filter_rejects_absolute_hardlink_target() {
         let gz = build_tar_gz(&[(b"hl", tar::EntryType::Link, b"/etc/passwd", 0o644, b"")]);
         let err = first_entry_filter(&gz).unwrap_err();
-        assert!(err.to_string().contains("unsafe link target"));
+        assert!(
+            err.to_string().contains("absolute link target"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -1561,7 +1566,10 @@ mod tests {
 
         let dest = Utf8PathBuf::from_path_buf(tmp.path().join("dest")).unwrap();
         let err = extract_tarball(&tarball_path, &dest).unwrap_err();
-        assert!(err.to_string().contains("unsafe link target"));
+        assert!(
+            err.to_string().contains("absolute link target"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -2239,7 +2247,10 @@ mod tests {
 
         let err =
             install_runner_binary(&tarball, &state, &runner_home, "buckos", "2.334.0").unwrap_err();
-        assert!(err.to_string().contains("unsafe link target"));
+        assert!(
+            err.to_string().contains("absolute link target"),
+            "{err}"
+        );
 
         // bin.<version> must NOT exist, and staging/ must be empty.
         assert!(!runner_home.join("bin.2.334.0").exists());

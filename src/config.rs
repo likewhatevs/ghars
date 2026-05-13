@@ -282,24 +282,6 @@ pub struct EffectiveRunnerSpec {
     /// this verbatim into the X-Ghars-Spec-Hash annotation; computing
     /// it is the loader's responsibility.
     pub spec_hash: String,
-    /// SHA256 of the runsvc.sh script that was extracted into
-    /// `<prefix>/<name>/runsvc.sh` from the runner tarball. Format
-    /// `"sha256:HEX"` (lowercase hex). Drives the
-    /// `X-Ghars-Runsvc-Sha256` annotation in the `00-ghars.conf`
-    /// drop-in (Part 17 SEC-02). The runsvc-wrapper binary reads this
-    /// at unit start, recomputes sha256 of the on-disk
-    /// `/var/lib/ghars/<name>/runsvc.sh`, and refuses to exec on
-    /// mismatch. Empty string until the tarball install phase records
-    /// the digest (apply.rs `execute_create_runner` wires it in).
-    ///
-    /// `#[serde(skip)]` keeps this out of `plan::spec_hash` — plan
-    /// runs before install, doesn't know the runsvc.sh content yet,
-    /// and re-runs of plan would otherwise oscillate the hash between
-    /// "" (pre-install) and the real digest (post-install). The
-    /// annotation value lives entirely in the rendered drop-in; the
-    /// spec-hash continues to capture only user-visible config.
-    #[serde(skip, default)]
-    pub runsvc_sha256: String,
     /// Source path that produced this spec (e.g.
     /// `"/etc/ghars/ghars.toml"`). Drives X-Ghars-Config-Source.
     pub config_source: String,
@@ -337,9 +319,7 @@ pub struct EffectiveCacheBinding {
     /// the operator's config. Including it in the canonical-JSON
     /// hash would flip the X-Ghars-Spec-Hash annotation between
     /// hosts whose sccache lives at different prefixes, driving
-    /// spurious recreate-class plans. Same pattern as
-    /// `EffectiveRunnerSpec.runsvc_sha256` — host-resolved values
-    /// must not feed the spec hash.
+    /// spurious recreate-class plans.
     #[serde(skip, default)]
     pub sccache_path: Option<Utf8PathBuf>,
     /// Resolved absolute path to the sleep binary. `Some` iff the pool

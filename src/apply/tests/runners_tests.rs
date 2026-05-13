@@ -11,7 +11,6 @@ use crate::error::GharsError;
 use crate::plan::{DropInChangeKind, RunnerDelta, RunnerIdentity};
 
 use super::super::runners::{execute_create_runner, execute_remove_runner, execute_update_runner};
-use super::super::tarball::sha256_of_runsvc;
 use super::super::undo::{Deps, UndoLog, UndoStep};
 use super::common::{
     MockConfigShell, MockSystemd, MockTarball, MockTokenSource, make_paths, make_runner_plan,
@@ -123,34 +122,34 @@ fn create_runner_writes_unit_and_drop_ins_and_starts() {
     assert!(paths.unit_file("a").as_std_path().exists());
     let drop_in_path = paths.drop_in_dir("a").join("00-ghars.conf");
     assert!(drop_in_path.as_std_path().exists());
-    // SEC-02: the freshly-rendered 00-ghars.conf
-    // MUST carry an `X-Ghars-Runsvc-Sha256=sha256:HEX` line under
-    // `[Service]`. Without this, runsvc-wrapper exits
-    // ANNOTATION_MISSING on every restart and the runner unit
-    // can never start.
+    // The drop-in MUST carry the versioned ExecStart= reset + path
+    // pair (the template intentionally omits ExecStart because the
+    // version is only known at apply time).
     let drop_in_body = std::fs::read_to_string(drop_in_path.as_std_path()).unwrap();
     assert!(
         drop_in_body.contains("[Service]"),
         "00-ghars.conf is missing [Service] section: {drop_in_body}"
     );
     assert!(
-        drop_in_body.contains("X-Ghars-Runsvc-Sha256=sha256:"),
-        "00-ghars.conf is missing X-Ghars-Runsvc-Sha256 annotation: {drop_in_body}"
+        drop_in_body.contains("\nExecStart=\n"),
+        "00-ghars.conf is missing ExecStart= reset line: {drop_in_body}"
     );
-    // The recorded hash must match what re-reading the same
-    // runsvc.sh would produce — otherwise every unit start would
-    // fail the integrity check.
-    let runsvc_path = paths.runner_home("default", "a").join("runsvc.sh");
-    let expected_hash = sha256_of_runsvc(&runsvc_path).unwrap();
     assert!(
-        drop_in_body.contains(&format!("X-Ghars-Runsvc-Sha256={expected_hash}")),
-        "annotation digest does not match on-disk runsvc.sh ({expected_hash}): {drop_in_body}"
+        drop_in_body.contains("ExecStart=/bin/bash /var/lib/ghars/default/ghars-a/bin.2.334.0/bin/runsvc.sh"),
+        "00-ghars.conf is missing versioned runsvc.sh ExecStart: {drop_in_body}"
     );
-    // Unit text written to disk is the canonical template.
+    // SEC-02 was the X-Ghars-Runsvc-Sha256 annotation + runsvc-wrapper
+    // trampoline; both were removed. Pin that the annotation does
+    // not reappear.
+    assert!(
+        !drop_in_body.contains("X-Ghars-Runsvc-Sha256"),
+        "X-Ghars-Runsvc-Sha256 must not be emitted (SEC-02 removed): {drop_in_body}"
+    );
+    // Template no longer carries ExecStart at all (the drop-in
+    // supplies it because the path includes the resolved version).
     let unit_text = std::fs::read_to_string(paths.unit_file("a").as_std_path()).unwrap();
     assert!(unit_text.contains("[Unit]"));
-    assert!(unit_text.contains("\nExecStart=/usr/lib/ghars/runsvc-wrapper %i\n"));
-    assert!(!unit_text.contains("ExecStart=!"));
+    assert!(!unit_text.contains("\nExecStart="));
     // Tarball was downloaded once.
     assert_eq!(tarball.fetched.lock().unwrap().len(), 1);
     // config.sh registered with the minted token.
@@ -168,57 +167,6 @@ fn create_runner_writes_unit_and_drop_ins_and_starts() {
         calls
             .iter()
             .any(|c| c == "start_unit(ghars-runner@a.service)")
-    );
-}
-
-#[test]
-fn create_runner_runsvc_sha_matches_wrapper_recompute() {
-    use sha2::{Digest, Sha256};
-    // SEC-02 round-trip: the value apply records as
-    // `X-Ghars-Runsvc-Sha256=...` MUST equal what runsvc-wrapper
-    // computes when it re-reads the same file at unit start. Both
-    // sides hash via SHA-256 of the full file with the
-    // `sha256:HEX` prefix; if either side drifts (e.g. one uses
-    // hex-uppercase, one strips trailing newline), the integrity
-    // check fails on every start. This test pins the agreement.
-    let tmp = tempfile::tempdir().unwrap();
-    let paths = make_paths(&tmp);
-    std::fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
-    let plan = make_runner_plan("rt", &paths.state_dir);
-    let systemd = MockSystemd::default();
-    let mut auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
-    auth_map.insert(
-        "pat".into(),
-        Box::new(MockTokenSource {
-            name: "pat".into(),
-            ..MockTokenSource::default()
-        }),
-    );
-    let tarball = MockTarball::default();
-    let config_shell = MockConfigShell::default();
-    let deps = Deps {
-        systemd: &systemd,
-        auth: &auth_map,
-        tarball: &tarball,
-        config_shell: &config_shell,
-    };
-    execute_create_runner(&plan, &deps, &paths, &mut UndoLog::new(), 2).unwrap();
-
-    // Recompute the digest the way runsvc-wrapper would: read the
-    // raw bytes the MockConfigShell wrote, hash with sha2::Sha256,
-    // format with the `sha256:HEX` lowercase-hex prefix.
-    let runsvc = paths.runner_home("default", "rt").join("runsvc.sh");
-    let bytes = std::fs::read(runsvc.as_std_path()).unwrap();
-    let mut h = Sha256::new();
-    h.update(&bytes);
-    let direct = format!("sha256:{}", hex::encode(h.finalize()));
-
-    let drop_in =
-        std::fs::read_to_string(paths.drop_in_dir("rt").join("00-ghars.conf").as_std_path())
-            .unwrap();
-    assert!(
-        drop_in.contains(&format!("X-Ghars-Runsvc-Sha256={direct}")),
-        "drop-in did not carry round-trip digest {direct}: {drop_in}"
     );
 }
 
@@ -363,6 +311,8 @@ fn update_runner_in_place_treats_already_missing_managed_dropin_as_no_op() {
             resolved_release: None,
             effective_unit_text: crate::systemd::runner_template_text(),
             drop_ins: BTreeMap::new(),
+            env_file: String::new(),
+            path_file: String::new(),
             spec_hash: "sha256:after".into(),
         },
         requires_recreate: false,
@@ -445,6 +395,8 @@ fn update_runner_in_place_propagates_eacces_on_managed_dropin_remove() {
             resolved_release: None,
             effective_unit_text: crate::systemd::runner_template_text(),
             drop_ins: BTreeMap::new(),
+            env_file: String::new(),
+            path_file: String::new(),
             spec_hash: "sha256:after".into(),
         },
         requires_recreate: false,
@@ -493,7 +445,12 @@ fn remove_runner_unregisters_and_cleans_up() {
     // Pre-stage a runner home + unit file so remove can clean them.
     let runner_home = paths.runner_home("default", "a");
     std::fs::create_dir_all(runner_home.as_std_path()).unwrap();
-    std::fs::write(runner_home.join("config.sh").as_std_path(), b"#!/bin/sh\n").unwrap();
+    // find_active_bin_dir scans for bin.X.Y.Z/ subdirs containing
+    // config.sh — pre-stage one so the deregister branch reaches
+    // config.sh remove (the assertion below counts config_shell.removed).
+    let bin_dir = runner_home.join("bin.2.334.0");
+    std::fs::create_dir_all(bin_dir.as_std_path()).unwrap();
+    std::fs::write(bin_dir.join("config.sh").as_std_path(), b"#!/bin/sh\n").unwrap();
     std::fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
     std::fs::write(paths.unit_file("a").as_std_path(), b"[Unit]\n").unwrap();
     let drop_in_dir = paths.drop_in_dir("a");
@@ -614,5 +571,176 @@ fn execute_create_runner_invokes_prune_with_keep_versions() {
     assert_eq!(
         *keep_versions, 5,
         "keep_versions must thread through verbatim"
+    );
+}
+
+#[test]
+fn update_runner_in_place_rewrites_env_and_path_when_content_differs() {
+    // #24 regression: in-place updates must rewrite bin.X.Y.Z/.env
+    // AND bin.X.Y.Z/.path when the rendered bodies differ from
+    // on-disk content. Pre-fix, execute_update_runner only touched
+    // the systemd drop-ins and left .env/.path stale — workflow steps
+    // then inherited obsolete env from Runner.Listener::LoadAndSetEnv
+    // reading the old .env at process start.
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = make_paths(&tmp);
+    std::fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
+    std::fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
+
+    // Pre-stage runner_home + a bin.2.334.0 dir with STALE .env + .path
+    // so read_then_write_if_changed sees a content mismatch.
+    // make_spec sets runner_version = Some("2.334.0").
+    let runner_home = paths.runner_home("default", "a");
+    let bin_dir = runner_home.join("bin.2.334.0");
+    std::fs::create_dir_all(bin_dir.as_std_path()).unwrap();
+    std::fs::write(bin_dir.join(".env").as_std_path(), b"STALE=true\n").unwrap();
+    std::fs::write(bin_dir.join(".path").as_std_path(), b"/old/path\n").unwrap();
+
+    let unit_file = paths.unit_file("a");
+    std::fs::write(
+        unit_file.as_std_path(),
+        crate::systemd::runner_template_text().as_bytes(),
+    ).unwrap();
+
+    let mut after = make_spec("a", &paths.state_dir);
+    after.spec_hash = "sha256:after".into();
+    let rendered = crate::systemd::render_runner_unit(&after).unwrap();
+    let expected_env = rendered.env_file.clone();
+    let expected_path = rendered.path_file.clone();
+    let delta = crate::plan::RunnerDelta {
+        identity: crate::plan::RunnerIdentity {
+            name: "a".into(),
+            url: after.url.clone(),
+            auth_name: after.auth_name.clone(),
+            trust_zone: after.trust_zone.clone(),
+        },
+        after: crate::plan::RunnerPlan {
+            spec: after.clone(),
+            resolved_release: None,
+            effective_unit_text: crate::systemd::runner_template_text(),
+            drop_ins: BTreeMap::new(),
+            env_file: expected_env.clone(),
+            path_file: expected_path.clone(),
+            spec_hash: "sha256:after".into(),
+        },
+        requires_recreate: false,
+        recreate_reasons: vec![],
+        drift_cause: crate::plan::DriftCause::SpecChanged,
+        field_changes: vec![],
+        drop_in_changes: vec![],
+        before_caches: None,
+        before_drop_in_basenames: None,
+    };
+    let systemd = MockSystemd::default();
+    let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+    let tarball = MockTarball::default();
+    let config_shell = MockConfigShell::default();
+    let deps = Deps {
+        systemd: &systemd, auth: &auth_map,
+        tarball: &tarball, config_shell: &config_shell,
+    };
+    execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2).unwrap();
+
+    // The bug-proof assertions: post-update bytes match render_*_file
+    // output. Pre-fix, these would fail because in-place left both
+    // files untouched.
+    let post_env = std::fs::read_to_string(bin_dir.join(".env").as_std_path()).unwrap();
+    assert_eq!(post_env, expected_env,
+               "in-place update must rewrite .env to match render_runner_env_file output");
+    let post_path = std::fs::read_to_string(bin_dir.join(".path").as_std_path()).unwrap();
+    assert_eq!(post_path, expected_path,
+               "in-place update must rewrite .path to match render_runner_path_file output");
+}
+
+#[test]
+fn update_runner_in_place_does_not_rewrite_env_when_content_matches() {
+    // Counter-fixture: byte-compare short-circuit must NOT bump
+    // files_changed when .env/.path on-disk already match what the
+    // renderer would produce. Without this, every in-place update
+    // (even a no-op) would force a daemon-reload + restart cycle.
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = make_paths(&tmp);
+    std::fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
+    std::fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
+
+    let mut after = make_spec("a", &paths.state_dir);
+    after.spec_hash = "sha256:after".into();
+    let rendered = crate::systemd::render_runner_unit(&after).unwrap();
+    let expected_env = rendered.env_file.clone();
+    let expected_path = rendered.path_file.clone();
+
+    // Pre-stage runner_home + bin.2.334.0/ with .env/.path matching
+    // the rendered output exactly.
+    let runner_home = paths.runner_home("default", "a");
+    let bin_dir = runner_home.join("bin.2.334.0");
+    std::fs::create_dir_all(bin_dir.as_std_path()).unwrap();
+    std::fs::write(bin_dir.join(".env").as_std_path(), expected_env.as_bytes()).unwrap();
+    std::fs::write(bin_dir.join(".path").as_std_path(), expected_path.as_bytes()).unwrap();
+
+    // Pre-stage drop-in dir so the dir-creation arm doesn't bump
+    // files_changed. Pre-stage every rendered drop-in with byte-
+    // identical content so the per-basename loop short-circuits too.
+    let drop_in_dir = paths.drop_in_dir("a");
+    std::fs::create_dir_all(drop_in_dir.as_std_path()).unwrap();
+    for (name, body) in &rendered.drop_ins {
+        std::fs::write(drop_in_dir.join(name).as_std_path(), body.as_bytes()).unwrap();
+    }
+
+    // Pre-stage the unit file (matches rendered template — no drop-ins
+    // changing — so files_changed for THIS path stays at 0 too).
+    let unit_file = paths.unit_file("a");
+    std::fs::write(
+        unit_file.as_std_path(),
+        rendered.template.as_bytes(),
+    ).unwrap();
+
+    let delta = crate::plan::RunnerDelta {
+        identity: crate::plan::RunnerIdentity {
+            name: "a".into(),
+            url: after.url.clone(),
+            auth_name: after.auth_name.clone(),
+            trust_zone: after.trust_zone.clone(),
+        },
+        after: crate::plan::RunnerPlan {
+            spec: after.clone(),
+            resolved_release: None,
+            effective_unit_text: crate::systemd::runner_template_text(),
+            drop_ins: BTreeMap::new(),
+            env_file: expected_env.clone(),
+            path_file: expected_path.clone(),
+            spec_hash: "sha256:after".into(),
+        },
+        requires_recreate: false,
+        recreate_reasons: vec![],
+        drift_cause: crate::plan::DriftCause::SpecChanged,
+        field_changes: vec![],
+        drop_in_changes: vec![],
+        before_caches: Some(vec![]),
+        before_drop_in_basenames: None,
+    };
+    let systemd = MockSystemd::default();
+    let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+    let tarball = MockTarball::default();
+    let config_shell = MockConfigShell::default();
+    let deps = Deps {
+        systemd: &systemd, auth: &auth_map,
+        tarball: &tarball, config_shell: &config_shell,
+    };
+    let outcome = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2).unwrap();
+
+    // When everything on disk already matches, the daemon-reload + restart
+    // gate fires InPlaceSkipped. No systemd stop_unit / start_unit calls.
+    assert!(
+        matches!(outcome, crate::apply::ApplyOutcome::InPlaceSkipped),
+        "byte-identical inputs must short-circuit to InPlaceSkipped; got {outcome:?}",
+    );
+    let calls = systemd.calls_snapshot();
+    assert!(
+        !calls.iter().any(|c| c.starts_with("stop_unit")),
+        "byte-identical inputs must NOT stop the unit; calls: {calls:?}",
+    );
+    assert!(
+        !calls.iter().any(|c| c.starts_with("start_unit")),
+        "byte-identical inputs must NOT restart the unit; calls: {calls:?}",
     );
 }

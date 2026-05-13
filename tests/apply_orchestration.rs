@@ -225,14 +225,11 @@ impl ConfigShell for TestConfigShell {
                 ))),
             });
         }
-        // Mirror the production behaviour: write a runsvc.sh into
-        // runner_home so subsequent SEC-02 hash step finds a real
-        // file. (Without it, sha256_of_runsvc errors with ENOENT.)
+        // Mirror the production behaviour: ensure runner_home exists.
+        // The real config.sh writes .runner / .credentials there;
+        // tests don't model those files for the orchestration code
+        // path.
         std::fs::create_dir_all(ctx.runner_home.as_std_path())?;
-        std::fs::write(
-            ctx.runner_home.join("runsvc.sh").as_std_path(),
-            b"#!/bin/sh\n# test runsvc\nexec ./bin/runsvc.sh \"$@\"\n",
-        )?;
         Ok(())
     }
     fn run_remove(&self, _ctx: &ConfigShellCtx<'_>) -> ghars::Result<()> {
@@ -305,7 +302,6 @@ fn make_spec(name: &str, _prefix: &Utf8Path) -> EffectiveRunnerSpec {
         allowed_cpus: None,
         allowed_memory_nodes: None,
         spec_hash: "sha256:dead".into(),
-        runsvc_sha256: String::new(),
         config_source: "/etc/ghars/ghars.toml".into(),
     }
 }
@@ -322,6 +318,8 @@ fn make_runner_plan(name: &str, prefix: &Utf8Path) -> RunnerPlan {
         resolved_release: None,
         effective_unit_text: "[Unit]\nDescription=test\n".into(),
         drop_ins,
+        env_file: String::new(),
+        path_file: String::new(),
         spec_hash: "sha256:dead".into(),
     }
 }

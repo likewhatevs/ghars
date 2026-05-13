@@ -751,15 +751,18 @@ fn has_unescaped_trailing_backslash(line: &str) -> bool {
 /// result — `ParsedUnit` matches section headers byte-for-byte.
 ///
 /// `Unit` and `Service` are the only sections [`extract_x_ghars`] /
-/// [`extract_x_ghars_in_section`] callers need today: the X-Ghars-*
-/// keys `crate::systemd::render_identity` emits live in `[Unit]`
-/// (identity / spec-hash) and `[Service]` (runsvc digest). New
-/// variants get added here when a new section is introduced.
+/// [`extract_x_ghars_in_section`] callers need today: every
+/// `X-Ghars-*` key `crate::systemd::render_identity` emits today
+/// lives in `[Unit]`. The `Service` variant is retained for future
+/// `[Service]`-section annotations and so callers don't have to
+/// pass free-form strings. New variants get added here when a new
+/// section is introduced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemdSection {
     /// `[Unit]` — identity + spec-hash X-Ghars-* annotations.
     Unit,
-    /// `[Service]` — runsvc digest annotation (X-Ghars-Runsvc-Sha256).
+    /// `[Service]` — retained for future `[Service]`-section
+    /// X-Ghars-* annotations; no current production emitter.
     Service,
 }
 
@@ -781,22 +784,19 @@ impl SystemdSection {
 /// `unit_text`. Useful for `ghars status` rendering and adversary
 /// audits. Returned in source order; duplicate keys preserved.
 ///
-/// Restricted to `[Unit]` because every `X-Ghars-*` key emitted in
-/// `[Unit]` by `crate::systemd::render_identity` lives there;
-/// annotations in other sections (e.g. `X-Ghars-Runsvc-Sha256` in
-/// `[Service]`) require [`extract_x_ghars_in_section`] with
-/// [`SystemdSection::Service`].
+/// Restricted to `[Unit]` because every `X-Ghars-*` key emitted
+/// today by `crate::systemd::render_identity` lives there. Future
+/// annotations in other sections require [`extract_x_ghars_in_section`]
+/// with the matching [`SystemdSection`] variant.
 #[must_use]
 pub fn extract_x_ghars(unit_text: &str) -> Vec<(String, String)> {
     extract_x_ghars_in_section(unit_text, SystemdSection::Unit)
 }
 
 /// Read every `X-Ghars-*` annotation from the named section of
-/// `unit_text`. Generalises [`extract_x_ghars`] to the
-/// `[Service]`-section annotation set (`X-Ghars-Runsvc-Sha256`,
-/// `crate::systemd::render_identity` emits it in `[Service]` per
-/// design Part 17's annotation table; the `[Unit]`-only filter on
-/// `extract_x_ghars` would silently drop it). Returned in source
+/// `unit_text`. Generalises [`extract_x_ghars`] to other sections —
+/// pass [`SystemdSection::Service`] (or another variant) when an
+/// `X-Ghars-*` annotation lands outside `[Unit]`. Returned in source
 /// order; duplicate keys preserved.
 ///
 /// Use [`extract_x_ghars_value`] when only one specific annotation
@@ -825,7 +825,7 @@ pub fn extract_x_ghars_in_section(
 /// returns the first matching value (or `None`).
 ///
 /// `key` is the full annotation key including the `X-Ghars-` prefix
-/// (e.g. `"X-Ghars-Runsvc-Sha256"`). Mirrors the semantics of
+/// (e.g. `"X-Ghars-Runner-Name"`). Mirrors the semantics of
 /// `ParsedUnit::first`: section header match is byte-for-byte
 /// (use [`SystemdSection`] to avoid casing typos), key match is
 /// exact-string. Empty values return `Some("")`; absent keys return
@@ -1159,7 +1159,6 @@ mod tests {
             allowed_cpus: Some("0-3".into()),
             allowed_memory_nodes: Some("0".into()),
             spec_hash: "sha256:dead".into(),
-            runsvc_sha256: String::new(),
             config_source: "/etc/ghars/ghars.toml".into(),
         };
 
@@ -1625,15 +1624,10 @@ mod tests {
 
     /// `extract_x_ghars_in_section(SystemdSection::Service)` must
     /// pull X-Ghars-* annotations from `[Service]` and ignore the
-    /// `[Unit]` section. Production driver: `plan::extract_runsvc_sha256`
-    /// (plan.rs) reads `X-Ghars-Runsvc-Sha256` from `[Service]`
-    /// because `crate::systemd::render_identity` emits that line in the
-    /// `[Service]` section of `00-ghars.conf` (per design Part 17).
-    /// Without per-section dispatch, the `[Unit]`-only
-    /// `extract_x_ghars` returned an empty iterator on every real
-    /// 00-ghars.conf, the in-place update preserved no digest, and
-    /// the freshly-rendered drop-in failed runsvc-wrapper's
-    /// `ANNOTATION_MISSING` fail-stop at the next runner restart.
+    /// `[Unit]` section. No production emitter currently lands an
+    /// X-Ghars-* annotation in `[Service]`; the apparatus is retained
+    /// so a future annotation that lives outside `[Unit]` can be
+    /// extracted without rewriting the parser.
     #[test]
     fn extract_x_ghars_in_section_service_pulls_only_service_section() {
         let body = "[Unit]\n\
@@ -1641,21 +1635,17 @@ mod tests {
                     X-Ghars-Runner-Name=buckos\n\
                     Description=ignored\n\
                     [Service]\n\
-                    X-Ghars-Runsvc-Sha256=sha256:deadbeef\n\
+                    X-Ghars-Hypothetical-Future-Annotation=value\n\
                     Type=notify\n";
         let v = extract_x_ghars_in_section(body, SystemdSection::Service);
         assert_eq!(v.len(), 1, "must skip [Unit] X-Ghars-* lines; got {v:?}");
-        assert_eq!(v[0].0, "X-Ghars-Runsvc-Sha256");
-        assert_eq!(v[0].1, "sha256:deadbeef");
+        assert_eq!(v[0].0, "X-Ghars-Hypothetical-Future-Annotation");
+        assert_eq!(v[0].1, "value");
     }
 
-    /// Empty result when `[Service]` section is absent — the
-    /// production caller (`plan::extract_runsvc_sha256`) treats an
-    /// empty iterator as "annotation missing" and routes to the
-    /// fail-closed `runsvc_integrity` recreate path. Pin the
-    /// empty-Vec contract so a future change that returns a
-    /// sentinel or panics on missing-section breaks here, not in
-    /// production.
+    /// Empty result when `[Service]` section is absent. Pin the
+    /// empty-Vec contract so a future change that returns a sentinel
+    /// or panics on missing-section breaks here, not in production.
     #[test]
     fn extract_x_ghars_in_section_service_empty_when_section_absent() {
         let body = "[Unit]\nX-Ghars-Managed=true\n";
@@ -1674,27 +1664,22 @@ mod tests {
     }
 
     /// Happy path: key present in the named section with a non-empty
-    /// value ⇒ Some(value). Production driver:
-    /// `plan::extract_runsvc_sha256` reads X-Ghars-Runsvc-Sha256 from
-    /// `[Service]` and the post-install steady state is a 64-char
-    /// `sha256:...` value.
+    /// value ⇒ Some(value).
     #[test]
     fn extract_x_ghars_value_returns_some_for_present_key() {
         let body = "[Unit]\n\
                     X-Ghars-Managed=true\n\
-                    [Service]\n\
-                    X-Ghars-Runsvc-Sha256=sha256:deadbeef\n";
-        let v = extract_x_ghars_value(body, SystemdSection::Service, "X-Ghars-Runsvc-Sha256");
-        assert_eq!(v.as_deref(), Some("sha256:deadbeef"));
+                    X-Ghars-Runner-Name=buckos\n";
+        let v = extract_x_ghars_value(body, SystemdSection::Unit, "X-Ghars-Runner-Name");
+        assert_eq!(v.as_deref(), Some("buckos"));
     }
 
     /// Empty value (`X-Ghars-Foo=`) ⇒ Some("") — distinguishes
-    /// "key present with no value" from "key absent". Pinned because
-    /// `plan::extract_runsvc_sha256` then maps Some("") → None at
-    /// the caller boundary; the helper itself MUST surface the
-    /// distinction so other callers (e.g. labels which DO accept
-    /// empty as a meaningful value per the production parser
-    /// `ParsedUnit::from_text`) get the right answer.
+    /// "key present with no value" from "key absent". Pinned so
+    /// callers that need to map `Some("")` to a domain-specific
+    /// sentinel (e.g. None) can rely on the helper to surface the
+    /// distinction; callers where empty IS a meaningful value (e.g.
+    /// labels) get the right answer too.
     #[test]
     fn extract_x_ghars_value_returns_some_empty_for_empty_value() {
         let body = "[Unit]\nX-Ghars-Empty=\n";
@@ -1720,8 +1705,8 @@ mod tests {
     /// `SystemdSection` enforces against typoed casings.
     #[test]
     fn extract_x_ghars_value_returns_none_when_section_absent() {
-        let body = "[Unit]\nX-Ghars-Runsvc-Sha256=sha256:in-wrong-section\n";
-        let v = extract_x_ghars_value(body, SystemdSection::Service, "X-Ghars-Runsvc-Sha256");
+        let body = "[Unit]\nX-Ghars-Misplaced=present-in-unit-only\n";
+        let v = extract_x_ghars_value(body, SystemdSection::Service, "X-Ghars-Misplaced");
         assert!(
             v.is_none(),
             "key in different section must not leak via Service lookup; got {v:?}"

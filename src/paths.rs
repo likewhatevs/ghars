@@ -9,8 +9,11 @@ use camino::Utf8PathBuf;
 /// Filesystem paths consumed by ghars during plan/apply.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paths {
-    /// `/var/lib/ghars` — per-runner state (config.sh output, runsvc.sh,
-    /// versioned bin/ directories).
+    /// `/var/lib/ghars` — per-runner state (config.sh output,
+    /// versioned `bin.X.Y.Z/` directories — the upstream
+    /// actions/runner tarball ships `runsvc.sh` inside the
+    /// versioned dir at `bin.X.Y.Z/bin/runsvc.sh`, not in the
+    /// runner home).
     pub state_dir: Utf8PathBuf,
     /// `/var/cache/ghars` — shared cache pool storage.
     pub cache_dir: Utf8PathBuf,

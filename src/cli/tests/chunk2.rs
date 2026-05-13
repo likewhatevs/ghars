@@ -2608,9 +2608,6 @@ fn plan_from_discovered_only_runner_populates_remove_runner_identity() {
         allowed_cpus: None,
         allowed_memory_nodes: None,
         spec_hash: "sha256:0".into(),
-        // Non-empty digest mirrors post-install steady state. See
-        // `FIXTURE_RUNSVC_SHA256` doc-comment for rationale.
-        runsvc_sha256: FIXTURE_RUNSVC_SHA256.into(),
         config_source: "/etc/ghars/ghars.toml".into(),
     };
     let rendered = crate::systemd::render_runner_unit(&discovered_spec)

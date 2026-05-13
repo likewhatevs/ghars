@@ -117,7 +117,10 @@ pub(super) fn build_register_cmd(ctx: &ConfigShellCtx<'_>) -> Command {
 /// Build the `config.sh remove` Command.
 pub(super) fn build_remove_cmd(ctx: &ConfigShellCtx<'_>) -> Command {
     let mut cmd = Command::new(ctx.bin_dir.join("config.sh"));
-    cmd.args(["remove"])
+    // --unattended keeps `config.sh remove` non-interactive in the
+    // systemd context where no TTY is available. SEC-05 token routing
+    // is via the env var below; argv carries no secret material.
+    cmd.args(["remove", "--unattended"])
         .env(RUNNER_TOKEN_ENV, ctx.token)
         .env("RUNNER_ALLOW_RUNASROOT", "1")
         .current_dir(ctx.runner_home.as_std_path());

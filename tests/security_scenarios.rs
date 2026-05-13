@@ -1,7 +1,6 @@
 //! SEC-* scenario tests: targeted coverage of the security findings the
 //! adversary surfaced during convergence review.
 //!
-//! - SEC-02: runsvc tamper detection — annotation parser hits.
 //! - SEC-06: GitHub App / `TokenFile` mode enforcement — per-bit coverage
 //!   for the 0o077 mask.
 //! - SEC-09: tarball extraction into root-owned staging dir; staging

@@ -13,15 +13,13 @@ The crate is not yet published to crates.io. Build from source:
 git clone https://github.com/likewhatevs/ghars
 cd ghars
 cargo install --path .
-sudo install -Dm755 ~/.cargo/bin/runsvc-wrapper \
-    /usr/lib/ghars/runsvc-wrapper
 ```
 
-The crate ships two `[[bin]]` targets: the `ghars` CLI (placed on
-`PATH` by `cargo install`) and the `runsvc-wrapper` trampoline,
-which MUST be copied to `/usr/lib/ghars/runsvc-wrapper` (root:root
-mode 0755) — the unit template's `ExecStart=` points at that exact
-path. Unit start fails when the binary is missing.
+The crate ships a single `[[bin]]` target: the `ghars` CLI (placed on
+`PATH` by `cargo install`). The systemd runner unit invokes
+`/bin/bash` directly against the tarball's `runsvc.sh` under the
+versioned bin dir; no separate ghars-managed binary lives at
+`/usr/lib/ghars/`.
 
 ## Scaffold the config
 
@@ -213,10 +211,10 @@ After a successful apply for a single-runner config:
   `15-resolv.conf`, `80-lognamespace.conf`, plus optional ones
   depending on config).
 - `/var/lib/ghars/<TRUST_ZONE>/ghars-build-1/` — runner state dir
-  (config.sh output, the regular-file `runsvc.sh` written by
-  config.sh, and one `bin.X.Y.Z/` directory per installed
-  version with the current install published atomically via
-  `renameat2(RENAME_EXCHANGE)`).
+  (config.sh output and one `bin.X.Y.Z/` directory per installed
+  version, with the current install published atomically via
+  `renameat2(RENAME_EXCHANGE)`; the systemd drop-in's
+  `ExecStart=` invokes `bin.X.Y.Z/bin/runsvc.sh` from there).
 - `/var/log/ghars/apply.log` — append-only structured audit log,
   one JSON object per line per action.
 
@@ -227,7 +225,6 @@ The full filesystem layout is in
 
 ```sh
 cargo install --path .                                  # crate not on crates.io yet
-sudo install -Dm755 ~/.cargo/bin/runsvc-wrapper /usr/lib/ghars/runsvc-wrapper
 sudo ghars init                                         # write /etc/ghars/ghars.toml (mode 0640)
 sudoedit /etc/ghars/ghars.toml                          # add [auth.pat] + GHARS_PAT
 export GHARS_PAT=ghp_...

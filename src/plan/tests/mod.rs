@@ -28,8 +28,8 @@ pub(super) use super::classify::{
     DiscoveredAnnotations, classify_recreate_reasons_from_annotations,
 };
 pub(super) use super::compute::{
-    NETNS_POOL_SLOTS, extract_runsvc_sha256, host_arch, into_cache_pool_plan, into_runner_plan,
-    lower_to_effective, netns_subnet_for_slot, plan_from, strip_hash, with_hash,
+    NETNS_POOL_SLOTS, host_arch, into_cache_pool_plan, into_runner_plan, lower_to_effective,
+    netns_subnet_for_slot, plan_from, with_hash,
 };
 pub(super) use super::expand::{MAX_COUNT, expand_counts};
 pub(super) use super::hash::{cache_pool_hash, spec_hash};
@@ -121,34 +121,12 @@ pub(super) fn cfg_source_default() -> String {
 /// annotations in `on_disk_unit_text` here would mask the
 /// production bug fixed by reading
 /// `DiscoveredAnnotations::from_discovered`.
-///
-/// If `spec.runsvc_sha256` is empty, the fixture injects a stable
-/// fake digest so the rendered 00-ghars.conf carries a
-/// `[Service] X-Ghars-Runsvc-Sha256=` line. This mirrors the
-/// post-install steady state that `discover` would observe in
-/// production (`apply.rs::execute_create_runner` records the
-/// digest after config.sh writes runsvc.sh; subsequent
-/// `discover` reads the annotation back). Without this default,
-/// every fixture-built in-place test would trip the
-/// recreate-on-missing-digest path and surface as a recreate
-/// reason of `runsvc_integrity` rather than the in-place
-/// behavior the test is actually exercising. Tests that
-/// SPECIFICALLY want to exercise the missing-annotation path
-/// (e.g. `plan_update_recreate_on_runsvc_integrity_when_annotation_missing`)
-/// build the fixture with a different shape.
 pub(super) fn discovered_for(
     name: &str,
     spec: &EffectiveRunnerSpec,
     drift: Drift,
 ) -> DiscoveredRunner {
-    // Inject a stable fake runsvc_sha256 when the caller didn't
-    // pin one. See doc above for rationale.
-    let mut spec_for_render = spec.clone();
-    if spec_for_render.runsvc_sha256.is_empty() {
-        spec_for_render.runsvc_sha256 =
-            "sha256:9999999999999999999999999999999999999999999999999999999999999999".to_owned();
-    }
-    let rendered = crate::systemd::render_runner_unit(&spec_for_render)
+    let rendered = crate::systemd::render_runner_unit(spec)
         .expect("test fixture: render_runner_unit must succeed for valid spec");
     DiscoveredRunner {
         name: name.to_owned(),

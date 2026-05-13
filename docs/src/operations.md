@@ -414,7 +414,7 @@ fell back to the host netns. Confirm:
 A field listed in `RunnerDelta::recreate_reasons` triggered the
 recreate decision. Vocabulary: `url`, `runner_version`, `labels`,
 `arch`, `runner_sha256`, `runner_tarball`, `network`,
-`runsvc_integrity`, `uncovered`. None of these are operator-
+`uncovered`. None of these are operator-
 configurable to in-place-only — the recreate is structural. To
 proceed, accept the disruption (or move the change behind a
 maintenance window).

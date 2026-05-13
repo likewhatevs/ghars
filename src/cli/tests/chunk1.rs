@@ -714,12 +714,13 @@ fn render_action_line_uses_sigil_per_kind() {
             allowed_cpus: None,
             allowed_memory_nodes: None,
             spec_hash: "sha256:0".into(),
-            runsvc_sha256: String::new(),
             config_source: "/etc/ghars/ghars.toml".into(),
         },
         resolved_release: None,
         effective_unit_text: String::new(),
         drop_ins: std::collections::BTreeMap::new(),
+        env_file: String::new(),
+        path_file: String::new(),
         spec_hash: "sha256:0".into(),
     });
     let line = render_action_line(&create, ColorMode { enabled: false }, false);

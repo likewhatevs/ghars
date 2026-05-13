@@ -22,7 +22,6 @@ the same diff.
 - DynamicUser isolation with trust-zone UID scoping and per-runner sandboxing profile. See [Security](https://likewhatevs.github.io/ghars/security.html).
 - Network policy in two modes — `netns` (per-runner network namespace with nftables egress rules and DNS forwarding) or `open` (host netns + systemd cgroup-BPF egress filter via `IPAddressAllow=` / `IPAddressDeny=` and `RestrictAddressFamilies=` allowlist). See [Security](https://likewhatevs.github.io/ghars/security.html).
 - Shared ccache/sccache pools scoped by trust zone. See [Configuration](https://likewhatevs.github.io/ghars/configuration.html).
-- Integrity-checking `runsvc-wrapper` trampoline (`fexecve` of sha256-verified `runsvc.sh`). See [Security](https://likewhatevs.github.io/ghars/security.html).
 - `O_NOFOLLOW` validation, crash-safe writes, zeroize-on-drop for credentials. See [Internals](https://likewhatevs.github.io/ghars/internals.html).
 - `ghars status --score` reports per-unit systemd security exposure scores. See [Operations](https://likewhatevs.github.io/ghars/operations.html).
 
@@ -56,7 +55,6 @@ git clone https://github.com/likewhatevs/ghars
 cd ghars
 cargo build --release
 sudo install -m 0755 target/release/ghars /usr/local/bin/ghars
-sudo install -Dm755 target/release/runsvc-wrapper /usr/lib/ghars/runsvc-wrapper
 ```
 
 For the full setup walkthrough (config skeleton, credentials, first runner), see

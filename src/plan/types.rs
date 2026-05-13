@@ -85,6 +85,17 @@ pub struct RunnerPlan {
     pub effective_unit_text: String,
     /// Drop-in basename → contents.
     pub drop_ins: BTreeMap<String, String>,
+    /// Body of `<bin_dir>/.env`. Read once by
+    /// `Runner.Listener::LoadAndSetEnv` at runner-process start; each
+    /// `KEY=VALUE` is set via `Environment.SetEnvironmentVariable` and
+    /// inherited by worker / workflow-step subprocesses through
+    /// fork+exec. The next unit stop+start picks up changes.
+    pub env_file: String,
+    /// Body of `<bin_dir>/.path`. Read once by `runsvc.sh`
+    /// (`export PATH=\`cat .path\``) at runner-process start; inherited
+    /// across exec by every worker / workflow-step subprocess. The
+    /// next unit stop+start picks up changes.
+    pub path_file: String,
     /// `sha256:HEX` of the spec; emitted into the 00-ghars.conf
     /// X-Ghars-Spec-Hash annotation.
     pub spec_hash: String,
@@ -340,10 +351,9 @@ pub struct RunnerDelta {
     /// These are raw classifier tokens. Field-name tokens (`url`,
     /// `labels`, `arch`, …) render verbatim because the corresponding
     /// `FieldChange` row already shows the before→after pair on the
-    /// preceding line; the two non-field tokens (`runsvc_integrity`,
-    /// `uncovered`) are glossed for operator display by
-    /// `cli::recreate_reason_note` — keep that match arm in lockstep
-    /// with the vocabulary below.
+    /// preceding line; the `uncovered` non-field token is glossed for
+    /// operator display by `cli::recreate_reason_note` — keep that
+    /// match arm in lockstep with the vocabulary below.
     ///
     /// Vocabulary (every string this Vec may contain):
     /// - `"url"` — runner URL changed (registration is URL-bound).
@@ -356,10 +366,6 @@ pub struct RunnerDelta {
     /// - `"network"` — `NetworkMode` toggled between Open and Netns
     ///   (provision/teardown of netns side-units only run on the
     ///   recreate path).
-    /// - `"runsvc_integrity"` — discovered 00-ghars.conf is missing
-    ///   `X-Ghars-Runsvc-Sha256`; recreate forces config.sh to mint
-    ///   a fresh trusted digest (SEC-02). No `FieldChange` — this is a
-    ///   host-state recovery trigger, not a per-field diff.
     /// - `"uncovered"` — conservative fallback for hash-mismatch with
     ///   no Stage 1 reason and no Stage 2 drop-in diff (should be
     ///   unreachable in practice; logs at warn level).
@@ -384,8 +390,6 @@ pub struct RunnerDelta {
     /// Empty when:
     /// - the recreate fired via the `"uncovered"` fallback (no
     ///   annotation source for the before-value), or
-    /// - the recreate fired via the `"runsvc_integrity"` host-state
-    ///   recovery trigger (which is not a per-field diff), or
     /// - the change was confined to drop-in body deltas with no
     ///   annotation-classified field touched (those land in
     ///   `drop_in_changes` instead).

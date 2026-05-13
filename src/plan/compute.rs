@@ -228,73 +228,13 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                     actions.push(Action::NoOp(format!("{name}: in sync")));
                 } else {
                     let annotations = DiscoveredAnnotations::from_discovered(discovered);
-                    // Thread the already-recorded
-                    // X-Ghars-Runsvc-Sha256 from the discovered
-                    // drop-in body into after_spec BEFORE
-                    // re-rendering. Without this, the plan-time
-                    // re-render emits a 00-ghars.conf
-                    // with an empty/missing Runsvc-Sha256 line, the
-                    // in-place rewrite path overwrites the drop-in,
-                    // and runsvc-wrapper's annotation check fails on
-                    // the next runner restart (SEC-02 trampoline
-                    // rejects). Pull the value from the existing
-                    // 00-ghars.conf body so an in-place update
-                    // preserves the install-phase digest.
-                    //
-                    // If the discovered drop-in is missing
-                    // X-Ghars-Runsvc-Sha256 entirely (older runner
-                    // or operator-stripped 00-ghars.conf), we
-                    // CANNOT silently emit an in-place update — the
-                    // freshly-rendered drop-in would lack the annotation
-                    // and runsvc-wrapper would fail-stop on the next
-                    // start. We also CANNOT hash runsvc.sh from disk
-                    // here: the file lives in the runner-writable home
-                    // and a tampered binary would propagate as a
-                    // "trusted" digest (SEC-02 design Part 8). Force
-                    // the recreate path instead — `config.sh` re-runs
-                    // there, writes a fresh runsvc.sh under our
-                    // control, and apply records the trusted digest in
-                    // execute_create_runner. The recreate_reason
-                    // `runsvc_integrity` flags this for operator
-                    // visibility; `tracing::warn!` records the trigger.
-                    let mut after_spec = after_spec;
-                    let mut runsvc_integrity_recreate = false;
-                    if after_spec.runsvc_sha256.is_empty() {
-                        if let Some(existing) = extract_runsvc_sha256(&discovered.drop_ins) {
-                            after_spec.runsvc_sha256 = existing;
-                            // Re-call with_hash defensively after
-                            // mutating runsvc_sha256. Today
-                            // `EffectiveRunnerSpec.runsvc_sha256` is
-                            // `#[serde(skip)]` (declared in `config.rs`)
-                            // so it is NOT a canonical-JSON spec_hash
-                            // input
-                            // — `prop_spec_hash_ignores_runsvc_sha256`
-                            // pins that property. The re-hash is
-                            // therefore a no-op for the current set of
-                            // hash inputs but stays in place to keep
-                            // the invariant holding if a future
-                            // revision lifts the serde(skip) and brings
-                            // the digest into the hash domain.
-                            after_spec = with_hash(strip_hash(after_spec));
-                        } else {
-                            tracing::warn!(
-                                runner = name.as_str(),
-                                "X-Ghars-Runsvc-Sha256 annotation missing from \
-                                 discovered 00-ghars.conf; refusing in-place \
-                                 update path and forcing recreate so config.sh \
-                                 mints a fresh trusted digest (SEC-02)."
-                            );
-                            runsvc_integrity_recreate = true;
-                        }
-                    }
-
-                    // Stage 2 — re-render
-                    // the desired spec and diff drop-in bodies against
-                    // the discovered drop-ins on disk. A change
-                    // confined to drop-in bodies (memory_max, proxy,
-                    // hooks, hardening, allowed_cpus, ...) is in-place
-                    // safe; a change that touches the recreate-bound
-                    // annotations falls through to Stage 1 above.
+                    // Re-render the desired spec and diff drop-in
+                    // bodies against the discovered drop-ins on disk.
+                    // A change confined to drop-in bodies (memory_max,
+                    // proxy, hooks, hardening, allowed_cpus, ...) is
+                    // in-place safe; a change that touches the
+                    // recreate-bound annotations falls through to
+                    // Stage 1 above.
                     let rendered = match crate::systemd::render_runner_unit(&after_spec) {
                         Ok(r) => r,
                         Err(e) => {
@@ -308,17 +248,6 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                         &after_spec,
                         &mut field_changes,
                     );
-
-                    // If runsvc_sha256 recovery failed above, force
-                    // recreate. Pushed AFTER the
-                    // classifier so the typed reasons (url, labels, …)
-                    // still appear when those fields ALSO changed; this
-                    // entry just guarantees the recreate path runs
-                    // regardless.
-                    if runsvc_integrity_recreate && !recreate_reasons.contains(&"runsvc_integrity")
-                    {
-                        recreate_reasons.push("runsvc_integrity");
-                    }
 
                     // Stage 2: drop-in body diff. Compare each rendered
                     // basename's body against the discovered body.
@@ -504,6 +433,8 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                         resolved_release: None,
                         effective_unit_text: rendered.template,
                         drop_ins: rendered.drop_ins,
+                        env_file: rendered.env_file,
+                        path_file: rendered.path_file,
                     };
 
                     // Recreate path collapses drop-in diff (the path
@@ -727,46 +658,6 @@ pub(super) fn with_hash(mut spec: EffectiveRunnerSpec) -> EffectiveRunnerSpec {
     spec
 }
 
-/// Clear the `spec_hash` so it can be re-computed. Used by the
-/// in-place update path after mutating a field that *might* be a
-/// hash input on some future revision (e.g. `runsvc_sha256`, which is
-/// `#[serde(skip)]` today and therefore NOT a hash input). Re-call
-/// `with_hash` afterward.
-pub(super) fn strip_hash(mut spec: EffectiveRunnerSpec) -> EffectiveRunnerSpec {
-    spec.spec_hash.clear();
-    spec
-}
-
-/// Pull `X-Ghars-Runsvc-Sha256` out of a `00-ghars.conf` body.
-/// Returns `None` if the drop-in or annotation is absent. Used by the
-/// in-place update path to preserve the install-phase digest across
-/// re-renders.
-///
-/// The annotation lives in `[Service]` per design Part 17 — that's
-/// where `crate::systemd::render_identity` emits it (when
-/// `spec.runsvc_sha256` is non-empty, the renderer appends a
-/// `[Service]` section with the line). `crate::state::extract_x_ghars`
-/// is restricted to `[Unit]`, so this lookup MUST go through
-/// [`crate::state::extract_x_ghars_value`] with
-/// [`crate::state::SystemdSection::Service`] to find the digest.
-/// Without this section selection the lookup below would return
-/// `None` for every real 00-ghars.conf and the in-place update at
-/// the call site emitted a freshly-rendered drop-in without the
-/// annotation, which would fail-stop runsvc-wrapper's SEC-02
-/// trampoline at the next runner restart with `ANNOTATION_MISSING`.
-pub(super) fn extract_runsvc_sha256(drop_ins: &BTreeMap<String, String>) -> Option<String> {
-    let body = drop_ins.get("00-ghars.conf")?;
-    // Point-lookup via extract_x_ghars_value avoids the full
-    // Vec<(String, String)> allocation we'd pay for the bulk
-    // extract_x_ghars_in_section call followed by a single-key search.
-    let v = crate::state::extract_x_ghars_value(
-        body,
-        crate::state::SystemdSection::Service,
-        "X-Ghars-Runsvc-Sha256",
-    )?;
-    if v.is_empty() { None } else { Some(v) }
-}
-
 /// Build a `RunnerPlan` from an effective spec, computing the `spec_hash`
 /// (if not already set) and rendering the unit text + drop-ins.
 /// `RunnerPlan` carries the rendered bytes that apply.rs writes to
@@ -784,6 +675,8 @@ pub(super) fn into_runner_plan(spec: EffectiveRunnerSpec) -> Result<RunnerPlan> 
         resolved_release: None,
         effective_unit_text: rendered.template,
         drop_ins: rendered.drop_ins,
+        env_file: rendered.env_file,
+        path_file: rendered.path_file,
     })
 }
 
