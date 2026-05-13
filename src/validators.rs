@@ -1154,7 +1154,7 @@ pub fn validate_restrict_address_families(field_label: &str, families: &[String]
 ///
 /// Each entry must satisfy:
 /// - Equal to its own trimmed form (no surrounding whitespace). The
-///   renderer at `units::render_hardening_drop_in` emits tokens via
+///   renderer at `units::render_hardening` emits tokens via
 ///   `Vec::join(" ")` verbatim, so a whitespace-padded token would
 ///   produce different on-disk bytes (and a different `spec_hash`)
 ///   from the equivalent unpadded form, triggering a spurious in-place
@@ -1231,7 +1231,7 @@ pub fn validate_extra_capabilities(caps: &[String]) -> Result<()> {
 ///
 /// Each entry must satisfy:
 /// - Equal to its own trimmed form (no surrounding whitespace). The
-///   renderer at `units::render_hardening_drop_in` emits tokens via
+///   renderer at `units::render_hardening` emits tokens via
 ///   `Vec::join(" ")` verbatim, so a whitespace-padded token would
 ///   produce different on-disk bytes (and a different `spec_hash`)
 ///   from the equivalent unpadded form, triggering a spurious in-place
@@ -3444,7 +3444,7 @@ mod tests {
     /// whitespace" message — fires the raw != trimmed gate BEFORE
     /// the trim+uppercase+deny-list check. Defends the spec_hash
     /// stability invariant: the renderer at
-    /// `units::render_hardening_drop_in` emits the raw token verbatim,
+    /// `units::render_hardening` emits the raw token verbatim,
     /// so without this gate a whitespace-padded token would produce
     /// different on-disk bytes (and a different spec_hash) from the
     /// equivalent unpadded form, triggering a spurious in-place
@@ -3629,7 +3629,7 @@ mod tests {
 
     /// Whitespace-padded tokens reject with the "surrounding
     /// whitespace" message. Defends the spec_hash stability
-    /// invariant: the renderer at `units::render_hardening_drop_in`
+    /// invariant: the renderer at `units::render_hardening`
     /// emits the raw token verbatim, so without this gate a
     /// whitespace-padded token would produce different on-disk bytes
     /// (and a different spec_hash) from the equivalent unpadded form,
