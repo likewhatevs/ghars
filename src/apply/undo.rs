@@ -469,7 +469,7 @@ fn undo_one(step: &UndoStep, deps: &Deps<'_>) -> Result<()> {
         }
         UndoStep::SetMode { path, prior_mode } => {
             use std::os::fd::AsRawFd;
-            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            use std::os::unix::fs::OpenOptionsExt;
             // Restore the pre-call mode. Two tolerated edge cases:
             //
             //   1. ENOENT: the path may have been removed by a

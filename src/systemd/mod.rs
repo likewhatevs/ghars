@@ -47,8 +47,15 @@ pub use units::{
 pub(crate) use units::check_identity_field;
 
 // `render_runner_env_file` / `render_runner_path_file` are pure pre-
-// renderers for the bin.X.Y.Z/.env|.path files; re-exported at
-// pub(crate) so the apply layer (and the test-helper that mirrors
-// real plan bytes) can call them through `crate::systemd::...`
-// rather than reaching into the units submodule directly.
+// renderers for the bin.X.Y.Z/.env|.path files. The `units` submodule
+// is private to `crate::systemd`, so these helpers are not reachable
+// at `crate::systemd::units::...`. Production code consumes the bytes
+// via `RenderedUnit { env_file, path_file }` returned from
+// `render_runner_unit` (which calls them as intra-module helpers);
+// `RenderedUnit` is re-exported publicly above. The only callers at
+// `crate::systemd::...` live in `src/apply/tests/` and rebuild
+// canonical plan bytes for assertion. Gate the re-export on
+// `cfg(test)` so non-test builds don't emit an unused-import warning.
+#[cfg(test)]
 pub(crate) use units::{render_runner_env_file, render_runner_path_file};
+
