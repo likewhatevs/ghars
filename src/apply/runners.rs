@@ -137,15 +137,34 @@ fn chmod_record_undo(
             });
         }
     };
-    // Re-open the fd target through /proc/self/fd/{fd}, atomic
-    // with the open above (no path-resolution race). metadata()
-    // here follows the proc magic symlink to the fd target.
-    let proc_path = format!("/proc/self/fd/{}", fd.as_raw_fd());
-    let prior_mode = fs::metadata(&proc_path)?.permissions().mode() & 0o7777;
-    fs::set_permissions(&proc_path, std::fs::Permissions::from_mode(mode))?;
-    // fd drops here, closing the kernel handle. The /proc/self/fd
-    // pathname becomes invalid after this point — any later code
-    // accessing it would see ENOENT.
+    // Read prior mode via fstat on the fd (atomic with the open;
+    // no path-resolution race). std::fs::File::metadata wraps
+    // fstat under the hood -- the call inspects the inode bound
+    // to the fd at open time, not whatever lives at the path now.
+    let prior_mode = fd.metadata()?.permissions().mode() & 0o7777;
+    // Direct fchmod on the fd: no /proc/self/fd round-trip. The fd
+    // was opened O_RDONLY + O_NOFOLLOW + O_NONBLOCK so the inode is
+    // pinned and symlink-refused atomically. fchmod operates on the
+    // pinned inode regardless of what path resolution would now
+    // produce, closing the same lstat -> chmod TOCTOU window the
+    // /proc/self/fd pattern closed -- with one fewer syscall and no
+    // dependency on /proc being mounted (containers / chroots that
+    // omit /proc would have ENOTSUP'd the old pattern's
+    // /proc/self/fd chmod silently).
+    //
+    // Mode::from_bits_retain accepts any u32 (caller passes 0o755,
+    // 0o770, 0o600, 0o700, 0o711, etc. — all subset of 0o7777
+    // permission bits, but `from_bits_retain` is the future-proof
+    // choice if a caller ever needs to set setuid / setgid / sticky
+    // beyond what nix's Mode bitflags enumerates).
+    nix::sys::stat::fchmod(
+        fd.as_raw_fd(),
+        nix::sys::stat::Mode::from_bits_retain(mode as nix::sys::stat::mode_t),
+    )
+    .map_err(|e| GharsError::Apply {
+        action: format!("chmod {context} at {path}"),
+        source: Box::new(GharsError::Io(std::io::Error::from_raw_os_error(e as i32))),
+    })?;
     drop(fd);
     // Gate the UndoLog push on a non-trivial mode change. A
     // no-op chmod (current mode == requested mode) on a re-apply

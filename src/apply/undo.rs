@@ -493,24 +493,25 @@ fn undo_one(step: &UndoStep, deps: &Deps<'_>) -> Result<()> {
             //      anyway (see the function-level docstring).
             //
             // The implementation uses the same O_RDONLY + O_NOFOLLOW
-            // → /proc/self/fd/{fd} pattern as `chmod_record_undo`,
-            // so both the symlink-refusal AND the chmod are atomic
-            // with the open: no path-resolution race between the
-            // lstat-equivalent (the open with O_NOFOLLOW) and the
-            // chmod.
+            // pattern as `chmod_record_undo`, so both the symlink-
+            // refusal AND the chmod are atomic with the open: no
+            // path-resolution race between the lstat-equivalent
+            // (the open with O_NOFOLLOW) and the chmod. fchmod
+            // operates directly on the fd (post-#64) -- no
+            // /proc/self/fd round-trip, one fewer syscall, no
+            // dependency on /proc being mounted.
             match std::fs::OpenOptions::new()
                 .read(true)
                 .custom_flags(libc::O_NOFOLLOW)
                 .open(path.as_std_path())
             {
-                Ok(fd) => {
-                    let proc_path = format!("/proc/self/fd/{}", fd.as_raw_fd());
-                    fs::set_permissions(
-                        &proc_path,
-                        std::fs::Permissions::from_mode(*prior_mode),
-                    )
-                    .map_err(GharsError::Io)
-                }
+                Ok(fd) => nix::sys::stat::fchmod(
+                    fd.as_raw_fd(),
+                    nix::sys::stat::Mode::from_bits_retain(
+                        *prior_mode as nix::sys::stat::mode_t,
+                    ),
+                )
+                .map_err(|e| GharsError::Io(std::io::Error::from_raw_os_error(e as i32))),
                 Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
                     tracing::warn!(
                         path = path.as_str(),
