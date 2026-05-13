@@ -583,3 +583,20 @@ BETWEEN the framework ccache wrappers and the per-runner
 `.cargo/bin` segment (so operator paths cannot shadow `gcc` /
 `cc` and break compile-cache hits). `path_append` lands AFTER
 the system tail.
+
+### Workflow steps see empty / minimal env after a failed apply
+
+A `ghars apply` that failed PARTWAY through a `CreateRunner`
+action triggers rollback. The rollback path for `bin.X.Y.Z/.env`
+and `bin.X.Y.Z/.path` is unlink-on-undo (the `WriteFile` undo
+step records `prior_content: None` for fresh files, so rollback
+removes the file rather than restoring it). Subsequent
+`actions/runner` startup writes a minimal default `.env` /
+`.path` of its own — no ccache wrappers, no `KTSTR_*` env, no
+operator-declared `environment.vars`. Workflow steps relying on
+those framework env vars run in degraded mode.
+
+Remediation: re-run `ghars apply` to restore the ghars-emitted
+`.env` / `.path` content. The successful re-apply overwrites
+the minimal upstream-written files with the full framework +
+operator-declared composition.

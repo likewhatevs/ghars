@@ -687,6 +687,22 @@ pub(super) fn execute_create_runner(
     // in-place UpdateRunner path produces byte-identical content for
     // the same spec (no runner_version interpolation in either
     // producer).
+    //
+    // Rollback semantics for the create-path: `write_record_undo`
+    // snapshots `prior_content` via `read_prior(path)`. For a
+    // CreateRunner (fresh runner), .env and .path do not exist on
+    // disk yet, so `read_prior` returns `None`. The pushed
+    // `UndoStep::WriteFile` with `prior_content: None` performs
+    // `unlink` on rollback, NOT a restore to prior content (there
+    // was none). A partial CreateRunner failure that triggers
+    // rollback therefore leaves the runner without `.env`/.path on
+    // disk. If `actions/runner`'s `env.sh` fires on the runner unit
+    // before a successful re-apply, it writes its OWN minimal .env
+    // / .path content (no ccache wrappers, no KTSTR_* env, no
+    // operator-declared environment.vars) — workflow steps that
+    // depend on those framework env vars run in degraded mode until
+    // the operator re-runs `ghars apply` to restore the ghars-
+    // emitted bytes.
     write_record_undo(&bin_dir.join(".path"), rendered.path_file.as_bytes(), log)?;
     write_record_undo(&bin_dir.join(".env"), rendered.env_file.as_bytes(), log)?;
 
