@@ -512,11 +512,31 @@ fn merge_defaults_hardening_field_by_field() {
     assert_eq!(eff.hardening.etc_bind_style, EtcBindStyle::Broad);
 }
 
+/// `merge_defaults` threads the caller-supplied `caches` Vec into
+/// `EffectiveRunnerSpec.caches` verbatim — no sort, no dedup, no
+/// reordering. The lowering layer (`lower_to_effective` at
+/// compute.rs:1092) is the source-of-truth sort site for caches;
+/// merge_defaults is just the bind-bag assembler called from below
+/// the sort. Direct merge_defaults callers (test fixtures, future
+/// synthetic spec builders) must sort their own caches Vec if they
+/// care about hash stability across operator-supplied orderings.
+///
+/// Pins both shape and order:
+/// - Single-element fixture catches Vec-corrupting regressions
+///   (e.g. accidental drop or duplicate inside merge_defaults).
+/// - Three-element non-canonical-order fixture catches
+///   sort-introducing regressions: if merge_defaults silently
+///   added `caches.sort_by_name()`, the 1-element check would still
+///   pass (trivially sorted), but the 3-element check would observe
+///   the input order `[pool-z, pool-a, pool-m]` flatten to canonical
+///   `[pool-a, pool-m, pool-z]` and fail.
 #[test]
 fn merge_defaults_caches_threaded_verbatim() {
     let runner = minimal_runner("a");
     let defaults = Defaults::default();
-    let caches = vec![EffectiveCacheBinding {
+
+    // Single-element shape pin (catches Vec-corrupting regressions).
+    let single = vec![EffectiveCacheBinding {
         name: "build".into(),
         kinds: vec![CacheKind::Ccache, CacheKind::Sccache],
         size: "200G".into(),
@@ -526,18 +546,74 @@ fn merge_defaults_caches_threaded_verbatim() {
         sleep_path: None,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     }];
-    let eff = merge_defaults(
+    let eff_single = merge_defaults(
         &runner,
         &defaults,
         "pat".into(),
-        caches.clone(),
+        single.clone(),
         None,
         None,
         None,
         Arch::X86_64,
         "/etc/ghars/ghars.toml".into(),
     );
-    assert_eq!(eff.caches, caches);
+    assert_eq!(eff_single.caches, single);
+
+    // Three-element non-canonical-order pin (catches
+    // sort-introducing regressions in merge_defaults). Names chosen
+    // in lex-descending order ["pool-z", "pool-a", "pool-m"] — if
+    // merge_defaults silently sorted, eff.caches would surface as
+    // lex-ascending ["pool-a", "pool-m", "pool-z"] and the assertion
+    // would fail.
+    let multi = vec![
+        EffectiveCacheBinding {
+            name: "pool-z".into(),
+            kinds: vec![CacheKind::Ccache],
+            size: "10G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
+        },
+        EffectiveCacheBinding {
+            name: "pool-a".into(),
+            kinds: vec![CacheKind::Sccache],
+            size: "5G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+            sccache_path: Some("/usr/bin/sccache".into()),
+            sleep_path: None,
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
+        },
+        EffectiveCacheBinding {
+            name: "pool-m".into(),
+            kinds: vec![CacheKind::Ccache],
+            size: "20G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
+        },
+    ];
+    let eff_multi = merge_defaults(
+        &runner,
+        &defaults,
+        "pat".into(),
+        multi.clone(),
+        None,
+        None,
+        None,
+        Arch::X86_64,
+        "/etc/ghars/ghars.toml".into(),
+    );
+    assert_eq!(
+        eff_multi.caches, multi,
+        "merge_defaults must thread caches verbatim (no sort, no dedup, no reorder); \
+         a regression that introduced sort here would flatten the non-canonical \
+         order [pool-z, pool-a, pool-m] to canonical [pool-a, pool-m, pool-z]"
+    );
 }
 
 // --- spec_hash ------------------------------------------------------
