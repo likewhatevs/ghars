@@ -200,12 +200,15 @@ fn empty_operator_environment_produces_no_extra_emission() {
     let spec = base_spec();
     let unit = render_runner_unit(&spec).expect("render must succeed");
 
-    // .env should ONLY contain LANG + CCACHE_DIR + KTSTR_LOCK_DIR +
-    // KTSTR_CACHE_DIR (4 framework lines for a spec with no caches).
+    // .env should ONLY contain LANG + KTSTR_LOCK_DIR + KTSTR_CACHE_DIR
+    // (3 framework lines for a spec with no caches). CCACHE_DIR is
+    // gated on has_ccache binding per #10 — empty caches → no
+    // CCACHE_DIR emission.
     let line_count = unit.env_file.lines().count();
     assert_eq!(
-        line_count, 4,
-        ".env must contain exactly 4 framework lines for empty caches + empty env_vars; got:\n{}",
+        line_count, 3,
+        ".env must contain exactly 3 framework lines for empty caches + empty env_vars \
+         (LANG + KTSTR_LOCK_DIR + KTSTR_CACHE_DIR); got:\n{}",
         unit.env_file
     );
 

@@ -69,8 +69,13 @@ chmod during `ghars apply`'s CreateRunner action:
 The trust-zone parent dir `/var/lib/ghars/<TRUST_ZONE>/` is
 `0o711` (descend-only): non-root can traverse into named
 children but cannot `ls` the parent. Shared trust-zone subdirs
-(`.ktstr`, `.ccache`) under it are `0o777` for cross-runner
-coordination within the zone.
+are `0o777` when present, for cross-runner coordination within
+the zone: `.ktstr` always exists (KTSTR coordination); `.ccache`
+exists only when at least one runner in the zone is bound to a
+ccache `[[cache_pools]]` entry (skipped otherwise — the renderer
+also omits the matching `CCACHE_DIR=` `.env` emission, so the
+unconditional ccache wrappers in PATH fall back to the per-runner
+XDG default `$HOME/.ccache` under `runner_home`).
 
 Per-file chmods (`runner_tmp`, the credential files, and the
 two runner_home stages) all route through a single helper that

@@ -500,8 +500,15 @@ fn create_runner_refuses_planted_symlink_at_runner_tmp() {
 ///   just before `start_unit`.
 /// - runner_home/tmp 0o777: TMPDIR for the runner unit's sccache
 ///   server + workflow steps.
-/// - tz_dir/.ktstr 0o777: shared cross-runner KTSTR coordination.
-/// - tz_dir/.ccache 0o777: shared cross-runner ccache pool.
+/// - tz_dir/.ktstr 0o777: shared cross-runner KTSTR coordination
+///   (always created).
+/// - tz_dir/.ccache: NOT created for no-ccache-binding runners
+///   (gated per #10). For the binding-present case see
+///   `create_runner_with_ccache_binding_creates_ccache_dir`. For
+///   the binding-absent skip case see
+///   `create_runner_without_ccache_binding_skips_ccache_dir`. This
+///   test uses `make_runner_plan` which produces a no-binding spec
+///   → asserts .ccache does NOT exist.
 ///
 /// Regression guards against a future change that clamps any of
 /// these tighter (breaks DynamicUser write) or looser (defeats
@@ -566,10 +573,227 @@ fn create_runner_pins_directory_modes() {
         0o777,
         "ktstr_dir must be 0o777 (cross-runner shared in trust zone)"
     );
+    // .ccache dir is NOT created for a runner with no ccache binding
+    // (make_spec uses caches=vec![]). Coverage for the
+    // ccache-binding case lives in
+    // `create_runner_with_ccache_binding_creates_ccache_dir`; coverage
+    // for the no-ccache skip case lives in
+    // `create_runner_without_ccache_binding_skips_ccache_dir`.
+    assert!(
+        !ccache_dir.as_std_path().exists(),
+        ".ccache dir must NOT be created for a no-ccache-binding runner: {ccache_dir}"
+    );
+}
+
+/// Pin that `execute_create_runner` SKIPS `.ccache` dir creation when
+/// the runner spec has no ccache binding. Symmetric with the
+/// `validate_no_duplicate_cache_kinds` invariant: the trust-zone-
+/// shared `.ccache` is only material when a ccache pool is bound, so
+/// trust zones with zero ccache runners stay free of an empty dir.
+/// Sibling of `create_runner_without_ccache_binding_skips_ccache_dir`
+/// for the sccache-only binding case — proves the gate filters on
+/// `Ccache` kind specifically, not on "any binding exists". Regression
+/// guard against a kind-blind predicate (e.g.
+/// `.any(|b| !b.kinds.is_empty())`) that would create `.ccache` for
+/// runners that only bind sccache.
+#[test]
+fn create_runner_with_sccache_only_binding_skips_ccache_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = make_paths(&tmp);
+    std::fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
+    let mut plan = make_runner_plan("a", &paths.state_dir);
+    plan.spec.caches.push(crate::config::EffectiveCacheBinding {
+        name: "build".into(),
+        kinds: vec![crate::config::CacheKind::Sccache],
+        size: "10G".into(),
+        mode: crate::config::CacheMode::Shared,
+        trust_zone: "default".into(),
+        sccache_path: Some("/usr/bin/sccache".into()),
+        sleep_path: None,
+        renderer_schema: crate::systemd::RENDERER_SCHEMA,
+    });
+    plan.env_file = crate::systemd::render_runner_env_file(&plan.spec).unwrap();
+    plan.path_file = crate::systemd::render_runner_path_file(&plan.spec).unwrap();
+    let systemd = MockSystemd::default();
+    let mut auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+    auth_map.insert(
+        "pat".into(),
+        Box::new(MockTokenSource {
+            name: "pat".into(),
+            ..MockTokenSource::default()
+        }),
+    );
+    let tarball = MockTarball::default();
+    let config_shell = MockConfigShell::default();
+    let deps = Deps {
+        systemd: &systemd,
+        auth: &auth_map,
+        tarball: &tarball,
+        config_shell: &config_shell,
+    };
+    execute_create_runner(&plan, &deps, &paths, &mut UndoLog::new(), 2).unwrap();
+    let ccache_dir = paths.state_dir.join("default").join(".ccache");
+    assert!(
+        !ccache_dir.as_std_path().exists(),
+        "sccache-only-binding runner must not create .ccache: {ccache_dir}"
+    );
+}
+
+/// Sibling of `create_runner_with_ccache_binding_creates_ccache_dir`
+/// covering combined-kind pools (`kinds = ["ccache", "sccache"]`).
+/// The gate at execute_create_runner uses `.kinds.contains(&Ccache)`
+/// (which #38's validator accepts for combined-kind pools too), so a
+/// combined-kind pool must trigger `.ccache` creation. Regression
+/// guard against `.kinds == &[Ccache]` equality matching.
+#[test]
+fn create_runner_with_combined_kind_pool_creates_ccache_dir() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = make_paths(&tmp);
+    std::fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
+    let mut plan = make_runner_plan("a", &paths.state_dir);
+    plan.spec.caches.push(crate::config::EffectiveCacheBinding {
+        name: "combined".into(),
+        kinds: vec![
+            crate::config::CacheKind::Ccache,
+            crate::config::CacheKind::Sccache,
+        ],
+        size: "10G".into(),
+        mode: crate::config::CacheMode::Shared,
+        trust_zone: "default".into(),
+        sccache_path: Some("/usr/bin/sccache".into()),
+        sleep_path: Some("/usr/bin/sleep".into()),
+        renderer_schema: crate::systemd::RENDERER_SCHEMA,
+    });
+    plan.env_file = crate::systemd::render_runner_env_file(&plan.spec).unwrap();
+    plan.path_file = crate::systemd::render_runner_path_file(&plan.spec).unwrap();
+    let systemd = MockSystemd::default();
+    let mut auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+    auth_map.insert(
+        "pat".into(),
+        Box::new(MockTokenSource {
+            name: "pat".into(),
+            ..MockTokenSource::default()
+        }),
+    );
+    let tarball = MockTarball::default();
+    let config_shell = MockConfigShell::default();
+    let deps = Deps {
+        systemd: &systemd,
+        auth: &auth_map,
+        tarball: &tarball,
+        config_shell: &config_shell,
+    };
+    execute_create_runner(&plan, &deps, &paths, &mut UndoLog::new(), 2).unwrap();
+    let ccache_dir = paths.state_dir.join("default").join(".ccache");
+    assert!(
+        ccache_dir.as_std_path().exists(),
+        "combined-kind-pool runner must create .ccache: {ccache_dir}"
+    );
+    let mode = std::fs::metadata(ccache_dir.as_std_path())
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
     assert_eq!(
-        mode(&ccache_dir),
-        0o777,
-        "ccache_dir must be 0o777 (cross-runner shared in trust zone)"
+        mode, 0o777,
+        ".ccache must be 0o777 under combined-kind pool too"
+    );
+}
+
+#[test]
+fn create_runner_without_ccache_binding_skips_ccache_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = make_paths(&tmp);
+    std::fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
+    let plan = make_runner_plan("a", &paths.state_dir);
+    assert!(
+        plan.spec.caches.is_empty(),
+        "fixture sanity: make_runner_plan must produce a no-ccache spec"
+    );
+    let systemd = MockSystemd::default();
+    let mut auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+    auth_map.insert(
+        "pat".into(),
+        Box::new(MockTokenSource {
+            name: "pat".into(),
+            ..MockTokenSource::default()
+        }),
+    );
+    let tarball = MockTarball::default();
+    let config_shell = MockConfigShell::default();
+    let deps = Deps {
+        systemd: &systemd,
+        auth: &auth_map,
+        tarball: &tarball,
+        config_shell: &config_shell,
+    };
+    execute_create_runner(&plan, &deps, &paths, &mut UndoLog::new(), 2).unwrap();
+    let tz_dir = paths.state_dir.join("default");
+    let ccache_dir = tz_dir.join(".ccache");
+    assert!(
+        !ccache_dir.as_std_path().exists(),
+        "no-ccache-binding runner must not create .ccache: {ccache_dir}"
+    );
+}
+
+/// Pin that `execute_create_runner` DOES create `.ccache` when the
+/// runner spec has at least one ccache-kind binding. Mirror of the
+/// negative `_without_ccache_binding_skips_ccache_dir` test.
+#[test]
+fn create_runner_with_ccache_binding_creates_ccache_dir() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = make_paths(&tmp);
+    std::fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
+    let mut plan = make_runner_plan("a", &paths.state_dir);
+    plan.spec.caches.push(crate::config::EffectiveCacheBinding {
+        name: "obj".into(),
+        kinds: vec![crate::config::CacheKind::Ccache],
+        size: "10G".into(),
+        mode: crate::config::CacheMode::Shared,
+        trust_zone: "default".into(),
+        sccache_path: None,
+        sleep_path: Some("/usr/bin/sleep".into()),
+        renderer_schema: crate::systemd::RENDERER_SCHEMA,
+    });
+    // Re-render env_file + path_file so the in-place rewrite path
+    // (if it ran) would see consistent bytes — defensive only;
+    // execute_create_runner doesn't use these directly.
+    plan.env_file = crate::systemd::render_runner_env_file(&plan.spec).unwrap();
+    plan.path_file = crate::systemd::render_runner_path_file(&plan.spec).unwrap();
+    let systemd = MockSystemd::default();
+    let mut auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+    auth_map.insert(
+        "pat".into(),
+        Box::new(MockTokenSource {
+            name: "pat".into(),
+            ..MockTokenSource::default()
+        }),
+    );
+    let tarball = MockTarball::default();
+    let config_shell = MockConfigShell::default();
+    let deps = Deps {
+        systemd: &systemd,
+        auth: &auth_map,
+        tarball: &tarball,
+        config_shell: &config_shell,
+    };
+    execute_create_runner(&plan, &deps, &paths, &mut UndoLog::new(), 2).unwrap();
+    let tz_dir = paths.state_dir.join("default");
+    let ccache_dir = tz_dir.join(".ccache");
+    assert!(
+        ccache_dir.as_std_path().exists(),
+        "ccache-binding runner must create .ccache: {ccache_dir}"
+    );
+    let mode = std::fs::metadata(ccache_dir.as_std_path())
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        mode, 0o777,
+        ".ccache must be 0o777 at apply-time (DynamicUser + cross-runner shared)"
     );
 }
 
@@ -602,7 +826,26 @@ fn create_runner_pushes_set_mode_undo_step_for_every_chmod_site() {
     let tmp = tempfile::tempdir().unwrap();
     let paths = make_paths(&tmp);
     std::fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
-    let plan = make_runner_plan("a", &paths.state_dir);
+    let mut plan = make_runner_plan("a", &paths.state_dir);
+    // Add a ccache binding so the .ccache dir is created + chmodded
+    // (and so the assertion below that .ccache is in the expected
+    // chmod-site set holds). Without this binding the
+    // .ccache-creation block is skipped per #10's gating. The
+    // chmod-site contract being tested is per-chmod-call, not per-
+    // spec, so the right test posture is "spec with all chmod sites
+    // active" → all SetMode pushes observable.
+    plan.spec.caches.push(crate::config::EffectiveCacheBinding {
+        name: "obj".into(),
+        kinds: vec![crate::config::CacheKind::Ccache],
+        size: "10G".into(),
+        mode: crate::config::CacheMode::Shared,
+        trust_zone: "default".into(),
+        sccache_path: None,
+        sleep_path: Some("/usr/bin/sleep".into()),
+        renderer_schema: crate::systemd::RENDERER_SCHEMA,
+    });
+    plan.env_file = crate::systemd::render_runner_env_file(&plan.spec).unwrap();
+    plan.path_file = crate::systemd::render_runner_path_file(&plan.spec).unwrap();
 
     // Pre-stage every chmod-target dir at a mode DIFFERENT from
     // what execute_create_runner sets, so each chmod_record_undo
@@ -664,7 +907,10 @@ fn create_runner_pushes_set_mode_undo_step_for_every_chmod_site() {
     let ktstr_dir = tz_dir.join(".ktstr");
     let ccache_dir = tz_dir.join(".ccache");
 
-    // tz_dir, runner_tmp, .ktstr, .ccache: each chmodded ONCE.
+    // tz_dir, runner_tmp, .ktstr: each chmodded ONCE.
+    // .ccache: chmodded ONCE because this fixture's plan includes a
+    // ccache binding (per #10's gating, .ccache is only created +
+    // chmodded when the runner spec has at least one ccache binding).
     // runner_home: chmodded TWICE (Stage 1 0o755, Stage 2 0o777).
     // .runner / .credentials / .credentials_rsaparams: each chmodded
     // ONCE post-config.sh.
@@ -1013,9 +1259,12 @@ fn fchown_record_undo_refuses_planted_symlink() {
 
 /// chown_and_tighten_runner_state is the production helper that
 /// runs after the post-StartUnit DynamicUser UID query. The
-/// helper chowns runner_home, runner_tmp, .ktstr, .ccache, and
-/// the credential files to the DynamicUser UID, then tightens
-/// modes (0o700 dirs, 0o770 shared, 0o600 credentials).
+/// helper chowns runner_home, runner_tmp, .ktstr, optionally
+/// .ccache (per #10's gating — this test passes Some; see
+/// `chown_and_tighten_runner_state_skips_ccache_when_none` for
+/// the None branch), and the credential files to the DynamicUser
+/// UID, then tightens modes (0o700 dirs, 0o770 shared, 0o600
+/// credentials).
 ///
 /// This test exercises the FULL helper directly (not via
 /// execute_create_runner's root-gate, which skips it under non-
@@ -1080,7 +1329,7 @@ fn chown_and_tighten_runner_state_chowns_and_tightens_all_paths() {
         &runner_home,
         &runner_tmp,
         &ktstr_dir,
-        &ccache_dir,
+        Some(ccache_dir.as_path()),
         our_uid,
         our_gid,
         &mut log,
@@ -1156,6 +1405,116 @@ fn chown_and_tighten_runner_state_chowns_and_tightens_all_paths() {
     assert_eq!(
         set_owner_count, 0,
         "expected 0 SetOwner entries (chown-to-self is a no-op, gate skips); got {set_owner_count}"
+    );
+}
+
+/// Sibling of `chown_and_tighten_runner_state_chowns_and_tightens_all_paths`
+/// for the `ccache_dir: None` branch (#10 gating). The helper must:
+/// - succeed with no `.ccache` path on disk + `None` arg
+/// - skip fchown AND chmod-tighten for `.ccache`
+/// - still tighten runner_home / runner_tmp / .ktstr / creds as usual
+/// - NOT push any UndoStep referencing a `.ccache` path
+///
+/// Regression guard against:
+/// - inverting the `Option` branch (`if let None` instead of `if let Some`)
+/// - falling back to a sentinel path when `None`
+/// - any code path that touches `.ccache` despite the None signal
+#[test]
+fn chown_and_tighten_runner_state_skips_ccache_when_none() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let tmp = tempfile::tempdir().unwrap();
+    let our_meta = std::fs::metadata("/proc/self").unwrap();
+    let our_uid = our_meta.uid();
+    let our_gid = our_meta.gid();
+
+    // Construct the runner tree WITHOUT `.ccache` (matches the post-
+    // #10 no-ccache-binding runner shape).
+    let tz_dir = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
+        .unwrap()
+        .join("default");
+    let runner_home = tz_dir.join("ghars-a");
+    let runner_tmp = runner_home.join("tmp");
+    let ktstr_dir = tz_dir.join(".ktstr");
+    for d in [&tz_dir, &runner_home, &runner_tmp, &ktstr_dir] {
+        std::fs::create_dir_all(d.as_std_path()).unwrap();
+    }
+    // Affirmatively assert .ccache does NOT exist as a precondition.
+    let ccache_dir = tz_dir.join(".ccache");
+    assert!(
+        !ccache_dir.as_std_path().exists(),
+        "fixture sanity: .ccache must not exist for the None-branch test"
+    );
+    // Plant the 3 credential files so the helper exercises the
+    // credential-loop branches too.
+    for basename in [".runner", ".credentials", ".credentials_rsaparams"] {
+        let p = runner_home.join(basename);
+        std::fs::write(p.as_std_path(), b"{}").unwrap();
+        std::fs::set_permissions(p.as_std_path(), std::fs::Permissions::from_mode(0o644))
+            .unwrap();
+    }
+    // Pre-stage dirs at apply-time pre-tighten modes.
+    std::fs::set_permissions(runner_home.as_std_path(), std::fs::Permissions::from_mode(0o777))
+        .unwrap();
+    std::fs::set_permissions(runner_tmp.as_std_path(), std::fs::Permissions::from_mode(0o777))
+        .unwrap();
+    std::fs::set_permissions(ktstr_dir.as_std_path(), std::fs::Permissions::from_mode(0o777))
+        .unwrap();
+
+    let mut log = UndoLog::new();
+    crate::apply::runners::chown_and_tighten_runner_state(
+        &runner_home,
+        &runner_tmp,
+        &ktstr_dir,
+        None,
+        our_uid,
+        our_gid,
+        &mut log,
+    )
+    .expect("chown+tighten with None ccache_dir must succeed");
+
+    // Modes: 3 dirs + 3 creds tightened; .ccache untouched (still
+    // doesn't exist).
+    let mode_of = |p: &camino::Utf8PathBuf| -> u32 {
+        std::fs::metadata(p.as_std_path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    assert_eq!(mode_of(&runner_home), 0o700);
+    assert_eq!(mode_of(&runner_tmp), 0o700);
+    assert_eq!(mode_of(&ktstr_dir), 0o770);
+    assert!(
+        !ccache_dir.as_std_path().exists(),
+        "None branch must not create .ccache: {ccache_dir}"
+    );
+
+    // UndoLog must NOT reference any .ccache path.
+    let ccache_path_str = ccache_dir.to_string();
+    for step in log.steps() {
+        let path_str = match step {
+            UndoStep::SetMode { path, .. } => Some(path.to_string()),
+            UndoStep::SetOwner { path, .. } => Some(path.to_string()),
+            _ => None,
+        };
+        if let Some(p) = path_str {
+            assert!(
+                p != ccache_path_str && !p.ends_with("/.ccache"),
+                "None branch must not push UndoStep referencing .ccache; got: {p}"
+            );
+        }
+    }
+
+    // Expected SetMode count: 6 = 3 dirs (runner_home, runner_tmp,
+    // .ktstr) + 3 creds. .ccache is not counted.
+    let set_mode_count = log
+        .steps()
+        .iter()
+        .filter(|s| matches!(s, UndoStep::SetMode { .. }))
+        .count();
+    assert_eq!(
+        set_mode_count, 6,
+        "expected 6 SetMode entries (3 dirs + 3 creds, no .ccache); got {set_mode_count}"
     );
 }
 

@@ -2,6 +2,7 @@
 //! short-circuit, and managed-orphan deletion.
 
 use std::collections::HashMap;
+use std::os::unix::fs::PermissionsExt;
 
 use crate::Result;
 use crate::auth::TokenSource;
@@ -110,6 +111,104 @@ fn execute_update_runner_in_place_populates_pool_name_vecs() {
         }
         other => panic!("expected InPlaceRestarted, got {other:?}"),
     }
+
+    // Pin the new in-place .ccache materialization: a runner that
+    // transitions from no-cache to ccache-binding in-place must have
+    // `.ccache` created in its trust-zone dir. Symmetric with
+    // `create_runner_with_ccache_binding_creates_ccache_dir` in the
+    // CreateRunner path. Regression guard against an inverted gate or
+    // a missing `create_dir_all` at runners.rs in-place block.
+    let tmp_inplace_add = tempfile::tempdir().unwrap();
+    let paths_inplace_add = make_paths(&tmp_inplace_add);
+    let systemd_inplace_add = MockSystemd::default();
+    let tarball_inplace_add = MockTarball::default();
+    let config_shell_inplace_add = MockConfigShell::default();
+    let auth_map_inplace_add: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+    let deps_inplace_add = Deps {
+        systemd: &systemd_inplace_add,
+        auth: &auth_map_inplace_add,
+        tarball: &tarball_inplace_add,
+        config_shell: &config_shell_inplace_add,
+    };
+    let delta_inplace_add =
+        make_caches_delta(&paths_inplace_add, Some(vec![]), vec!["new-ccache-pool"]);
+    let ccache_dir_inplace_add = paths_inplace_add.state_dir.join("default").join(".ccache");
+    assert!(
+        !ccache_dir_inplace_add.as_std_path().exists(),
+        "fixture sanity: .ccache must NOT exist before in-place add-binding apply"
+    );
+    let mut log_inplace_add = UndoLog::new();
+    execute_update_runner(
+        &delta_inplace_add,
+        &deps_inplace_add,
+        &paths_inplace_add,
+        &mut log_inplace_add,
+        2,
+    )
+    .unwrap();
+    assert!(
+        ccache_dir_inplace_add.as_std_path().exists(),
+        "in-place add-ccache-binding apply must create .ccache: {ccache_dir_inplace_add}"
+    );
+    let mode_inplace_add = std::fs::metadata(ccache_dir_inplace_add.as_std_path())
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        mode_inplace_add, 0o777,
+        ".ccache must be 0o777 in in-place path (matches CreateRunner apply-time mode; \
+         post-StartUnit tightening to 0o770 is task #73's territory)"
+    );
+
+    // Sibling: pre-existing .ccache from a sibling runner's prior
+    // apply must NOT be re-chmodded by the in-place path. Pins the
+    // `if !exists()` short-circuit at runners.rs in the in-place block.
+    let tmp_existing = tempfile::tempdir().unwrap();
+    let paths_existing = make_paths(&tmp_existing);
+    let tz_dir_existing = paths_existing.state_dir.join("default");
+    std::fs::create_dir_all(tz_dir_existing.as_std_path()).unwrap();
+    let ccache_dir_existing = tz_dir_existing.join(".ccache");
+    std::fs::create_dir_all(ccache_dir_existing.as_std_path()).unwrap();
+    // Pre-stage at a NON-0o777 mode so a redundant chmod would be
+    // observable.
+    std::fs::set_permissions(
+        ccache_dir_existing.as_std_path(),
+        std::fs::Permissions::from_mode(0o770),
+    )
+    .unwrap();
+    let systemd_existing = MockSystemd::default();
+    let tarball_existing = MockTarball::default();
+    let config_shell_existing = MockConfigShell::default();
+    let auth_map_existing: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+    let deps_existing = Deps {
+        systemd: &systemd_existing,
+        auth: &auth_map_existing,
+        tarball: &tarball_existing,
+        config_shell: &config_shell_existing,
+    };
+    let delta_existing =
+        make_caches_delta(&paths_existing, Some(vec![]), vec!["sibling-shared-pool"]);
+    let mut log_existing = UndoLog::new();
+    execute_update_runner(
+        &delta_existing,
+        &deps_existing,
+        &paths_existing,
+        &mut log_existing,
+        2,
+    )
+    .unwrap();
+    let mode_existing = std::fs::metadata(ccache_dir_existing.as_std_path())
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        mode_existing, 0o770,
+        "pre-existing .ccache from a sibling runner's apply must NOT be chmod-thrashed by the \
+         in-place path: the exists() short-circuit at runners.rs in the in-place block must \
+         skip chmod when the dir already exists. Cross-runner sharing relies on this."
+    );
 
     // Pure shrink.
     match run_case(Some(vec!["old-pool"]), vec![]) {

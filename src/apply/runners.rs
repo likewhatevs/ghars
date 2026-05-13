@@ -368,23 +368,36 @@ pub(super) fn fchown_record_undo(
 /// Modes applied:
 ///   - runner_home → 0o700 (was 0o777 — non-owner access removed)
 ///   - runner_tmp → 0o700 (same)
-///   - .ktstr / .ccache → 0o770 (group is the trust-zone UID
-///     == owner UID for DynamicUser, so group bits are equivalent
-///     to owner; 0o770 leaves room for a future separate trust-
-///     zone group with read access)
+///   - .ktstr → 0o770 (group is the trust-zone UID == owner UID for
+///     DynamicUser, so group bits are equivalent to owner; 0o770
+///     leaves room for a future separate trust-zone group with read
+///     access)
+///   - .ccache → 0o770 (same rationale as .ktstr — but gated on
+///     ccache binding presence: skipped entirely when ccache_dir is
+///     None, see body. Callers pass None for runners with no
+///     `[cache_pools.NAME]` binding of `kinds = ["ccache"]`, per
+///     #10's gating)
 ///   - .runner / .credentials* → 0o600 (owner-only read; world
 ///     no longer sees OAuth credentials or the RSA private key)
 ///
-/// Optional credential files (.runner, .credentials,
-/// .credentials_rsaparams) are existence-gated: a runner whose
-/// config.sh skipped one (e.g. PAT-authenticated runners may not
-/// produce .credentials_rsaparams) silently skips its chown +
-/// chmod entry.
+/// Two gating axes coexist in this helper:
+///   - `.ccache` is gated at the PARAMETER layer (`ccache_dir:
+///     Option<&Utf8Path>`): callers pass None when the runner spec
+///     has no ccache-kind binding, gated upstream at
+///     execute_create_runner where the binding is known.
+///   - Credential files (`.runner`, `.credentials`,
+///     `.credentials_rsaparams`) are existence-gated INSIDE the
+///     helper: a runner whose config.sh skipped one (e.g.
+///     PAT-authenticated runners may not produce
+///     `.credentials_rsaparams`) silently skips its chown + chmod
+///     entry. The difference: ccache gating is by spec (config-
+///     known); credential gating is by config.sh output (runtime-
+///     observed).
 pub(super) fn chown_and_tighten_runner_state(
     runner_home: &camino::Utf8Path,
     runner_tmp: &camino::Utf8Path,
     ktstr_dir: &camino::Utf8Path,
-    ccache_dir: &camino::Utf8Path,
+    ccache_dir: Option<&camino::Utf8Path>,
     uid: u32,
     gid: u32,
     log: &mut UndoLog,
@@ -399,10 +412,18 @@ pub(super) fn chown_and_tighten_runner_state(
     // pass (test_process_uid, test_process_gid) so non-root chown
     // doesn't trip on the gid-change-needs-CAP_CHOWN-unless-in-
     // group-set rule.
+    //
+    // `ccache_dir` is Option because the dir is only created when
+    // this runner has at least one cache_pool binding with ccache
+    // kind (gated in execute_create_runner). Passing None here
+    // skips the .ccache fchown + chmod-tighten so non-ccache
+    // runners don't touch a dir that doesn't exist for their spec.
     fchown_record_undo(runner_home, uid, gid, "runner_home", log)?;
     fchown_record_undo(runner_tmp, uid, gid, "runner_tmp", log)?;
     fchown_record_undo(ktstr_dir, uid, gid, ".ktstr", log)?;
-    fchown_record_undo(ccache_dir, uid, gid, ".ccache", log)?;
+    if let Some(ccache_dir) = ccache_dir {
+        fchown_record_undo(ccache_dir, uid, gid, ".ccache", log)?;
+    }
     for basename in [".runner", ".credentials", ".credentials_rsaparams"] {
         let path = runner_home.join(basename);
         if path.as_std_path().exists() {
@@ -414,7 +435,9 @@ pub(super) fn chown_and_tighten_runner_state(
     chmod_record_undo(runner_home, 0o700, "runner_home (tighten)", log)?;
     chmod_record_undo(runner_tmp, 0o700, "runner_tmp (tighten)", log)?;
     chmod_record_undo(ktstr_dir, 0o770, ".ktstr (tighten)", log)?;
-    chmod_record_undo(ccache_dir, 0o770, ".ccache (tighten)", log)?;
+    if let Some(ccache_dir) = ccache_dir {
+        chmod_record_undo(ccache_dir, 0o770, ".ccache (tighten)", log)?;
+    }
     for basename in [".runner", ".credentials", ".credentials_rsaparams"] {
         let path = runner_home.join(basename);
         if path.as_std_path().exists() {
@@ -664,9 +687,29 @@ pub(super) fn execute_create_runner(
     let ktstr_dir = tz_dir.join(".ktstr");
     fs::create_dir_all(ktstr_dir.as_std_path())?;
     chmod_record_undo(&ktstr_dir, 0o777, ".ktstr", log)?;
+    // .ccache dir is trust-zone-shared but only used when at least
+    // one cache_pool with `kinds` containing ccache is bound to this
+    // runner. The renderer at systemd::render_runner_env_file gates
+    // its `CCACHE_DIR=` .env emission on the same `has_ccache`
+    // predicate — keeping the two symmetric: if the dir isn't
+    // created, the env var pointing at it isn't emitted, so the
+    // unconditional ccache wrappers in PATH don't intercept `gcc`
+    // calls and try to write into a non-existent path. Runners with
+    // no ccache binding fall through to ccache's XDG default
+    // (HOME/.ccache → runner_home, per-runner ephemeral). Gating
+    // creation here keeps trust zones with zero ccache runners free
+    // of an empty `.ccache`. `create_dir_all` is idempotent so
+    // multiple ccache-binding runners in the same trust_zone
+    // converge to one shared dir.
     let ccache_dir = tz_dir.join(".ccache");
-    fs::create_dir_all(ccache_dir.as_std_path())?;
-    chmod_record_undo(&ccache_dir, 0o777, ".ccache", log)?;
+    let has_ccache = spec
+        .caches
+        .iter()
+        .any(|b| b.kinds.contains(&crate::config::CacheKind::Ccache));
+    if has_ccache {
+        fs::create_dir_all(ccache_dir.as_std_path())?;
+        chmod_record_undo(&ccache_dir, 0o777, ".ccache", log)?;
+    }
 
     // No useradd / gpasswd step. The runner unit declares
     // DynamicUser=yes with `User=ghars-tz-<TRUST_ZONE>` set in the
@@ -1027,7 +1070,7 @@ pub(super) fn execute_create_runner(
             &runner_home,
             &runner_tmp,
             &ktstr_dir,
-            &ccache_dir,
+            has_ccache.then_some(ccache_dir.as_path()),
             uid,
             uid,
             log,
@@ -1481,6 +1524,45 @@ pub(super) fn execute_update_runner(
         let dest = drop_in_dir.join(name);
         if read_then_write_if_changed(&dest, body.as_bytes(), log)? {
             files_changed += 1;
+        }
+    }
+
+    // Materialize the trust-zone-shared `.ccache` dir if the
+    // in-place update ADDED a ccache binding (or refreshed an existing
+    // one). Without this, an operator who edits a no-cache runner to
+    // add `caches = ["build"]` (a ccache pool) gets the new drop-in
+    // body + .env emission (CCACHE_DIR=/var/lib/ghars/<TZ>/.ccache,
+    // gated on has_ccache in render_runner_env_file) but the dir on
+    // disk was never created — workflow steps' ccache wrappers would
+    // try to write to a non-existent path. `create_dir_all` is
+    // idempotent so the same call is safe for runners whose ccache
+    // binding pre-existed. The reverse (removing the last ccache
+    // binding) leaves a stale empty dir; harmless (no env var points
+    // at it anymore once the renderer's has_ccache gate drops the
+    // emission) and avoids cross-runner racy rmdir (another runner
+    // in the same trust_zone may still need the dir).
+    //
+    // KNOWN GAP (task #73): the freshly-created `.ccache` here stays
+    // root-owned at 0o777 because `execute_update_runner` does NOT
+    // call `chown_and_tighten_runner_state` post-StartUnit (only
+    // `execute_create_runner` does, at the chown call-site below).
+    // The dir is functionally writable by the DynamicUser via the
+    // world bit, but the ownership posture diverges from the
+    // CreateRunner path (which produces DynamicUser-owned 0o770).
+    // Self-heals on the next CreateRunner in the same trust_zone.
+    // Task #73 tracks closing the asymmetry.
+    let after_has_ccache = delta
+        .after
+        .spec
+        .caches
+        .iter()
+        .any(|b| b.kinds.contains(&crate::config::CacheKind::Ccache));
+    if after_has_ccache {
+        let tz_dir_inplace = paths.state_dir.join(&delta.identity.trust_zone);
+        let ccache_dir_inplace = tz_dir_inplace.join(".ccache");
+        if !ccache_dir_inplace.as_std_path().exists() {
+            fs::create_dir_all(ccache_dir_inplace.as_std_path())?;
+            chmod_record_undo(&ccache_dir_inplace, 0o777, ".ccache (in-place)", log)?;
         }
     }
 

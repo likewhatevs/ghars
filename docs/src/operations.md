@@ -600,14 +600,20 @@ The constraint is structural, not arbitrary:
   design. `ccache/src/ccache/config.cpp` picks ONE `cache_dir`
   from a strict resolution chain with no loop or list. Multi-
   pool ghars binding cannot deliver distinct cache dirs to the
-  workflow step. The runner sees a single trust-zone-shared
-  `CCACHE_DIR=/var/lib/ghars/<TRUST_ZONE>/.ccache` (so trust-
-  zone-shared cache hits across runners survive recreates) and
-  one `CCACHE_MAXSIZE` per binding in `.env` — `Runner.Listener::
-  LoadAndSetEnv` calls `Environment.SetEnvironmentVariable` per
-  line and the LAST `CCACHE_MAXSIZE` wins. Two pools collapse
-  to one effective cache with whichever pool's size cap was
-  emitted last.
+  workflow step. When a runner is bound to at least one ccache
+  pool, the renderer emits `CCACHE_DIR=/var/lib/ghars/<TRUST_ZONE>/
+  .ccache` in the runner's `.env` (so trust-zone-shared cache
+  hits across runners survive recreates) and one `CCACHE_MAXSIZE`
+  per binding — `Runner.Listener::LoadAndSetEnv` calls
+  `Environment.SetEnvironmentVariable` per line and the LAST
+  `CCACHE_MAXSIZE` wins. Two pools collapse to one effective
+  cache with whichever pool's size cap was emitted last.
+  Runners with NO ccache binding don't get `CCACHE_DIR=` in
+  their `.env` and don't have the trust-zone `.ccache` dir
+  created on disk; the unconditional ccache wrappers in PATH
+  fall back to ccache's XDG default (`$HOME/.ccache` under
+  `runner_home`), giving the runner a per-runner ephemeral
+  cache instead of the trust-zone-shared one.
 - **sccache** reads a single `SCCACHE_SERVER_UDS`. Two sccache
   bindings emit two `Environment=SCCACHE_SERVER_UDS=` directives
   in the runner's 30-cache-pool.conf; systemd's last-writer-wins

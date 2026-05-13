@@ -650,7 +650,28 @@ pub(crate) fn render_runner_env_file(spec: &EffectiveRunnerSpec) -> Result<Strin
 
     let mut s = String::new();
     s.push_str("LANG=C.UTF-8\n");
-    let _ = writeln!(s, "CCACHE_DIR=/var/lib/ghars/{}/.ccache", spec.trust_zone);
+    // CCACHE_DIR is gated on the runner having at least one ccache-
+    // kind binding. The .ccache dir at this path is created in
+    // execute_create_runner ONLY when the same binding gate is
+    // satisfied (see src/apply/runners.rs has_ccache check). The
+    // two must stay symmetric: if the runner has no ccache binding,
+    // the dir is not created AND the env var is not emitted. Otherwise
+    // the unconditional ccache wrappers in PATH (units.rs PATH file)
+    // would intercept `gcc` / `cc` calls and try to write to a non-
+    // existent dir whose parent (/var/lib/ghars/<TRUST_ZONE>/) is
+    // 0o711 root-owned — the DynamicUser worker cannot mkdir it,
+    // ccache falls back to its XDG default (HOME/.ccache) which lands
+    // in runner_home (per-runner, owned by the DynamicUser, mode
+    // 0o777 at runtime). Per-runner ephemeral cache is correct for
+    // no-ccache-binding runners; trust-zone-shared cache is the
+    // operator opt-in via [[runner]].caches.
+    let has_ccache = spec
+        .caches
+        .iter()
+        .any(|b| b.kinds.contains(&CacheKind::Ccache));
+    if has_ccache {
+        let _ = writeln!(s, "CCACHE_DIR=/var/lib/ghars/{}/.ccache", spec.trust_zone);
+    }
     let _ = writeln!(s, "KTSTR_LOCK_DIR=/var/lib/ghars/{}/.ktstr", spec.trust_zone);
     let _ = writeln!(s, "KTSTR_CACHE_DIR=/var/lib/ghars/{}/.ktstr", spec.trust_zone);
     for binding in &spec.caches {
@@ -2005,19 +2026,109 @@ mod tests {
 
     #[test]
     fn render_runner_env_file_emits_unconditional_keys_for_empty_caches() {
-        // LANG + three trust-zone-derived dirs always emitted; empty
-        // caches means NO per-binding lines. Pin byte-exact output so
-        // any drift (extra blank line, key reorder, missing newline)
-        // is caught.
+        // LANG + KTSTR_LOCK_DIR + KTSTR_CACHE_DIR always emitted.
+        // CCACHE_DIR is GATED on having at least one ccache-kind
+        // binding (#10 fix — symmetric with apply-layer .ccache dir
+        // creation gating). Empty caches = no ccache binding = no
+        // CCACHE_DIR emission. Pin byte-exact output so any drift
+        // (extra blank line, key reorder, missing newline, or a
+        // regression to unconditional CCACHE_DIR emission) is caught.
         let spec = minimal_spec();  // caches = vec![]
         let env = render_runner_env_file(&spec).unwrap();
         assert_eq!(
             env,
             "LANG=C.UTF-8\n\
-             CCACHE_DIR=/var/lib/ghars/default/.ccache\n\
              KTSTR_LOCK_DIR=/var/lib/ghars/default/.ktstr\n\
              KTSTR_CACHE_DIR=/var/lib/ghars/default/.ktstr\n",
             "byte-exact empty-caches output drift detected",
+        );
+    }
+
+    /// Pin that `render_runner_env_file` emits `CCACHE_DIR=` ONLY
+    /// when the spec has at least one ccache-kind binding. Without a
+    /// ccache binding the env var must be absent so the unconditional
+    /// ccache wrappers in PATH (units.rs render_runner_path_file)
+    /// don't intercept `gcc`/`cc` calls and try to write to the
+    /// trust-zone `.ccache` dir that wasn't created by apply.
+    ///
+    /// Symmetric with `execute_create_runner`'s `.ccache` dir
+    /// creation gate (src/apply/runners.rs has_ccache check). The
+    /// two are load-bearing for the post-#10 invariant: dir presence
+    /// ⇔ env var presence ⇔ at-least-one-ccache-binding.
+    #[test]
+    fn render_runner_env_file_gates_ccache_dir_on_ccache_binding() {
+        // Use line-start match (CCACHE_DIR=... is a full env-file
+        // line) so the assertion doesn't falsely match the
+        // `SCCACHE_DIR=` line which contains `CCACHE_DIR=` as a
+        // substring starting at index 1.
+        let has_ccache_dir_line = |env: &str| -> bool {
+            env.lines().any(|l| l.starts_with("CCACHE_DIR="))
+        };
+
+        // No binding → no CCACHE_DIR.
+        let spec = minimal_spec();
+        let env = render_runner_env_file(&spec).unwrap();
+        assert!(
+            !has_ccache_dir_line(&env),
+            "no-binding spec must NOT emit CCACHE_DIR line: {env}"
+        );
+
+        // Ccache-only binding → CCACHE_DIR present.
+        let mut spec_c = minimal_spec();
+        spec_c.caches.push(crate::config::EffectiveCacheBinding {
+            name: "obj".into(),
+            kinds: vec![CacheKind::Ccache],
+            size: "10G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
+        });
+        let env_c = render_runner_env_file(&spec_c).unwrap();
+        assert!(
+            env_c.contains("CCACHE_DIR=/var/lib/ghars/default/.ccache\n"),
+            "ccache-binding spec must emit trust-zone-interpolated CCACHE_DIR: {env_c}"
+        );
+
+        // Sccache-only binding → no CCACHE_DIR line (kind-blind
+        // regression guard — the gate must check the Ccache kind
+        // specifically, not just "any binding").
+        let mut spec_s = minimal_spec();
+        spec_s.caches.push(crate::config::EffectiveCacheBinding {
+            name: "build".into(),
+            kinds: vec![CacheKind::Sccache],
+            size: "10G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+            sccache_path: Some("/usr/bin/sccache".into()),
+            sleep_path: None,
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
+        });
+        let env_s = render_runner_env_file(&spec_s).unwrap();
+        assert!(
+            !has_ccache_dir_line(&env_s),
+            "sccache-only-binding spec must NOT emit CCACHE_DIR line (note: \
+             SCCACHE_DIR is fine — only the bare CCACHE_DIR= line is gated): {env_s}"
+        );
+
+        // Combined-kind binding → CCACHE_DIR present (binding has
+        // Ccache + Sccache, so the contains-Ccache predicate fires).
+        let mut spec_combined = minimal_spec();
+        spec_combined.caches.push(crate::config::EffectiveCacheBinding {
+            name: "combined".into(),
+            kinds: vec![CacheKind::Ccache, CacheKind::Sccache],
+            size: "10G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+            sccache_path: Some("/usr/bin/sccache".into()),
+            sleep_path: Some("/usr/bin/sleep".into()),
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
+        });
+        let env_combined = render_runner_env_file(&spec_combined).unwrap();
+        assert!(
+            env_combined.contains("CCACHE_DIR=/var/lib/ghars/default/.ccache\n"),
+            "combined-kind-binding spec must emit CCACHE_DIR: {env_combined}"
         );
     }
 
