@@ -721,6 +721,26 @@ pub struct ProxySpec {
     pub ca_certs: Vec<CaCertBinding>,
 }
 
+impl ProxySpec {
+    /// Whether all fields are unset / empty. An empty ProxySpec is
+    /// semantically equivalent to no proxy configuration at all —
+    /// `render_proxy` returns `Ok(None)` for both `None` and
+    /// `Some(empty)`, so the two shapes produce identical render
+    /// output. Collapsing `Some(empty)` to `None` at the loader
+    /// normalization layer eliminates a spec_hash dark input: pre-
+    /// normalization the canonical-JSON of `Some(ProxySpec{..})`
+    /// differed from `None` and the two would flip spec_hash on
+    /// operator toggle, but the rendered drop-in body bytes were
+    /// identical.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.http.is_none()
+            && self.https.is_none()
+            && self.no_proxy.is_empty()
+            && self.ca_certs.is_empty()
+    }
+}
+
 /// One CA-bundle env-var binding (`env=PATH`) for `[proxy.ca_certs]`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -743,6 +763,19 @@ pub struct HooksSpec {
     pub pre_job: Option<Utf8PathBuf>,
     /// Path to a host-readable script run after each job.
     pub post_job: Option<Utf8PathBuf>,
+}
+
+impl HooksSpec {
+    /// Whether both hook fields are unset. An empty HooksSpec
+    /// produces no `ACTIONS_RUNNER_HOOK_JOB_*` env vars —
+    /// `render_hooks` returns `Ok(None)` for both `None` and
+    /// `Some(empty)`. Collapsing `Some(empty)` to `None` at the
+    /// loader normalization layer eliminates the parallel spec_hash
+    /// dark input.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.pre_job.is_none() && self.post_job.is_none()
+    }
 }
 
 /// Auth source. The `kind` discriminator is serialized as a TOML/JSON tag (e.g.

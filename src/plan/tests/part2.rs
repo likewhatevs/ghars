@@ -2459,3 +2459,246 @@ fn plan_noop_when_extra_capabilities_reorder_only() {
         "extra_capabilities reorder must NOT produce UpdateRunner; got: {updates:?}"
     );
 }
+
+// --- Some(empty) → None normalization at lower_to_effective layer
+// (eliminates dark inputs where canonical-JSON of Some(empty)
+// differs from None but render output is identical).
+
+/// Pins memory_max normalization: an operator-typed empty string in
+/// TOML collapses to None at merge_defaults, so spec_hash matches the
+/// None case byte-for-byte. Without the filter, `Some("")` and `None`
+/// would render identically (render_memory returns Ok(None) for empty)
+/// but flip spec_hash on toggle — a dark input.
+#[test]
+fn merge_defaults_collapses_some_empty_memory_max_to_none() {
+    let mut runner = minimal_runner("a");
+    runner.memory_max = Some(String::new());
+    let defaults = Defaults::default();
+    let spec = merge_defaults(
+        &runner,
+        &defaults,
+        "pat".into(),
+        vec![],
+        None,
+        None,
+        None,
+        Arch::X86_64,
+        "/etc/ghars/ghars.toml".into(),
+    );
+    assert_eq!(spec.memory_max, None);
+
+    let mut none_runner = minimal_runner("a");
+    none_runner.memory_max = None;
+    let none_spec = merge_defaults(
+        &none_runner,
+        &defaults,
+        "pat".into(),
+        vec![],
+        None,
+        None,
+        None,
+        Arch::X86_64,
+        "/etc/ghars/ghars.toml".into(),
+    );
+    assert_eq!(
+        spec_hash(&spec),
+        spec_hash(&none_spec),
+        "Some(empty) and None must produce identical spec_hash after normalization"
+    );
+}
+
+/// Parallel pin for runner_sha256 normalization. render_identity
+/// emits X-Ghars-Runner-Sha256 only on `Some(non-empty)` so `Some("")`
+/// and `None` render identically but pre-normalization differed in
+/// spec_hash.
+#[test]
+fn merge_defaults_collapses_some_empty_runner_sha256_to_none() {
+    let mut runner = minimal_runner("a");
+    runner.runner_sha256 = Some(String::new());
+    let defaults = Defaults::default();
+    let spec = merge_defaults(
+        &runner,
+        &defaults,
+        "pat".into(),
+        vec![],
+        None,
+        None,
+        None,
+        Arch::X86_64,
+        "/etc/ghars/ghars.toml".into(),
+    );
+    assert_eq!(spec.runner_sha256, None);
+
+    let mut none_runner = minimal_runner("a");
+    none_runner.runner_sha256 = None;
+    let none_spec = merge_defaults(
+        &none_runner,
+        &defaults,
+        "pat".into(),
+        vec![],
+        None,
+        None,
+        None,
+        Arch::X86_64,
+        "/etc/ghars/ghars.toml".into(),
+    );
+    assert_eq!(
+        spec_hash(&spec),
+        spec_hash(&none_spec),
+        "Some(empty) and None must produce identical spec_hash after normalization"
+    );
+}
+
+/// Pin ProxySpec::is_empty contract. Mirrors the field set
+/// `render_proxy` early-returns Ok(None) on (units.rs render_proxy:
+/// `http.is_none() && https.is_none() && no_proxy.is_empty() &&
+/// ca_certs.is_empty()`). The is_empty method is what the
+/// lower_to_effective normalization filter uses to collapse
+/// `Some(empty)` to `None`.
+///
+/// Exercises EVERY non-empty field path individually so a typo-style
+/// regression that drops one field from the && chain (e.g. duplicating
+/// `http.is_none() && http.is_none() && ...` instead of going through
+/// all four) fails immediately at the dropped field's assertion.
+#[test]
+fn proxy_spec_is_empty_matches_render_proxy_early_return() {
+    let empty = crate::config::ProxySpec::default();
+    assert!(empty.is_empty());
+
+    let with_http = crate::config::ProxySpec {
+        http: Some("http://proxy".into()),
+        ..crate::config::ProxySpec::default()
+    };
+    assert!(!with_http.is_empty());
+
+    let with_https = crate::config::ProxySpec {
+        https: Some("http://proxy".into()),
+        ..crate::config::ProxySpec::default()
+    };
+    assert!(!with_https.is_empty());
+
+    let with_no_proxy = crate::config::ProxySpec {
+        no_proxy: vec!["host".into()],
+        ..crate::config::ProxySpec::default()
+    };
+    assert!(!with_no_proxy.is_empty());
+
+    let with_ca_certs = crate::config::ProxySpec {
+        ca_certs: vec![crate::config::CaCertBinding {
+            env: "REQUESTS_CA_BUNDLE".into(),
+            path: Utf8PathBuf::from("/etc/ghars/ca-bundle.pem"),
+        }],
+        ..crate::config::ProxySpec::default()
+    };
+    assert!(!with_ca_certs.is_empty());
+}
+
+/// Pin HooksSpec::is_empty contract. Mirrors render_hooks's early-
+/// return condition: `pre_job.is_none() && post_job.is_none()`.
+///
+/// Exercises both non-empty field paths individually so a typo-style
+/// regression that drops one field from the && chain (e.g.
+/// `pre_job.is_none() && pre_job.is_none()`) fails immediately at the
+/// dropped field's assertion.
+#[test]
+fn hooks_spec_is_empty_matches_render_hooks_early_return() {
+    let empty = crate::config::HooksSpec::default();
+    assert!(empty.is_empty());
+
+    let with_pre = crate::config::HooksSpec {
+        pre_job: Some(Utf8PathBuf::from("/etc/ghars/hooks/pre.sh")),
+        post_job: None,
+    };
+    assert!(!with_pre.is_empty());
+
+    let with_post = crate::config::HooksSpec {
+        pre_job: None,
+        post_job: Some(Utf8PathBuf::from("/etc/ghars/hooks/post.sh")),
+    };
+    assert!(!with_post.is_empty());
+}
+
+/// Pin the `lower_to_effective` integration: an operator-typed
+/// `[proxy]` block with all fields empty collapses to None on the
+/// resulting EffectiveRunnerSpec, AND the spec_hash matches the
+/// genuinely-absent (config.proxy = None) case.
+/// `proxy_spec_is_empty_matches_render_proxy_early_return` above
+/// pins the `is_empty` predicate in isolation; this test pins that
+/// the predicate is actually plumbed into the resolver chain via
+/// the `.filter(|p| !p.is_empty())` call at compute.rs. A regression
+/// that removed the filter (keeping the is_empty method) would
+/// pass the predicate test but fail here.
+#[test]
+fn lower_to_effective_collapses_some_empty_proxy_to_none() {
+    let mut cfg_empty_proxy = config_with_runners(vec![minimal_runner("a")]);
+    cfg_empty_proxy.proxy = Some(crate::config::ProxySpec::default());
+    let expanded = expand_counts(&cfg_empty_proxy).expect("count expansion must succeed");
+    let eff_empty = lower_to_effective(
+        &expanded[0],
+        &cfg_empty_proxy,
+        Arch::X86_64,
+        "/etc/ghars/ghars.toml".into(),
+        0,
+    )
+    .expect("lower_to_effective must succeed");
+    assert_eq!(
+        eff_empty.proxy, None,
+        "Some(empty ProxySpec) at config layer must collapse to None on EffectiveRunnerSpec"
+    );
+
+    let mut cfg_no_proxy = config_with_runners(vec![minimal_runner("a")]);
+    cfg_no_proxy.proxy = None;
+    let expanded_none = expand_counts(&cfg_no_proxy).expect("count expansion must succeed");
+    let eff_none = lower_to_effective(
+        &expanded_none[0],
+        &cfg_no_proxy,
+        Arch::X86_64,
+        "/etc/ghars/ghars.toml".into(),
+        0,
+    )
+    .expect("lower_to_effective must succeed");
+    assert_eq!(
+        spec_hash(&eff_empty),
+        spec_hash(&eff_none),
+        "Some(empty) proxy must produce identical spec_hash to None after normalization — dark input eliminated"
+    );
+}
+
+/// Parallel pin for hooks normalization at lower_to_effective —
+/// `is_empty` predicate must be plumbed into the resolver via the
+/// `.filter(|h| !h.is_empty())` call.
+#[test]
+fn lower_to_effective_collapses_some_empty_hooks_to_none() {
+    let mut cfg_empty_hooks = config_with_runners(vec![minimal_runner("a")]);
+    cfg_empty_hooks.hooks = Some(crate::config::HooksSpec::default());
+    let expanded = expand_counts(&cfg_empty_hooks).expect("count expansion must succeed");
+    let eff_empty = lower_to_effective(
+        &expanded[0],
+        &cfg_empty_hooks,
+        Arch::X86_64,
+        "/etc/ghars/ghars.toml".into(),
+        0,
+    )
+    .expect("lower_to_effective must succeed");
+    assert_eq!(
+        eff_empty.hooks, None,
+        "Some(empty HooksSpec) at config layer must collapse to None on EffectiveRunnerSpec"
+    );
+
+    let mut cfg_no_hooks = config_with_runners(vec![minimal_runner("a")]);
+    cfg_no_hooks.hooks = None;
+    let expanded_none = expand_counts(&cfg_no_hooks).expect("count expansion must succeed");
+    let eff_none = lower_to_effective(
+        &expanded_none[0],
+        &cfg_no_hooks,
+        Arch::X86_64,
+        "/etc/ghars/ghars.toml".into(),
+        0,
+    )
+    .expect("lower_to_effective must succeed");
+    assert_eq!(
+        spec_hash(&eff_empty),
+        spec_hash(&eff_none),
+        "Some(empty) hooks must produce identical spec_hash to None after normalization — dark input eliminated"
+    );
+}

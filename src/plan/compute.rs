@@ -1222,10 +1222,24 @@ pub(super) fn lower_to_effective(
         None => None,
     };
 
-    // Proxy: runner.proxy overrides config.proxy entirely.
-    let proxy = runner.proxy.clone().or_else(|| config.proxy.clone());
-    // Hooks: runner.hooks overrides config.hooks entirely.
-    let hooks = runner.hooks.clone().or_else(|| config.hooks.clone());
+    // Proxy: runner.proxy overrides config.proxy entirely. Collapse
+    // Some(empty) → None so the spec_hash domain matches the render
+    // domain — `render_proxy` returns Ok(None) for both shapes, but
+    // canonical-JSON of `Some(ProxySpec{..all-empty..})` differs from
+    // `None`, creating a dark input that would flip spec_hash on
+    // operator toggle without changing any rendered byte.
+    let proxy = runner
+        .proxy
+        .clone()
+        .or_else(|| config.proxy.clone())
+        .filter(|p| !p.is_empty());
+    // Hooks: runner.hooks overrides config.hooks entirely. Same
+    // Some(empty) → None normalization as proxy above.
+    let hooks = runner
+        .hooks
+        .clone()
+        .or_else(|| config.hooks.clone())
+        .filter(|h| !h.is_empty());
 
     // SEC-27 shared-user warning is removed — DynamicUser provisions
     // per-trust_zone identities, so the "shared UID disables

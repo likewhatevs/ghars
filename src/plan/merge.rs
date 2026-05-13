@@ -160,18 +160,31 @@ pub fn merge_defaults(
         url: runner.url.clone(),
         arch,
         labels,
+        // Collapse Some("") → None for string-valued optionals so the
+        // spec_hash domain matches the render domain. `render_memory`
+        // returns Ok(None) for an empty string (no 10-memory.conf
+        // emitted), but Some("") and None serialize differently in
+        // canonical-JSON. Without the filter, operator-toggled empty
+        // strings flip spec_hash without changing any rendered byte —
+        // a dark input that drives spurious cascades.
         memory_max: runner
             .memory_max
             .clone()
-            .or_else(|| defaults.memory_max.clone()),
+            .or_else(|| defaults.memory_max.clone())
+            .filter(|s| !s.is_empty()),
         runner_version: runner
             .runner_version
             .clone()
             .or_else(|| defaults.runner_version.clone()),
+        // Same Some("") → None collapse as memory_max above —
+        // `render_identity` emits X-Ghars-Runner-Sha256 only when
+        // Some(non-empty), so the empty and absent cases render
+        // identically.
         runner_sha256: runner
             .runner_sha256
             .clone()
-            .or_else(|| defaults.runner_sha256.clone()),
+            .or_else(|| defaults.runner_sha256.clone())
+            .filter(|s| !s.is_empty()),
         runner_tarball: runner.runner_tarball.clone(),
         auth_name,
         caches,
