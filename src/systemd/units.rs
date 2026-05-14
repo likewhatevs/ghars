@@ -943,8 +943,8 @@ fn binds_filesystem_root(path: &Utf8Path) -> bool {
     depth == 0
 }
 
-/// SEC-12 defense gate for `BindReadOnlyPaths=` emission in
-/// `render_hardening`. Refuses the directive in two cases:
+/// SEC-12 defense gate for `BindReadOnlyPaths=` emission. Refuses
+/// the directive in two cases:
 ///
 /// 1. The entry is empty (`""`). `Path::components()` returns `[]`
 ///    for the empty path, which would yield `depth = 0` and trigger
@@ -957,16 +957,24 @@ fn binds_filesystem_root(path: &Utf8Path) -> bool {
 ///    (`TemporaryFileSystem=/:ro` + the curated `BindReadOnlyPaths`
 ///    set).
 ///
-/// FIRST/ONLY gate today: unlike `render_hooks`'s SEC-12 root-parent
-/// check (defense-in-depth on top of `validators::validate_hook_script`'s
-/// config-load root-parent rejection), the Hardening-side validators
-/// (`validate_extra_bind_paths` at validators.rs; `bind_readonly_paths`
-/// has no config-load validator) do not reject root-equivalent paths.
-/// A config-load companion would convert this into defense-in-depth.
-fn check_no_root_bind(field: &str, path: &Utf8Path) -> Result<()> {
+/// `label` is the FULL operator-facing identifier the caller wants
+/// surfaced in the error message (e.g.
+/// `"hardening.bind_readonly_paths[]"`). The helper does not impose
+/// a scope prefix; each call site owns its own namespace string so
+/// the message names the operator's TOML path, not a fixed scope.
+///
+/// FIRST/ONLY gate for Hardening bind paths today: unlike
+/// `render_hooks`'s SEC-12 root-parent check (defense-in-depth on
+/// top of `validators::validate_hook_script`'s config-load
+/// root-parent rejection), the Hardening-side validators
+/// (`validate_extra_bind_paths` at validators.rs;
+/// `bind_readonly_paths` has no config-load validator) do not
+/// reject root-equivalent paths. A config-load companion would
+/// convert this into defense-in-depth.
+fn check_no_root_bind(label: &str, path: &Utf8Path) -> Result<()> {
     if path.as_str().is_empty() {
         return Err(GharsError::Validation(
-            format!("hardening.{field} entry is empty"),
+            format!("{label} entry is empty"),
             "remove the empty path from the list, or replace it with an \
              absolute path (e.g. /etc/pki/ca-trust/source/anchors)"
                 .into(),
@@ -975,7 +983,7 @@ fn check_no_root_bind(field: &str, path: &Utf8Path) -> Result<()> {
     if binds_filesystem_root(path) {
         return Err(GharsError::Validation(
             format!(
-                "hardening.{field} entry `{path}` resolves to filesystem root \
+                "{label} entry `{path}` resolves to filesystem root \
                  (SEC-12); BindReadOnlyPaths=/ would expose the entire host \
                  into the runner sandbox"
             ),
@@ -1416,13 +1424,13 @@ fn render_hardening(
         for p in paths {
             check_identity_field("bind_readonly_paths[]", p.as_str())?;
             check_no_whitespace_padding("bind_readonly_paths[]", p.as_str())?;
-            check_no_root_bind("bind_readonly_paths[]", p)?;
+            check_no_root_bind("hardening.bind_readonly_paths[]", p)?;
         }
     }
     for p in &h.extra_bind_paths {
         check_identity_field("extra_bind_paths[]", p.as_str())?;
         check_no_whitespace_padding("extra_bind_paths[]", p.as_str())?;
-        check_no_root_bind("extra_bind_paths[]", p)?;
+        check_no_root_bind("hardening.extra_bind_paths[]", p)?;
     }
 
     // Determine if any directive needs to be emitted. The template
@@ -3948,6 +3956,11 @@ mod tests {
         assert!(msg.contains("bind_readonly_paths"), "msg: {msg}");
         assert!(msg.contains("SEC-12"), "msg: {msg}");
         assert!(msg.contains("filesystem root"), "msg: {msg}");
+        // Pin the full label format. Without this, a future caller
+        // dropping the `hardening.` prefix or the `[]` suffix would
+        // still satisfy the `bind_readonly_paths` substring assertion
+        // above. The label is the call site's contract with operators.
+        assert!(msg.contains("hardening.bind_readonly_paths[]"), "msg: {msg}");
     }
 
     /// Sister to `render_hardening_rejects_root_bind_readonly_paths`.
@@ -3968,6 +3981,10 @@ mod tests {
         assert!(msg.contains("extra_bind_paths"), "msg: {msg}");
         assert!(msg.contains("SEC-12"), "msg: {msg}");
         assert!(msg.contains("filesystem root"), "msg: {msg}");
+        // Pin the full label format. Sister to the bind_readonly_paths
+        // assertion above — catches a regression where a future caller
+        // drops the `hardening.` prefix or the `[]` suffix.
+        assert!(msg.contains("hardening.extra_bind_paths[]"), "msg: {msg}");
     }
 
     /// Path-normalization variant: `//` collapses to `/` at
