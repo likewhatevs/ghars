@@ -953,8 +953,8 @@ fn binds_filesystem_root(path: &Utf8Path) -> bool {
 /// 2. The entry resolves to the filesystem root via
 ///    `binds_filesystem_root` — binding root into the runner
 ///    namespace would overlay-bind the entire host filesystem on top
-///    of every other Hardening-applied protection (`ProtectSystem`,
-///    `ReadOnlyPaths`, the template's curated `BindReadOnlyPaths`
+///    of the runner template's filesystem isolation layer
+///    (`TemporaryFileSystem=/:ro` + the curated `BindReadOnlyPaths`
 ///    set).
 ///
 /// FIRST/ONLY gate today: unlike `render_hooks`'s SEC-12 root-parent
@@ -964,12 +964,6 @@ fn binds_filesystem_root(path: &Utf8Path) -> bool {
 /// has no config-load validator) do not reject root-equivalent paths.
 /// A config-load companion would convert this into defense-in-depth.
 fn check_no_root_bind(field: &str, path: &Utf8Path) -> Result<()> {
-    // Empty pre-check: `binds_filesystem_root` returns true for the
-    // empty path (`Path::components()` yields `[]` → depth=0), but
-    // the operator's actual mistake is an empty entry, not a root
-    // bind. Surface the correct cause. (`extra_bind_paths` is gated
-    // at config-load by `validate_extra_bind_paths`; for
-    // `bind_readonly_paths` this renderer is the only check.)
     if path.as_str().is_empty() {
         return Err(GharsError::Validation(
             format!("hardening.{field} entry is empty"),
