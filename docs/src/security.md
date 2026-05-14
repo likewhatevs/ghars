@@ -301,7 +301,7 @@ doc comments and commit messages. Every label maps to a specific
 attack surface and the gate that closes it. Operators reading the
 source for review will see references like SEC-03 (trust zones),
 SEC-09 (root-owned runner home), SEC-10 (tar safe-member filter),
-SEC-12 (hooks ownership), SEC-19 (apply.lock PID liveness), SEC-25
+SEC-12 (host-exposure gates: bind-path safety + hook script trust), SEC-19 (apply.lock PID liveness), SEC-25
 (token_file mode), SEC-30 (egress comment sanitization), SEC-33
 (root-owned staging), SEC-36 (apply audit log).
 

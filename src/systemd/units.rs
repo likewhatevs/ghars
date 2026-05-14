@@ -903,19 +903,25 @@ fn check_no_whitespace_padding(field: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-/// SEC-12 defense gate for `BindReadOnlyPaths=` emission. Refuses
-/// the directive in two cases:
+/// SEC-12 defense gate for `BindReadOnlyPaths=` emission. Rejects
+/// paths that would produce a malformed or sandbox-defeating
+/// directive:
 ///
-/// 1. The entry is empty (`""`). `Path::components()` returns `[]`
-///    for the empty path, which would yield `depth = 0` and trigger
-///    the SEC-12 root-rejection with a misleading "filesystem root"
-///    error; the empty pre-check surfaces the correct cause first.
-/// 2. The entry resolves to the filesystem root via
-///    `binds_filesystem_root` — binding root into the runner
-///    namespace would overlay-bind the entire host filesystem on top
-///    of the runner template's filesystem isolation layer
-///    (`TemporaryFileSystem=/:ro` + the curated `BindReadOnlyPaths`
-///    set).
+/// 1. Empty (`""`) — misclassification guard; `binds_filesystem_root`
+///    would return true for the empty path, but the operator's actual
+///    mistake is an empty entry.
+/// 2. Non-absolute — systemd rejects relative paths at unit-load;
+///    surface the error at plan time instead.
+/// 3. Embedded whitespace — systemd whitespace-splits
+///    `BindReadOnlyPaths` entries, so a space would silently bind
+///    additional host paths.
+/// 4. Colon (`:`) — systemd parses `SOURCE:DESTINATION[:OPTIONS]`,
+///    so a colon remaps the bind target to an unintended sandbox
+///    path.
+/// 5. Component-walk root equivalence (`/`, `/foo/..`, `//`, `/.`) —
+///    binding root overlays the entire host filesystem on top of the
+///    runner template's isolation layer (`TemporaryFileSystem=/:ro` +
+///    the curated `BindReadOnlyPaths` set).
 ///
 /// `label` is the FULL operator-facing identifier the caller wants
 /// surfaced in the error message (e.g.
@@ -923,14 +929,16 @@ fn check_no_whitespace_padding(field: &str, value: &str) -> Result<()> {
 /// a scope prefix; each call site owns its own namespace string so
 /// the message names the operator's TOML path, not a fixed scope.
 ///
-/// FIRST/ONLY gate for Hardening bind paths today: unlike
-/// `render_hooks`'s SEC-12 root-parent check (defense-in-depth on
-/// top of `validators::validate_hook_script`'s config-load
-/// root-parent rejection), the Hardening-side validators
-/// (`validate_extra_bind_paths` at validators.rs;
-/// `bind_readonly_paths` has no config-load validator) do not
-/// reject root-equivalent paths. A config-load companion would
-/// convert this into defense-in-depth.
+/// FIRST/ONLY root-equivalence gate for Hardening bind paths and
+/// `proxy.ca_certs[].path` today. `validate_extra_bind_paths`
+/// checks empty / non-absolute / SEC-01 denylist at config-load but
+/// has no root-equivalence, whitespace, or colon check;
+/// `bind_readonly_paths` has no config-load validator at all;
+/// `proxy.ca_certs[].path` has no config-load path-shape validator.
+/// `render_hooks` has a parallel root-parent check (defense-in-depth
+/// on top of `validators::validate_hook_script`'s config-load
+/// root-parent rejection). A config-load companion for any of
+/// these would convert the corresponding gate into defense-in-depth.
 fn check_no_root_bind(label: &str, path: &Utf8Path) -> Result<()> {
     if path.as_str().is_empty() {
         return Err(GharsError::Validation(

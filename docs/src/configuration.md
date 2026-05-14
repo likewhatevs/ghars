@@ -445,10 +445,14 @@ config load (SEC-12); the order matches the source:
   paths resolve against the runner's cwd at exec time, which is
   operator-controllable through workflow YAML and would let a
   workflow swap the hook target.
-- **Parent must not be `/`** — a hook at `/foo.sh` would force
-  the renderer to emit `BindReadOnlyPaths=/`, exposing the entire
-  host filesystem to the runner sandbox. Hooks must live under a
-  dedicated subdirectory (e.g. `/usr/local/lib/ghars-hooks/`).
+- **Parent must not resolve to `/`** — a hook at `/foo.sh` (or
+  path-normalization equivalents like `/foo/../bar.sh`, `/./foo.sh`)
+  would force the renderer to emit `BindReadOnlyPaths=/`, exposing
+  the entire host filesystem to the runner sandbox. The check uses
+  component-walk normalization via `binds_filesystem_root`, catching
+  both literal `/` parents and root-equivalent forms. Hooks must
+  live under a dedicated subdirectory (e.g.
+  `/usr/local/lib/ghars-hooks/`).
 - **`O_NOFOLLOW` open** — kernel `ELOOP`s a final-component
   symlink, so the validator inspects the inode the kernel
   returned; no lstat-then-open race.
