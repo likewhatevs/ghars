@@ -720,20 +720,20 @@ pub(super) fn execute_create_runner(
 
     // 1) Runner binary. Two paths:
     //    (a) `runner_tarball` set on the spec → use the local file
-    //        verbatim after re-stat'ing (verify_local closes the
+    //        verbatim after re-stat'ing (`verify_local` closes the
     //        SEC-16 stat-then-extract TOCTOU window).
     //    (b) Otherwise the plan resolved a `Release` and we fetch its
     //        `tarball_url` into a runtime dir, verify SHA256, then
     //        install.
     let (tarball_path, version) = if let Some(local) = &spec.runner_tarball {
         deps.tarball.verify_local(local)?;
-        // spec.runner_version is guaranteed Some by lower_to_effective:
-        // the tarball+no-version gate at compute.rs rejects this
-        // combination at plan time. expect() over unwrap_or_else
+        // `spec.runner_version` is guaranteed `Some` by `lower_to_effective`:
+        // the tarball+no-version gate at `compute.rs` rejects this
+        // combination at plan time. `expect()` over `unwrap_or_else`
         // makes a regression that re-introduces the silent "local"
         // fallback surface as a loud panic rather than installing
-        // into bin.local/ while the unit drop-in references
-        // bin.latest/ (the pre-fix broken-from-birth shape).
+        // into `bin.local/` while the unit drop-in references
+        // `bin.latest/` (the pre-fix broken-from-birth shape).
         let version = spec
             .runner_version
             .clone()
@@ -778,8 +778,8 @@ pub(super) fn execute_create_runner(
     //     symlinks ghars itself no longer creates). Pruning is
     //     best-effort: per-entry failures are logged and counted,
     //     never propagated, so a failed cleanup doesn't sink the
-    //     whole CreateRunner action. Errors from the call itself
-    //     (read_dir failure on runner_home, or keep_versions = 0)
+    //     whole `CreateRunner` action. Errors from the call itself
+    //     (`read_dir` failure on `runner_home`, or `keep_versions = 0`)
     //     DO propagate — those indicate a structural problem the
     //     operator should see.
     let _pruned = deps
@@ -787,16 +787,16 @@ pub(super) fn execute_create_runner(
         .prune_old_versions(&runner_home, keep_versions)?;
 
     // 3) Mint a registration token. SEC-05: the token is short-lived
-    //    (1h GitHub TTL); we hand it to config.sh and never persist it.
+    //    (1h GitHub TTL); we hand it to `config.sh` and never persist it.
     //    The caller-visible `RegistrationToken.value` is opaque so
     //    nothing here logs it.
     let token = mint_token(deps.auth, &spec.auth_name, &spec.url, false)?;
 
-    // 4) Run config.sh --url ... --token ... — registers the runner
+    // 4) Run `config.sh --url ... --token ...` — registers the runner
     //    with GitHub. SEC-05 mitigation note in trait doc; v0.1 still
-    //    passes the token via argv pending the token-drop env-var
+    //    passes the token via `argv` pending the token-drop env-var
     //    pattern's full design. Pass `&token.value` so `token`
-    //    stays owned in this frame and zeroizes on Drop at end of fn.
+    //    stays owned in this frame and zeroizes on `Drop` at end of fn.
     deps.config_shell.run_register(&ConfigShellCtx {
         runner_home: &runner_home,
         bin_dir: &bin_dir,
@@ -805,10 +805,10 @@ pub(super) fn execute_create_runner(
         labels: &spec.labels,
         token: &token.value,
     })?;
-    // Push GitHubRegistration AFTER run_register succeeds. Undo
+    // Push `GitHubRegistration` AFTER `run_register` succeeds. Undo
     // path mints a fresh removal token via the auth registry and
-    // calls run_remove. The runner_home is captured here because
-    // it is the canonical location config.sh writes credentials
+    // calls `run_remove`. The `runner_home` is captured here because
+    // it is the canonical location `config.sh` writes credentials
     // to, and we want the undo to target this exact path even if
     // the spec is mutated between push-time and undo-time.
     log.push(UndoStep::GitHubRegistration {
@@ -818,79 +818,79 @@ pub(super) fn execute_create_runner(
         runner_home: runner_home.clone(),
     });
 
-    // No tighten_credential_perms call. DynamicUser=yes manages
-    // StateDirectory ownership at the systemd level; .credentials is
-    // owned by the trust_zone's transient UID and inherits the
-    // StateDirectoryMode=0700 from the unit template.
+    // No `tighten_credential_perms` call. `DynamicUser=yes` manages
+    // `StateDirectory` ownership at the systemd level; `.credentials` is
+    // owned by the `trust_zone`'s transient UID and inherits the
+    // `StateDirectoryMode=0700` from the unit template.
 
     // 5b) Re-render the unit text against the resolved spec. The
     // plan-time render in `into_runner_plan` happened BEFORE
     // `resolve_plan_releases` populated `spec.runner_version` from
     // the API for implicit-latest runners, so the plan-time preview
-    // showed a "latest" placeholder in WorkingDirectory= / ExecStart=
-    // / ConditionPathExists=. By apply time, resolve_plan_releases
-    // (cli/cmd_apply.rs) has filled `spec.runner_version` from the
+    // showed a "latest" placeholder in `WorkingDirectory=` / `ExecStart=`
+    // / `ConditionPathExists=`. By apply time, `resolve_plan_releases`
+    // (`cli/cmd_apply.rs`) has filled `spec.runner_version` from the
     // resolved release, so re-rendering here pins the actual version
     // into the drop-in body that lands on disk. The legacy populate
     // block that filled `runner_version` from `plan.resolved_release`
-    // here is gone — resolve_plan_releases now owns the spec-level
+    // here is gone — `resolve_plan_releases` now owns the spec-level
     // fill so this site reads the same field uniformly.
     //
-    // spec_hash is also recomputed against the resolved spec so the
-    // on-disk X-Ghars-Spec-Hash annotation matches the canonical-JSON
+    // `spec_hash` is also recomputed against the resolved spec so the
+    // on-disk `X-Ghars-Spec-Hash` annotation matches the canonical-JSON
     // hash of what's actually rendered to disk. Without this
-    // recompute, the on-disk X-Ghars-Spec-Hash would remain the
-    // plan-time hash computed with runner_version=None for
+    // recompute, the on-disk `X-Ghars-Spec-Hash` would remain the
+    // plan-time hash computed with `runner_version=None` for
     // implicit-latest runners, while the rendered drop-in body bytes
-    // use bin.X.Y.Z paths from the resolved version. The resulting
+    // use `bin.X.Y.Z` paths from the resolved version. The resulting
     // hash-vs-bytes mismatch breaks the invariant downstream plan
     // classifiers rely on, with consequences that depend on the
-    // discovered X-Ghars-Effective-Version annotation state: the
+    // discovered `X-Ghars-Effective-Version` annotation state: the
     // intersection-arm version-fill in `lower_to_effective` fires
     // when the annotation is well-formed, producing a spurious in-place
-    // UpdateRunner cycle because the candidate hash (computed against
-    // the annotation-filled runner_version) and the on-disk hash
-    // (frozen at plan-time None) disagree; skips when the annotation
+    // `UpdateRunner` cycle because the candidate hash (computed against
+    // the annotation-filled `runner_version`) and the on-disk hash
+    // (frozen at plan-time `None`) disagree; skips when the annotation
     // is empty or invalid, silently accepting the divergence as a
     // permanent NoOp. Either consequence is wrong. Recomputing pins
     // the contract that the on-disk hash reflects the spec actually
     // rendered to disk; the intersection arm then reads
-    // X-Ghars-Effective-Version from the annotation, fills
-    // runner_version on the candidate BEFORE its hash computation,
+    // `X-Ghars-Effective-Version` from the annotation, fills
+    // `runner_version` on the candidate BEFORE its hash computation,
     // and produces a matching candidate hash on the next plan.
     let mut resolved_spec = spec.clone();
     resolved_spec.spec_hash = crate::plan::spec_hash(&resolved_spec);
     let rendered = render_runner_unit(&resolved_spec)?;
 
-    // 5c) Write .path and .env into the versioned bin dir.
-    //   - `.path`: read once by runsvc.sh (`export PATH=\`cat .path\``)
+    // 5c) Write `.path` and `.env` into the versioned bin dir.
+    //   - `.path`: read once by `runsvc.sh` (`export PATH=\`cat .path\``)
     //     at runner-process start; inherited across exec by every
     //     worker / workflow-step subprocess.
-    //   - `.env`: read once by Runner.Listener's LoadAndSetEnv
-    //     (`src/Runner.Listener/Program.cs` Main) at process start,
-    //     each `KEY=VALUE` set via Environment.SetEnvironmentVariable;
+    //   - `.env`: read once by `Runner.Listener`'s `LoadAndSetEnv`
+    //     (`src/Runner.Listener/Program.cs` `Main`) at process start,
+    //     each `KEY=VALUE` set via `Environment.SetEnvironmentVariable`;
     //     workflow steps inherit through worker fork+exec.
     //
     // These reach workflow steps via the parent-process env, distinct
-    // from the systemd `Environment=` directives in 00-ghars.conf /
-    // 30-cache-pool.conf (LAYER 1, bind to the systemd unit process).
+    // from the systemd `Environment=` directives in `00-ghars.conf` /
+    // `30-cache-pool.conf` (LAYER 1, bind to the systemd unit process).
     // Bytes are computed by the pure functions
     // `render_runner_env_file` / `render_runner_path_file` so the
-    // in-place UpdateRunner path produces byte-identical content for
-    // the same spec (no runner_version interpolation in either
+    // in-place `UpdateRunner` path produces byte-identical content for
+    // the same spec (no `runner_version` interpolation in either
     // producer).
     //
     // Rollback semantics for the create-path: `write_record_undo`
     // snapshots `prior_content` via `read_prior(path)`. For a
-    // CreateRunner (fresh runner), .env and .path do not exist on
+    // `CreateRunner` (fresh runner), `.env` and `.path` do not exist on
     // disk yet, so `read_prior` returns `None`. The pushed
     // `UndoStep::WriteFile` with `prior_content: None` performs
     // `unlink` on rollback, NOT a restore to prior content (there
-    // was none). A partial CreateRunner failure that triggers
-    // rollback therefore leaves the runner without `.env`/.path on
+    // was none). A partial `CreateRunner` failure that triggers
+    // rollback therefore leaves the runner without `.env`/`.path` on
     // disk. If `actions/runner`'s `env.sh` fires on the runner unit
-    // before a successful re-apply, it writes its OWN minimal .env
-    // / .path content (no ccache wrappers, no KTSTR_* env, no
+    // before a successful re-apply, it writes its OWN minimal `.env`
+    // / `.path` content (no ccache wrappers, no KTSTR_* env, no
     // operator-declared environment.vars) — workflow steps that
     // depend on those framework env vars run in degraded mode until
     // the operator re-runs `ghars apply` to restore the ghars-
@@ -903,23 +903,23 @@ pub(super) fn execute_create_runner(
         false,
     )?;
 
-    // 5d) Normalize post-config.sh file modes to DynamicUser-READ.
-    // Upstream actions/runner writes three files in runner_home:
-    //   - `.runner` — runner identity JSON (IOUtil.SaveObject ->
-    //     File.WriteAllText; mode is 0o666 & ~umask, so 0o644 with
+    // 5d) Normalize post-`config.sh` file modes to DynamicUser-READ.
+    // Upstream `actions/runner` writes three files in `runner_home`:
+    //   - `.runner` — runner identity JSON (`IOUtil.SaveObject` ->
+    //     `File.WriteAllText`; mode is `0o666 & ~umask`, so 0o644 with
     //     the default 0o022 umask, but could be 0o600 if ghars was
     //     invoked with a non-default umask like 0o077).
     //   - `.credentials` — OAuth credentials JSON (same call shape;
     //     same umask exposure).
     //   - `.credentials_rsaparams` — RSA private key. Upstream
     //     explicitly `chmod 600` in
-    //     src/Runner.Listener/Configuration/RSAFileKeyManager.cs:33
+    //     `src/Runner.Listener/Configuration/RSAFileKeyManager.cs:33`
     //     (the RSA key signs OAuth assertions for credential
     //     refresh), so this file lands at 0o600 regardless of
     //     umask.
     //
-    // All three are root:root after config.sh (which ghars invokes
-    // as root). The runner unit runs under DynamicUser; the
+    // All three are root:root after `config.sh` (which ghars invokes
+    // as root). The runner unit runs under `DynamicUser`; the
     // DynamicUser-allocated UID is in neither the owner nor any
     // group of root, so 0o600 / 0o640 are unreadable to it. Without
     // a normalize step, a non-default umask on the ghars host
@@ -929,38 +929,38 @@ pub(super) fn execute_create_runner(
     // Force 0o644 (owner rw, world r) on each file unconditionally
     // — defense-in-depth that does not depend on the
     // ghars-process-inherited umask being 0o022. Pre-exec umask
-    // pinning via CommandExt::pre_exec (which requires unsafe,
+    // pinning via `CommandExt::pre_exec` (which requires unsafe,
     // forbidden by workspace lint) was the original plan, but
-    // post-hoc chmod is the cleaner mechanism here: it works
-    // regardless of WHICH process wrote the file (config.sh,
+    // post-hoc `chmod` is the cleaner mechanism here: it works
+    // regardless of WHICH process wrote the file (`config.sh`,
     // a future helper, an upstream-runner-version that adds a
-    // new credential file with its own explicit chmod) AND
+    // new credential file with its own explicit `chmod`) AND
     // doesn't mutate process-global umask state that other code
-    // paths in the same apply may depend on. nix::sys::stat::umask
+    // paths in the same apply may depend on. `nix::sys::stat::umask`
     // exposes a safe wrapper (would unblock the pre-exec plan)
     // but using it process-wide has the same multi-writer
-    // ambiguity — post-hoc chmod is the right level.
+    // ambiguity — post-hoc `chmod` is the right level.
     //
-    // Files missing on disk are tolerated as a no-op — config.sh
+    // Files missing on disk are tolerated as a no-op — `config.sh`
     // may legitimately omit `.credentials_rsaparams` on a
     // PAT-authenticated runner, or skip a write if registration
     // takes a path that doesn't materialize the file.
     //
-    // The bin.X.Y.Z/ tree (extracted by deps.tarball.install_binary
+    // The `bin.X.Y.Z/` tree (extracted by `deps.tarball.install_binary`
     // above) keeps the modes the tarball headers wrote — 0o755 for
-    // runsvc.sh / Runner.Listener / native binaries, 0o644 for
-    // managed assemblies, 0o644 for the .env / .path files
-    // write_record_undo just laid down. The pre-fix
+    // `runsvc.sh` / `Runner.Listener` / native binaries, 0o644 for
+    // managed assemblies, 0o644 for the `.env` / `.path` files
+    // `write_record_undo` just laid down. The pre-fix
     // `set_tree_permissions(tz_dir, 0o777)` cascade opened ALL of
-    // these to 0o777, making runsvc.sh world-writable — a
+    // these to 0o777, making `runsvc.sh` world-writable — a
     // workflow-step-RCE persistence vector. With the cascade gone,
     // those modes stay correct.
     //
     // The cascade also used path-based `fs::set_permissions` which
-    // follows symlinks (it's chmod(2), not lchmod). Combined with
+    // follows symlinks (it's `chmod(2)`, not `lchmod`). Combined with
     // the recursive walk and ghars-runs-as-root, an operator-
-    // writable path under runner_home with a planted symlink to,
-    // e.g., /etc would have caused root to chmod /etc/* → 0o777, a
+    // writable path under `runner_home` with a planted symlink to,
+    // e.g., `/etc` would have caused root to chmod `/etc/*` → 0o777, a
     // full local privilege escalation — the well-known
     // TOCTOU-during-recursive-chmod-on-operator-writable-trees
     // vulnerability class. The deletion closes the class by
@@ -974,9 +974,9 @@ pub(super) fn execute_create_runner(
             normalized.push(basename);
         }
     }
-    // Operator visibility: surface the per-CreateRunner credential
+    // Operator visibility: surface the per-`CreateRunner` credential
     // normalization so an operator running under non-default umask
-    // can see ghars corrected modes. tracing::debug! keeps it out
+    // can see ghars corrected modes. `tracing::debug!` keeps it out
     // of the default log surface; opt in via `RUST_LOG=ghars=debug`.
     tracing::debug!(
         runner = %spec.name,
@@ -1008,29 +1008,29 @@ pub(super) fn execute_create_runner(
     log.push(UndoStep::EnableUnit {
         name: unit_name.clone(),
     });
-    // Manager.StartUnit fails on a unit not yet loaded post-write. The
-    // ordering per Part 8 is: write files → daemon_reload → start_unit.
-    // We issue a daemon_reload here so the freshly-written unit is
-    // visible; `apply()` issues a final daemon_reload after the
+    // `Manager.StartUnit` fails on a unit not yet loaded post-write. The
+    // ordering per Part 8 is: write files → `daemon_reload` → `start_unit`.
+    // We issue a `daemon_reload` here so the freshly-written unit is
+    // visible; `apply()` issues a final `daemon_reload` after the
     // per-action loop too, which is idempotent.
     deps.systemd.daemon_reload()?;
 
     // 7b) For Netns runners: provision the per-runner netns side-units
-    //     (config TOML, nft files, ghars-net@.service template) and
+    //     (config TOML, nft files, `ghars-net@.service` template) and
     //     start `ghars-net@INSTANCE.service` BEFORE the runner unit so
     //     the runner's `NetworkNamespacePath=/var/run/netns/ghars-%i`
     //     join succeeds. Fail-closed contract: missing netns =>
     //     runner refuses to start. Open mode is a no-op.
     provision_netns_artifacts(spec, deps, paths, log)?;
 
-    // Stage 2 of runner_home chmod: open to 0o777 so the
-    // DynamicUser allocated at unit start can write `_work/`,
+    // Stage 2 of `runner_home` chmod: open to 0o777 so the
+    // `DynamicUser` allocated at unit start can write `_work/`,
     // `_diag/`, and toolchain caches under the per-runner home.
-    // This is the LAST mutation under runner_home before the unit
+    // This is the LAST mutation under `runner_home` before the unit
     // starts, so no later chmod follows a sibling-DynamicUser-
     // planted symlink (the only file-mode mutations between here
-    // and start_unit are systemd unit / drop-in writes outside
-    // runner_home).
+    // and `start_unit` are systemd unit / drop-in writes outside
+    // `runner_home`).
     chmod_record_undo(&runner_home, 0o777, "runner_home (Stage 2)", log)?;
 
     deps.systemd.start_unit(&unit_name)?;
@@ -1038,42 +1038,42 @@ pub(super) fn execute_create_runner(
         name: unit_name.clone(),
     });
 
-    // 8) Post-start: chown runner_home and the trust-zone-shared
+    // 8) Post-start: chown `runner_home` and the trust-zone-shared
     // dirs + credential files to the DynamicUser-allocated UID,
     // then tighten modes to DynamicUser-only access.
     //
-    // Gated on running-as-root. Production ghars apply always
-    // runs as root (CAP_CHOWN required + many other capabilities
+    // Gated on running-as-root. Production `ghars apply` always
+    // runs as root (`CAP_CHOWN` required + many other capabilities
     // for systemd D-Bus, file ownership management, etc.) so the
     // gate is normally taken. Non-root invocations (operator
     // running `ghars apply` without sudo, test harnesses) hit
     // the warn-and-skip arm: the runner starts with the wider
-    // apply-time modes (0o777 runner_home, 0o644 credentials)
+    // apply-time modes (0o777 `runner_home`, 0o644 credentials)
     // but ownership stays root:root. The runner unit won't be
     // able to read its credentials in that case, so non-root
     // apply is best-effort for dry-run / development; production
     // requires root.
     //
     // SystemD's `Manager.LookupDynamicUserByName(name) → uid`
-    // returns BUS_ERROR_NO_SUCH_DYNAMIC_USER until the unit's
-    // ExecStart child has run `dynamic_user_realize` (verified
-    // against systemd src/core/exec-invoke.c:5401 +
-    // src/core/dynamic-user.c:333-464). For a FIRST-IN-TRUST-ZONE
+    // returns `BUS_ERROR_NO_SUCH_DYNAMIC_USER` until the unit's
+    // `ExecStart` child has run `dynamic_user_realize` (verified
+    // against systemd `src/core/exec-invoke.c:5401` +
+    // `src/core/dynamic-user.c:333-464`). For a FIRST-IN-TRUST-ZONE
     // runner, that hasn't happened yet at `start_unit` return time —
-    // Manager.StartUnit only enqueues the job, doesn't wait for
+    // `Manager.StartUnit` only enqueues the job, doesn't wait for
     // the child fork to complete. Poll with backoff: 10ms doubling
     // to 100ms cap, total budget 5s. If the poll times out, the
     // runner unit probably failed to start; surface a typed
-    // GharsError::Apply with operator-actionable remediation.
+    // `GharsError::Apply` with operator-actionable remediation.
     //
     // For subsequent runners in the same trust zone (sharing the
     // `User=ghars-tz-X` name), the UID is already allocated and
     // the first poll returns immediately.
     //
-    // GID equals UID for DynamicUser without a /etc/passwd entry
-    // (verified at dynamic-user.c:459-461: `*ret_gid = num`
+    // GID equals UID for `DynamicUser` without a `/etc/passwd` entry
+    // (verified at `dynamic-user.c:459-461`: `*ret_gid = num`
     // in the no-passwd-entry branch). Use the same value for
-    // both fchown args.
+    // both `fchown` args.
     if nix::unistd::geteuid().is_root() {
         let trust_zone_user = format!(
             "{}{}",
@@ -1088,8 +1088,8 @@ pub(super) fn execute_create_runner(
             uid,
             "DynamicUser UID resolved post-start; chowning narrow writable set"
         );
-        // DynamicUser without a /etc/passwd entry: gid == uid
-        // (systemd src/core/dynamic-user.c:459-461 sets
+        // `DynamicUser` without a `/etc/passwd` entry: gid == uid
+        // (systemd `src/core/dynamic-user.c:459-461` sets
         // `*ret_gid = num` in the no-passwd-entry branch).
         chown_and_tighten_runner_state(
             &runner_home,
@@ -1116,7 +1116,7 @@ pub(super) fn execute_create_runner(
     //    a fail-open regression: if the runner has Netns mode but
     //    landed in the host netns, the systemd unit was misjoined
     //    and we abort the action. The runner's PID is read from
-    //    Service.MainPID via `systemd.get_unit_property`.
+    //    `Service.MainPID` via `systemd.get_unit_property`.
     if matches!(
         spec.network.as_ref().map(|n| &n.spec.mode),
         Some(NetworkMode::Netns)
@@ -1220,7 +1220,7 @@ pub(super) fn execute_remove_runner(
     let unit_name = format!("ghars-runner@{}.service", identity.name);
     let runner_home = paths.runner_home(&identity.trust_zone, &identity.name);
 
-    // 1) Stop the unit. systemd's StopUnit is idempotent — non-running
+    // 1) Stop the unit. systemd's `StopUnit` is idempotent — non-running
     //    units accept Stop with a no-op outcome.
     deps.systemd.stop_unit(&unit_name)?;
     log.push(UndoStep::StopUnit {
@@ -1235,18 +1235,18 @@ pub(super) fn execute_remove_runner(
     //     for non-netns runners — `teardown_netns_artifacts` no-ops on
     //     missing files, and stop/disable on a non-existent
     //     `ghars-net@INSTANCE.service` is a systemd-side no-op.
-    //     RemoveRunner does not carry the original NetworkSpec, so the
+    //     `RemoveRunner` does not carry the original `NetworkSpec`, so the
     //     teardown is unconditional rather than mode-gated.
     teardown_netns_artifacts(&identity.name, deps, paths, log)?;
 
     // 2) Mint a removal token + invoke `config.sh remove` so GitHub
-    //    deregisters the runner. RealConfigShell::run_remove tolerates
+    //    deregisters the runner. `RealConfigShell::run_remove` tolerates
     //    "already removed" exit codes.
     //
-    //    Orphan branch: when plan.rs synthesises a RemoveRunner from
+    //    Orphan branch: when `plan.rs` synthesises a `RemoveRunner` from
     //    `actual.orphans`, `identity.auth_name` and `identity.url` are
     //    empty (the orphan synthesis loop in `plan_from`) because the
-    //    orphan has no [[runner]] block in the desired config and
+    //    orphan has no `[[runner]]` block in the desired config and
     //    discovery doesn't reach the auth registry. Without those,
     //    `mint_token` would error with
     //    `auth source "" referenced by runner is not in the registry`
@@ -1254,9 +1254,9 @@ pub(super) fn execute_remove_runner(
     //    leaving the host in a permanently-orphaned state.
     //
     //    Skipping the deregister step is the intentional trade-off
-    //    (documented in plan.rs orphan handling): the runner stays
+    //    (documented in `plan.rs` orphan handling): the runner stays
     //    registered server-side until the operator either reinstates
-    //    its [[runner]] block (so a future apply has full identity)
+    //    its `[[runner]]` block (so a future apply has full identity)
     //    or removes it via the GitHub UI / API. The host-local artifacts
     //    are still cleaned up below.
     if identity.auth_name.is_empty() || identity.url.is_empty() {
@@ -1270,7 +1270,7 @@ pub(super) fn execute_remove_runner(
     } else {
         let token = mint_token(deps.auth, &identity.auth_name, &identity.url, true)?;
         // Best-effort deregister: tolerate missing bin dir (stale
-        // runner from a failed apply) and config.sh remove failure
+        // runner from a failed apply) and `config.sh remove` failure
         // (runner already deleted from GitHub UI). The host-local
         // cleanup below runs regardless.
         match find_active_bin_dir(&runner_home) {
@@ -1300,13 +1300,13 @@ pub(super) fn execute_remove_runner(
                 );
             }
         }
-        // No UndoStep for run_remove: it is itself the inverse of
-        // GitHubRegistration. Recording GitHubRegistration here would
+        // No `UndoStep` for `run_remove`: it is itself the inverse of
+        // `GitHubRegistration`. Recording `GitHubRegistration` here would
         // attempt to re-register on rollback — wrong semantically and
-        // not recoverable (config.sh register requires a fresh token
+        // not recoverable (`config.sh register` requires a fresh token
         // mint and recreates credentials, which the upstream Remove
         // path just intentionally tore down). The operator restores
-        // the runner by reinstating its [[runner]] block + apply.
+        // the runner by reinstating its `[[runner]]` block + apply.
     }
 
     // 3) Remove unit + drop-ins.
@@ -1343,11 +1343,11 @@ pub(super) fn execute_remove_runner(
         });
     }
 
-    // No userdel step. The runner unit's DynamicUser-allocated UID is
+    // No `userdel` step. The runner unit's DynamicUser-allocated UID is
     // released by systemd on unit stop; nothing was written to
-    // /etc/passwd / /etc/group, so there is nothing to clean up.
+    // `/etc/passwd` / `/etc/group`, so there is nothing to clean up.
 
-    // The end-of-apply daemon_reload picks up the unit file removal.
+    // The end-of-apply `daemon_reload` picks up the unit file removal.
     Ok(ApplyOutcome::Removed)
 }
 
@@ -1361,8 +1361,8 @@ pub(super) fn execute_update_runner(
 ) -> Result<ApplyOutcome> {
     if delta.requires_recreate {
         // Recreate path: stop + remove + create. The plan emits this
-        // when an identity-bound field changed (url, runner_version,
-        // labels, arch, runner_sha256, runner_tarball, network).
+        // when an identity-bound field changed (`url`, `runner_version`,
+        // `labels`, `arch`, `runner_sha256`, `runner_tarball`, `network`).
         //
         // The undo log threading here propagates BOTH inner calls'
         // pushes. If create fails partway, undo walks: create's pushes
@@ -1372,7 +1372,7 @@ pub(super) fn execute_update_runner(
         // state stays gone (genuinely lossy — re-running apply is the
         // recovery path).
         //
-        // Collapse the inner Removed + Created outcomes into
+        // Collapse the inner `Removed` + `Created` outcomes into
         // a single `Recreated` — the user-facing contract is one row
         // per `Action`, and the inner remove+create are
         // implementation detail of the recreate path.
@@ -1383,8 +1383,8 @@ pub(super) fn execute_update_runner(
         // Without this snapshot, the operator's override file
         // vanishes on remove and never comes back on create
         // (`execute_create_runner` only emits managed basenames).
-        // Operators reporting "my systemctl edit override
-        // disappeared after a runner_version bump" hit this class.
+        // Operators reporting "my `systemctl edit` override
+        // disappeared after a `runner_version` bump" hit this class.
         //
         // The snapshot reads file bodies into memory before the
         // wipe; the restore re-writes them post-create with the
@@ -1405,18 +1405,18 @@ pub(super) fn execute_update_runner(
     }
 
     // In-place path: rewrite drop-ins (template body unchanged because
-    // it is identical across runners) and let the next daemon-reload
-    // pick them up. Restart only when a Service-section value changed
-    // — `RunnerDelta` does not yet distinguish [Service] from [Unit]
-    // drift, so to avoid spurious restarts we skip the daemon-reload +
+    // it is identical across runners) and let the next `daemon-reload`
+    // pick them up. Restart only when a `[Service]`-section value changed
+    // — `RunnerDelta` does not yet distinguish `[Service]` from `[Unit]`
+    // drift, so to avoid spurious restarts we skip the `daemon-reload` +
     // stop + start when (a) every managed file's on-disk bytes match
     // what we would render and (b) the caches-list diff is empty.
     // The byte comparison reuses `read_prior` snapshots that were
     // already needed for rollback.
-    // Track files_changed (count) and pool names
+    // Track `files_changed` (count) and pool names
     // (Vec) so the apply outcome row can carry both `files_changed`
-    // and the WHICH-pools detail for cmd_apply's per-action line.
-    // The `is_empty()` checks at the daemon-reload gate below
+    // and the WHICH-pools detail for `cmd_apply`'s per-action line.
+    // The `is_empty()` checks at the `daemon-reload` gate below
     // preserve the short-circuit semantics ("skip rewrite when bytes
     // match"): the gate fires iff `files_changed == 0` AND both
     // pool Vecs are empty. The public-detail "group op(s)" count
@@ -1432,20 +1432,20 @@ pub(super) fn execute_update_runner(
     // "added: …; removed: …" detail string.
     //
     // No system-level group reconciliation runs here. Cache reach
-    // is materialized by socket-DAC + BindPaths under DynamicUser
-    // (cache server runs at the same trust_zone DynamicUser as the
-    // runner), not by /etc/group membership. The set diff below
+    // is materialized by socket-DAC + `BindPaths` under `DynamicUser`
+    // (cache server runs at the same `trust_zone` `DynamicUser` as the
+    // runner), not by `/etc/group` membership. The set diff below
     // captures `pools_added` / `pools_removed` purely for the
     // detail surface ("runner X gained pool Y / lost pool Z");
-    // the runner unit's 30-cache-pool.conf drop-in (re-rendered
-    // below) carries the BindPaths entries that actually grant
+    // the runner unit's `30-cache-pool.conf` drop-in (re-rendered
+    // below) carries the `BindPaths` entries that actually grant
     // pool access.
     //
     // The diff is computed from the discovered `X-Ghars-Caches`
     // annotation (`delta.before_caches`) against the desired
     // post-update binding list (`delta.after.spec.caches`). When
     // the discovered annotation is absent (`None`) — pre-annotation
-    // runner or operator-stripped 00-ghars.conf — we skip the diff
+    // runner or operator-stripped `00-ghars.conf` — we skip the diff
     // entirely rather than guess at the prior membership; the next
     // apply will land annotations and a future caches-list edit
     // can reconcile from a known baseline.
@@ -1459,7 +1459,7 @@ pub(super) fn execute_update_runner(
             .collect();
         let before_set: std::collections::BTreeSet<&str> =
             before.iter().map(String::as_str).collect();
-        // Sort by collecting into BTreeSet first so the operations
+        // Sort by collecting into `BTreeSet` first so the operations
         // run in deterministic alphabetical order — easier for tests
         // and for operator log readability.
         for added in after_set.difference(&before_set) {
@@ -1472,7 +1472,7 @@ pub(super) fn execute_update_runner(
     }
 
     // Write managed unit text (this block) and drop-ins (loop
-    // further down). The 00-ghars.conf X-Ghars-Caches annotation
+    // further down). The `00-ghars.conf` `X-Ghars-Caches` annotation
     // lives in the drop-in body written by the `for (name, body)
     // in &delta.after.drop_ins` loop, NOT in the systemd template
     // body written here.
@@ -1487,23 +1487,23 @@ pub(super) fn execute_update_runner(
         log.push(UndoStep::CreateDir {
             path: drop_in_dir.clone(),
         });
-        // CreateDir is itself a filesystem mutation — count it as a
-        // change so the daemon-reload + restart still fires the first
+        // `CreateDir` is itself a filesystem mutation — count it as a
+        // change so the `daemon-reload` + restart still fires the first
         // time we plant a runner's drop-in directory, even on a runner
         // whose drop-in basenames all happen to byte-match a prior
         // hand-edit (vanishingly unlikely but cheap to be correct).
         files_changed += 1;
     }
-    // Remove ghars-managed drop-ins flagged DropInChangeKind::Removed
+    // Remove ghars-managed drop-ins flagged `DropInChangeKind::Removed`
     // by Stage 2 (rendered side has no entry, on-disk side does).
     // Stage 2 walks the union of rendered + discovered keys, so
-    // operator-edited 99-*.conf and any other non-managed name CAN
-    // appear here as Removed entries. The MANAGED_DROP_IN_BASENAMES
+    // operator-edited `99-*.conf` and any other non-managed name CAN
+    // appear here as `Removed` entries. The `MANAGED_DROP_IN_BASENAMES`
     // guard below is the load-bearing safety mechanism that keeps
     // `systemctl edit` overrides intact: we only delete basenames
     // ghars itself would emit. Anything else is operator territory
     // and is left untouched, even when Stage 2 classifies it as
-    // Removed.
+    // `Removed`.
     for change in &delta.drop_in_changes {
         if let DropInChangeKind::Removed { .. } = &change.change {
             if !MANAGED_DROP_IN_BASENAMES.contains(&change.basename.as_str()) {
@@ -1511,13 +1511,13 @@ pub(super) fn execute_update_runner(
             }
             let path = drop_in_dir.join(&change.basename);
             let prior = read_prior(&path);
-            // Differentiate "file is missing" (ENOENT — already
+            // Differentiate "file is missing" (`ENOENT` — already
             // removed, treat as no-op success) from any other I/O
-            // failure (EACCES on read-only mount, EBUSY on a held
-            // descriptor, EROFS, etc. — the file is still present
+            // failure (`EACCES` on read-only mount, `EBUSY` on a held
+            // descriptor, `EROFS`, etc. — the file is still present
             // and the convergence target was NOT reached). The
-            // pre-fix `is_ok()` collapsed every Err into a silent
-            // skip, so a real EACCES would let `apply` claim
+            // pre-fix `is_ok()` collapsed every `Err` into a silent
+            // skip, so a real `EACCES` would let `apply` claim
             // success while leaving the stale drop-in on disk.
             match fs::remove_file(path.as_std_path()) {
                 Ok(()) => {
@@ -1529,8 +1529,8 @@ pub(super) fn execute_update_runner(
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     // Already gone — operator concurrently removed
                     // or Stage 2 saw a race. Convergence target is
-                    // satisfied, no UndoStep to push (nothing to
-                    // restore), no files_changed bump (we did NOT
+                    // satisfied, no `UndoStep` to push (nothing to
+                    // restore), no `files_changed` bump (we did NOT
                     // mutate disk this apply).
                 }
                 Err(e) => return Err(GharsError::Io(e)),
@@ -1539,10 +1539,10 @@ pub(super) fn execute_update_runner(
     }
     // Write each desired drop-in. `read_then_write_if_changed` snapshots
     // the on-disk prior and short-circuits when the bytes already match
-    // The Preserved Stage 2 verdict is not used as an
+    // The `Preserved` Stage 2 verdict is not used as an
     // optimization here: it is plan-time, and on-disk bytes can drift
     // between plan and apply (e.g. operator edit landed after `ghars
-    // plan` rendered output). Trusting Preserved would preserve that
+    // plan` rendered output). Trusting `Preserved` would preserve that
     // drift instead of converging — the byte comparison inside
     // `read_then_write_if_changed` is the authoritative check and runs
     // every time.
@@ -1557,15 +1557,15 @@ pub(super) fn execute_update_runner(
     // in-place update ADDED a ccache binding (or refreshed an existing
     // one). Without this, an operator who edits a no-cache runner to
     // add `caches = ["build"]` (a ccache pool) gets the new drop-in
-    // body + .env emission (`CCACHE_DIR=/var/lib/ghars/<TZ>/.ccache`,
+    // body + `.env` emission (`CCACHE_DIR=/var/lib/ghars/<TZ>/.ccache`,
     // gated on `has_ccache` in `render_runner_env_file`) but the dir on
     // disk was never created — workflow steps' ccache wrappers would
     // try to write to a non-existent path. The `if !exists()` gate
     // around the create + chmod is load-bearing (not redundant
     // idempotency): a pre-existing `.ccache` from a sibling runner's
-    // prior CreateRunner apply was already chowned + tightened to
+    // prior `CreateRunner` apply was already chowned + tightened to
     // 0o770 by `chown_and_tighten_runner_state`; re-chmodding to
-    // 0o777 here would mode-thrash the sibling's post-StartUnit
+    // 0o777 here would mode-thrash the sibling's post-`StartUnit`
     // tightening and re-widen world access on a shared dir that
     // another running runner is reading. Regression-pinned at
     // `caches_tests::execute_update_runner_in_place_populates_pool_name_vecs`
@@ -1574,18 +1574,18 @@ pub(super) fn execute_update_runner(
     // a stale empty dir; harmless (no env var points at it anymore
     // once the renderer's `has_ccache` gate drops the emission) and
     // avoids cross-runner racy rmdir (another runner in the same
-    // trust_zone may still need the dir).
+    // `trust_zone` may still need the dir).
     //
     // KNOWN GAP: the freshly-created `.ccache` here stays root-owned
     // at 0o777 because `execute_update_runner` does NOT call
-    // `chown_and_tighten_runner_state` post-StartUnit (only
+    // `chown_and_tighten_runner_state` post-`StartUnit` (only
     // `execute_create_runner` does, at the
     // `chown_and_tighten_runner_state` call site in
     // `execute_create_runner`).
-    // The dir is functionally writable by the DynamicUser via the
+    // The dir is functionally writable by the `DynamicUser` via the
     // world bit, but the ownership posture diverges from the
-    // CreateRunner path (which produces DynamicUser-owned 0o770).
-    // Self-heals on the next CreateRunner in the same trust_zone.
+    // `CreateRunner` path (which produces DynamicUser-owned 0o770).
+    // Self-heals on the next `CreateRunner` in the same `trust_zone`.
     let after_has_ccache = delta
         .after
         .spec
@@ -1601,28 +1601,28 @@ pub(super) fn execute_update_runner(
         }
     }
 
-    // Rewrite .env and .path. CreateRunner writes them once, but
+    // Rewrite `.env` and `.path`. `CreateRunner` writes them once, but
     // in-place updates that change env-affecting fields (cache binding
     // flip, future operator-declared env vars) would otherwise leave
-    // the systemd Environment= directives (rewritten in the drop-in
-    // loop above; LAYER 1, reaches the Runner.Listener process) and
-    // the workflow-step env (via Runner.Listener's LoadAndSetEnv at
-    // process start, which reads .env once; LAYER 2) out of sync.
+    // the systemd `Environment=` directives (rewritten in the drop-in
+    // loop above; LAYER 1, reaches the `Runner.Listener` process) and
+    // the workflow-step env (via `Runner.Listener`'s `LoadAndSetEnv` at
+    // process start, which reads `.env` once; LAYER 2) out of sync.
     //
     // The pure-function producers `render_runner_env_file` and
-    // `render_runner_path_file` consume only EffectiveRunnerSpec
-    // fields (no runner_version), so the bytes here are byte-identical
-    // to what CreateRunner wrote for the same spec. The byte-compare
-    // in read_then_write_if_changed makes this a no-op when nothing
+    // `render_runner_path_file` consume only `EffectiveRunnerSpec`
+    // fields (no `runner_version`), so the bytes here are byte-identical
+    // to what `CreateRunner` wrote for the same spec. The byte-compare
+    // in `read_then_write_if_changed` makes this a no-op when nothing
     // changed.
     //
-    // bin_dir is computed from delta.after.spec.runner_version
-    // directly rather than find_active_bin_dir's lex-sort: in-place
-    // updates never change runner_version (that's a recreate-class
+    // `bin_dir` is computed from `delta.after.spec.runner_version`
+    // directly rather than `find_active_bin_dir`'s lex-sort: in-place
+    // updates never change `runner_version` (that's a recreate-class
     // field), so the running runner's bin dir matches the desired
-    // spec's version. An empty runner_version here means plan emitted
+    // spec's version. An empty `runner_version` here means plan emitted
     // a malformed in-place delta — fail loudly rather than silently
-    // skip the .env/.path rewrite.
+    // skip the `.env`/`.path` rewrite.
     let runner_home = paths.runner_home(&delta.identity.trust_zone, &delta.identity.name);
     let version = delta.after.spec.runner_version.as_deref().ok_or_else(|| GharsError::Apply {
         action: format!("UpdateRunner({}): rewrite .env/.path", delta.identity.name),
@@ -1649,15 +1649,15 @@ pub(super) fn execute_update_runner(
         true,
     )?;
 
-    // Skip daemon-reload + stop + start when nothing on disk
+    // Skip `daemon-reload` + stop + start when nothing on disk
     // changed AND the caches-list diff was empty. A non-empty
-    // pools_added/pools_removed implies the 30-cache-pool.conf
+    // `pools_added`/`pools_removed` implies the `30-cache-pool.conf`
     // drop-in was re-rendered (its body changed when bindings
-    // changed), so files_changed > 0 in that case — but the
+    // changed), so `files_changed > 0` in that case — but the
     // pool-Vec checks below stay as belt-and-suspenders so a
     // future code path that records pool changes without
     // re-rendering can't slip past the restart gate.
-    // verify_runner_netns runs only when we actually start the
+    // `verify_runner_netns` runs only when we actually start the
     // unit; otherwise the prior PID is still in the netns we
     // already verified on the last apply.
     if files_changed == 0 && pools_added.is_empty() && pools_removed.is_empty() {
@@ -1667,8 +1667,8 @@ pub(super) fn execute_update_runner(
         );
         return Ok(ApplyOutcome::InPlaceSkipped);
     }
-    // `--no-restart` opt-out: files (drop-ins, .env, .path) were
-    // already written above; skip the daemon-reload + stop + start
+    // `--no-restart` opt-out: files (drop-ins, `.env`, `.path`) were
+    // already written above; skip the `daemon-reload` + stop + start
     // cycle so the running unit keeps its pre-rewrite loaded config
     // until the operator manually restarts via `systemctl restart
     // ghars-runner@NAME.service` or re-runs apply without the flag.
@@ -1691,8 +1691,8 @@ pub(super) fn execute_update_runner(
     let unit_name = format!("ghars-runner@{}.service", delta.identity.name);
     deps.systemd.daemon_reload()?;
     // Restart by stop+start; systemd has no atomic "restart" D-Bus
-    // method via `Manager` (RestartUnit exists but is implemented as
-    // stop+start internally). Use stop_unit/start_unit which are part
+    // method via `Manager` (`RestartUnit` exists but is implemented as
+    // stop+start internally). Use `stop_unit`/`start_unit` which are part
     // of the trait surface.
     deps.systemd.stop_unit(&unit_name)?;
     log.push(UndoStep::StopUnit {
