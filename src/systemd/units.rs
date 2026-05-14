@@ -17,6 +17,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
+use camino::Utf8Path;
 use ipnet::IpNet;
 
 use crate::config::{
@@ -901,6 +902,98 @@ fn check_no_whitespace_padding(field: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Whether `path` resolves to the filesystem root (`/`) after
+/// component-walk normalization. Catches operator-supplied paths
+/// whose textual form differs from `/` but whose resolved bind
+/// target is the host root: `//`, `///`, `/.`, `/./`, `/foo/..`,
+/// `/foo/bar/../..`, etc.
+///
+/// Walks `Path::components()` and tracks normalized depth:
+/// - `RootDir`, `CurDir` (`.`) are no-ops.
+/// - `ParentDir` (`..`) decrements depth, saturating at 0 — climbing
+///   above root stays at root, matching Linux kernel semantics for
+///   `/..`.
+/// - `Normal` (operator-named component) increments depth.
+///
+/// A final depth of 0 means every `Normal` component was cancelled
+/// by a `ParentDir`, leaving only root.
+///
+/// Accepts: `/etc`, `/etc/`, `/foo/../bar`, `/foo/./bar`.
+/// Rejects: `/`, `//`, `///`, `/.`, `/./`, `/foo/..`,
+/// `/foo/bar/../..`, `/.//.`.
+fn binds_filesystem_root(path: &Utf8Path) -> bool {
+    use std::path::Component;
+    let mut depth: i64 = 0;
+    for c in path.as_std_path().components() {
+        match c {
+            Component::RootDir | Component::CurDir => {}
+            Component::ParentDir => {
+                if depth > 0 {
+                    depth -= 1;
+                }
+            }
+            Component::Normal(_) => {
+                depth += 1;
+            }
+            Component::Prefix(_) => {
+                // Windows-only; ignore on Linux.
+            }
+        }
+    }
+    depth == 0
+}
+
+/// SEC-12 defense gate for `BindReadOnlyPaths=` emission in
+/// `render_hardening`. Refuses the directive in two cases:
+///
+/// 1. The entry is empty (`""`). `Path::components()` returns `[]`
+///    for the empty path, which would yield `depth = 0` and trigger
+///    the SEC-12 root-rejection with a misleading "filesystem root"
+///    error; the empty pre-check surfaces the correct cause first.
+/// 2. The entry resolves to the filesystem root via
+///    `binds_filesystem_root` — binding root into the runner
+///    namespace would overlay-bind the entire host filesystem on top
+///    of every other Hardening-applied protection (`ProtectSystem`,
+///    `ReadOnlyPaths`, the template's curated `BindReadOnlyPaths`
+///    set).
+///
+/// FIRST/ONLY gate today: unlike `render_hooks`'s SEC-12 root-parent
+/// check (defense-in-depth on top of `validators::validate_hook_script`'s
+/// config-load root-parent rejection), the Hardening-side validators
+/// (`validate_extra_bind_paths` at validators.rs; `bind_readonly_paths`
+/// has no config-load validator) do not reject root-equivalent paths.
+/// A config-load companion would convert this into defense-in-depth.
+fn check_no_root_bind(field: &str, path: &Utf8Path) -> Result<()> {
+    // Empty pre-check: `binds_filesystem_root` returns true for the
+    // empty path (`Path::components()` yields `[]` → depth=0), but
+    // the operator's actual mistake is an empty entry, not a root
+    // bind. Surface the correct cause. (`extra_bind_paths` is gated
+    // at config-load by `validate_extra_bind_paths`; for
+    // `bind_readonly_paths` this renderer is the only check.)
+    if path.as_str().is_empty() {
+        return Err(GharsError::Validation(
+            format!("hardening.{field} entry is empty"),
+            "remove the empty path from the list, or replace it with an \
+             absolute path (e.g. /etc/pki/ca-trust/source/anchors)"
+                .into(),
+        ));
+    }
+    if binds_filesystem_root(path) {
+        return Err(GharsError::Validation(
+            format!(
+                "hardening.{field} entry `{path}` resolves to filesystem root \
+                 (SEC-12); BindReadOnlyPaths=/ would expose the entire host \
+                 into the runner sandbox"
+            ),
+            "use a narrower path (e.g. /etc/pki/ca-trust/source/anchors) \
+             instead of the filesystem root; if you genuinely need whole-host \
+             exposure, use a 99-*.conf operator drop-in via systemctl edit"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
     // Validate every interpolated field BEFORE writing — fail-fast
     // before the bytes touch the BTreeMap so an upstream caller's
@@ -1329,11 +1422,13 @@ fn render_hardening(
         for p in paths {
             check_identity_field("bind_readonly_paths[]", p.as_str())?;
             check_no_whitespace_padding("bind_readonly_paths[]", p.as_str())?;
+            check_no_root_bind("bind_readonly_paths[]", p)?;
         }
     }
     for p in &h.extra_bind_paths {
         check_identity_field("extra_bind_paths[]", p.as_str())?;
         check_no_whitespace_padding("extra_bind_paths[]", p.as_str())?;
+        check_no_root_bind("extra_bind_paths[]", p)?;
     }
 
     // Determine if any directive needs to be emitted. The template
@@ -3828,6 +3923,169 @@ mod tests {
         assert!(
             body.contains("BindReadOnlyPaths=/var/log/example"),
             "expected BindReadOnlyPaths=/var/log/example in body; got:\n{body}"
+        );
+    }
+
+    /// SEC-12 root-bind rejection: literal `/` in
+    /// `bind_readonly_paths`. `bind_readonly_paths` has no config-load
+    /// validator at all, so the renderer is the FIRST/ONLY gate. A
+    /// `BindReadOnlyPaths=/` emission would overlay-bind the host root
+    /// into the runner namespace, defeating every other Hardening
+    /// protection. Mirrors the existing render_hooks SEC-12 pattern.
+    #[test]
+    fn render_hardening_rejects_root_bind_readonly_paths() {
+        let mut spec = minimal_spec();
+        spec.hardening.bind_readonly_paths = Some(vec![Utf8PathBuf::from("/")]);
+        let err = render_runner_unit(&spec).unwrap_err();
+        assert!(
+            matches!(err, GharsError::Validation(_, _)),
+            "expected Validation, got {err:?}"
+        );
+        let msg = format!("{err}");
+        assert!(msg.contains("bind_readonly_paths"), "msg: {msg}");
+        assert!(msg.contains("SEC-12"), "msg: {msg}");
+        assert!(msg.contains("filesystem root"), "msg: {msg}");
+    }
+
+    /// Sister to `render_hardening_rejects_root_bind_readonly_paths`.
+    /// `extra_bind_paths` passes the config-load
+    /// `validate_extra_bind_paths` check today for bare `/` (the
+    /// `DENY_EXTRA_BIND_PATHS` list does not include `/`), so the
+    /// renderer is the only gate.
+    #[test]
+    fn render_hardening_rejects_root_extra_bind_paths() {
+        let mut spec = minimal_spec();
+        spec.hardening.extra_bind_paths = vec![Utf8PathBuf::from("/")];
+        let err = render_runner_unit(&spec).unwrap_err();
+        assert!(
+            matches!(err, GharsError::Validation(_, _)),
+            "expected Validation, got {err:?}"
+        );
+        let msg = format!("{err}");
+        assert!(msg.contains("extra_bind_paths"), "msg: {msg}");
+        assert!(msg.contains("SEC-12"), "msg: {msg}");
+        assert!(msg.contains("filesystem root"), "msg: {msg}");
+    }
+
+    /// Path-normalization variant: `//` collapses to `/` at
+    /// `mount(2)` time, so the SEC-12 gate must reject it even
+    /// though `path.as_str() == "/"` is false.
+    /// `binds_filesystem_root`'s component-walk handles this by
+    /// treating consecutive separators as a single `RootDir`
+    /// component.
+    #[test]
+    fn render_hardening_rejects_double_slash_root_bind_readonly_paths() {
+        let mut spec = minimal_spec();
+        spec.hardening.bind_readonly_paths = Some(vec![Utf8PathBuf::from("//")]);
+        let err = render_runner_unit(&spec).unwrap_err();
+        assert!(matches!(err, GharsError::Validation(_, _)));
+        let msg = format!("{err}");
+        assert!(msg.contains("SEC-12"), "msg: {msg}");
+    }
+
+    /// Path-normalization variant: `/.` is `RootDir + CurDir` which
+    /// resolves to root. The component-walk treats `CurDir` as a
+    /// no-op, leaving depth=0 → reject.
+    #[test]
+    fn render_hardening_rejects_dot_root_extra_bind_paths() {
+        let mut spec = minimal_spec();
+        spec.hardening.extra_bind_paths = vec![Utf8PathBuf::from("/.")];
+        let err = render_runner_unit(&spec).unwrap_err();
+        assert!(matches!(err, GharsError::Validation(_, _)));
+        let msg = format!("{err}");
+        assert!(msg.contains("SEC-12"), "msg: {msg}");
+    }
+
+    /// Path-normalization variant: `/foo/..` climbs to root via
+    /// `ParentDir`. The component-walk increments depth for `foo`
+    /// and decrements for `..`, leaving depth=0 → reject.
+    #[test]
+    fn render_hardening_rejects_parent_dir_climb_root_extra_bind_paths() {
+        let mut spec = minimal_spec();
+        spec.hardening.extra_bind_paths = vec![Utf8PathBuf::from("/foo/..")];
+        let err = render_runner_unit(&spec).unwrap_err();
+        assert!(matches!(err, GharsError::Validation(_, _)));
+        let msg = format!("{err}");
+        assert!(msg.contains("SEC-12"), "msg: {msg}");
+    }
+
+    /// Mid-list rejection: `/` in the middle of a list of valid
+    /// paths. The per-entry loop must iterate every entry; a
+    /// regression that only checked the first entry would miss
+    /// this case.
+    #[test]
+    fn render_hardening_rejects_root_mid_list_bind_readonly_paths() {
+        let mut spec = minimal_spec();
+        spec.hardening.bind_readonly_paths = Some(vec![
+            Utf8PathBuf::from("/etc/example"),
+            Utf8PathBuf::from("/"),
+            Utf8PathBuf::from("/var/log/example"),
+        ]);
+        let err = render_runner_unit(&spec).unwrap_err();
+        assert!(matches!(err, GharsError::Validation(_, _)));
+        let msg = format!("{err}");
+        assert!(msg.contains("SEC-12"), "msg: {msg}");
+    }
+
+    /// Empty entry must be rejected with the correct "entry is
+    /// empty" error class — NOT misclassified as "filesystem root"
+    /// (which would happen without the empty pre-check, since
+    /// `Path::components()` on `""` yields `[]` and the
+    /// component-walk returns depth=0).
+    /// `bind_readonly_paths` has no config-load validator so this
+    /// renderer-side check is the only gate.
+    #[test]
+    fn render_hardening_rejects_empty_bind_readonly_paths_entry() {
+        let mut spec = minimal_spec();
+        spec.hardening.bind_readonly_paths = Some(vec![Utf8PathBuf::from("")]);
+        let err = render_runner_unit(&spec).unwrap_err();
+        assert!(matches!(err, GharsError::Validation(_, _)));
+        let msg = format!("{err}");
+        assert!(msg.contains("bind_readonly_paths"), "msg: {msg}");
+        assert!(msg.contains("empty"), "msg: {msg}");
+        assert!(
+            !msg.contains("filesystem root"),
+            "empty entry must not be misclassified as filesystem root: {msg}"
+        );
+    }
+
+    /// Sister to `render_hardening_rejects_empty_bind_readonly_paths_entry`
+    /// for `extra_bind_paths`. The config-load validator
+    /// `validate_extra_bind_paths` already rejects empty entries,
+    /// but this renderer-side check is defense-in-depth for
+    /// direct-construct callers that bypass cli/load.rs.
+    #[test]
+    fn render_hardening_rejects_empty_extra_bind_paths_entry() {
+        let mut spec = minimal_spec();
+        spec.hardening.extra_bind_paths = vec![Utf8PathBuf::from("")];
+        let err = render_runner_unit(&spec).unwrap_err();
+        assert!(matches!(err, GharsError::Validation(_, _)));
+        let msg = format!("{err}");
+        assert!(msg.contains("extra_bind_paths"), "msg: {msg}");
+        assert!(msg.contains("empty"), "msg: {msg}");
+        assert!(
+            !msg.contains("filesystem root"),
+            "empty entry must not be misclassified as filesystem root: {msg}"
+        );
+    }
+
+    /// Negative regression: `/foo/../bar` resolves to `/bar` (a
+    /// non-root path) — must NOT be rejected. Catches a regression
+    /// that broadens the gate to reject any path containing `..`.
+    #[test]
+    fn render_hardening_accepts_parent_dir_normalized_to_non_root_extra_bind_paths() {
+        let mut spec = minimal_spec();
+        spec.hardening.extra_bind_paths = vec![Utf8PathBuf::from("/foo/../bar")];
+        let r = render_runner_unit(&spec).expect("non-root path must render");
+        let body = r
+            .drop_ins
+            .get("20-hardening.conf")
+            .expect("20-hardening.conf expected when extra_bind_paths is non-empty");
+        // The renderer emits the operator's textual path verbatim;
+        // systemd resolves `..` at mount(2) time.
+        assert!(
+            body.contains("BindReadOnlyPaths=/foo/../bar"),
+            "expected BindReadOnlyPaths=/foo/../bar; got:\n{body}"
         );
     }
 
