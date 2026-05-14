@@ -23,6 +23,7 @@ use ipnet::IpNet;
 use crate::config::{
     CacheKind, EffectiveCacheBinding, EffectiveRunnerSpec, EtcBindStyle, Hardening, NetworkMode,
 };
+use crate::path_util::binds_filesystem_root;
 use crate::{GharsError, Result};
 
 use super::dbus::validate_drop_in;
@@ -900,47 +901,6 @@ fn check_no_whitespace_padding(field: &str, value: &str) -> Result<()> {
         ));
     }
     Ok(())
-}
-
-/// Whether `path` resolves to the filesystem root (`/`) after
-/// component-walk normalization. Catches operator-supplied paths
-/// whose textual form differs from `/` but whose resolved bind
-/// target is the host root: `//`, `///`, `/.`, `/./`, `/foo/..`,
-/// `/foo/bar/../..`, etc.
-///
-/// Walks `Path::components()` and tracks normalized depth:
-/// - `RootDir`, `CurDir` (`.`) are no-ops.
-/// - `ParentDir` (`..`) decrements depth, saturating at 0 — climbing
-///   above root stays at root, matching Linux kernel semantics for
-///   `/..`.
-/// - `Normal` (operator-named component) increments depth.
-///
-/// A final depth of 0 means every `Normal` component was cancelled
-/// by a `ParentDir`, leaving only root.
-///
-/// Accepts: `/etc`, `/etc/`, `/foo/../bar`, `/foo/./bar`.
-/// Rejects: `/`, `//`, `///`, `/.`, `/./`, `/foo/..`,
-/// `/foo/bar/../..`, `/.//.`.
-fn binds_filesystem_root(path: &Utf8Path) -> bool {
-    use std::path::Component;
-    let mut depth: i64 = 0;
-    for c in path.as_std_path().components() {
-        match c {
-            Component::RootDir | Component::CurDir => {}
-            Component::ParentDir => {
-                if depth > 0 {
-                    depth -= 1;
-                }
-            }
-            Component::Normal(_) => {
-                depth += 1;
-            }
-            Component::Prefix(_) => {
-                // Windows-only; ignore on Linux.
-            }
-        }
-    }
-    depth == 0
 }
 
 /// SEC-12 defense gate for `BindReadOnlyPaths=` emission. Refuses
@@ -2077,14 +2037,12 @@ fn render_hooks(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
     //
     // SEC-12 defense-in-depth: `check_no_root_bind` refuses to emit
     // `BindReadOnlyPaths=/` if any hook's parent resolves to the
-    // filesystem root. `validators::validate_hook_script` already
-    // rejects literal `/` parents at config-load via string-equality,
-    // but the helper's component-walk normalization additionally
-    // catches `//`, `/.`, `/foo/..` — root-equivalent paths that
-    // string-equality misses. Keeping the check here means any caller
-    // that bypasses the validator (programmatic EffectiveRunnerSpec
-    // construction, future test harnesses) still cannot regress this
-    // surface into a host-exposing bind.
+    // filesystem root via component-walk normalization.
+    // `validators::validate_hook_script` applies the same check at
+    // config-load via `crate::path_util::binds_filesystem_root`, but
+    // keeping the check here covers any caller that bypasses the
+    // validator (programmatic EffectiveRunnerSpec construction, future
+    // test harnesses).
     let mut parents: Vec<String> = Vec::new();
     for (field, opt_p) in [
         ("hooks.pre_job", &h.pre_job),

@@ -1522,21 +1522,21 @@ pub fn validate_hook_script(path: &Utf8Path) -> Result<()> {
              runner's cwd at exec time, which is operator-controllable",
         ));
     }
-    // SEC-12 hardening: reject hook scripts whose parent is `/`
-    // (i.e. paths like `/foo.sh`). The runner unit binds the hook's
-    // parent directory into the sandbox via `BindReadOnlyPaths=`;
-    // a hook at `/foo.sh` would emit `BindReadOnlyPaths=/`, exposing
-    // the entire host filesystem to the runner. Operators should
-    // place hooks under a dedicated subdirectory (e.g.
-    // `/usr/local/lib/ghars-hooks/foo.sh`) so the bind targets a
-    // narrow tree.
+    // SEC-12 hardening: reject hook scripts whose parent resolves to
+    // the filesystem root after component-walk normalization. Covers
+    // literal `/`, `//`, `/.`, `/foo/..` and other root-equivalent
+    // textual forms — all would emit `BindReadOnlyPaths=/<parent>`
+    // lines that systemd resolves to `/` at unit-load, exposing the
+    // entire host filesystem to the runner.
     if let Some(parent) = path.parent()
-        && (parent.as_str() == "/" || parent.as_str().is_empty())
+        && (parent.as_str().is_empty()
+            || crate::path_util::binds_filesystem_root(parent))
     {
         return Err(validation(
             format!(
-                "hook script {path}: parent directory is `/` (SEC-12); \
-                     BindReadOnlyPaths=/ would expose the entire host to the runner"
+                "hook script {path}: parent directory `{parent}` resolves \
+                 to filesystem root (SEC-12); BindReadOnlyPaths=/ would \
+                 expose the entire host to the runner"
             ),
             "place the hook under a dedicated subdirectory \
                  (e.g. /usr/local/lib/ghars-hooks/<name>.sh) so the \
@@ -4037,8 +4037,32 @@ mod tests {
         let err = validate_hook_script(&path).expect_err("hook with parent=`/` must be rejected");
         let msg = format!("{err}");
         assert!(
-            msg.contains("parent directory is `/`") && msg.contains("SEC-12"),
+            msg.contains("resolves to filesystem root") && msg.contains("SEC-12"),
             "expected root-parent rejection; got {msg}"
+        );
+    }
+
+    #[test]
+    fn hook_script_rejects_parent_dir_climb_root() {
+        let path = camino::Utf8PathBuf::from("/foo/../bar.sh");
+        let err = validate_hook_script(&path)
+            .expect_err("hook with root-equivalent parent must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("resolves to filesystem root") && msg.contains("SEC-12"),
+            "expected root-parent rejection for /foo/../bar.sh; got {msg}"
+        );
+    }
+
+    #[test]
+    fn hook_script_rejects_dot_root_parent() {
+        let path = camino::Utf8PathBuf::from("/./foo.sh");
+        let err = validate_hook_script(&path)
+            .expect_err("hook with /. parent must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("resolves to filesystem root") && msg.contains("SEC-12"),
+            "expected root-parent rejection for /./foo.sh; got {msg}"
         );
     }
 
@@ -4059,7 +4083,7 @@ mod tests {
         if let Err(err) = &result {
             let msg = format!("{err}");
             assert!(
-                !msg.contains("parent directory is `/`"),
+                !msg.contains("resolves to filesystem root"),
                 "subdir-parented path must NOT trigger root-parent rejection; got {msg}"
             );
         }

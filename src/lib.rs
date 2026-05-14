@@ -14,6 +14,7 @@ pub mod error;
 pub mod extract;
 pub mod github;
 pub mod netns;
+pub(crate) mod path_util;
 pub mod paths;
 pub mod plan;
 pub mod preflight;
