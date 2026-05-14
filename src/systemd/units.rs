@@ -2041,32 +2041,30 @@ fn render_hooks(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
     // post share the parent). Hook scripts must be reachable through
     // the runner's mount namespace.
     //
-    // SEC-12 defense-in-depth: refuse to emit `BindReadOnlyPaths=/`
-    // if any hook's parent resolves to the filesystem root. The
-    // validator (`validators::validate_hook_script`) already rejects
-    // root-parent paths at config-load time, but the renderer is the
-    // last gate before the directive lands on disk; keep the check
-    // here so any caller that bypasses the validator (programmatic
-    // EffectiveRunnerSpec construction, future test harnesses)
-    // cannot regress this surface into a host-exposing bind.
+    // SEC-12 defense-in-depth: `check_no_root_bind` refuses to emit
+    // `BindReadOnlyPaths=/` if any hook's parent resolves to the
+    // filesystem root. `validators::validate_hook_script` already
+    // rejects literal `/` parents at config-load via string-equality,
+    // but the helper's component-walk normalization additionally
+    // catches `//`, `/.`, `/foo/..` — root-equivalent paths that
+    // string-equality misses. Keeping the check here means any caller
+    // that bypasses the validator (programmatic EffectiveRunnerSpec
+    // construction, future test harnesses) still cannot regress this
+    // surface into a host-exposing bind.
     let mut parents: Vec<String> = Vec::new();
-    for p in [&h.pre_job, &h.post_job].into_iter().flatten() {
+    for (field, opt_p) in [
+        ("hooks.pre_job", &h.pre_job),
+        ("hooks.post_job", &h.post_job),
+    ] {
+        let Some(p) = opt_p else {
+            continue;
+        };
         if let Some(parent) = p.parent() {
             let parent_str = parent.to_string();
             if parent_str.is_empty() {
                 continue;
             }
-            if parent_str == "/" {
-                return Err(GharsError::Validation(
-                    format!(
-                        "hook script {p}: parent directory is `/` (SEC-12); \
-                         BindReadOnlyPaths=/ would expose the entire host"
-                    ),
-                    "place the hook under a dedicated subdirectory \
-                     (e.g. /usr/local/lib/ghars-hooks/<name>.sh)"
-                        .into(),
-                ));
-            }
+            check_no_root_bind(&format!("{field} parent directory for `{p}`"), parent)?;
             if !parents.contains(&parent_str) {
                 parents.push(parent_str);
             }
@@ -3539,14 +3537,49 @@ mod tests {
             "expected Validation, got {err:?}"
         );
         let msg = format!("{err}");
-        assert!(msg.contains("parent directory is `/`"), "msg: {msg}");
+        assert!(msg.contains("hooks.pre_job parent directory"), "msg: {msg}");
+        assert!(msg.contains("/foo.sh"), "msg: {msg}");
         assert!(msg.contains("SEC-12"), "msg must label SEC-12: {msg}");
-        // Defense in depth: ensure the hint points operators at the
-        // subdirectory remediation, not just "remove the hook".
+        assert!(msg.contains("filesystem root"), "msg: {msg}");
+        // The shared `check_no_root_bind` helper emits a generic
+        // remediation pointing operators at a narrower path or a
+        // 99-*.conf operator drop-in. The hooks-specific subdirectory
+        // hint lives at `validators::validate_hook_script` which fires
+        // at config-load before the renderer.
         assert!(
-            msg.contains("subdirectory") || msg.contains("ghars-hooks"),
-            "remediation hint must point at subdir layout: {msg}"
+            msg.contains("narrower path") || msg.contains("99-*.conf"),
+            "remediation hint must point at narrower-path / drop-in: {msg}"
         );
+    }
+
+    /// Path-normalization tightening: `/foo/..` resolves to root via
+    /// `ParentDir` saturation in `binds_filesystem_root`. The previous
+    /// renderer-side check used `parent_str == "/"` string-equality and
+    /// ACCEPTED `/foo/..` (literal string is `/foo/..`, not `/`), so
+    /// the rendered drop-in carried `BindReadOnlyPaths=/foo/..` which
+    /// systemd's mount-path normalization resolves to `/` at unit-load
+    /// time — full host exposure. The post-refactor `check_no_root_bind`
+    /// component-walk catches this class. Regression-pin so a revert to
+    /// the weaker check surfaces here.
+    #[test]
+    fn render_hooks_rejects_parent_dir_climb_root_pre_job_path() {
+        let mut spec = minimal_spec();
+        spec.hooks = Some(crate::config::HooksSpec {
+            pre_job: Some(camino::Utf8PathBuf::from("/foo/../bar.sh")),
+            post_job: None,
+        });
+        let err = render_runner_unit(&spec).unwrap_err();
+        assert!(matches!(err, GharsError::Validation(_, _)));
+        let msg = format!("{err}");
+        assert!(msg.contains("SEC-12"), "msg: {msg}");
+        assert!(msg.contains("filesystem root"), "msg: {msg}");
+        // Pin the full label format including the hook path. Mirrors
+        // the label-format pin pattern from the render_hardening
+        // SEC-12 tests — catches a regression where a future call site
+        // drops the `hooks.<field>` scope prefix or the `for `{p}``
+        // context suffix.
+        assert!(msg.contains("hooks.pre_job parent directory"), "msg: {msg}");
+        assert!(msg.contains("/foo/../bar.sh"), "msg: {msg}");
     }
 
     /// `render_hooks`: `hooks.pre_job` is an operator-supplied path
