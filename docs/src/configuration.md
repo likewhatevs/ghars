@@ -684,17 +684,30 @@ List-typed fields:
   alpha-sorted at the renderer in `render_hardening`; cosmetic TOML reorders are a true NoOp.
 - `etc_bind_style` (`EtcBindStyle`) — `curated` (default; narrow
   /etc list) or `broad` (whole /etc).
-- `bind_readonly_paths` (`Option<Vec<Utf8PathBuf>>`) — REPLACES
-  the template's `BindReadOnlyPaths` set (gated by the
-  reset-on-empty validator). NOT sorted: operator order is
-  preserved across the merge boundary because systemd's PID 1
-  user-space resorts mount entries parent-first via
-  `mount_path_compare` before any `mount(2)` syscall, so operator-
-  declared order is purely cosmetic to systemd but load-bearing
-  for `spec_hash` byte-equality: introducing sort would flip
-  `spec_hash` for existing deployments (triggering spurious in-
-  place `UpdateRunner` cascades) and break the round-trip between
-  operator TOML order and rendered drop-in bytes.
+- `bind_readonly_paths` (`Option<Vec<Utf8PathBuf>>`) — APPENDS
+  operator-supplied entries to the template's `BindReadOnlyPaths`
+  set at render time. The reset-on-empty validator forbids
+  emitting a bare-`=` clear, so operator entries widen the
+  rendered read-only bind set rather than replacing the template;
+  narrowing requires a `99-*.conf` operator drop-in (which the
+  validator does NOT police). At the merge boundary, a runner-side
+  `Some(...)` REPLACES any `[defaults].hardening.bind_readonly_paths`
+  value (`.or_else()` pick — runner wins; no per-block
+  concatenation across `[defaults]` and `[[runner]]`); distinct
+  from `extra_bind_paths`, which is additive across both layers.
+  Earlier docs called this field REPLACES; the renderer has always
+  APPENDED — operators who configured the field for template-
+  narrowing should audit the effective bind set via `systemctl
+  show ghars-runner@NAME -p BindReadOnlyPaths`. NOT sorted:
+  operator order is preserved across the merge boundary because
+  systemd's PID 1 user-space resorts mount entries parent-first
+  via `mount_path_compare` before any `mount(2)` syscall, so
+  operator-declared order is purely cosmetic to systemd but
+  load-bearing for `spec_hash` byte-equality: introducing sort
+  would flip `spec_hash` for existing deployments (triggering
+  spurious in-place `UpdateRunner` cascades) and break the
+  round-trip between operator TOML order and rendered drop-in
+  bytes.
 - `extra_bind_paths` (`Vec<Utf8PathBuf>`) — APPENDS to the
   template's `BindReadOnlyPaths` set (or to `bind_readonly_paths`
   if also set). Use to keep defaults but add paths (e.g. proxy

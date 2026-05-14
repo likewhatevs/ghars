@@ -607,10 +607,19 @@ pub struct Hardening {
     /// /etc list) or `Broad` (whole /etc bound).
     #[serde(default)]
     pub etc_bind_style: EtcBindStyle,
-    /// Explicit `BindReadOnlyPaths` replacement list. None ≡ use the
-    /// template's curated set (or whole /etc per `etc_bind_style`).
-    /// Some(list) ≡ REPLACE the template's `BindReadOnlyPaths` entirely
-    /// (the reset-on-empty validator gates safety).
+    /// APPENDS operator entries to the template's `BindReadOnlyPaths`
+    /// set at render time. `None` ≡ use the template's curated set
+    /// (or whole /etc per `etc_bind_style`). `Some(list)` widens the
+    /// template via a second `BindReadOnlyPaths=` line that systemd
+    /// unions with the template's at unit-load time. At the merge
+    /// boundary, a runner-side `Some(...)` REPLACES any
+    /// `[defaults].hardening.bind_readonly_paths` value (`.or_else()`
+    /// pick — runner wins; defaults inherited only when runner-side
+    /// is `None`); distinct from `extra_bind_paths` which is additive
+    /// across both layers. The reset-on-empty validator forbids a
+    /// bare-`=` clear, so operator entries can only widen the
+    /// template at render time — narrowing requires a `99-*.conf`
+    /// operator drop-in.
     pub bind_readonly_paths: Option<Vec<Utf8PathBuf>>,
     /// Additional `BindReadOnlyPaths` entries APPENDED to the
     /// template's set (or to `bind_readonly_paths` if set). Use this
@@ -702,7 +711,7 @@ pub enum EtcBindStyle {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ProxySpec {
-    /// `HTTP_PROXY` value (e.g. `"http://192.168.2.84:3128"`).
+    /// `HTTP_PROXY` value (e.g. `"http://192.0.2.84:3128"`).
     pub http: Option<String>,
     /// `HTTPS_PROXY` value (often the same URL as `http`).
     pub https: Option<String>,

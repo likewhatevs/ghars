@@ -1003,24 +1003,21 @@ const DENY_EXTRA_CAPABILITIES: &[&str] = &[
     "CAP_NET_RAW",
 ];
 
-/// Filesystem paths ghars refuses to add to `BindReadOnlyPaths=` /
-/// `BindPaths=` via `Hardening.extra_bind_paths`. Mounting any of
-/// these into the runner namespace re-exposes a host-control surface
-/// the systemd profile takes care to hide:
+/// Filesystem paths ghars refuses to add to `BindReadOnlyPaths=`
+/// via `Hardening.extra_bind_paths`. Mounting any of these into
+/// the runner namespace re-exposes a host-control surface the
+/// systemd profile takes care to hide:
 /// - `/proc/sys` — kernel sysctls. Read-only is enough for
-///   fingerprinting; a future regression that grew a `read_write`
-///   bool on the binding would be one config edit from re-enabling
-///   write access.
-/// - `/sys/kernel/security` — securityfs (`SELinux`, `AppArmor`, IMA).
+///   fingerprinting.
+/// - `/sys/kernel/security` — securityfs (`SELinux`, `AppArmor`, `IMA`).
 /// - `/proc/sysrq-trigger` — even read-only mount makes the file
-///   path present, and a misconfigured drop-in could escalate the
-///   binding to writable.
+///   path present, re-exposing a host-control surface.
 /// - `/dev/kmem`, `/dev/mem` — raw kernel/physical memory.
 /// - `/dev/kmsg` — kernel ring buffer. Read-only is still an
 ///   info-leak (the runner can read all dmesg output, including
 ///   driver / module / hardware fingerprints).
 /// - `/dev/kallsyms` — kernel symbol-to-address map. Even read-only
-///   defeats KASLR.
+///   defeats `KASLR`.
 /// - `/proc/kcore` — pseudo-file backing a full kernel-memory dump.
 ///   Read-only is full kernel-state exfiltration.
 ///
