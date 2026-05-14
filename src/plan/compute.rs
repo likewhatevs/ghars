@@ -1442,17 +1442,29 @@ pub(super) fn lower_to_effective(
     // that systemd refuses to start (ConditionPathExists fails).
     //
     // GATE READS RAW FIELDS PRE-MERGE: this check evaluates
-    // `runner.runner_version` + `config.defaults.runner_version`
-    // BEFORE the merge_defaults call below populates the effective
-    // spec. The disjunction `runner.runner_version.is_none() &&
-    // config.defaults.runner_version.is_none()` captures the
+    // `runner.runner_tarball` + `runner.runner_version` +
+    // `config.defaults.runner_version` BEFORE the merge_defaults
+    // call below populates the effective spec. The runner_version
+    // disjunction (`runner.runner_version.is_none() &&
+    // config.defaults.runner_version.is_none()`) captures the
     // post-merge "still None" condition without needing the merged
     // value — same semantic as `merged.runner_version.is_none()`
     // because merge_defaults uses `.or()` precedence (runner-side
-    // wins, then defaults-side). A future refactor that moves the
-    // merge above this gate MUST update the predicate to read the
-    // merged value, or the gate stops firing for the
-    // defaults-inheritance escape hatch.
+    // wins, then defaults-side).
+    //
+    // The runner_tarball arm is NOT post-merge-equivalent after the
+    // Some(empty) → None normalization landed at merge_defaults:
+    // a raw `Some(Utf8PathBuf::from(""))` runner_tarball trips this
+    // gate's `is_some()` arm here but would be normalized to None
+    // in the effective spec, where the tarball-pin path would not
+    // actually run. The error still surfaces a real misconfiguration
+    // (empty runner_tarball is operator error regardless of which
+    // layer catches it), just not strictly congruent to the
+    // post-merge state.
+    //
+    // A future refactor that moves the merge above this gate MUST
+    // update the predicate to read the merged value, or the gate
+    // stops firing for the defaults-inheritance escape hatch.
     if runner.runner_tarball.is_some()
         && runner.runner_version.is_none()
         && config.defaults.runner_version.is_none()
