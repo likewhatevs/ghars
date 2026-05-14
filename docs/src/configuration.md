@@ -696,9 +696,11 @@ List-typed fields:
   place `UpdateRunner` cascades) and break the round-trip between
   operator TOML order and rendered drop-in bytes.
 - `extra_bind_paths` (`Vec<Utf8PathBuf>`) — APPENDS to the
-  template's set (or to `bind_readonly_paths` if also set). Use
-  to keep defaults but add paths (e.g. proxy CA bundles). NOT
-  sorted — same rationale as `bind_readonly_paths`.
+  template's `BindReadOnlyPaths` set (or to `bind_readonly_paths`
+  if also set). Use to keep defaults but add paths (e.g. proxy
+  CA bundles). All entries are read-only; no `Hardening` field
+  exposes RW bind via `BindPaths=`. NOT sorted — same rationale
+  as `bind_readonly_paths`.
 - `extra_capabilities` (`Vec<String>`) — additional
   `CapabilityBoundingSet=` entries (rarely needed). Canonicalized
   (sort+dedup) upstream at `merge_hardening` AND alpha-sorted at the
