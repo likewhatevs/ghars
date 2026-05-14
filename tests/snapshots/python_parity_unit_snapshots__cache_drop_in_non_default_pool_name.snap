@@ -1,0 +1,20 @@
+---
+source: tests/python_parity_unit_snapshots.rs
+expression: body
+---
+[Unit]
+X-Ghars-Spec-Hash=sha256:abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdef0123
+X-Ghars-Pool-Name=rust-incremental
+X-Ghars-Pool-Kinds=sccache
+X-Ghars-Config-Source=/etc/ghars/ghars.toml
+
+[Service]
+User=ghars-tz-default
+Environment=SCCACHE_DIR=%C/ghars/pools/rust-incremental/sccache
+Environment=SCCACHE_CACHE_SIZE=200G
+Environment=SCCACHE_SERVER_UDS=%t/ghars/cache-rust-incremental.sock
+Environment=SCCACHE_NO_DAEMON=1
+Environment=SCCACHE_IDLE_TIMEOUT=0
+ExecStart=/usr/bin/sccache --start-server
+Type=forking
+ReadWritePaths=%C/ghars/pools/rust-incremental %t/ghars /var/lib/ghars/default

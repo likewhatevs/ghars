@@ -1,0 +1,6 @@
+---
+source: tests/python_parity_unit_snapshots.rs
+expression: "dropin(&r.drop_ins, \"15-resolv.conf\")"
+---
+[Service]
+BindReadOnlyPaths=/run/ghars/netns-resolv/buckos:/etc/resolv.conf

@@ -1,0 +1,7 @@
+---
+source: tests/python_parity_unit_snapshots.rs
+expression: "dropin(&r.drop_ins, \"60-proxy.conf\")"
+---
+[Service]
+Environment=HTTP_PROXY=http://192.168.2.84:3128
+Environment=http_proxy=http://192.168.2.84:3128

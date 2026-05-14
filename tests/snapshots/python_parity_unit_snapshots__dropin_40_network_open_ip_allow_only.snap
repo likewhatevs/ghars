@@ -1,0 +1,6 @@
+---
+source: tests/python_parity_unit_snapshots.rs
+expression: "dropin(&r.drop_ins, \"40-network.conf\")"
+---
+[Service]
+IPAddressAllow=10.0.0.0/8

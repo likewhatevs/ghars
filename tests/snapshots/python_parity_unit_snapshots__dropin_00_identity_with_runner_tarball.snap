@@ -1,0 +1,32 @@
+---
+source: tests/python_parity_unit_snapshots.rs
+expression: "dropin(&r.drop_ins, \"00-ghars.conf\")"
+---
+[Unit]
+X-Ghars-Spec-Hash=sha256:0000000000000000000000000000000000000000000000000000000000000000
+X-Ghars-Runner-Name=buckos
+X-Ghars-Runner-Url=https://github.com/example/buckos
+X-Ghars-Auth-Name=pat
+X-Ghars-Labels=linux,self-hosted
+X-Ghars-Arch=x86_64
+X-Ghars-Caches=
+X-Ghars-Config-Source=/etc/ghars/ghars.toml
+X-Ghars-Effective-Version=2.334.0
+X-Ghars-Runner-Tarball-Hash=sha256:6ab216b75440447ce40044cb9c5053ca46499263ddecaa6a4c1d9bb33fcf0534
+X-Ghars-Trust-Zone=default
+X-Ghars-Network-Mode=open
+
+[Service]
+User=ghars-tz-default
+BindPaths=/var/lib/ghars/default
+WorkingDirectory=/var/lib/ghars/default/ghars-buckos/bin.2.334.0
+ExecStart=
+ExecStart=/bin/bash /var/lib/ghars/default/ghars-buckos/bin.2.334.0/bin/runsvc.sh
+Environment=HOME=/var/lib/ghars/default/ghars-buckos
+Environment=PATH=/usr/lib64/ccache:/usr/lib/ccache:/var/lib/ghars/default/ghars-buckos/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=TMPDIR=/var/lib/ghars/default/ghars-buckos/tmp
+Environment=KTSTR_LOCK_DIR=/var/lib/ghars/default/.ktstr
+Environment=KTSTR_CACHE_DIR=/var/lib/ghars/default/.ktstr
+
+[Unit]
+ConditionPathExists=/var/lib/ghars/default/ghars-buckos/bin.2.334.0/bin/runsvc.sh

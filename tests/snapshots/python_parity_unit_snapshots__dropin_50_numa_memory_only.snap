@@ -1,0 +1,6 @@
+---
+source: tests/python_parity_unit_snapshots.rs
+expression: "dropin(&r.drop_ins, \"50-numa.conf\")"
+---
+[Service]
+AllowedMemoryNodes=0

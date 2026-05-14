@@ -1,0 +1,7 @@
+---
+source: tests/python_parity_unit_snapshots.rs
+expression: "dropin(&r.drop_ins, \"60-proxy.conf\")"
+---
+[Service]
+Environment=NO_PROXY=192.168.2.84,localhost,.internal
+Environment=no_proxy=192.168.2.84,localhost,.internal

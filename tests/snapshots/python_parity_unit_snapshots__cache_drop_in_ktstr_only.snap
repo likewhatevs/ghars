@@ -1,0 +1,14 @@
+---
+source: tests/python_parity_unit_snapshots.rs
+expression: body
+---
+[Unit]
+X-Ghars-Spec-Hash=sha256:abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdef0123
+X-Ghars-Pool-Name=build
+X-Ghars-Pool-Kinds=ktstr
+X-Ghars-Config-Source=/etc/ghars/ghars.toml
+
+[Service]
+User=ghars-tz-default
+ExecStart=/usr/bin/sleep infinity
+ReadWritePaths=%C/ghars/pools/build

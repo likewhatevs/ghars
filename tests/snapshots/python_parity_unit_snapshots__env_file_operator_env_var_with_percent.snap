@@ -1,0 +1,8 @@
+---
+source: tests/python_parity_unit_snapshots.rs
+expression: r.env_file
+---
+LANG=C.UTF-8
+KTSTR_LOCK_DIR=/var/lib/ghars/default/.ktstr
+KTSTR_CACHE_DIR=/var/lib/ghars/default/.ktstr
+WITH_PERCENT=100%done

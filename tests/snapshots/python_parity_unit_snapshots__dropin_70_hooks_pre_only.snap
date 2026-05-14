@@ -1,0 +1,7 @@
+---
+source: tests/python_parity_unit_snapshots.rs
+expression: "dropin(&r.drop_ins, \"70-hooks.conf\")"
+---
+[Service]
+Environment=ACTIONS_RUNNER_HOOK_JOB_STARTED=/opt/gha-hooks/pre-job.sh
+BindReadOnlyPaths=/opt/gha-hooks

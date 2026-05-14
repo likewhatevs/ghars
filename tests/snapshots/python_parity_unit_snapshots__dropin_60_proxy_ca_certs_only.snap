@@ -1,0 +1,7 @@
+---
+source: tests/python_parity_unit_snapshots.rs
+expression: "dropin(&r.drop_ins, \"60-proxy.conf\")"
+---
+[Service]
+Environment=NODE_EXTRA_CA_CERTS=/etc/pki/ca-trust/source/anchors/squid-proxy-ca.pem
+BindReadOnlyPaths=/etc/pki/ca-trust/source/anchors/squid-proxy-ca.pem

@@ -1,0 +1,6 @@
+---
+source: tests/python_parity_unit_snapshots.rs
+expression: "dropin(&r.drop_ins, \"20-hardening.conf\")"
+---
+[Service]
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_RAW
