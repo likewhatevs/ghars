@@ -89,20 +89,20 @@ fn chmod_record_undo(
     context: &str,
     log: &mut UndoLog,
 ) -> crate::Result<()> {
-    // Open with O_RDONLY + O_NOFOLLOW: returns ELOOP if path is a
+    // Open with `O_RDONLY` + `O_NOFOLLOW`: returns `ELOOP` if path is a
     // symlink (refuses symlink targets atomically; no path-
-    // resolution race between an lstat and a chmod). Apply runs
-    // as root, so O_RDONLY succeeds against any file or directory
-    // owned by anyone. O_PATH would be lighter-weight but Linux
-    // does not let chmod operate on /proc/self/fd/{fd} when fd
-    // was opened O_PATH (returns ENOTSUP), so O_RDONLY is the
+    // resolution race between an `lstat` and a `chmod`). Apply runs
+    // as root, so `O_RDONLY` succeeds against any file or directory
+    // owned by anyone. `O_PATH` would be lighter-weight but Linux
+    // does not let `chmod` operate on `/proc/self/fd/{fd}` when fd
+    // was opened `O_PATH` (returns `ENOTSUP`), so `O_RDONLY` is the
     // simplest portable form.
-    // O_NONBLOCK defense-in-depth: a FIFO at the chmod target
+    // `O_NONBLOCK` defense-in-depth: a FIFO at the `chmod` target
     // would otherwise block `open(O_RDONLY)` until a writer
     // appears, hanging apply indefinitely. Even though
     // `sweep_runner_home_for_planted_entries` rejects FIFOs at
-    // runner_home's direct children, adding O_NONBLOCK here is
-    // free and covers any future chmod target outside the
+    // `runner_home`'s direct children, adding `O_NONBLOCK` here is
+    // free and covers any future `chmod` target outside the
     // sweep's scope (e.g. `tz_dir`, `.ktstr`, `.ccache` — currently
     // root-owned but defended against a future regression
     // weakening the parent dir mode).
@@ -137,26 +137,26 @@ fn chmod_record_undo(
             });
         }
     };
-    // Read prior mode via fstat on the fd (atomic with the open;
-    // no path-resolution race). std::fs::File::metadata wraps
-    // fstat under the hood -- the call inspects the inode bound
+    // Read prior mode via `fstat` on the fd (atomic with the open;
+    // no path-resolution race). `std::fs::File::metadata` wraps
+    // `fstat` under the hood -- the call inspects the inode bound
     // to the fd at open time, not whatever lives at the path now.
     let prior_mode = fd.metadata()?.permissions().mode() & 0o7777;
-    // Direct fchmod on the fd: no /proc/self/fd round-trip. The fd
-    // was opened O_RDONLY + O_NOFOLLOW + O_NONBLOCK so the inode is
-    // pinned and symlink-refused atomically. fchmod operates on the
+    // Direct `fchmod` on the fd: no `/proc/self/fd` round-trip. The fd
+    // was opened `O_RDONLY` + `O_NOFOLLOW` + `O_NONBLOCK` so the inode is
+    // pinned and symlink-refused atomically. `fchmod` operates on the
     // pinned inode regardless of what path resolution would now
-    // produce, closing the same lstat -> chmod TOCTOU window the
-    // /proc/self/fd pattern closed -- with one fewer syscall and no
-    // dependency on /proc being mounted (containers / chroots that
-    // omit /proc would have ENOTSUP'd the old pattern's
-    // /proc/self/fd chmod silently).
+    // produce, closing the same `lstat` -> `chmod` TOCTOU window the
+    // `/proc/self/fd` pattern closed -- with one fewer syscall and no
+    // dependency on `/proc` being mounted (containers / chroots that
+    // omit `/proc` would have `ENOTSUP`'d the old pattern's
+    // `/proc/self/fd` chmod silently).
     //
-    // Mode::from_bits_retain accepts any u32 (caller passes 0o755,
+    // `Mode::from_bits_retain` accepts any u32 (caller passes 0o755,
     // 0o770, 0o600, 0o700, 0o711, etc. — all subset of 0o7777
     // permission bits, but `from_bits_retain` is the future-proof
     // choice if a caller ever needs to set setuid / setgid / sticky
-    // beyond what nix's Mode bitflags enumerates).
+    // beyond what nix's `Mode` bitflags enumerates).
     nix::sys::stat::fchmod(
         fd.as_raw_fd(),
         nix::sys::stat::Mode::from_bits_retain(mode as nix::sys::stat::mode_t),
@@ -166,8 +166,8 @@ fn chmod_record_undo(
         source: Box::new(GharsError::Io(std::io::Error::from_raw_os_error(e as i32))),
     })?;
     drop(fd);
-    // Gate the UndoLog push on a non-trivial mode change. A
-    // no-op chmod (current mode == requested mode) on a re-apply
+    // Gate the `UndoLog` push on a non-trivial mode change. A
+    // no-op `chmod` (current mode == requested mode) on a re-apply
     // would otherwise pollute the rollback advisory with chmod-
     // restore lines that describe restoring the mode to its
     // current value.
@@ -196,7 +196,7 @@ fn chmod_record_undo(
 ///
 /// Why also reject FIFO/device/socket: opening a FIFO with
 /// `O_RDONLY` blocks until a writer opens — apply would hang
-/// indefinitely in chmod_record_undo. Devices and sockets have
+/// indefinitely in `chmod_record_undo`. Devices and sockets have
 /// similar uncovered semantics through path-based file ops.
 ///
 /// Why direct children only (not recursive): the recursive
@@ -278,7 +278,7 @@ fn sweep_runner_home_for_planted_entries(home: &std::path::Path) -> crate::Resul
 /// operator-readable label identifying the call site for the
 /// error wrapper.
 ///
-/// The UndoLog push is gated on `(prior_uid, prior_gid) != (uid,
+/// The `UndoLog` push is gated on `(prior_uid, prior_gid) != (uid,
 /// gid)` so no-op re-chowns (re-apply over an already-chowned
 /// tree) don't pollute the rollback advisory.
 pub(super) fn fchown_record_undo(
@@ -320,7 +320,7 @@ pub(super) fn fchown_record_undo(
             });
         }
     };
-    // Read the pre-call uid/gid via fstat through /proc/self/fd
+    // Read the pre-call uid/gid via `fstat` through `/proc/self/fd`
     // (atomic with the open — no path-resolution race).
     let proc_path = format!("/proc/self/fd/{}", fd.as_raw_fd());
     let meta = fs::metadata(&proc_path)?;
@@ -431,7 +431,7 @@ pub(super) fn chown_and_tighten_runner_state(
         }
     }
 
-    // Tighten modes now that ownership is the DynamicUser.
+    // Tighten modes now that ownership is the `DynamicUser`.
     chmod_record_undo(runner_home, 0o700, "runner_home (tighten)", log)?;
     chmod_record_undo(runner_tmp, 0o700, "runner_tmp (tighten)", log)?;
     chmod_record_undo(ktstr_dir, 0o770, ".ktstr (tighten)", log)?;
