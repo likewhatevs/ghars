@@ -258,7 +258,8 @@ Fields:
   redundant. Under `open` they are the sole egress gate at the
   systemd layer (no namespace, no nft). Set-semantic at the
   lowering boundary: both fields are sorted+deduped at
-  `canonicalize_network_spec`, so `["192.168.0.0/16", "10.0.0.0/8"]`
+  `canonicalize_network_spec` AND alpha-sorted again at the
+  renderer in `render_network`, so `["192.168.0.0/16", "10.0.0.0/8"]`
   and `["10.0.0.0/8", "192.168.0.0/16"]` produce identical rendered
   output and identical plan output (a cosmetic TOML reorder is a
   true NoOp at plan time). Operators who want their TOML to match
@@ -271,11 +272,12 @@ Fields:
   regardless of whether the runner has its own netns. Field name
   mirrors the systemd directive and the parallel
   `Hardening.restrict_address_families` field; both fields are
-  canonicalized (sort+dedup) at the lowering boundary, so
-  `["AF_UNIX", "AF_INET"]` and `["AF_INET", "AF_UNIX"]` produce
-  identical rendered output and identical plan output — operators
-  who want their TOML to match the rendered drop-in byte-for-byte
-  should write the list in alphabetical order.
+  canonicalized (sort+dedup) at the lowering boundary AND alpha-
+  sorted again at the renderer, so `["AF_UNIX", "AF_INET"]` and
+  `["AF_INET", "AF_UNIX"]` produce identical rendered output and
+  identical plan output — operators who want their TOML to match
+  the rendered drop-in byte-for-byte should write the list in
+  alphabetical order.
 - `dns` (`DnsMode`) — default `forward` (use the host's
   systemd-resolved via the veth IP). `{ mode = "static", servers
   = [...] }` lists explicit upstream nameservers and bypasses
@@ -645,18 +647,37 @@ List-typed fields:
   widens the allowlist globally; the network-spec field narrows it
   per-`[network.NAME]` block (and applies in either Netns or Open
   mode, since the directive lives at the cgroup layer).
+  Canonicalized (sort+dedup) upstream at `merge_hardening` AND
+  alpha-sorted at the renderer in `render_hardening`, so `["AF_UNIX", "AF_INET"]` and
+  `["AF_INET", "AF_UNIX"]` produce identical rendered output and
+  identical plan output — operators who want their TOML to match
+  the rendered drop-in byte-for-byte should write the list in
+  alphabetical order.
 - `extra_syscalls` (`Vec<String>`) — APPENDED to the canonical
   syscall allowlist (`SystemCallFilter=@system-service ...`).
+  Canonicalized (sort+dedup) upstream at `merge_hardening` AND
+  alpha-sorted at the renderer in `render_hardening`; cosmetic TOML reorders are a true NoOp.
 - `etc_bind_style` (`EtcBindStyle`) — `curated` (default; narrow
   /etc list) or `broad` (whole /etc).
 - `bind_readonly_paths` (`Option<Vec<Utf8PathBuf>>`) — REPLACES
   the template's `BindReadOnlyPaths` set (gated by the
-  reset-on-empty validator).
+  reset-on-empty validator). NOT sorted: operator order is
+  preserved across the merge boundary because systemd's PID 1
+  user-space resorts mount entries parent-first via
+  `mount_path_compare` before any `mount(2)` syscall, so operator-
+  declared order is purely cosmetic to systemd but load-bearing
+  for `spec_hash` byte-equality: introducing sort would flip
+  `spec_hash` for existing deployments (triggering spurious in-
+  place `UpdateRunner` cascades) and break the round-trip between
+  operator TOML order and rendered drop-in bytes.
 - `extra_bind_paths` (`Vec<Utf8PathBuf>`) — APPENDS to the
   template's set (or to `bind_readonly_paths` if also set). Use
-  to keep defaults but add paths (e.g. proxy CA bundles).
+  to keep defaults but add paths (e.g. proxy CA bundles). NOT
+  sorted — same rationale as `bind_readonly_paths`.
 - `extra_capabilities` (`Vec<String>`) — additional
-  `CapabilityBoundingSet=` entries (rarely needed).
+  `CapabilityBoundingSet=` entries (rarely needed). Canonicalized
+  (sort+dedup) upstream at `merge_hardening` AND alpha-sorted at the
+  renderer in `render_hardening`; cosmetic TOML reorders are a true NoOp.
 
 The reset-on-empty validator rejects any drop-in that emits a
 list-typed directive with bare `=` (e.g. `SystemCallFilter=`),

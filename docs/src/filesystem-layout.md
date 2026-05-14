@@ -161,15 +161,20 @@ Notes:
   `RestrictAddressFamilies=`),
   `Hardening.extra_syscalls` (→ `SystemCallFilter=`), and
   `Hardening.extra_capabilities` (→ `CapabilityBoundingSet=`) —
-  are canonicalized upstream-only via `merge_hardening`'s
-  sort+dedup; the renderer emits them verbatim with no
-  defense-in-depth re-sort. systemd unions consecutive drop-in
-  lines for all three directives at unit-load time, so the
-  Hardening-side drop-in's tokens compose additively with the
-  network-side ones for `RestrictAddressFamilies=`. The
-  Hardening bind-path fields (`bind_readonly_paths`,
-  `extra_bind_paths` → `BindReadOnlyPaths=`) are intentionally
-  NOT sorted at any layer. systemd's PID 1 user-space sorts
+  are canonicalized (sort+dedup) upstream via `merge_hardening`
+  AND alpha-sorted again at the renderer in `render_hardening`.
+  The renderer-side sort is defense-in-depth for direct-construct
+  callers (test fixtures, future programmatic spec builders)
+  that bypass the merge layer; the sort closes the ordering gap
+  only (renderer-side dedup is omitted per the established
+  pattern across all renderer sort sites). systemd unions
+  consecutive drop-in lines for all three directives at unit-
+  load time, so the Hardening-side drop-in's tokens compose
+  additively with the network-side ones for
+  `RestrictAddressFamilies=`. The Hardening bind-path fields
+  (`bind_readonly_paths`, `extra_bind_paths` →
+  `BindReadOnlyPaths=`) are intentionally NOT sorted at any
+  layer. systemd's PID 1 user-space sorts
   mount entries parent-first via `mount_path_compare` before
   issuing any `mount(2)` syscall, so operator-declared order is
   discarded in user-space and never reaches the kernel's
@@ -177,7 +182,7 @@ Notes:
   here is for byte-equality between the operator's TOML and
   the rendered drop-in line — a sort-induced reorder would
   flip `spec_hash` (triggering spurious in-place
-  UpdateRunner cascades) and would make the operator's TOML
+  `UpdateRunner` cascades) and would make the operator's TOML
   order non-canonical (re-deploy with the original ordering
   would not produce a NoOp).
 - `X-Ghars-Network-Mode` is always emitted: the renderer collapses
