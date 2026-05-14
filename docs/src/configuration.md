@@ -74,10 +74,22 @@ Fields in `Defaults`:
 - `runner_version` (`Option<String>`) — default GitHub Actions
   runner version (e.g. `"2.334.0"`).
 - `runner_sha256` (`Option<String>`) — default tarball SHA-256 (64
-  hex). Only meaningful with `runner_version`.
+  hex). Only meaningful with `runner_version`. Empty string is
+  normalized to None at merge time: equivalent to omitting the
+  field at `[defaults]`, or — on a `[[runner]]` block — suppressing
+  any inherited `[defaults].runner_sha256` value (explicit-reset
+  semantic for per-runner opt-out). The collapse keeps `spec_hash`
+  matching the omit-the-field shape across both `Some(empty)` and
+  `None` representations.
 - `auth` (`Option<String>`) — default `[auth.NAME]` reference.
 - `memory_max` (`Option<String>`) — default systemd `MemoryMax=`,
-  parsed by `bytesize` at validate time.
+  parsed by `bytesize` at validate time. Empty string is normalized
+  to None at merge time: equivalent to omitting the field at
+  `[defaults]`, or — on a `[[runner]]` block — suppressing any
+  inherited `[defaults].memory_max` value (explicit-reset semantic
+  for per-runner opt-out). The collapse keeps `spec_hash` matching
+  the omit-the-field shape across both `Some(empty)` and `None`
+  representations.
 - `labels` (`Vec<String>`) — concatenated with each runner's labels
   (dedup, preserve order — see merge rules below).
 - `network` (`Option<String>`) — default `[network.NAME]`
@@ -403,6 +415,13 @@ Fields:
 Per-runner overrides via `[[runner]].proxy` replace the singleton
 entirely for that runner.
 
+A `[proxy]` block with every field unset (`http`, `https`,
+`no_proxy`, `ca_certs` all absent or empty) is normalized to None
+at the lowering boundary (`lower_to_effective`); the `60-proxy.conf`
+drop-in is not emitted and `spec_hash` matches the no-`[proxy]`
+runner shape. Omitting the entire block is the canonical "no
+proxy" form.
+
 Authenticated proxy URLs embed credentials in the userinfo
 component (`https://USER:PASS@host`). The `60-proxy.conf` drop-in
 emits `Environment=HTTP_PROXY=...` / `HTTPS_PROXY=...` verbatim,
@@ -446,6 +465,12 @@ config load (SEC-12); the order matches the source:
 
 Per-runner override via `[[runner]].hooks` replaces the singleton
 for that runner.
+
+A `[hooks]` block with both fields unset (`pre_job = None`,
+`post_job = None`) is normalized to None at the lowering boundary
+(`lower_to_effective`); the `70-hooks.conf` drop-in is not emitted
+and `spec_hash` matches the no-`[hooks]` runner shape. Same
+precedent as `[proxy]` empty-collapse.
 
 ## `[[runner]]`
 
