@@ -1410,15 +1410,37 @@ fn render_hardening(
     }
 
     if !h.restrict_address_families.is_empty() {
-        // Canonicalization is upstream: `plan::merge_hardening`
-        // sorts AND dedups this Vec before the renderer sees it
-        // (see the `extra_capabilities` block below for the full
-        // contract description). The same upstream contract applies
-        // to `extra_syscalls` (next block) and `extra_capabilities`.
+        // Defense-in-depth canonical-lex sort. The production path
+        // sorts AND dedups at `plan::merge_hardening` before the
+        // renderer sees it; this renderer-side sort closes the
+        // ORDERING gap (not the duplicate-emission gap) for
+        // direct-construct callers (test fixtures, future
+        // programmatic spec builders) that bypass the merge layer
+        // and would otherwise emit non-canonical bytes / spurious
+        // `spec_hash` drift across cosmetically-equivalent
+        // operator-supplied orderings. Renderer-side dedup is
+        // deliberately omitted to mirror the established
+        // `render_network` / `render_identity` / `render_cache_drop_in`
+        // pattern (all existing renderer sort sites also omit
+        // dedup); a sibling-sweep that adds dedup uniformly across
+        // all renderer sort sites is tracked separately. Set-semantic safe per
+        // systemd.exec(5) — RestrictAddressFamilies= unions across
+        // drop-in lines; token shape gated upstream by
+        // `validate_restrict_address_families` (AF_FAMILY_RE) which
+        // rejects `~`-prefix tokens at config load. Mirrors the
+        // labels + caches sorts at `render_identity`, the pool-kinds
+        // sort at `render_cache_drop_in`, and the network-side
+        // restrict_address_families sort at `render_network`.
+        let mut families: Vec<&str> = h
+            .restrict_address_families
+            .iter()
+            .map(String::as_str)
+            .collect();
+        families.sort_unstable();
         let _ = writeln!(
             s,
             "RestrictAddressFamilies={}",
-            h.restrict_address_families.join(" ")
+            families.join(" ")
         );
     }
 
@@ -1427,11 +1449,25 @@ fn render_hardening(
         // lines as union, so adding new tokens through a drop-in
         // grows the allowlist instead of replacing it.
         //
-        // Canonicalization is upstream: `plan::merge_hardening`
-        // sorts AND dedups this Vec before the renderer sees it
-        // (see the `extra_capabilities` block below for the full
-        // contract description).
-        let _ = writeln!(s, "SystemCallFilter={}", h.extra_syscalls.join(" "));
+        // Defense-in-depth canonical-lex sort (mirror of
+        // `restrict_address_families` block above for the
+        // ordering-gap-only scope and the renderer-side-dedup
+        // carve-out). Production path sorts upstream at
+        // `plan::merge_hardening`; direct-construct callers bypass
+        // that, so the renderer sort closes the ordering gap.
+        // Set-semantic safe: token shape gated upstream by
+        // `validate_extra_syscalls` (SYSCALL_NAME_RE) which rejects
+        // `~`-prefix / `@`-prefix tokens at config-load, so the
+        // first-token mode-switch hazard documented at
+        // `systemd/src/core/load-fragment.c` config_parse_syscall_filter
+        // cannot arise from sort reordering.
+        let mut syscalls: Vec<&str> = h
+            .extra_syscalls
+            .iter()
+            .map(String::as_str)
+            .collect();
+        syscalls.sort_unstable();
+        let _ = writeln!(s, "SystemCallFilter={}", syscalls.join(" "));
     }
 
     if !h.extra_capabilities.is_empty() {
@@ -1444,19 +1480,32 @@ fn render_hardening(
         // want a strictly-empty bounding set leave `extra_capabilities`
         // empty and the template's empty value stands.
         //
-        // Canonicalization is upstream: this renderer emits whatever
-        // is in `h.extra_capabilities` verbatim, including duplicates
-        // and operator-supplied order. `plan::merge_hardening` is
-        // responsible for sorting AND deduping the merged Vec before
-        // the renderer sees it so a pure reorder or accidental
-        // dup in TOML does not perturb the rendered drop-in body or
-        // the spec_hash. The same upstream contract applies to
-        // `extra_syscalls` (SystemCallFilter= line above) and
-        // `restrict_address_families` (RestrictAddressFamilies=).
+        // Defense-in-depth canonical-lex sort (mirror of
+        // `restrict_address_families` and `extra_syscalls` blocks
+        // above for the ordering-gap-only scope and the
+        // renderer-side-dedup carve-out). Production path sorts
+        // upstream at `plan::merge_hardening`; direct-construct
+        // callers bypass that, so the renderer sort closes the
+        // ordering gap. Set-semantic safe: token shape gated upstream
+        // by `validate_extra_capabilities` (CAP_RE) which rejects
+        // `~`-prefix tokens at config-load.
+        //
+        // bind_readonly_paths + extra_bind_paths are NOT sorted here
+        // by design — see the BindReadOnlyPaths blocks below; the
+        // upstream `plan::merge_hardening` doc-comment cites
+        // mount_path_compare's PID-1-user-space resort as the
+        // reason operator order is preserved for spec_hash
+        // byte-equality.
+        let mut caps: Vec<&str> = h
+            .extra_capabilities
+            .iter()
+            .map(String::as_str)
+            .collect();
+        caps.sort_unstable();
         let _ = writeln!(
             s,
             "CapabilityBoundingSet={}",
-            h.extra_capabilities.join(" ")
+            caps.join(" ")
         );
     }
 
@@ -4379,27 +4428,22 @@ mod tests {
             .expect("network drop-in present");
         // Each drop-in carries its OWN RestrictAddressFamilies= line —
         // systemd will union them at load time. Pin both lines.
+        //
+        // Both Hardening and NetworkSpec emissions now canonical-
+        // lex-sort at the renderer site (`render_hardening` for the
+        // hardening drop-in, `render_network` for the network drop-
+        // in), so operator-supplied `[AF_UNIX, AF_NETLINK]` and
+        // `[AF_UNIX, AF_INET]` emit alpha-sorted on disk regardless
+        // of input order. The defensive sort mirrors the upstream
+        // `plan::merge_hardening` + `canonicalize_network_spec`
+        // sorts; direct-construct callers (this test) bypass those,
+        // so the renderer-side sort is the load-bearing
+        // canonicalization gate.
         assert!(
             h.lines()
-                .any(|l| l == "RestrictAddressFamilies=AF_UNIX AF_NETLINK"),
+                .any(|l| l == "RestrictAddressFamilies=AF_NETLINK AF_UNIX"),
             "hardening drop-in missing RestrictAddressFamilies, got:\n{h}"
         );
-        // Network drop-in: NetworkSpec.restrict_address_families
-        // renders in canonical lex order via the renderer-site
-        // sort in `render_network`, so operator [AF_UNIX, AF_INET]
-        // emits as "AF_INET AF_UNIX". Hardening drop-in's own
-        // RestrictAddressFamilies= line uses Hardening's separate
-        // emission inside `render_hardening` which does NOT sort
-        // at the renderer (rescope of the Hardening renderer-side
-        // defensive-sort work is pending — see queue notes).
-        // In the production lowering path, `merge_hardening`
-        // sorts+dedups `Hardening.restrict_address_families`, but
-        // THIS test bypasses `merge_defaults` by mutating
-        // `spec.hardening.restrict_address_families` directly on a
-        // `minimal_spec()`, so the operator-supplied Vec order
-        // survives verbatim to the Hardening emission site —
-        // which is why the hardening assertion above observes
-        // operator order.
         assert!(
             n.lines()
                 .any(|l| l == "RestrictAddressFamilies=AF_INET AF_UNIX"),
@@ -4452,14 +4496,15 @@ mod tests {
             .get("40-network.conf")
             .expect("open-mode network drop-in present (cgroup-BPF directives non-empty)");
         // Each drop-in carries its OWN RestrictAddressFamilies= line.
+        // Both Hardening (`render_hardening`) and NetworkSpec
+        // (`render_network`) emissions canonical-lex-sort at the
+        // renderer site, so operator-supplied Vec order is irrelevant
+        // for on-disk bytes (mirror of the netns sister test above).
         assert!(
             h.lines()
-                .any(|l| l == "RestrictAddressFamilies=AF_UNIX AF_NETLINK"),
+                .any(|l| l == "RestrictAddressFamilies=AF_NETLINK AF_UNIX"),
             "hardening drop-in missing RestrictAddressFamilies, got:\n{h}"
         );
-        // Open-mode network drop-in: same canonical-lex-order sort
-        // as the netns sister test above; operator [AF_UNIX, AF_INET]
-        // renders as "AF_INET AF_UNIX".
         assert!(
             n.lines()
                 .any(|l| l == "RestrictAddressFamilies=AF_INET AF_UNIX"),

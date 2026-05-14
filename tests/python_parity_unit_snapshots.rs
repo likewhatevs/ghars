@@ -521,13 +521,14 @@ fn dropin_20_hardening_strict_snapshot() {
     // dropin_20_hardening_bind_readonly_paths) — including them here
     // would bundle too many directives into one snapshot diff.
     //
-    // NOTE: the AF_UNIX/AF_INET ordering in the rendered
-    // RestrictAddressFamilies= line is operator-supplied (not
-    // canonical-sorted) because direct-construct fixtures bypass
-    // the upstream `plan::merge_hardening` sort. When the pending
-    // renderer-side defensive-sort work for Hardening list fields
-    // lands, this snapshot must be re-accepted with the sorted
-    // (AF_INET AF_UNIX) ordering.
+    // The fixture-supplied operator order for `restrict_address_families`
+    // (AF_UNIX, AF_INET) and `extra_syscalls` (clone3, rseq, ...) is
+    // intentionally non-canonical at the input — `render_hardening`'s
+    // defense-in-depth sort canonicalizes both lines at the renderer
+    // boundary, so the snapshot pins the lexicographically-sorted on-disk
+    // emission. This is the direct-construct sister to the
+    // `plan::merge_hardening` upstream sort and to the
+    // `restrict_address_families` defensive sort at `render_network`.
     let mut spec = base_spec();
     spec.hardening = Hardening {
         kvm: Some(true),
