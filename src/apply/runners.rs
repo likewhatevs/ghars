@@ -103,7 +103,7 @@ fn chmod_record_undo(
     // `sweep_runner_home_for_planted_entries` rejects FIFOs at
     // runner_home's direct children, adding O_NONBLOCK here is
     // free and covers any future chmod target outside the
-    // sweep's scope (e.g. tz_dir, .ktstr, .ccache — currently
+    // sweep's scope (e.g. `tz_dir`, `.ktstr`, `.ccache` — currently
     // root-owned but defended against a future regression
     // weakening the parent dir mode).
     let fd = match std::fs::OpenOptions::new()
@@ -186,11 +186,11 @@ fn chmod_record_undo(
 /// planting them during a prior failed apply's 0o777 window OR
 /// from operator manual intervention.
 ///
-/// Why a sweep is needed even with chmod_record_undo's
-/// O_NOFOLLOW: `config.sh` runs BEFORE the post-config.sh
-/// chmod loop and uses .NET `File.WriteAllText` (no O_NOFOLLOW)
+/// Why a sweep is needed even with `chmod_record_undo`'s
+/// `O_NOFOLLOW`: `config.sh` runs BEFORE the post-`config.sh`
+/// chmod loop and uses .NET `File.WriteAllText` (no `O_NOFOLLOW`)
 /// — if a planted symlink exists at `runner_home/.credentials*`,
-/// config.sh writes OAuth credentials + RSA private key through
+/// `config.sh` writes OAuth credentials + RSA private key through
 /// the symlink to an attacker target before the chmod loop runs
 /// and notices. The credentials are already exfiltrated by then.
 ///
@@ -259,22 +259,22 @@ fn sweep_runner_home_for_planted_entries(home: &std::path::Path) -> crate::Resul
 /// log so a rollback after a later step's failure can restore the
 /// previous ownership.
 ///
-/// Uses the same O_RDONLY + O_NOFOLLOW + O_NONBLOCK open pattern as
-/// `chmod_record_undo`. The fchown then operates on the fd
-/// directly via `nix::unistd::fchown` — no /proc/self/fd round-
-/// trip needed because fchown is a direct file-descriptor syscall.
-/// The fd binds the inode at open time with O_NOFOLLOW protection,
-/// so no path-resolution race can redirect the chown to a
+/// Uses the same `O_RDONLY` + `O_NOFOLLOW` + `O_NONBLOCK` open pattern as
+/// `chmod_record_undo`. The `fchown` then operates on the fd
+/// directly via `nix::unistd::fchown` — no `/proc/self/fd` round-
+/// trip needed because `fchown` is a direct file-descriptor syscall.
+/// The fd binds the inode at open time with `O_NOFOLLOW` protection,
+/// so no path-resolution race can redirect the `chown` to a
 /// different inode.
 ///
 /// `uid` and `gid` are the new owner/group. ghars passes the
 /// DynamicUser-allocated UID (queried from systemd's D-Bus
-/// interface) for both fields — systemd's DynamicUser model uses
-/// UID==GID when there's no /etc/passwd entry (verified at
-/// systemd src/core/dynamic-user.c:459-461 — `*ret_gid = num`
+/// interface) for both fields — systemd's `DynamicUser` model uses
+/// UID==GID when there's no `/etc/passwd` entry (verified at
+/// systemd `src/core/dynamic-user.c:459-461` — `*ret_gid = num`
 /// when the gid wasn't separately allocated).
 ///
-/// `context` mirrors chmod_record_undo's parameter: a short
+/// `context` mirrors `chmod_record_undo`'s parameter: a short
 /// operator-readable label identifying the call site for the
 /// error wrapper.
 ///
@@ -346,15 +346,15 @@ pub(super) fn fchown_record_undo(
     Ok(())
 }
 
-/// fchown the runner's writable set to the DynamicUser-allocated
-/// UID, then tighten modes to DynamicUser-only access. Extracted
+/// `fchown` the runner's writable set to the DynamicUser-allocated
+/// UID, then chmod tighten modes to DynamicUser-only access. Extracted
 /// from `execute_create_runner` so a test can drive this path
-/// directly without needing CAP_CHOWN (callers in production pass
+/// directly without needing `CAP_CHOWN` (callers in production pass
 /// the real allocated UID from `poll_dynamic_user_uid`; tests
 /// pass the test process's own UID, which Linux allows non-root
-/// to fchown to).
+/// to `fchown` to).
 ///
-/// fchown ALL paths first, THEN chmod tighten ALL paths. The
+/// `fchown` ALL paths first, THEN `chmod` tighten ALL paths. The
 /// order is correctness-critical:
 ///   - After chown, ownership is the DynamicUser UID. The
 ///     subsequent chmod tighten leaves OWNER bits intact (0o7xx
@@ -366,32 +366,32 @@ pub(super) fn fchown_record_undo(
 ///     read.
 ///
 /// Modes applied:
-///   - runner_home → 0o700 (was 0o777 — non-owner access removed)
-///   - runner_tmp → 0o700 (same)
-///   - .ktstr → 0o770 (group is the trust-zone UID == owner UID for
+///   - `runner_home` → 0o700 (was 0o777 — non-owner access removed)
+///   - `runner_tmp` → 0o700 (same)
+///   - `.ktstr` → 0o770 (group is the trust-zone UID == owner UID for
 ///     DynamicUser, so group bits are equivalent to owner; 0o770
 ///     leaves room for a future separate trust-zone group with read
 ///     access)
-///   - .ccache → 0o770 (same rationale as .ktstr — but gated on
-///     ccache binding presence: skipped entirely when ccache_dir is
+///   - `.ccache` → 0o770 (same rationale as `.ktstr` — but gated on
+///     ccache binding presence: skipped entirely when `ccache_dir` is
 ///     None, see body. Callers pass None for runners with no
 ///     `[cache_pools.NAME]` binding of `kinds = ["ccache"]`, per
 ///     the `has_ccache` binding gate in `execute_create_runner`)
-///   - .runner / .credentials* → 0o600 (owner-only read; world
+///   - `.runner` / `.credentials*` → 0o600 (owner-only read; world
 ///     no longer sees OAuth credentials or the RSA private key)
 ///
 /// Two gating axes coexist in this helper:
 ///   - `.ccache` is gated at the PARAMETER layer (`ccache_dir:
 ///     Option<&Utf8Path>`): callers pass None when the runner spec
 ///     has no ccache-kind binding, gated upstream at
-///     execute_create_runner where the binding is known.
+///     `execute_create_runner` where the binding is known.
 ///   - Credential files (`.runner`, `.credentials`,
 ///     `.credentials_rsaparams`) are existence-gated INSIDE the
-///     helper: a runner whose config.sh skipped one (e.g.
+///     helper: a runner whose `config.sh` skipped one (e.g.
 ///     PAT-authenticated runners may not produce
 ///     `.credentials_rsaparams`) silently skips its chown + chmod
 ///     entry. The difference: ccache gating is by spec (config-
-///     known); credential gating is by config.sh output (runtime-
+///     known); credential gating is by `config.sh` output (runtime-
 ///     observed).
 pub(super) fn chown_and_tighten_runner_state(
     runner_home: &camino::Utf8Path,
@@ -402,21 +402,21 @@ pub(super) fn chown_and_tighten_runner_state(
     gid: u32,
     log: &mut UndoLog,
 ) -> crate::Result<()> {
-    // fchown every path the DynamicUser needs to read/write. The
-    // helper uses O_NOFOLLOW + O_NONBLOCK + nix::unistd::fchown so
+    // `fchown` every path the DynamicUser needs to read/write. The
+    // helper uses `O_NOFOLLOW` + `O_NONBLOCK` + `nix::unistd::fchown` so
     // symlink targets, FIFOs, devices, and sockets at the chown
     // target are refused atomically with the open.
     //
-    // Production callers pass (uid, gid) where gid==uid (the
-    // DynamicUser invariant; see dynamic-user.c:459-461). Tests
-    // pass (test_process_uid, test_process_gid) so non-root chown
-    // doesn't trip on the gid-change-needs-CAP_CHOWN-unless-in-
-    // group-set rule.
+    // Production callers pass `(uid, gid)` where `gid == uid` (the
+    // DynamicUser invariant; see `dynamic-user.c:459-461`). Tests
+    // pass `(test_process_uid, test_process_gid)` so non-root chown
+    // doesn't trip on the gid-change-needs-`CAP_CHOWN` unless-caller-
+    // is-in-the-group-set rule.
     //
-    // `ccache_dir` is Option because the dir is only created when
-    // this runner has at least one cache_pool binding with ccache
-    // kind (gated in execute_create_runner). Passing None here
-    // skips the .ccache fchown + chmod-tighten so non-ccache
+    // `ccache_dir` is `Option` because the dir is only created when
+    // this runner has at least one `cache_pool` binding with ccache
+    // kind (gated in `execute_create_runner`). Passing None here
+    // skips the `.ccache` `fchown` + chmod-tighten so non-ccache
     // runners don't touch a dir that doesn't exist for their spec.
     fchown_record_undo(runner_home, uid, gid, "runner_home", log)?;
     fchown_record_undo(runner_tmp, uid, gid, "runner_tmp", log)?;
@@ -1379,7 +1379,7 @@ pub(super) fn execute_update_runner(
         // Snapshot operator-territory drop-ins (basenames NOT in
         // `MANAGED_DROP_IN_BASENAMES` — typically `99-*.conf` from
         // `systemctl edit`) BEFORE `execute_remove_runner` wipes
-        // `drop_in_dir` via `fs::remove_dir_all` at runners.rs:1184.
+        // `drop_in_dir` via `fs::remove_dir_all`.
         // Without this snapshot, the operator's override file
         // vanishes on remove and never comes back on create
         // (`execute_create_runner` only emits managed basenames).
