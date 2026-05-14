@@ -67,8 +67,10 @@ chmod during `ghars apply`'s CreateRunner action:
   unit starts.
 
 The trust-zone parent dir `/var/lib/ghars/<TRUST_ZONE>/` is
-`0o711` (descend-only): non-root can traverse into named
-children but cannot `ls` the parent. Shared trust-zone subdirs
+`0o755` (read + descend): non-root can traverse and enumerate
+named children. Runner.Listener's `ValidateExecutePermission`
+walks the ancestor chain with `Directory.EnumerateFileSystemEntries`,
+which requires read permission on every ancestor. Shared trust-zone subdirs
 are `0o777` when present, for cross-runner coordination within
 the zone: `.ktstr` always exists (KTSTR coordination); `.ccache`
 exists only when at least one runner in the zone is bound to a

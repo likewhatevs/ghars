@@ -398,6 +398,7 @@ pub(super) fn chown_and_tighten_runner_state(
     runner_tmp: &camino::Utf8Path,
     ktstr_dir: &camino::Utf8Path,
     ccache_dir: Option<&camino::Utf8Path>,
+    bin_dir: &camino::Utf8Path,
     uid: u32,
     gid: u32,
     log: &mut UndoLog,
@@ -424,8 +425,11 @@ pub(super) fn chown_and_tighten_runner_state(
     if let Some(ccache_dir) = ccache_dir {
         fchown_record_undo(ccache_dir, uid, gid, ".ccache", log)?;
     }
+    // Runner.Listener resolves its Root from the assembly location
+    // (bin_dir/bin/Runner.Listener.dll), so config.sh writes
+    // credential files into bin_dir — not runner_home.
     for basename in [".runner", ".credentials", ".credentials_rsaparams"] {
-        let path = runner_home.join(basename);
+        let path = bin_dir.join(basename);
         if path.as_std_path().exists() {
             fchown_record_undo(&path, uid, gid, basename, log)?;
         }
@@ -439,7 +443,7 @@ pub(super) fn chown_and_tighten_runner_state(
         chmod_record_undo(ccache_dir, 0o770, ".ccache (tighten)", log)?;
     }
     for basename in [".runner", ".credentials", ".credentials_rsaparams"] {
-        let path = runner_home.join(basename);
+        let path = bin_dir.join(basename);
         if path.as_std_path().exists() {
             chmod_record_undo(&path, 0o600, basename, log)?;
         }
@@ -591,18 +595,13 @@ pub(super) fn execute_create_runner(
     let spec = &plan.spec;
     let runner_home = paths.runner_home(&spec.trust_zone, &spec.name);
 
-    // Trust-zone parent dir. `fs::create_dir_all` is idempotent and
-    // creates it as a side effect of the `.ktstr` / `.ccache` calls
-    // below, but making it explicit closes the gap if those children
-    // become conditional. 0o711 = root rwx, others execute-only:
-    // `DynamicUser` can descend into `/var/lib/ghars/{tz}/ghars-{name}/`
-    // and `/var/lib/ghars/{tz}/.ktstr/` etc. but can NOT `ls` the
-    // trust-zone dir. Belt for out-of-sandbox processes; the systemd
-    // `BindPaths` inside the runner sandbox only surface the runner's
-    // own trust_zone path anyway.
+    // Trust-zone parent dir. 0o755 = root rwx, others r-x:
+    // DynamicUser can descend AND enumerate. Runner.Listener's
+    // ValidateExecutePermission calls Directory.InternalEnumeratePaths
+    // on every ancestor, which needs read, not just execute.
     let tz_dir = paths.state_dir.join(&spec.trust_zone);
     fs::create_dir_all(tz_dir.as_std_path())?;
-    chmod_record_undo(&tz_dir, 0o711, "tz_dir", log)?;
+    chmod_record_undo(&tz_dir, 0o755, "tz_dir", log)?;
 
     // Clean up stale DynamicUser symlinks from previous runs.
     let home_std = runner_home.as_std_path();
@@ -859,6 +858,7 @@ pub(super) fn execute_create_runner(
     // `runner_version` on the candidate BEFORE its hash computation,
     // and produces a matching candidate hash on the next plan.
     let mut resolved_spec = spec.clone();
+    resolved_spec.runner_version = Some(version.clone());
     resolved_spec.spec_hash = crate::plan::spec_hash(&resolved_spec);
     let rendered = render_runner_unit(&resolved_spec)?;
 
@@ -968,7 +968,10 @@ pub(super) fn execute_create_runner(
     // safely.
     let mut normalized = Vec::with_capacity(3);
     for basename in [".runner", ".credentials", ".credentials_rsaparams"] {
-        let path = runner_home.join(basename);
+        // Runner.Listener resolves its Root from the assembly location
+        // (bin_dir/bin/Runner.Listener.dll), so config.sh writes
+        // credential files into bin_dir — not runner_home.
+        let path = bin_dir.join(basename);
         if path.as_std_path().exists() {
             chmod_record_undo(&path, 0o644, basename, log)?;
             normalized.push(basename);
@@ -1033,6 +1036,20 @@ pub(super) fn execute_create_runner(
     // `runner_home`).
     chmod_record_undo(&runner_home, 0o777, "runner_home (Stage 2)", log)?;
 
+    // 7c) Ensure every cache pool directory referenced by this runner's
+    //     BindPaths= exists on disk. The pool dir is normally created by
+    //     systemd's CacheDirectory= at cache-unit start, and phase
+    //     ordering (CreateCachePool before CreateRunner) covers fresh
+    //     deploys. But re-deploys where the pool storage was cleaned up
+    //     while the pool's systemd config is in-sync (NoOp) leave a
+    //     dangling BindPaths= target — systemd fails at NAMESPACE step
+    //     with "No such file or directory" before the runner process
+    //     even forks. Idempotent mkdir here closes the gap.
+    for cache_binding in &spec.caches {
+        let pool_dir = paths.cache_pool_dir(&cache_binding.name);
+        fs::create_dir_all(pool_dir.as_std_path())?;
+    }
+
     deps.systemd.start_unit(&unit_name)?;
     log.push(UndoStep::StartUnit {
         name: unit_name.clone(),
@@ -1096,6 +1113,7 @@ pub(super) fn execute_create_runner(
             &runner_tmp,
             &ktstr_dir,
             has_ccache.then_some(ccache_dir.as_path()),
+            &bin_dir,
             uid,
             uid,
             log,
@@ -1689,11 +1707,15 @@ pub(super) fn execute_update_runner(
         });
     }
     let unit_name = format!("ghars-runner@{}.service", delta.identity.name);
+    // Ensure every cache pool directory referenced by this runner's
+    // BindPaths= exists before restart. Symmetric with the
+    // execute_create_runner guard — covers in-place updates that
+    // add a new sccache binding to an existing runner.
+    for cache_binding in &delta.after.spec.caches {
+        let pool_dir = paths.cache_pool_dir(&cache_binding.name);
+        fs::create_dir_all(pool_dir.as_std_path())?;
+    }
     deps.systemd.daemon_reload()?;
-    // Restart by stop+start; systemd has no atomic "restart" D-Bus
-    // method via `Manager` (`RestartUnit` exists but is implemented as
-    // stop+start internally). Use `stop_unit`/`start_unit` which are part
-    // of the trait surface.
     deps.systemd.stop_unit(&unit_name)?;
     log.push(UndoStep::StopUnit {
         name: unit_name.clone(),

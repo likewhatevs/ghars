@@ -306,7 +306,7 @@ fn reconcile_github_registrations(
 }
 
 /// Read the PAT value from the config's auth source for API auth.
-fn extract_pat_for_api(cfg: &crate::config::Config) -> Option<String> {
+pub(super) fn extract_pat_for_api(cfg: &crate::config::Config) -> Option<String> {
     for (_name, spec) in &cfg.auth {
         match spec {
             crate::config::AuthSpec::Pat { token_env, token_file } => {

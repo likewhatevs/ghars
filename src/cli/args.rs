@@ -278,6 +278,12 @@ pub struct StatusArgs {
     /// a JSON array under `--json`).
     #[arg(long)]
     pub score: bool,
+    /// Query the GitHub API for each runner's online/idle/offline
+    /// status. Requires auth configuration (same as `validate --deep`).
+    /// Degrades gracefully: API failures appear as inline errors per
+    /// runner, not as a fatal exit.
+    #[arg(long)]
+    pub github: bool,
     /// Filter to specific runner names.
     pub names: Vec<String>,
 }

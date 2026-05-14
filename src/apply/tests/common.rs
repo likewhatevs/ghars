@@ -328,10 +328,11 @@ impl ConfigShell for MockConfigShell {
             .lock()
             .unwrap()
             .push((ctx.name.into(), ctx.url.into(), ctx.token.into()));
-        // Ensure runner_home exists; the real config.sh writes
-        // .runner / .credentials / .credentials_rsaparams there at
-        // register time. The mock writes all three at mode 0o600 to
-        // mirror the worst-case production shape:
+        // Runner.Listener resolves its Root from the assembly
+        // location (bin_dir/bin/Runner.Listener.dll), so config.sh
+        // writes .runner / .credentials / .credentials_rsaparams
+        // into bin_dir — not runner_home. The mock writes all three
+        // at mode 0o600 to mirror the worst-case production shape:
         //   - `.runner` / `.credentials` — upstream IOUtil.SaveObject
         //     uses File.WriteAllText (Runner.Sdk/Util/IOUtil.cs:42)
         //     with no explicit mode, so the resulting file inherits
@@ -353,14 +354,14 @@ impl ConfigShell for MockConfigShell {
         // mock writing the 0o600 baseline for all three so the
         // chmod-to-0o644 is observable.
         use std::os::unix::fs::PermissionsExt;
-        let home = ctx.runner_home.as_std_path();
-        std::fs::create_dir_all(home)?;
+        let bd = ctx.bin_dir.as_std_path();
+        std::fs::create_dir_all(bd)?;
         for (basename, body) in &[
             (".runner", &b"{\"mock_runner\":\"...\"}"[..]),
             (".credentials", &b"{\"mock_creds\":\"...\"}"[..]),
             (".credentials_rsaparams", &b"{\"mock_rsa_params\":\"...\"}"[..]),
         ] {
-            let path = home.join(basename);
+            let path = bd.join(basename);
             std::fs::write(&path, body)?;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
         }

@@ -195,6 +195,85 @@ pub fn runner_is_registered(
         .any(|r| r.get("name").and_then(|n| n.as_str()) == Some(name)))
 }
 
+/// Query the GitHub runners API and return a map of runner name to
+/// status string (`"online"` or `"offline"`). Paginates automatically.
+pub fn list_runner_statuses(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    pat: Option<&str>,
+) -> Result<std::collections::HashMap<String, String>> {
+    let scope = parse_url(url)?;
+    let base_url = match &scope {
+        Scope::Repo { owner, repo } => {
+            format!("https://api.github.com/repos/{owner}/{repo}/actions/runners")
+        }
+        Scope::Org { owner } => {
+            format!("https://api.github.com/orgs/{owner}/actions/runners")
+        }
+    };
+    let mut statuses = std::collections::HashMap::new();
+    let mut page = 1u32;
+    let max_pages = 50u32;
+    loop {
+        let api_url = format!("{base_url}?per_page=100&page={page}");
+        let mut req = client
+            .get(&api_url)
+            .header("Accept", "application/vnd.github+json");
+        if let Some(token) = pat {
+            req = req.header("Authorization", format!("Bearer {token}"));
+        }
+        let resp = req.send().map_err(|e| {
+            GharsError::GitHub(
+                format!(
+                    "GitHub runners API request failed: {}: {api_url}",
+                    format_error_chain(&e)
+                ),
+                "check network connectivity".into(),
+            )
+        })?;
+        if !resp.status().is_success() {
+            return Err(GharsError::GitHub(
+                format!("GitHub runners API returned {}: {api_url}", resp.status()),
+                "check PAT scopes (needs admin:org or repo admin)".into(),
+            ));
+        }
+        let body = resp.text().map_err(|e| {
+            GharsError::GitHub(format!("cannot read runners response: {e}"), String::new())
+        })?;
+        let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
+            GharsError::GitHub(
+                format!("cannot parse runners list JSON: {e}"),
+                "unexpected response shape from GitHub runners API".into(),
+            )
+        })?;
+        let empty = Vec::new();
+        let runners = json
+            .get("runners")
+            .and_then(|r| r.as_array())
+            .unwrap_or(&empty);
+        if runners.is_empty() {
+            break;
+        }
+        for r in runners {
+            if let (Some(name), Some(status)) = (
+                r.get("name").and_then(|n| n.as_str()),
+                r.get("status").and_then(|s| s.as_str()),
+            ) {
+                statuses.insert(name.to_owned(), status.to_owned());
+            }
+        }
+        let total = json
+            .get("total_count")
+            .and_then(|t| t.as_u64())
+            .unwrap_or(0);
+        if statuses.len() as u64 >= total || page >= max_pages {
+            break;
+        }
+        page += 1;
+    }
+    Ok(statuses)
+}
+
 /// Parse a runner URL into a `Scope`.
 ///
 /// Accepts only `https://github.com/OWNER` (org) and

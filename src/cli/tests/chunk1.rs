@@ -1527,6 +1527,7 @@ fn cmd_status_runners_only_propagates_config_parse_error() {
         health_only: false,
         runners_only: true,
         score: false,
+        github: false,
         names: vec![],
     };
     let err = cmd_status(
@@ -1594,6 +1595,7 @@ size = \"200G\"
         health_only: false,
         runners_only: true,
         score: false,
+        github: false,
         names: vec![],
     };
     let err = cmd_status(
@@ -1661,6 +1663,7 @@ auth = \"pat\"
         health_only: false,
         runners_only: true,
         score: false,
+        github: false,
         names: vec![],
     };
     let err = cmd_status(
@@ -1738,6 +1741,7 @@ trust_zone = \"audited\\nInjected=stuff\"
         health_only: false,
         runners_only: true,
         score: false,
+        github: false,
         names: vec![],
     };
     let err = cmd_status(
@@ -1805,6 +1809,7 @@ trust_zone = \"audited\\rsmuggled\"
         health_only: false,
         runners_only: true,
         score: false,
+        github: false,
         names: vec![],
     };
     let err = cmd_status(
@@ -1881,6 +1886,7 @@ trust_zone = \"audited\"
         health_only: false,
         runners_only: true,
         score: false,
+        github: false,
         names: vec![],
     };
     // Expect Ok — load_config + validate_identity_fields pass for
@@ -1936,6 +1942,7 @@ trust_zone = \"{oversize_tz}\"
         health_only: false,
         runners_only: true,
         score: false,
+        github: false,
         names: vec![],
     };
     let err = cmd_status(
@@ -2000,6 +2007,7 @@ trust_zone = \"{oversize_tz}\"
         health_only: false,
         runners_only: true,
         score: false,
+        github: false,
         names: vec![],
     };
     let err = cmd_status(
@@ -2076,6 +2084,7 @@ runner_tarball = \"{nonexistent}\"
         health_only: false,
         runners_only: true,
         score: false,
+        github: false,
         names: vec![],
     };
     let err = cmd_status(
@@ -2152,6 +2161,7 @@ runner_tarball = \"{}\"
         health_only: false,
         runners_only: true,
         score: false,
+        github: false,
         names: vec![],
     };
     let err = cmd_status(
@@ -2224,6 +2234,7 @@ runner_tarball = \"{}\"
         health_only: false,
         runners_only: true,
         score: false,
+        github: false,
         names: vec![],
     };
     let err = cmd_status(
@@ -2304,6 +2315,7 @@ network = \"isolated\"
         health_only: false,
         runners_only: true,
         score: false,
+        github: false,
         names: vec![],
     };
     let err = cmd_status(
@@ -2389,6 +2401,7 @@ auth = \"pat\"
         health_only: false,
         runners_only: true,
         score: false,
+        github: false,
         names: vec![],
     };
     let err = cmd_status(
@@ -2554,6 +2567,7 @@ network = \"isolated\"
         health_only: false,
         runners_only: true,
         score: false,
+        github: false,
         names: vec![],
     };
     let err = cmd_status(
@@ -2813,6 +2827,7 @@ fn cmd_status_health_only_still_loads_config() {
         health_only: true,
         runners_only: false,
         score: false,
+        github: false,
         names: vec![],
     };
     let err = cmd_status(

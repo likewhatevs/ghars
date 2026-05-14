@@ -438,8 +438,9 @@ fn create_runner_normalizes_config_sh_file_modes() {
     execute_create_runner(&plan, &deps, &paths, &mut UndoLog::new(), 2).unwrap();
 
     let runner_home = paths.runner_home("default", "a");
+    let bin_dir = runner_home.join("bin.2.334.0");
     for basename in [".runner", ".credentials", ".credentials_rsaparams"] {
-        let path = runner_home.join(basename);
+        let path = bin_dir.join(basename);
         assert!(
             path.as_std_path().exists(),
             "MockConfigShell must have written {basename}"
@@ -636,8 +637,8 @@ fn create_runner_pins_directory_modes() {
 
     assert_eq!(
         mode(&tz_dir),
-        0o711,
-        "tz_dir must be 0o711 (descend-only, no `ls`)"
+        0o755,
+        "tz_dir must be 0o755 (Runner.Listener ValidateExecutePermission needs read)"
     );
     assert_eq!(
         mode(&runner_home),
@@ -1003,9 +1004,9 @@ fn create_runner_pushes_set_mode_undo_step_for_every_chmod_site() {
         runner_tmp.to_string(),
         ktstr_dir.to_string(),
         ccache_dir.to_string(),
-        runner_home.join(".runner").to_string(),
-        runner_home.join(".credentials").to_string(),
-        runner_home.join(".credentials_rsaparams").to_string(),
+        runner_home.join("bin.2.334.0").join(".runner").to_string(),
+        runner_home.join("bin.2.334.0").join(".credentials").to_string(),
+        runner_home.join("bin.2.334.0").join(".credentials_rsaparams").to_string(),
     ];
     for expected in &expected_unique_paths {
         assert!(
@@ -1187,8 +1188,8 @@ fn create_runner_chmod_loop_tolerates_missing_credential_files() {
             &self,
             ctx: &crate::apply::shell::ConfigShellCtx<'_>,
         ) -> crate::Result<()> {
-            std::fs::create_dir_all(ctx.runner_home.as_std_path())?;
-            let runner = ctx.runner_home.join(".runner");
+            std::fs::create_dir_all(ctx.bin_dir.as_std_path())?;
+            let runner = ctx.bin_dir.join(".runner");
             std::fs::write(runner.as_std_path(), b"{\"mock_runner\":\"...\"}")?;
             std::fs::set_permissions(
                 runner.as_std_path(),
@@ -1237,7 +1238,8 @@ fn create_runner_chmod_loop_tolerates_missing_credential_files() {
 
     // .runner was normalized to 0o644.
     let runner_home = paths.runner_home("default", "a");
-    let runner = runner_home.join(".runner");
+    let bin_dir = runner_home.join("bin.2.334.0");
+    let runner = bin_dir.join(".runner");
     let mode = std::fs::metadata(runner.as_std_path())
         .unwrap()
         .permissions()
@@ -1253,11 +1255,11 @@ fn create_runner_chmod_loop_tolerates_missing_credential_files() {
     // satisfy the loop; the loop's `if exists` gate is the
     // production contract.
     assert!(
-        !runner_home.join(".credentials").as_std_path().exists(),
+        !bin_dir.join(".credentials").as_std_path().exists(),
         "ghars must not create placeholder .credentials when config.sh skipped it"
     );
     assert!(
-        !runner_home
+        !bin_dir
             .join(".credentials_rsaparams")
             .as_std_path()
             .exists(),
@@ -1375,11 +1377,12 @@ fn chown_and_tighten_runner_state_chowns_and_tightens_all_paths() {
 
     // Construct a synthetic trust-zone tree:
     //   tz_dir/
-    //     ghars-a/         (runner_home)
-    //       tmp/           (runner_tmp)
-    //       .runner
-    //       .credentials
-    //       .credentials_rsaparams
+    //     ghars-a/             (runner_home)
+    //       tmp/               (runner_tmp)
+    //       bin.2.334.0/       (bin_dir)
+    //         .runner
+    //         .credentials
+    //         .credentials_rsaparams
     //     .ktstr/
     //     .ccache/
     let tz_dir = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
@@ -1387,15 +1390,16 @@ fn chown_and_tighten_runner_state_chowns_and_tightens_all_paths() {
         .join("default");
     let runner_home = tz_dir.join("ghars-a");
     let runner_tmp = runner_home.join("tmp");
+    let bin_dir = runner_home.join("bin.2.334.0");
     let ktstr_dir = tz_dir.join(".ktstr");
     let ccache_dir = tz_dir.join(".ccache");
-    for d in [&tz_dir, &runner_home, &runner_tmp, &ktstr_dir, &ccache_dir] {
+    for d in [&tz_dir, &runner_home, &runner_tmp, &bin_dir, &ktstr_dir, &ccache_dir] {
         std::fs::create_dir_all(d.as_std_path()).unwrap();
     }
-    // Plant the 3 credential files at 0o644 (matches post-fix
-    // DynamicUser-readable normalize state).
+    // Plant the 3 credential files in bin_dir (Runner.Listener
+    // writes them relative to its assembly Root, not runner_home).
     for basename in [".runner", ".credentials", ".credentials_rsaparams"] {
-        let p = runner_home.join(basename);
+        let p = bin_dir.join(basename);
         std::fs::write(p.as_std_path(), b"{}").unwrap();
         std::fs::set_permissions(p.as_std_path(), std::fs::Permissions::from_mode(0o644))
             .unwrap();
@@ -1416,6 +1420,7 @@ fn chown_and_tighten_runner_state_chowns_and_tightens_all_paths() {
         &runner_tmp,
         &ktstr_dir,
         Some(ccache_dir.as_path()),
+        &bin_dir,
         our_uid,
         our_gid,
         &mut log,
@@ -1458,7 +1463,7 @@ fn chown_and_tighten_runner_state_chowns_and_tightens_all_paths() {
     );
     assert_eq!(uid_of(&ccache_dir), our_uid, ".ccache chowned to our UID");
     for basename in [".runner", ".credentials", ".credentials_rsaparams"] {
-        let p = runner_home.join(basename);
+        let p = bin_dir.join(basename);
         assert_eq!(
             mode_of(&p),
             0o600,
@@ -1521,8 +1526,9 @@ fn chown_and_tighten_runner_state_skips_ccache_when_none() {
         .join("default");
     let runner_home = tz_dir.join("ghars-a");
     let runner_tmp = runner_home.join("tmp");
+    let bin_dir = runner_home.join("bin.2.334.0");
     let ktstr_dir = tz_dir.join(".ktstr");
-    for d in [&tz_dir, &runner_home, &runner_tmp, &ktstr_dir] {
+    for d in [&tz_dir, &runner_home, &runner_tmp, &bin_dir, &ktstr_dir] {
         std::fs::create_dir_all(d.as_std_path()).unwrap();
     }
     // Affirmatively assert .ccache does NOT exist as a precondition.
@@ -1531,10 +1537,10 @@ fn chown_and_tighten_runner_state_skips_ccache_when_none() {
         !ccache_dir.as_std_path().exists(),
         "fixture sanity: .ccache must not exist for the None-branch test"
     );
-    // Plant the 3 credential files so the helper exercises the
-    // credential-loop branches too.
+    // Plant the 3 credential files in bin_dir so the helper
+    // exercises the credential-loop branches too.
     for basename in [".runner", ".credentials", ".credentials_rsaparams"] {
-        let p = runner_home.join(basename);
+        let p = bin_dir.join(basename);
         std::fs::write(p.as_std_path(), b"{}").unwrap();
         std::fs::set_permissions(p.as_std_path(), std::fs::Permissions::from_mode(0o644))
             .unwrap();
@@ -1553,6 +1559,7 @@ fn chown_and_tighten_runner_state_skips_ccache_when_none() {
         &runner_tmp,
         &ktstr_dir,
         None,
+        &bin_dir,
         our_uid,
         our_gid,
         &mut log,

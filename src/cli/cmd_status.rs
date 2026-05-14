@@ -13,6 +13,7 @@ use crate::state;
 use crate::systemd::DbusSystemd;
 
 use super::args::{ColorMode, StatusArgs};
+use super::cmd_apply::extract_pat_for_api;
 use super::cmd_metrics::{MetricRow, collect_metrics, render_metrics_text};
 use super::exit_codes::status_exit_code;
 use super::load::load_config;
@@ -94,6 +95,31 @@ pub(super) fn cmd_status(
         Vec::new()
     };
 
+    let github_statuses: std::collections::HashMap<String, String> = if args.github {
+        let pat = extract_pat_for_api(&cfg);
+        let urls: std::collections::HashSet<&str> =
+            cfg.runners.iter().map(|r| r.url.as_str()).collect();
+        let client = match crate::github::build_blocking_client(cfg.proxy.as_ref()) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("warning: cannot build HTTP client for --github: {e}");
+                return Ok(status_exit_code(&health));
+            }
+        };
+        let mut combined = std::collections::HashMap::new();
+        for url in urls {
+            match crate::github::list_runner_statuses(&client, url, pat.as_deref()) {
+                Ok(map) => combined.extend(map),
+                Err(e) => {
+                    eprintln!("warning: GitHub runner status query failed for {url}: {e}");
+                }
+            }
+        }
+        combined
+    } else {
+        std::collections::HashMap::new()
+    };
+
     let score_rows = if args.score {
         // Collect both runner and cache-pool unit names from the
         // disk-discovery pass so units never installed (or removed
@@ -109,9 +135,9 @@ pub(super) fn cmd_status(
     };
 
     if args.json {
-        return render_status_json(&health, &runners, &metrics_rows, &score_rows);
+        return render_status_json(&health, &runners, &metrics_rows, &score_rows, &github_statuses);
     }
-    render_status_text(&health, &runners, &metrics_rows, &score_rows, &args.names)
+    render_status_text(&health, &runners, &metrics_rows, &score_rows, &args.names, &github_statuses)
 }
 
 pub(super) fn render_status_text(
@@ -120,8 +146,10 @@ pub(super) fn render_status_text(
     metrics: &[MetricRow],
     scores: &[ScoreRow],
     name_filter: &[String],
+    github_statuses: &std::collections::HashMap<String, String>,
 ) -> Result<i32> {
     let mut stdout = io::stdout().lock();
+    let has_github = !github_statuses.is_empty();
     if !health.is_empty() {
         writeln!(stdout, "SYSTEM HEALTH").map_err(GharsError::Io)?;
         for c in health {
@@ -141,24 +169,27 @@ pub(super) fn render_status_text(
     }
     if !runners.runners.is_empty() || !runners.external.is_empty() {
         writeln!(stdout, "RUNNERS").map_err(GharsError::Io)?;
-        writeln!(
-            stdout,
-            "  {:<24} {:<10} {:<10} drift",
-            "name", "active", "enabled"
-        )
-        .map_err(GharsError::Io)?;
+        if has_github {
+            writeln!(
+                stdout,
+                "  {:<24} {:<10} {:<10} {:<10} drift",
+                "name", "active", "enabled", "github"
+            )
+            .map_err(GharsError::Io)?;
+        } else {
+            writeln!(
+                stdout,
+                "  {:<24} {:<10} {:<10} drift",
+                "name", "active", "enabled"
+            )
+            .map_err(GharsError::Io)?;
+        }
         for (name, r) in &runners.runners {
             if !name_filter.is_empty() && !name_filter.iter().any(|n| n == name) {
                 continue;
             }
             let active = if r.running { "active" } else { "inactive" };
             let enabled = if r.enabled { "enabled" } else { "disabled" };
-            // Drift labels match `state::Drift` variant names rendered
-            // snake_case so text + JSON output share one label vocabulary
-            // (e.g. `grep drop_ins_modified` works against either).
-            // For variants carrying the unmanaged-basenames Vec, the
-            // basenames are appended after a colon so the operator can
-            // see which files drifted without re-running `systemctl cat`.
             let drift = match &r.drift {
                 state::Drift::InSync => "in_sync".to_string(),
                 state::Drift::UnitEdited => "unit_edited".to_string(),
@@ -169,8 +200,14 @@ pub(super) fn render_status_text(
                     format!("both: {}", names.join(", "))
                 }
             };
-            writeln!(stdout, "  {name:<24} {active:<10} {enabled:<10} {drift}")
-                .map_err(GharsError::Io)?;
+            if has_github {
+                let gh = github_statuses.get(name).map(String::as_str).unwrap_or("-");
+                writeln!(stdout, "  {name:<24} {active:<10} {enabled:<10} {gh:<10} {drift}")
+                    .map_err(GharsError::Io)?;
+            } else {
+                writeln!(stdout, "  {name:<24} {active:<10} {enabled:<10} {drift}")
+                    .map_err(GharsError::Io)?;
+            }
         }
         for ext in &runners.external {
             // External runners (units present on disk but not declared
@@ -205,6 +242,7 @@ pub(super) fn render_status_json(
     runners: &state::ActualState,
     metrics: &[MetricRow],
     scores: &[ScoreRow],
+    github_statuses: &std::collections::HashMap<String, String>,
 ) -> Result<i32> {
     let health_json: Vec<serde_json::Value> = health
         .iter()
@@ -248,6 +286,12 @@ pub(super) fn render_status_json(
                 },
                 "spec_hash": r.spec_hash,
             });
+            if let Some(gh) = github_statuses.get(name) {
+                #[allow(clippy::expect_used)]
+                obj.as_object_mut()
+                    .expect("serde_json::json!({...}) always returns Object")
+                    .insert("github_status".into(), serde_json::Value::String(gh.clone()));
+            }
             if !unmanaged.is_empty() {
                 #[allow(clippy::expect_used)]
                 obj.as_object_mut()
