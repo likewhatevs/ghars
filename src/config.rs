@@ -603,8 +603,14 @@ pub struct Hardening {
     /// `SystemCallFilter=@system-service ...` line.
     #[serde(default)]
     pub extra_syscalls: Vec<String>,
-    /// `BindReadOnlyPaths` style: `Curated` (Python default, narrow
-    /// /etc list) or `Broad` (whole /etc bound).
+    /// `BindReadOnlyPaths` widening for `/etc`: `Curated` (Python
+    /// default — only the template's curated list of /etc paths is
+    /// bound) or `Broad` (an additional `BindReadOnlyPaths=/etc`
+    /// line is emitted, APPENDED on top of the template's curated
+    /// set so systemd's union widens coverage to the whole tree).
+    /// Despite the field name, `Broad` does NOT replace the curated
+    /// set — both styles share the template floor; `Broad` only adds
+    /// a wider sibling bind.
     #[serde(default)]
     pub etc_bind_style: EtcBindStyle,
     /// APPENDS operator entries to the template's `BindReadOnlyPaths`
@@ -733,12 +739,12 @@ impl ProxySpec {
     /// semantically equivalent to no proxy configuration at all —
     /// `render_proxy` returns `Ok(None)` for both `None` and
     /// `Some(empty)`, so the two shapes produce identical render
-    /// output. Collapsing `Some(empty)` to `None` at the loader
-    /// normalization layer eliminates a spec_hash dark input: pre-
-    /// normalization the canonical-JSON of `Some(ProxySpec{..})`
-    /// differed from `None` and the two would flip spec_hash on
-    /// operator toggle, but the rendered drop-in body bytes were
-    /// identical.
+    /// output. Collapsing `Some(empty)` to `None` at the lowering
+    /// boundary (`lower_to_effective` in `compute.rs`) eliminates a
+    /// spec_hash dark input: pre-normalization the canonical-JSON of
+    /// `Some(ProxySpec{..})` differed from `None` and the two would
+    /// flip spec_hash on operator toggle, but the rendered drop-in
+    /// body bytes were identical.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.http.is_none()
@@ -776,8 +782,8 @@ impl HooksSpec {
     /// produces no `ACTIONS_RUNNER_HOOK_JOB_*` env vars —
     /// `render_hooks` returns `Ok(None)` for both `None` and
     /// `Some(empty)`. Collapsing `Some(empty)` to `None` at the
-    /// loader normalization layer eliminates the parallel spec_hash
-    /// dark input.
+    /// lowering boundary (`lower_to_effective` in `compute.rs`)
+    /// eliminates the parallel spec_hash dark input.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.pre_job.is_none() && self.post_job.is_none()

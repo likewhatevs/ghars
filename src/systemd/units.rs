@@ -3834,6 +3834,15 @@ mod tests {
         assert!(h.contains("RestrictRealtime=yes"));
         assert!(h.contains("SystemCallFilter=clone3 rseq"));
         assert!(h.contains("BindReadOnlyPaths=/etc"));
+        // Broad APPENDS to the template's curated /etc set rather
+        // than replacing it. systemd unions list-typed directives
+        // across template + drop-in unless an empty-RHS reset
+        // (`BindReadOnlyPaths=` with nothing after `=`) clears the
+        // prior list — the drop-in must not emit such a reset.
+        assert!(
+            !h.lines().any(|l| l.trim() == "BindReadOnlyPaths="),
+            "Broad must not emit a BindReadOnlyPaths= reset directive: {h}"
+        );
         // Sanity: no kvm-related lines or warnings when kvm wasn't
         // touched in the override.
         assert!(!h.lines().any(|l| l.starts_with("DeviceAllow")));

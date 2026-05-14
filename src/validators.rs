@@ -1050,7 +1050,7 @@ const DENY_EXTRA_BIND_PATHS: &[&str] = &[
 /// match while `/procmon` and `/proc/12abc` do not. Static + lazy so
 /// the regex compiles once.
 static PROC_PID_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^/proc/[0-9]+($|/)").expect("PROC_PID_REGEX is a compile-time constant")
+    Regex::new(r"^/proc/[0-9]+($|/)").expect("PROC_PID_RE is a compile-time constant")
 });
 
 /// Validate every entry in a `restrict_address_families` list
