@@ -386,9 +386,10 @@ fn egress_rule_lines(
              validate_egress_comment must run before render_nft_rules"
         );
     }
+    let daddr = if addr.contains(':') { "ip6 daddr" } else { "ip daddr" };
     match port {
         PortSpec::Single(p) => {
-            let mut line = format!("ip daddr {addr} {proto} dport {p} accept");
+            let mut line = format!("{daddr} {addr} {proto} dport {p} accept");
             if let Some(c) = comment {
                 let _ = write!(line, " comment \"{c}\"");
             }
@@ -401,7 +402,7 @@ fn egress_rule_lines(
                 .map(u16::to_string)
                 .collect::<Vec<_>>()
                 .join(", ");
-            let mut line = format!("ip daddr {addr} {proto} dport {{ {set} }} accept");
+            let mut line = format!("{daddr} {addr} {proto} dport {{ {set} }} accept");
             if let Some(c) = comment {
                 let _ = write!(line, " comment \"{c}\"");
             }
@@ -409,7 +410,7 @@ fn egress_rule_lines(
         }
         PortSpec::Range { start, end } => {
             // nft range syntax: `dport START-END`.
-            let mut line = format!("ip daddr {addr} {proto} dport {start}-{end} accept");
+            let mut line = format!("{daddr} {addr} {proto} dport {start}-{end} accept");
             if let Some(c) = comment {
                 let _ = write!(line, " comment \"{c}\"");
             }
@@ -524,6 +525,53 @@ mod tests {
             rules
                 .host_rules
                 .contains("ip daddr 1.2.3.4 udp dport 53 accept")
+        );
+    }
+
+    #[test]
+    fn render_nft_emits_ip6_daddr_for_ipv6_egress() {
+        let binding = netns_binding(
+            "10.200.0.0/30",
+            vec![EgressRule {
+                addr: "2001:db8::1".into(),
+                port: PortSpec::Single(443),
+                proto: Proto::Tcp,
+                comment: None,
+            }],
+        );
+        let rules = render_nft_rules("r", &binding).unwrap();
+        assert!(
+            rules
+                .host_rules
+                .contains("ip6 daddr 2001:db8::1 tcp dport 443 accept"),
+            "IPv6 egress must use `ip6 daddr`, not `ip daddr`; got:\n{}",
+            rules.host_rules
+        );
+        assert!(
+            !rules.host_rules.contains("ip daddr 2001:db8::1"),
+            "IPv6 address must NOT use `ip daddr`; got:\n{}",
+            rules.host_rules
+        );
+    }
+
+    #[test]
+    fn render_nft_emits_ip_daddr_for_ipv4_egress() {
+        let binding = netns_binding(
+            "10.200.0.0/30",
+            vec![EgressRule {
+                addr: "192.168.2.84".into(),
+                port: PortSpec::Single(3128),
+                proto: Proto::Tcp,
+                comment: None,
+            }],
+        );
+        let rules = render_nft_rules("r", &binding).unwrap();
+        assert!(
+            rules
+                .host_rules
+                .contains("ip daddr 192.168.2.84 tcp dport 3128 accept"),
+            "IPv4 egress must use `ip daddr`; got:\n{}",
+            rules.host_rules
         );
     }
 
