@@ -591,14 +591,14 @@ pub(super) fn execute_create_runner(
     let spec = &plan.spec;
     let runner_home = paths.runner_home(&spec.trust_zone, &spec.name);
 
-    // Trust-zone parent dir. fs::create_dir_all is idempotent and
-    // creates it as a side effect of the .ktstr / .ccache calls
+    // Trust-zone parent dir. `fs::create_dir_all` is idempotent and
+    // creates it as a side effect of the `.ktstr` / `.ccache` calls
     // below, but making it explicit closes the gap if those children
     // become conditional. 0o711 = root rwx, others execute-only:
-    // DynamicUser can descend into /var/lib/ghars/{tz}/ghars-{name}/
-    // and /var/lib/ghars/{tz}/.ktstr/ etc. but can NOT `ls` the
+    // `DynamicUser` can descend into `/var/lib/ghars/{tz}/ghars-{name}/`
+    // and `/var/lib/ghars/{tz}/.ktstr/` etc. but can NOT `ls` the
     // trust-zone dir. Belt for out-of-sandbox processes; the systemd
-    // BindPaths inside the runner sandbox only surface the runner's
+    // `BindPaths` inside the runner sandbox only surface the runner's
     // own trust_zone path anyway.
     let tz_dir = paths.state_dir.join(&spec.trust_zone);
     fs::create_dir_all(tz_dir.as_std_path())?;
@@ -614,92 +614,92 @@ pub(super) fn execute_create_runner(
     fs::create_dir_all(home_std)?;
 
     // Pre-Stage-1 entry sweep: refuse to proceed if any direct child
-    // of runner_home is a symlink, FIFO, device file, or socket.
-    // chmod_record_undo's O_NOFOLLOW defense catches a symlink at
-    // a CHMOD TARGET path, but config.sh runs BEFORE the credential-
-    // file chmod loop and uses .NET File.WriteAllText (no O_NOFOLLOW)
-    // — if a sibling DynamicUser planted runner_home/.credentials*
+    // of `runner_home` is a symlink, FIFO, device file, or socket.
+    // `chmod_record_undo`'s `O_NOFOLLOW` defense catches a symlink at
+    // a CHMOD TARGET path, but `config.sh` runs BEFORE the credential-
+    // file chmod loop and uses .NET `File.WriteAllText` (no `O_NOFOLLOW`)
+    // — if a sibling `DynamicUser` planted `runner_home/.credentials*`
     // as a symlink during a prior failed apply's 0o777 window,
-    // config.sh would write OAuth credentials + RSA private key
+    // `config.sh` would write OAuth credentials + RSA private key
     // through the symlink to an attacker target BEFORE the post-
-    // config.sh chmod_record_undo loop runs and notices. The
+    // `config.sh` `chmod_record_undo` loop runs and notices. The
     // credentials are already exfiltrated by then.
     //
-    // The sweep enumerates runner_home's direct children via
-    // symlink_metadata (lstat — does NOT follow), refuses to
+    // The sweep enumerates `runner_home`'s direct children via
+    // `symlink_metadata` (`lstat` — does NOT follow), refuses to
     // proceed if any are non-regular-non-dir. FIFO/device/socket
     // entries would also cause apply to block on subsequent reads
-    // (FIFO open with O_RDONLY blocks until a writer opens, hanging
+    // (FIFO open with `O_RDONLY` blocks until a writer opens, hanging
     // apply indefinitely).
     //
     // Recursive sweep would re-introduce the same TOCTOU-during-
-    // walk class as the deleted set_tree_permissions cascade — we
+    // walk class as the deleted `set_tree_permissions` cascade — we
     // intentionally stay non-recursive. Only direct children matter:
-    // config.sh and the post-config.sh chmod loop write at
-    // runner_home/.runner / .credentials / .credentials_rsaparams,
-    // and chmod runner_home/tmp + runner_home itself. Deeper paths
+    // `config.sh` and the post-`config.sh` chmod loop write at
+    // `runner_home/.runner` / `.credentials` / `.credentials_rsaparams`,
+    // and `chmod` `runner_home/tmp` + `runner_home` itself. Deeper paths
     // aren't touched by either code path.
     sweep_runner_home_for_planted_entries(home_std)?;
 
-    // Stage 1 of runner_home chmod: clamp to 0o755 (root rwx, others
+    // Stage 1 of `runner_home` chmod: clamp to 0o755 (root rwx, others
     // r-x) for the duration of apply. Defense-in-depth on top of
-    // chmod_record_undo's O_NOFOLLOW: even if a future regression
+    // `chmod_record_undo`'s `O_NOFOLLOW`: even if a future regression
     // weakened the helper's symlink refusal, the 0o755 clamp denies
-    // sibling DynamicUser write access to runner_home so they
+    // sibling `DynamicUser` write access to `runner_home` so they
     // cannot plant new symlinks DURING apply between the pre-
     // Stage-1 sweep above and Stage 2 below. The pre-Stage-1 sweep
     // catches PRE-existing planted entries; Stage 1 prevents NEW
     // planting during the apply window.
     //
-    // The dir needs to be traversable by root throughout — install_
-    // binary writes bin.X.Y.Z/ under it, config.sh writes .runner /
-    // .credentials* into it, ghars chmods those files after.
+    // The dir needs to be traversable by root throughout — `install_binary`
+    // writes `bin.X.Y.Z/` under it, `config.sh` writes `.runner` /
+    // `.credentials*` into it, ghars chmods those files after.
     //
-    // Stage 2 below (just before deps.systemd.start_unit) re-opens
-    // runner_home to 0o777 so the DynamicUser allocated at unit
-    // start time can create _work/, _diag/, and operator toolchain
+    // Stage 2 below (just before `deps.systemd.start_unit`) re-opens
+    // `runner_home` to 0o777 so the `DynamicUser` allocated at unit
+    // start time can create `_work/`, `_diag/`, and operator toolchain
     // caches:
-    //   - Runner.Listener creating `_work/` (Runner.cs:418).
-    //   - HostTraceListener creating `_diag/` (HostTraceListener.cs:29).
+    //   - `Runner.Listener` creating `_work/` (`Runner.cs:418`).
+    //   - `HostTraceListener` creating `_diag/` (`HostTraceListener.cs:29`).
     //   - workflow steps writing job artifacts under `_work/`.
-    //   - operator/runner-toolchain caches (~/.cargo, ~/.npm, ~/.config, ...).
+    //   - operator/runner-toolchain caches (`~/.cargo`, `~/.npm`, `~/.config`, ...).
     // 0o777 is the right unit-runtime mode under the current
-    // architecture: the DynamicUser UID is not NSS-resolvable on
-    // systemd<256, so chown-by-name fails and Manager.RefUid is the
+    // architecture: the `DynamicUser` UID is not NSS-resolvable on
+    // systemd<256, so chown-by-name fails and `Manager.RefUid` is the
     // narrower alternative once the runner unit has started.
     chmod_record_undo(&runner_home, 0o755, "runner_home (Stage 1)", log)?;
 
-    // Per-runner tmp dir so TMPDIR points somewhere the sccache server
-    // can reach (PrivateTmp isolates /tmp per unit). Safe to chmod
-    // 0o777 here because runner_home is currently 0o755 — no sibling
-    // DynamicUser can plant `runner_home/tmp` as a symlink between
-    // our create_dir_all and chmod.
+    // Per-runner tmp dir so `TMPDIR` points somewhere the `sccache` server
+    // can reach (`PrivateTmp` isolates `/tmp` per unit). Safe to `chmod`
+    // 0o777 here because `runner_home` is currently 0o755 — no sibling
+    // `DynamicUser` can plant `runner_home/tmp` as a symlink between
+    // our `create_dir_all` and `chmod`.
     let runner_tmp = runner_home.join("tmp");
     fs::create_dir_all(runner_tmp.as_std_path())?;
     chmod_record_undo(&runner_tmp, 0o777, "runner_tmp", log)?;
 
-    // Shared .ktstr directory at the trust-zone level. All runners in the
-    // same trust_zone bind this path into their sandbox for KTSTR_LOCK_DIR
-    // and KTSTR_CACHE_DIR. Mode 0777 so the DynamicUser (allocated at
+    // Shared `.ktstr` directory at the trust-zone level. All runners in the
+    // same trust_zone bind this path into their sandbox for `KTSTR_LOCK_DIR`
+    // and `KTSTR_CACHE_DIR`. Mode 0777 so the `DynamicUser` (allocated at
     // unit-start time, unknown at apply time) can write to it; actual
     // isolation is at the trust-zone UID layer (different trust zones get
     // different UIDs).
     let ktstr_dir = tz_dir.join(".ktstr");
     fs::create_dir_all(ktstr_dir.as_std_path())?;
     chmod_record_undo(&ktstr_dir, 0o777, ".ktstr", log)?;
-    // .ccache dir is trust-zone-shared but only used when at least
-    // one cache_pool with `kinds` containing ccache is bound to this
-    // runner. The renderer at systemd::render_runner_env_file gates
-    // its `CCACHE_DIR=` .env emission on the same `has_ccache`
+    // `.ccache` dir is trust-zone-shared but only used when at least
+    // one `cache_pool` with `kinds` containing `ccache` is bound to this
+    // runner. The renderer at `systemd::render_runner_env_file` gates
+    // its `CCACHE_DIR=` `.env` emission on the same `has_ccache`
     // predicate — keeping the two symmetric: if the dir isn't
     // created, the env var pointing at it isn't emitted, so the
-    // unconditional ccache wrappers in PATH don't intercept `gcc`
+    // unconditional `ccache` wrappers in `PATH` don't intercept `gcc`
     // calls and try to write into a non-existent path. Runners with
-    // no ccache binding fall through to ccache's XDG default
-    // (HOME/.ccache → runner_home, per-runner ephemeral). Gating
-    // creation here keeps trust zones with zero ccache runners free
+    // no `ccache` binding fall through to `ccache`'s XDG default
+    // (`HOME/.ccache` → `runner_home`, per-runner ephemeral). Gating
+    // creation here keeps trust zones with zero `ccache` runners free
     // of an empty `.ccache`. `create_dir_all` is idempotent so
-    // multiple ccache-binding runners in the same trust_zone
+    // multiple `ccache`-binding runners in the same trust_zone
     // converge to one shared dir.
     let ccache_dir = tz_dir.join(".ccache");
     let has_ccache = spec
@@ -711,12 +711,12 @@ pub(super) fn execute_create_runner(
         chmod_record_undo(&ccache_dir, 0o777, ".ccache", log)?;
     }
 
-    // No useradd / gpasswd step. The runner unit declares
-    // DynamicUser=yes with `User=ghars-tz-<TRUST_ZONE>` set in the
-    // per-runner 00-ghars.conf drop-in; systemd allocates the
+    // No `useradd` / `gpasswd` step. The runner unit declares
+    // `DynamicUser=yes` with `User=ghars-tz-<TRUST_ZONE>` set in the
+    // per-runner `00-ghars.conf` drop-in; systemd allocates the
     // transient UID/GID on unit start and recycles it on stop. Cache
-    // reach is socket-DAC + BindPaths (cache server runs at the same
-    // trust_zone DynamicUser), not gpasswd.
+    // reach is socket-DAC + `BindPaths` (cache server runs at the same
+    // trust_zone `DynamicUser`), not `gpasswd`.
 
     // 1) Runner binary. Two paths:
     //    (a) `runner_tarball` set on the spec → use the local file
