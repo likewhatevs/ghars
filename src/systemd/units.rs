@@ -980,6 +980,39 @@ fn check_no_root_bind(label: &str, path: &Utf8Path) -> Result<()> {
                 .into(),
         ));
     }
+    if !path.as_std_path().is_absolute() {
+        return Err(GharsError::Validation(
+            format!("{label} entry `{path}` is not an absolute path"),
+            "use an absolute path (e.g. /etc/pki/ca-trust/source/anchors)".into(),
+        ));
+    }
+    if path.as_str().chars().any(char::is_whitespace) {
+        return Err(GharsError::Validation(
+            format!(
+                "{label} entry `{path}` contains whitespace; systemd \
+                 whitespace-splits BindReadOnlyPaths entries, so an embedded \
+                 space would silently bind additional host paths into the \
+                 runner sandbox"
+            ),
+            "remove whitespace from the path; paths with spaces cannot be \
+             expressed in BindReadOnlyPaths without quoting, which systemd \
+             does not support for this directive"
+                .into(),
+        ));
+    }
+    if path.as_str().contains(':') {
+        return Err(GharsError::Validation(
+            format!(
+                "{label} entry `{path}` contains `:` which systemd parses as a \
+                 SOURCE:DESTINATION separator in BindReadOnlyPaths directives; \
+                 the rendered bind would map a different source onto an \
+                 unintended destination inside the runner sandbox"
+            ),
+            "remove the colon from the path; if you need a SOURCE:DESTINATION \
+             mapping, use a 99-*.conf operator drop-in via systemctl edit"
+                .into(),
+        ));
+    }
     if binds_filesystem_root(path) {
         return Err(GharsError::Validation(
             format!(
@@ -1975,6 +2008,7 @@ fn render_proxy(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
     for binding in &proxy.ca_certs {
         check_identity_field("proxy.ca_certs[].env", &binding.env)?;
         check_identity_field("proxy.ca_certs[].path", binding.path.as_str())?;
+        check_no_root_bind("proxy.ca_certs[].path", &binding.path)?;
     }
     let mut s = String::new();
     s.push_str("[Service]\n");
@@ -4143,6 +4177,52 @@ mod tests {
     }
 
     #[test]
+    fn render_hardening_rejects_colon_in_extra_bind_paths() {
+        let mut spec = minimal_spec();
+        spec.hardening.extra_bind_paths = vec![Utf8PathBuf::from("/etc:/")];
+        let err = render_runner_unit(&spec).unwrap_err();
+        assert!(matches!(err, GharsError::Validation(_, _)));
+        let msg = format!("{err}");
+        assert!(msg.contains("extra_bind_paths"), "msg: {msg}");
+        assert!(msg.contains("SOURCE:DESTINATION"), "msg: {msg}");
+    }
+
+    #[test]
+    fn render_hardening_rejects_colon_in_bind_readonly_paths() {
+        let mut spec = minimal_spec();
+        spec.hardening.bind_readonly_paths =
+            Some(vec![Utf8PathBuf::from("/etc:/shadow")]);
+        let err = render_runner_unit(&spec).unwrap_err();
+        assert!(matches!(err, GharsError::Validation(_, _)));
+        let msg = format!("{err}");
+        assert!(msg.contains("bind_readonly_paths"), "msg: {msg}");
+        assert!(msg.contains("SOURCE:DESTINATION"), "msg: {msg}");
+    }
+
+    #[test]
+    fn render_hardening_rejects_whitespace_in_extra_bind_paths() {
+        let mut spec = minimal_spec();
+        spec.hardening.extra_bind_paths =
+            vec![Utf8PathBuf::from("/etc/foo /etc/passwd")];
+        let err = render_runner_unit(&spec).unwrap_err();
+        assert!(matches!(err, GharsError::Validation(_, _)));
+        let msg = format!("{err}");
+        assert!(msg.contains("extra_bind_paths"), "msg: {msg}");
+        assert!(msg.contains("whitespace"), "msg: {msg}");
+    }
+
+    #[test]
+    fn render_hardening_rejects_relative_extra_bind_paths() {
+        let mut spec = minimal_spec();
+        spec.hardening.extra_bind_paths = vec![Utf8PathBuf::from("foo")];
+        let err = render_runner_unit(&spec).unwrap_err();
+        assert!(matches!(err, GharsError::Validation(_, _)));
+        let msg = format!("{err}");
+        assert!(msg.contains("extra_bind_paths"), "msg: {msg}");
+        assert!(msg.contains("not an absolute path"), "msg: {msg}");
+    }
+
+    #[test]
     fn render_hardening_kvm_true_emits_device_allow() {
         // Explicit kvm=true is an override (the template default agrees,
         // but the operator's intent is recorded). The drop-in re-emits
@@ -4668,6 +4748,109 @@ mod tests {
         // must fail the unit start, not silently fall back to system roots.
         assert!(p.contains("BindReadOnlyPaths=/etc/pki/tls/certs/ca-bundle.crt"));
         assert!(!p.contains("BindReadOnlyPaths=-/etc/pki/tls/certs/ca-bundle.crt"));
+    }
+
+    #[test]
+    fn render_proxy_rejects_root_ca_cert_path() {
+        let mut spec = minimal_spec();
+        spec.proxy = Some(ProxySpec {
+            http: None,
+            https: None,
+            no_proxy: vec![],
+            ca_certs: vec![CaCertBinding {
+                env: "CERT".into(),
+                path: Utf8PathBuf::from("/"),
+            }],
+        });
+        let err = render_runner_unit(&spec).unwrap_err();
+        assert!(matches!(err, GharsError::Validation(_, _)));
+        let msg = format!("{err}");
+        assert!(msg.contains("proxy.ca_certs[].path"), "msg: {msg}");
+        assert!(msg.contains("SEC-12"), "msg: {msg}");
+        assert!(msg.contains("filesystem root"), "msg: {msg}");
+    }
+
+    #[test]
+    fn render_proxy_rejects_parent_dir_climb_root_ca_cert_path() {
+        let mut spec = minimal_spec();
+        spec.proxy = Some(ProxySpec {
+            http: None,
+            https: None,
+            no_proxy: vec![],
+            ca_certs: vec![CaCertBinding {
+                env: "CERT".into(),
+                path: Utf8PathBuf::from("/foo/.."),
+            }],
+        });
+        let err = render_runner_unit(&spec).unwrap_err();
+        assert!(matches!(err, GharsError::Validation(_, _)));
+        let msg = format!("{err}");
+        assert!(msg.contains("proxy.ca_certs[].path"), "msg: {msg}");
+        assert!(msg.contains("SEC-12"), "msg: {msg}");
+        assert!(msg.contains("filesystem root"), "msg: {msg}");
+    }
+
+    #[test]
+    fn render_proxy_rejects_empty_ca_cert_path() {
+        let mut spec = minimal_spec();
+        spec.proxy = Some(ProxySpec {
+            http: None,
+            https: None,
+            no_proxy: vec![],
+            ca_certs: vec![CaCertBinding {
+                env: "CERT".into(),
+                path: Utf8PathBuf::from(""),
+            }],
+        });
+        let err = render_runner_unit(&spec).unwrap_err();
+        assert!(matches!(err, GharsError::Validation(_, _)));
+        let msg = format!("{err}");
+        assert!(msg.contains("proxy.ca_certs[].path"), "msg: {msg}");
+        assert!(msg.contains("empty"), "msg: {msg}");
+        assert!(
+            !msg.contains("filesystem root"),
+            "empty entry must not be misclassified as filesystem root: {msg}"
+        );
+    }
+
+    #[test]
+    fn render_proxy_rejects_colon_in_ca_cert_path() {
+        let mut spec = minimal_spec();
+        spec.proxy = Some(ProxySpec {
+            http: None,
+            https: None,
+            no_proxy: vec![],
+            ca_certs: vec![CaCertBinding {
+                env: "CERT".into(),
+                path: Utf8PathBuf::from("/etc:/"),
+            }],
+        });
+        let err = render_runner_unit(&spec).unwrap_err();
+        assert!(matches!(err, GharsError::Validation(_, _)));
+        let msg = format!("{err}");
+        assert!(msg.contains("proxy.ca_certs[].path"), "msg: {msg}");
+        assert!(msg.contains(":"), "msg: {msg}");
+        assert!(msg.contains("SOURCE:DESTINATION"), "msg: {msg}");
+    }
+
+    #[test]
+    fn render_proxy_accepts_non_root_ca_cert_path() {
+        let mut spec = minimal_spec();
+        spec.proxy = Some(ProxySpec {
+            http: None,
+            https: None,
+            no_proxy: vec![],
+            ca_certs: vec![CaCertBinding {
+                env: "REQUESTS_CA_BUNDLE".into(),
+                path: Utf8PathBuf::from("/foo/../bar.pem"),
+            }],
+        });
+        let r = render_runner_unit(&spec).expect("non-root path must render");
+        let p = r.drop_ins.get("60-proxy.conf").unwrap();
+        assert!(
+            p.contains("BindReadOnlyPaths=/foo/../bar.pem"),
+            "expected BindReadOnlyPaths=/foo/../bar.pem; got:\n{p}"
+        );
     }
 
     #[test]
