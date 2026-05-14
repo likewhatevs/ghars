@@ -1742,7 +1742,7 @@ fn update_runner_in_place_preserves_operator_drop_ins() {
         tarball: &tarball,
         config_shell: &config_shell,
     };
-    execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2).unwrap();
+    execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2, false).unwrap();
 
     // The stale MANAGED file is gone (the new plan omits it).
     assert!(
@@ -1843,7 +1843,7 @@ fn update_runner_in_place_treats_already_missing_managed_dropin_as_no_op() {
     };
     // Must NOT propagate ENOENT — Stage 2's Removed verdict is
     // satisfied by "file already absent on disk".
-    execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2)
+    execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2, false)
         .expect("ENOENT during managed-drop-in removal must be tolerated");
 }
 
@@ -1930,7 +1930,7 @@ fn update_runner_in_place_propagates_eacces_on_managed_dropin_remove() {
         tarball: &tarball,
         config_shell: &config_shell,
     };
-    let err = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2)
+    let err = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2, false)
         .expect_err("EACCES on managed-drop-in remove must propagate, not silently succeed");
     assert!(
         matches!(err, GharsError::Io(_)),
@@ -2147,7 +2147,7 @@ fn update_runner_in_place_rewrites_env_and_path_when_content_differs() {
         systemd: &systemd, auth: &auth_map,
         tarball: &tarball, config_shell: &config_shell,
     };
-    execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2).unwrap();
+    execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2, false).unwrap();
 
     // The bug-proof assertions: post-update bytes match render_*_file
     // output. Pre-fix, these would fail because in-place left both
@@ -2234,7 +2234,7 @@ fn update_runner_in_place_does_not_rewrite_env_when_content_matches() {
         systemd: &systemd, auth: &auth_map,
         tarball: &tarball, config_shell: &config_shell,
     };
-    let outcome = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2).unwrap();
+    let outcome = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2, false).unwrap();
 
     // When everything on disk already matches, the daemon-reload + restart
     // gate fires InPlaceSkipped. No systemd stop_unit / start_unit calls.
@@ -2250,5 +2250,226 @@ fn update_runner_in_place_does_not_rewrite_env_when_content_matches() {
     assert!(
         !calls.iter().any(|c| c.starts_with("start_unit")),
         "byte-identical inputs must NOT restart the unit; calls: {calls:?}",
+    );
+}
+
+/// `--no-restart` flag (via `ApplyOptions::no_restart`, threaded as
+/// the 6th positional arg to `execute_update_runner`): when bytes
+/// differ on disk (files_changed > 0) AND the flag is set, the
+/// handler MUST return `InPlaceRewroteNoRestart` AND skip every
+/// systemd lifecycle call (`daemon_reload`, `stop_unit`,
+/// `start_unit`). Operator's maintenance-window workflow: files
+/// are rewritten to disk now; restart is deferred until manual
+/// `systemctl restart ghars-runner@NAME.service` or a re-apply
+/// without `--no-restart`.
+///
+/// Pre-staged drop-in body bytes intentionally differ from what the
+/// renderer produces so the byte-equality short-circuit at
+/// `execute_update_runner`'s `files_changed == 0` gate does NOT fire
+/// (that would return `InPlaceSkipped` instead of exercising the
+/// new flag gate). Without this fixture-mismatch step the test
+/// would prove nothing about the new code path.
+#[test]
+fn update_runner_in_place_with_no_restart_returns_rewrote_no_restart_and_skips_systemd_calls() {
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = make_paths(&tmp);
+    std::fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
+    std::fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
+    // Pre-stage runner_home + bin.X.Y.Z so the .env/.path rewrite
+    // step has a destination dir to write into.
+    let runner_home = paths.runner_home("default", "a");
+    let bin_dir = runner_home.join("bin.2.334.0");
+    std::fs::create_dir_all(bin_dir.as_std_path()).unwrap();
+
+    let mut after = make_spec("a", &paths.state_dir);
+    after.spec_hash = "sha256:after".into();
+    let rendered = crate::systemd::render_runner_unit(&after).unwrap();
+
+    // Pre-stage unit file with content that DIFFERS from what the
+    // renderer will produce so read_then_write_if_changed bumps
+    // files_changed by 1 — drives execution past the byte-equality
+    // short-circuit at runners.rs `files_changed == 0` and INTO
+    // the new `--no-restart` gate.
+    let unit_file = paths.unit_file("a");
+    std::fs::write(
+        unit_file.as_std_path(),
+        b"[Unit]\nDescription=stale\n",
+    ).unwrap();
+
+    let delta = crate::plan::RunnerDelta {
+        identity: crate::plan::RunnerIdentity {
+            name: "a".into(),
+            url: after.url.clone(),
+            auth_name: after.auth_name.clone(),
+            trust_zone: after.trust_zone.clone(),
+        },
+        after: crate::plan::RunnerPlan {
+            spec: after.clone(),
+            resolved_release: None,
+            effective_unit_text: crate::systemd::runner_template_text(),
+            drop_ins: BTreeMap::new(),
+            env_file: rendered.env_file.clone(),
+            path_file: rendered.path_file.clone(),
+            spec_hash: "sha256:after".into(),
+        },
+        requires_recreate: false,
+        recreate_reasons: vec![],
+        drift_cause: crate::plan::DriftCause::SpecChanged,
+        field_changes: vec![],
+        drop_in_changes: vec![],
+        before_caches: None,
+        before_drop_in_basenames: None,
+    };
+    let systemd = MockSystemd::default();
+    let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+    let tarball = MockTarball::default();
+    let config_shell = MockConfigShell::default();
+    let deps = Deps {
+        systemd: &systemd, auth: &auth_map,
+        tarball: &tarball, config_shell: &config_shell,
+    };
+    // 6th arg `true` = `--no-restart` set.
+    let outcome = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2, true).unwrap();
+
+    // The new variant must surface — operator's apply row depends
+    // on this for the detail-string "restart deferred (--no-restart)"
+    // remediation hint and the `audit_summary() = "deferred-restart"`
+    // token. (The `[disruption]` bracket tag stays `[none]` per
+    // `disruption()` mapping at outcome.rs — apply-time blast-radius
+    // is zero — so operators distinguish "no-op skip" from "deferred
+    // restart" via the detail string + audit token, NOT the bracket.)
+    assert!(
+        matches!(
+            &outcome,
+            crate::apply::ApplyOutcome::InPlaceRewroteNoRestart { name, files_changed, .. }
+                if *files_changed > 0 && name == "a"
+        ),
+        "no_restart=true with files_changed>0 must return InPlaceRewroteNoRestart \
+         with name='a' so detail() can render `systemctl restart ghars-runner@a.service`; \
+         got {outcome:?}",
+    );
+    // Pin that detail() renders the actual runner name (not a literal
+    // "NAME" placeholder), so an operator copy-pasting the systemctl
+    // command gets the right unit.
+    let detail = outcome.detail();
+    assert!(
+        detail.contains("ghars-runner@a.service"),
+        "detail string must substitute runner name into the systemctl \
+         remediation hint; got: {detail}",
+    );
+    assert!(
+        !detail.contains("NAME"),
+        "detail string must NOT contain literal `NAME` placeholder \
+         (operator copy-paste would target the wrong unit); got: {detail}",
+    );
+    // The point of the flag: ZERO systemd lifecycle calls fire. If
+    // any of daemon_reload / stop_unit / start_unit / restart_unit
+    // surface in the mock's call log, the gate leaked.
+    let calls = systemd.calls_snapshot();
+    assert!(
+        !calls.iter().any(|c| c.starts_with("daemon_reload")),
+        "no_restart=true must NOT issue daemon_reload from the handler; \
+         the end-of-apply daemon_reload at orchestrator::apply still fires \
+         (cache-flush only, harmless to running workloads); calls: {calls:?}",
+    );
+    assert!(
+        !calls.iter().any(|c| c.starts_with("stop_unit")),
+        "no_restart=true must NOT issue stop_unit (preserves in-flight workloads); calls: {calls:?}",
+    );
+    assert!(
+        !calls.iter().any(|c| c.starts_with("start_unit")),
+        "no_restart=true must NOT issue start_unit (paired with stop_unit gate); calls: {calls:?}",
+    );
+}
+
+/// Symmetric counter-fixture to the test above: when no bytes
+/// differ on disk (`files_changed == 0`), the byte-equality
+/// short-circuit at `execute_update_runner`'s first gate (returning
+/// `InPlaceSkipped`) MUST fire BEFORE the `--no-restart` gate runs.
+/// `--no-restart` must NEVER promote `InPlaceSkipped` to
+/// `InPlaceRewroteNoRestart` — the latter implies bytes were
+/// written and restart was deferred, while the former implies
+/// nothing happened at all. Audit-log readers grep on
+/// `"deferred-restart"` to find runners needing follow-up manual
+/// restart; an `InPlaceSkipped`-misclassified-as-rewrote would put
+/// non-rewritten runners into that follow-up bucket and cause
+/// spurious operator action.
+#[test]
+fn update_runner_in_place_byte_match_returns_skipped_regardless_of_no_restart() {
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = make_paths(&tmp);
+    std::fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
+    std::fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
+    // drop_in_dir MUST pre-exist or the `!drop_in_dir_existed`
+    // branch at execute_update_runner bumps files_changed by 1
+    // (CreateDir is a filesystem mutation) — which would prevent
+    // the byte-equality short-circuit and turn this into the
+    // `InPlaceRewroteNoRestart` path.
+    std::fs::create_dir_all(paths.drop_in_dir("a").as_std_path()).unwrap();
+    let runner_home = paths.runner_home("default", "a");
+    let bin_dir = runner_home.join("bin.2.334.0");
+    std::fs::create_dir_all(bin_dir.as_std_path()).unwrap();
+
+    let mut after = make_spec("a", &paths.state_dir);
+    after.spec_hash = "sha256:after".into();
+    let rendered = crate::systemd::render_runner_unit(&after).unwrap();
+
+    // Pre-stage unit file with the EXACT bytes the renderer will
+    // produce — files_changed stays at 0 through every write check
+    // and the byte-equality short-circuit fires.
+    let unit_file = paths.unit_file("a");
+    std::fs::write(
+        unit_file.as_std_path(),
+        crate::systemd::runner_template_text().as_bytes(),
+    ).unwrap();
+    // Pre-stage .env/.path too so the write_env_path_files checks
+    // don't bump files_changed either.
+    std::fs::write(bin_dir.join(".env").as_std_path(), rendered.env_file.as_bytes()).unwrap();
+    std::fs::write(bin_dir.join(".path").as_std_path(), rendered.path_file.as_bytes()).unwrap();
+
+    let delta = crate::plan::RunnerDelta {
+        identity: crate::plan::RunnerIdentity {
+            name: "a".into(),
+            url: after.url.clone(),
+            auth_name: after.auth_name.clone(),
+            trust_zone: after.trust_zone.clone(),
+        },
+        after: crate::plan::RunnerPlan {
+            spec: after.clone(),
+            resolved_release: None,
+            effective_unit_text: crate::systemd::runner_template_text(),
+            drop_ins: BTreeMap::new(),
+            env_file: rendered.env_file.clone(),
+            path_file: rendered.path_file.clone(),
+            spec_hash: "sha256:after".into(),
+        },
+        requires_recreate: false,
+        recreate_reasons: vec![],
+        drift_cause: crate::plan::DriftCause::SpecChanged,
+        field_changes: vec![],
+        drop_in_changes: vec![],
+        before_caches: Some(vec![]),
+        before_drop_in_basenames: None,
+    };
+    let systemd = MockSystemd::default();
+    let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+    let tarball = MockTarball::default();
+    let config_shell = MockConfigShell::default();
+    let deps = Deps {
+        systemd: &systemd, auth: &auth_map,
+        tarball: &tarball, config_shell: &config_shell,
+    };
+    // 6th arg `true` = `--no-restart` set; the byte-match short-circuit
+    // fires first, so the flag is moot.
+    let outcome = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2, true).unwrap();
+    assert!(
+        matches!(outcome, crate::apply::ApplyOutcome::InPlaceSkipped),
+        "byte-identical inputs with no_restart=true must STILL return InPlaceSkipped \
+         (byte-equality short-circuit fires before the --no-restart gate); got {outcome:?}",
+    );
+    let calls = systemd.calls_snapshot();
+    assert!(
+        !calls.iter().any(|c| c.starts_with("stop_unit") || c.starts_with("start_unit") || c.starts_with("daemon_reload")),
+        "byte-identical short-circuit must NOT issue any systemd lifecycle calls; calls: {calls:?}",
     );
 }

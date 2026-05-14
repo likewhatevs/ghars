@@ -115,7 +115,7 @@ pub fn apply(
         // row can carry it through to cmd_apply rendering.
         // `Action::disruption` reads no state and is cheap.
         let plan_disruption = action.disruption();
-        match execute(&action, deps, paths, &mut log, plan.keep_versions) {
+        match execute(&action, deps, paths, &mut log, plan.keep_versions, opts.no_restart) {
             Ok(outcome) => {
                 // SEC-36 audit log entry — emitted per-action AFTER
                 // the side effects have landed but BEFORE the
@@ -300,19 +300,52 @@ pub fn apply(
 /// # Errors
 ///
 /// Returns the underlying error from the per-action handler.
+/// `no_restart` is the FIRST [`ApplyOptions`] field threaded into
+/// per-action handlers via `execute`. Every other [`ApplyOptions`]
+/// field (`dry_run`, `fail_fast`, `rollback_on_failure`,
+/// `auto_approve`) is consumed at orchestrator level in [`apply`]
+/// and never reaches the `execute_*` handlers — that is the
+/// established architectural pattern.
+///
+/// `no_restart` violates the pattern intentionally: the restart
+/// decision lives INSIDE [`super::runners::execute_update_runner`]
+/// and [`super::pools::execute_update_cache_pool`] (at the gate
+/// just before `daemon_reload + stop_unit + start_unit`), so
+/// keeping the consumption at orchestrator level would require
+/// either (a) refactoring the restart cycle out of the two
+/// handlers into post-dispatch orchestrator code (cleaner-r's
+/// "Choice B" — preserves the pattern but ~50-100 lines of
+/// refactoring across handlers + tests) or (b) plumbing the flag
+/// through. Option (b) was chosen for `--no-restart` because the
+/// flag is single-purpose, the handler-side decisioning is
+/// localized to a 4-line `if no_restart { return ...; }` block in
+/// each handler, and the refactor cost of (a) is meaningful while
+/// `--no-restart` is the only behavior-knob flag today.
+///
+/// FUTURE-FLAG GUIDANCE: do NOT extend this pattern casually.
+/// New [`ApplyOptions`] fields should default to orchestrator-level
+/// consumption (`dry_run` / `fail_fast` / etc. pattern). Thread
+/// through to handlers ONLY when the gating decision requires
+/// per-handler state that's expensive to expose at orchestrator
+/// level. If a SECOND handler-level behavior flag lands (e.g.
+/// `--no-verify` / `--no-daemon-reload`), revisit Choice B for
+/// the pair — see task tracking the refactor trigger.
 pub fn execute(
     action: &Action,
     deps: &Deps<'_>,
     paths: &Paths,
     log: &mut UndoLog,
     keep_versions: u32,
+    no_restart: bool,
 ) -> Result<ApplyOutcome> {
     match action {
         Action::CreateRunner(p) => execute_create_runner(p, deps, paths, log, keep_versions),
-        Action::UpdateRunner(d) => execute_update_runner(d, deps, paths, log, keep_versions),
+        Action::UpdateRunner(d) => {
+            execute_update_runner(d, deps, paths, log, keep_versions, no_restart)
+        }
         Action::RemoveRunner(i) => execute_remove_runner(i, deps, paths, log),
         Action::CreateCachePool(p) => execute_create_cache_pool(p, deps, paths, log),
-        Action::UpdateCachePool(d) => execute_update_cache_pool(d, deps, paths, log),
+        Action::UpdateCachePool(d) => execute_update_cache_pool(d, deps, paths, log, no_restart),
         Action::RemoveCachePool(name) => execute_remove_cache_pool(name, deps, paths, log),
         // NoOp never reaches `execute` in production: `apply`'s loop
         // body checks `matches!(action, Action::NoOp(_))` immediately

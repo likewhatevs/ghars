@@ -59,7 +59,7 @@ fn execute_update_runner_recreate_full_success_systemd_call_sequence() {
     delta.recreate_reasons = vec!["url"];
     delta.after.resolved_release = Some(make_release());
 
-    execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2).unwrap();
+    execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2, false).unwrap();
 
     let calls = systemd.calls_snapshot();
     let unit = "ghars-runner@a.service";
@@ -94,6 +94,77 @@ fn execute_update_runner_recreate_full_success_systemd_call_sequence() {
     assert!(
         enable_idx < start_idx,
         "enable must precede start; got calls: {calls:?}"
+    );
+}
+
+/// `--no-restart` opt-out MUST NOT suppress the recreate path's
+/// destroy+create lifecycle. Recreate is STRUCTURAL — `execute_remove_runner`
+/// deregisters from GitHub + stops/disables the unit; `execute_create_runner`
+/// re-registers + starts the new unit. There's no coherent "skip restart"
+/// for a recreate (the runner identity / binary / address-space changed).
+/// Operator's contract: `--no-restart` defers in-place restarts only.
+///
+/// Pin via: same recreate fixture as
+/// `execute_update_runner_recreate_full_success_systemd_call_sequence`
+/// (line ~25) but with `no_restart=true` passed to
+/// `execute_update_runner`. Asserts (i) the outcome is `Recreated`
+/// (not `InPlaceRewroteNoRestart`), (ii) both stop+disable+enable+start
+/// systemd calls fire — the recreate lifecycle proceeds normally.
+#[test]
+fn execute_update_runner_recreate_with_no_restart_still_runs_lifecycle() {
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = make_paths(&tmp);
+    std::fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();
+    std::fs::write(
+        paths.unit_file("a").as_std_path(),
+        b"[Unit]\nX-Ghars-Managed=true\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(paths.drop_in_dir("a").as_std_path()).unwrap();
+    std::fs::create_dir_all(paths.runner_home("default", "a").as_std_path()).unwrap();
+    std::fs::create_dir_all(paths.runtime_dir.as_std_path()).unwrap();
+
+    let systemd = MockSystemd::default();
+    let tarball = MockTarball::default();
+    let config_shell = MockConfigShell::default();
+    let mut auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+    auth_map.insert(
+        "pat".into(),
+        Box::new(MockTokenSource {
+            name: "pat".into(),
+            ..MockTokenSource::default()
+        }),
+    );
+    let deps = Deps {
+        systemd: &systemd,
+        auth: &auth_map,
+        tarball: &tarball,
+        config_shell: &config_shell,
+    };
+    let mut delta = make_caches_delta(&paths, Some(vec![]), vec![]);
+    delta.requires_recreate = true;
+    delta.recreate_reasons = vec!["url"];
+    delta.after.resolved_release = Some(make_release());
+
+    // 6th arg `true` = `--no-restart` set; the recreate branch at
+    // `execute_update_runner`'s `delta.requires_recreate` early-out
+    // ignores the flag entirely.
+    let outcome =
+        execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2, true).unwrap();
+    assert!(
+        matches!(outcome, crate::apply::ApplyOutcome::Recreated),
+        "no_restart=true on a recreate-class delta must still return Recreated \
+         (the recreate path is structurally undeferrable); got {outcome:?}",
+    );
+    let calls = systemd.calls_snapshot();
+    let unit = "ghars-runner@a.service";
+    assert!(
+        calls.contains(&format!("stop_unit({unit})")),
+        "recreate path's stop_unit must fire regardless of no_restart; calls: {calls:?}",
+    );
+    assert!(
+        calls.contains(&format!("start_unit({unit})")),
+        "recreate path's start_unit must fire regardless of no_restart; calls: {calls:?}",
     );
 }
 
@@ -136,7 +207,7 @@ fn execute_update_runner_recreate_remove_failure_skips_create() {
     delta.recreate_reasons = vec!["url"];
     delta.after.resolved_release = Some(make_release());
 
-    let err = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2).unwrap_err();
+    let err = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2, false).unwrap_err();
     // Sanity: the error originated from the auth path (mint_token
     // for the remove deregister step).
     let rendered = format!("{err}");
@@ -226,7 +297,7 @@ fn execute_update_runner_recreate_create_failure_after_remove() {
     assert!(delta.after.spec.runner_tarball.is_none());
     assert!(delta.after.resolved_release.is_none());
 
-    let err = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2).unwrap_err();
+    let err = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2, false).unwrap_err();
     let rendered = format!("{err}");
     assert!(
         rendered.contains("no runner_tarball") && rendered.contains("no resolved release"),
@@ -300,7 +371,7 @@ fn execute_update_runner_recreate_orphan_identity_skips_token_mint() {
     delta.identity.url = String::new();
     delta.after.resolved_release = Some(make_release());
 
-    let outcome = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2).unwrap();
+    let outcome = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2, false).unwrap();
     assert!(
         matches!(outcome, ApplyOutcome::Recreated),
         "recreate path returns Recreated; got {outcome:?}"
@@ -363,7 +434,7 @@ fn execute_update_runner_recreate_returns_recreated_outcome_not_inner() {
     delta.recreate_reasons = vec!["url"];
     delta.after.resolved_release = Some(make_release());
 
-    let outcome = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2).unwrap();
+    let outcome = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2, false).unwrap();
     match outcome {
         ApplyOutcome::Recreated => {}
         ApplyOutcome::Removed | ApplyOutcome::Created => panic!(
@@ -423,7 +494,7 @@ fn execute_update_runner_recreate_stop_unit_failure_skips_create() {
     delta.recreate_reasons = vec!["url"];
     delta.after.resolved_release = Some(make_release());
 
-    let err = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2).unwrap_err();
+    let err = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2, false).unwrap_err();
     let rendered = format!("{err}");
     assert!(
         rendered.contains("stop_unit") && rendered.contains("injected failure"),
@@ -495,7 +566,7 @@ fn execute_update_runner_recreate_create_failure_after_remove_includes_remove_st
     assert!(delta.after.resolved_release.is_none());
 
     let mut log = UndoLog::new();
-    execute_update_runner(&delta, &deps, &paths, &mut log, 2)
+    execute_update_runner(&delta, &deps, &paths, &mut log, 2, false)
         .expect_err("create-side Validation gate must error");
 
     let steps = log.steps();

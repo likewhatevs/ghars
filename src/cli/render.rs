@@ -655,6 +655,16 @@ pub(super) fn render_apply_summary_line(result: &apply::ApplyResult) -> String {
     let mut none_count: u64 = 0;
     let mut restart_count: u64 = 0;
     let mut recreate_count: u64 = 0;
+    // Count runners + pools that landed bytes-on-disk but skipped
+    // the restart cycle per `--no-restart`. Surfaced in the summary
+    // line below so operators who skim a long apply output (50+
+    // actions in production fleets) see the deferred-restart bucket
+    // at a glance instead of having to grep per-row detail strings
+    // for the "restart deferred" remediation hint. Counts are split
+    // runners vs pools to drive the correct `systemctl restart`
+    // unit-pattern remediation in the summary text.
+    let mut deferred_runners: u64 = 0;
+    let mut deferred_pools: u64 = 0;
     for (_, outcome) in &result.details {
         match outcome {
             apply::ApplyOutcome::Failed { .. } => failed += 1,
@@ -669,6 +679,14 @@ pub(super) fn render_apply_summary_line(result: &apply::ApplyResult) -> String {
             | apply::ApplyOutcome::PoolCreated
             | apply::ApplyOutcome::PoolUpdated
             | apply::ApplyOutcome::PoolRemoved => applied += 1,
+            apply::ApplyOutcome::InPlaceRewroteNoRestart { .. } => {
+                applied += 1;
+                deferred_runners += 1;
+            }
+            apply::ApplyOutcome::PoolRewroteNoRestart { .. } => {
+                applied += 1;
+                deferred_pools += 1;
+            }
         }
         match outcome.disruption() {
             plan::Disruption::None => none_count += 1,
@@ -676,13 +694,42 @@ pub(super) fn render_apply_summary_line(result: &apply::ApplyResult) -> String {
             plan::Disruption::Recreate => recreate_count += 1,
         }
     }
-    format!(
+    let base = format!(
         "Apply: {applied} applied, {failed} failed, {skipped} skipped {tail}",
         applied = applied,
         failed = failed,
         skipped = skipped,
         tail = format_disruption_tail(none_count, restart_count, recreate_count),
-    )
+    );
+    if deferred_runners == 0 && deferred_pools == 0 {
+        return base;
+    }
+    // Operator-facing deferred-restart summary. The remediation
+    // names `systemctl restart` (NOT "re-run apply without --no-restart"
+    // — that path takes the byte-equality short-circuit and leaves
+    // the runner pending, per the `InPlaceRewroteNoRestart` CAVEAT
+    // in outcome.rs). Single-unit and multi-unit shapes both render
+    // a runnable command for operators to grep + script against.
+    let mut tail = String::from("\nRestart deferred (--no-restart):");
+    if deferred_runners > 0 {
+        tail.push_str(&format!(
+            " {deferred_runners} runner(s); run `systemctl restart ghars-runner@<name>.service` per row above"
+        ));
+    }
+    if deferred_pools > 0 {
+        if deferred_runners > 0 {
+            tail.push(';');
+        }
+        tail.push_str(&format!(
+            " {deferred_pools} pool(s); run `systemctl restart ghars-cache@<name>.service` per row above"
+        ));
+    }
+    tail.push_str(
+        ". Re-running `ghars apply` (without --no-restart) sees byte-matched files and \
+         takes the byte-equality short-circuit — it does NOT clear deferred state. \
+         Use `systemctl restart` to complete the rollout.",
+    );
+    base + &tail
 }
 
 /// Render every `cmd_apply` post-execution stdout/stderr line for a
@@ -763,11 +810,13 @@ pub(super) fn render_apply_emission(
             // so a future variant addition forces a compile-time routing decision.
             apply::ApplyOutcome::InPlaceSkipped
             | apply::ApplyOutcome::InPlaceRestarted { .. }
+            | apply::ApplyOutcome::InPlaceRewroteNoRestart { .. }
             | apply::ApplyOutcome::Recreated
             | apply::ApplyOutcome::Created
             | apply::ApplyOutcome::Removed
             | apply::ApplyOutcome::PoolCreated
             | apply::ApplyOutcome::PoolUpdated
+            | apply::ApplyOutcome::PoolRewroteNoRestart { .. }
             | apply::ApplyOutcome::PoolSkipped
             | apply::ApplyOutcome::PoolRemoved
             | apply::ApplyOutcome::DryRunSkipped => {

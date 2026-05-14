@@ -139,6 +139,7 @@ pub(super) fn cmd_apply(
         fail_fast: args.fail_fast,
         dry_run: false,
         rollback_on_failure: args.rollback_on_failure,
+        no_restart: args.no_restart,
     };
     let result = apply::apply(&plan, &deps, paths, &opts)?;
     if !quiet {

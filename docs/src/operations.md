@@ -96,6 +96,7 @@ sudo ghars apply --fail-fast
 sudo ghars apply --rollback-on-failure
 sudo ghars apply --dry-run
 sudo ghars apply --only build-1
+sudo ghars apply --no-restart
 ```
 
 `apply` runs the plan again (since state may have moved between
@@ -146,6 +147,53 @@ Flags:
   same semantics as on `plan`. Fire on `apply --dry-run`,
   pre-confirm, the cancel path, and post-apply when
   `result.failed.is_empty()`.
+- `--no-restart` — write all files (drop-ins, .env, .path,
+  per-pool 00-ghars.conf) but skip the in-place restart cycle
+  (`daemon_reload + stop_unit + start_unit`) for `UpdateRunner`
+  and `UpdateCachePool` actions. The running unit keeps its
+  pre-rewrite loaded config until the operator explicitly runs
+  `systemctl restart ghars-runner@NAME.service` (or
+  `ghars-cache@POOL.service` for the cache side). Use for
+  maintenance-window deployments where config lands now but the
+  disruption is scheduled for off-hours. Recreate-class actions
+  (full enumeration: `url` / `runner_version` / `labels` /
+  `arch` / `runner_sha256` / `runner_tarball` / `network` for
+  runners; `CreateCachePool` + `RemoveCachePool` for pools)
+  proceed regardless of this flag — they are structurally
+  undeferrable (`CreateRunner` / `RemoveRunner` / `Recreated
+  UpdateRunner` / `CreateCachePool` / `RemoveCachePool` all tear
+  down or bring up the unit by design). `UpdateCachePool` (pool
+  drop-in rewrite from operator edits of `[cache_pools]`
+  settings, including `kinds` changes) IS deferred by this flag
+  — pool kinds changes flow through `UpdateCachePool` in-place,
+  not through recreate. Per-action rows in the apply output
+  carry the deferred-restart context in the detail string
+  itself (e.g. `ok: UpdateRunner(build-1) [none] (in-place: 1
+  file(s) changed, 0 group op(s), restart deferred
+  (--no-restart): run `systemctl restart
+  ghars-runner@build-1.service` to complete the rollout)`).
+  The `[disruption]` bracket tag shows `[none]` because
+  apply-time blast-radius is zero — no unit was actually
+  touched. A final-line summary tallies the deferred-restart
+  count and prints the canonical remediation command. SOC/SRE
+  audit-log readers can grep on `outcome: deferred-restart` to
+  enumerate affected runners and pools (the
+  `ApplyOutcome::audit_summary` token is distinct from
+  `"success"` / `"in-sync"`). CAVEAT: re-running `ghars apply`
+  WITHOUT `--no-restart` will see byte-matched on-disk files
+  (this apply wrote them) and take the byte-equality
+  short-circuit at `execute_update_runner` /
+  `execute_update_cache_pool` — it does NOT issue the deferred
+  restart. Operators MUST run `systemctl restart` to clear
+  pending state; re-apply is not a remediation path.
+  Verification caveat: `systemctl show ghars-runner@NAME` after
+  `--no-restart` reflects the NEW drop-in bytes from disk
+  (because the end-of-apply `daemon_reload` refreshed systemd's
+  unit-file index), but the running runner process keeps its
+  OLD in-memory `ExecContext` until restart. Use `cat
+  /proc/$(systemctl show -P MainPID
+  ghars-runner@NAME.service)/environ | tr '\0' '\n'` to inspect
+  what the running runner actually has.
 
 ### Concurrency
 
@@ -456,8 +504,20 @@ In-flight workload impact:
   finish; longer-running ones get killed.
 - Restarts are sequential across the fleet on the host the apply
   ran on (no parallelism today).
-- Task tracking the opt-out flag for protected-workload windows:
-  `--no-restart` is planned but not yet implemented.
+- Operator opt-out for protected-workload windows is `apply
+  --no-restart`: writes the new drop-ins / `.env` / `.path` to
+  disk but skips the per-action `daemon_reload + stop + start`
+  cycle. The running unit keeps its pre-rewrite loaded config
+  until the operator runs `systemctl restart
+  ghars-runner@NAME.service`. See `apply` Flags above for the
+  full caveat — re-apply WITHOUT `--no-restart` sees byte-matched
+  on-disk files and takes the byte-equality short-circuit, so
+  re-apply is NOT a remediation path; operators MUST run
+  `systemctl restart` to clear pending state. Recreate-class
+  changes (`url` / `runner_version` / `labels` / `arch` /
+  `runner_sha256` / `runner_tarball` / `network`) are
+  structurally undeferrable even with the flag and still tear
+  down the unit.
 
 Cross-host invariant:
 - Each host independently computes its own local hash against its

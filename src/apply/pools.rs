@@ -72,6 +72,7 @@ pub(super) fn execute_update_cache_pool(
     deps: &Deps<'_>,
     paths: &Paths,
     log: &mut UndoLog,
+    no_restart: bool,
 ) -> Result<ApplyOutcome> {
     let pool = &delta.binding.name;
     let unit_name = format!("ghars-cache@{pool}.service");
@@ -117,6 +118,19 @@ pub(super) fn execute_update_cache_pool(
             "in-place pool update: drop-in bytes match on disk; skipping daemon-reload + restart"
         );
         return Ok(ApplyOutcome::PoolSkipped);
+    }
+    // `--no-restart` opt-out, symmetric with the runner-side gate in
+    // `execute_update_runner`. The drop-in was already written above;
+    // skip daemon-reload + stop + start so the running cache unit
+    // keeps its pre-rewrite loaded config until manual
+    // `systemctl restart ghars-cache@POOL.service` or re-apply
+    // without the flag. Same deferred-restart-persists caveat as
+    // the runner side applies.
+    if no_restart {
+        return Ok(ApplyOutcome::PoolRewroteNoRestart {
+            name: pool.clone(),
+            files_changed,
+        });
     }
     deps.systemd.daemon_reload()?;
     deps.systemd.stop_unit(&unit_name)?;

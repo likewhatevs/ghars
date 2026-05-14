@@ -230,6 +230,27 @@ pub struct ApplyArgs {
     /// itself uses the `ok:`/`fail:` shape regardless of `--diff`.
     #[arg(long)]
     pub diff: bool,
+    /// Write files (drop-ins, .env, .path) but skip the in-place
+    /// restart cycle for `UpdateRunner` and `UpdateCachePool`
+    /// actions. The running unit keeps its pre-rewrite loaded config
+    /// until the operator explicitly runs
+    /// `systemctl restart ghars-runner@NAME.service` (or the
+    /// `ghars-cache@POOL.service` equivalent for pools). Use for
+    /// maintenance-window deployments where config lands now but
+    /// disruption is scheduled for off-hours. Recreate-class actions
+    /// (full enumeration: `url` / `runner_version` / `labels` /
+    /// `arch` / `runner_sha256` / `runner_tarball` / `network` for
+    /// runners; `CreateCachePool` + `RemoveCachePool` for pools)
+    /// proceed regardless of this flag — they are structurally
+    /// undeferrable. `UpdateCachePool` (pool drop-in rewrite from
+    /// operator `[cache_pools]` edits, including `kinds` changes)
+    /// IS deferred by this flag. CAVEAT: re-apply WITHOUT
+    /// `--no-restart` will see byte-matched on-disk drop-ins and
+    /// take the `InPlaceSkipped` / `PoolSkipped` short-circuit, so
+    /// re-apply is NOT a remediation path — operators MUST run
+    /// `systemctl restart` to clear pending state.
+    #[arg(long)]
+    pub no_restart: bool,
 }
 
 /// `ghars status [...]`.

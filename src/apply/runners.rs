@@ -1357,6 +1357,7 @@ pub(super) fn execute_update_runner(
     paths: &Paths,
     log: &mut UndoLog,
     keep_versions: u32,
+    no_restart: bool,
 ) -> Result<ApplyOutcome> {
     if delta.requires_recreate {
         // Recreate path: stop + remove + create. The plan emits this
@@ -1665,6 +1666,27 @@ pub(super) fn execute_update_runner(
             "in-place: all managed bytes match on disk and caches list is unchanged; skipping daemon-reload + restart"
         );
         return Ok(ApplyOutcome::InPlaceSkipped);
+    }
+    // `--no-restart` opt-out: files (drop-ins, .env, .path) were
+    // already written above; skip the daemon-reload + stop + start
+    // cycle so the running unit keeps its pre-rewrite loaded config
+    // until the operator manually restarts via `systemctl restart
+    // ghars-runner@NAME.service` or re-runs apply without the flag.
+    // CAVEAT: re-apply without `--no-restart` will see byte-matched
+    // on-disk drop-ins (this apply wrote them) and take the
+    // `InPlaceSkipped` short-circuit above, so the deferred restart
+    // persists across re-applies until an explicit
+    // `systemctl restart` invocation. The end-of-apply
+    // `daemon_reload` at `orchestrator::apply` still fires —
+    // it's a cache-flush of systemd's unit-file index, no unit
+    // lifecycle change, so it's harmless to running workloads.
+    if no_restart {
+        return Ok(ApplyOutcome::InPlaceRewroteNoRestart {
+            name: delta.identity.name.clone(),
+            files_changed,
+            pools_added,
+            pools_removed,
+        });
     }
     let unit_name = format!("ghars-runner@{}.service", delta.identity.name);
     deps.systemd.daemon_reload()?;

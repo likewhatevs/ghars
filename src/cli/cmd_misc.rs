@@ -242,6 +242,7 @@ pub(super) fn cmd_add(
         detailed_exitcode_recreate: false,
         rollback_on_failure: false,
         diff: false,
+        no_restart: false,
     };
     cmd_apply(config_path, paths, &apply_args, color, quiet)
 }

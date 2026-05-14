@@ -232,8 +232,9 @@ up any byte-changed drop-ins. GitHub registration stays intact;
 only the systemd unit cycles. In-flight workflows are sent
 SIGTERM with `TimeoutStopSec=5min` before SIGKILL — see
 [Operations](./operations.md#why-did-my-fleet-restart-on-a-ghars-binary-upgrade)
-for the full restart semantics and the planned `--no-restart`
-opt-out for protected-workload windows.
+for the full restart semantics and the `--no-restart` opt-out
+for protected-workload windows (writes new files to disk now,
+defers the unit restart to a manual `systemctl restart`).
 
 ## Quickstart, condensed
 

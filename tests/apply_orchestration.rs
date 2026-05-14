@@ -405,7 +405,7 @@ fn create_runner_errors_when_no_release_and_no_local_tarball() {
     let config_shell = TestConfigShell::default();
     let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let action = Action::CreateRunner(plan);
-    let err = execute(&action, &d, &paths, &mut UndoLog::new(), 2)
+    let err = execute(&action, &d, &paths, &mut UndoLog::new(), 2, false)
         .expect_err("must error on no release + no tarball");
     let msg = format!("{err}");
     assert!(
@@ -430,7 +430,7 @@ fn create_runner_errors_when_auth_registry_missing_key() {
     let config_shell = TestConfigShell::default();
     let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let action = Action::CreateRunner(plan);
-    let err = execute(&action, &d, &paths, &mut UndoLog::new(), 2)
+    let err = execute(&action, &d, &paths, &mut UndoLog::new(), 2, false)
         .expect_err("must error on missing auth");
     let msg = format!("{err}");
     assert!(msg.contains("auth") && msg.contains("pat"), "{msg}");
@@ -457,7 +457,7 @@ fn create_runner_errors_when_token_mint_fails() {
     let config_shell = TestConfigShell::default();
     let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let action = Action::CreateRunner(plan);
-    let err = execute(&action, &d, &paths, &mut UndoLog::new(), 2)
+    let err = execute(&action, &d, &paths, &mut UndoLog::new(), 2, false)
         .expect_err("must error on mint failure");
     assert!(format!("{err}").contains("mint failed"));
 }
@@ -485,7 +485,7 @@ fn create_runner_errors_when_verify_local_fails() {
     let config_shell = TestConfigShell::default();
     let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let action = Action::CreateRunner(plan);
-    let err = execute(&action, &d, &paths, &mut UndoLog::new(), 2)
+    let err = execute(&action, &d, &paths, &mut UndoLog::new(), 2, false)
         .expect_err("must error on verify_local failure");
     assert!(format!("{err}").contains("verify_local failure"));
 }
@@ -511,7 +511,7 @@ fn create_runner_errors_when_install_binary_fails() {
     let config_shell = TestConfigShell::default();
     let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let action = Action::CreateRunner(plan);
-    let err = execute(&action, &d, &paths, &mut UndoLog::new(), 2)
+    let err = execute(&action, &d, &paths, &mut UndoLog::new(), 2, false)
         .expect_err("must error on install_binary failure");
     assert!(format!("{err}").contains("install failure"));
 }
@@ -537,7 +537,7 @@ fn create_runner_errors_when_config_shell_register_fails() {
     *config_shell.fail_register.lock().unwrap() = true;
     let d = deps(&systemd, &auth_map, &tarball, &config_shell);
     let action = Action::CreateRunner(plan);
-    let err = execute(&action, &d, &paths, &mut UndoLog::new(), 2)
+    let err = execute(&action, &d, &paths, &mut UndoLog::new(), 2, false)
         .expect_err("must error on register failure");
     assert!(format!("{err}").contains("register"));
 }

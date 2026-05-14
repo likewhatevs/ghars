@@ -276,7 +276,7 @@ fn execute_update_cache_pool_skips_restart_when_bytes_match() {
     )
     .unwrap();
     let mut log = UndoLog::new();
-    let outcome = execute_update_cache_pool(&delta, &deps, &paths, &mut log).unwrap();
+    let outcome = execute_update_cache_pool(&delta, &deps, &paths, &mut log, false).unwrap();
 
     assert_eq!(outcome, ApplyOutcome::PoolSkipped);
     let calls = systemd.calls_snapshot();
@@ -322,7 +322,7 @@ fn execute_update_cache_pool_restarts_when_drop_in_differs() {
     )
     .unwrap();
     let mut log = UndoLog::new();
-    let outcome = execute_update_cache_pool(&delta, &deps, &paths, &mut log).unwrap();
+    let outcome = execute_update_cache_pool(&delta, &deps, &paths, &mut log, false).unwrap();
 
     assert_eq!(outcome, ApplyOutcome::PoolUpdated);
     let calls = systemd.calls_snapshot();
@@ -347,6 +347,94 @@ fn execute_update_cache_pool_restarts_when_drop_in_differs() {
     // differ.
     let after_disk = std::fs::read(drop_in_dir.join("00-ghars.conf").as_std_path()).unwrap();
     assert_eq!(after_disk, delta.drop_in_body.as_bytes());
+}
+
+/// Pool-side `--no-restart` test — symmetric to the runner-side
+/// `update_runner_in_place_with_no_restart_returns_rewrote_no_restart_and_skips_systemd_calls`
+/// at `runners_tests.rs`. When the on-disk drop-in body diverges
+/// from the rendered body (files_changed > 0) AND `no_restart=true`,
+/// the handler MUST return `PoolRewroteNoRestart` AND skip every
+/// systemd lifecycle call (`daemon_reload`, `stop_unit`,
+/// `start_unit`). Same maintenance-window operator workflow as the
+/// runner-side flag.
+#[test]
+fn execute_update_cache_pool_with_no_restart_returns_pool_rewrote_no_restart_and_skips_systemd_calls()
+ {
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = make_paths(&tmp);
+    let systemd = MockSystemd::default();
+    let tarball = MockTarball::default();
+    let config_shell = MockConfigShell::default();
+    let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+    let deps = Deps {
+        systemd: &systemd,
+        auth: &auth_map,
+        tarball: &tarball,
+        config_shell: &config_shell,
+    };
+    let delta = skip_test_cache_delta("build");
+    // Pre-stage drop-in dir with STALE bytes so files_changed bumps
+    // to 1 — drives execution past the byte-equality short-circuit
+    // and INTO the new `no_restart` gate.
+    let drop_in_dir = paths.cache_drop_in_dir(&delta.binding.name);
+    std::fs::create_dir_all(drop_in_dir.as_std_path()).unwrap();
+    std::fs::write(
+        drop_in_dir.join("00-ghars.conf").as_std_path(),
+        b"[Service]\nEnvironment=GHARS_DRIFT=stale\n",
+    )
+    .unwrap();
+    let mut log = UndoLog::new();
+    // 6th arg `true` = `--no-restart` set.
+    let outcome = execute_update_cache_pool(&delta, &deps, &paths, &mut log, true).unwrap();
+
+    assert!(
+        matches!(
+            &outcome,
+            ApplyOutcome::PoolRewroteNoRestart { name, files_changed }
+                if *files_changed > 0 && name == "build"
+        ),
+        "no_restart=true with files_changed>0 must return PoolRewroteNoRestart \
+         with name='build' so detail() can render `systemctl restart ghars-cache@build.service`; \
+         got {outcome:?}",
+    );
+    // Pin detail() substitutes pool name (not literal "POOL").
+    let detail = outcome.detail();
+    assert!(
+        detail.contains("ghars-cache@build.service"),
+        "detail string must substitute pool name into systemctl hint; got: {detail}",
+    );
+    assert!(
+        !detail.contains("POOL"),
+        "detail string must NOT contain literal `POOL` placeholder; got: {detail}",
+    );
+    let calls = systemd.calls_snapshot();
+    assert!(
+        !calls.iter().any(|c| c == "daemon_reload"),
+        "no_restart=true must NOT issue daemon_reload from the handler; calls: {calls:?}",
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|c| c.starts_with("stop_unit(ghars-cache@build")),
+        "no_restart=true must NOT stop the cache unit (preserves in-flight pool consumers); \
+         calls: {calls:?}",
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|c| c.starts_with("start_unit(ghars-cache@build")),
+        "no_restart=true must NOT start the cache unit (paired with stop_unit gate); \
+         calls: {calls:?}",
+    );
+    // Confirm the on-disk bytes WERE rewritten — flag skips the
+    // restart cycle but NOT the file writes.
+    let after_disk = std::fs::read(drop_in_dir.join("00-ghars.conf").as_std_path()).unwrap();
+    assert_eq!(
+        after_disk,
+        delta.drop_in_body.as_bytes(),
+        "no_restart=true must still rewrite the drop-in to the rendered body \
+         (the deferred restart picks it up on operator's later systemctl restart)",
+    );
 }
 
 /// First-time pool update where the drop-in directory does
@@ -377,7 +465,7 @@ fn execute_update_cache_pool_restarts_on_first_drop_in_dir_create() {
     // == false, count CreateDir as a mutation, and proceed to
     // restart.
     let mut log = UndoLog::new();
-    let outcome = execute_update_cache_pool(&delta, &deps, &paths, &mut log).unwrap();
+    let outcome = execute_update_cache_pool(&delta, &deps, &paths, &mut log, false).unwrap();
 
     assert_eq!(outcome, ApplyOutcome::PoolUpdated);
     let calls = systemd.calls_snapshot();

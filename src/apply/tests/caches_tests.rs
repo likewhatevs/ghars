@@ -96,7 +96,7 @@ fn execute_update_runner_in_place_populates_pool_name_vecs() {
         };
         let delta = make_caches_delta(&paths, before, after);
         let mut log = UndoLog::new();
-        execute_update_runner(&delta, &deps, &paths, &mut log, 2).unwrap()
+        execute_update_runner(&delta, &deps, &paths, &mut log, 2, false).unwrap()
     }
 
     // Pure grow.
@@ -144,6 +144,7 @@ fn execute_update_runner_in_place_populates_pool_name_vecs() {
         &paths_inplace_add,
         &mut log_inplace_add,
         2,
+        false,
     )
     .unwrap();
     assert!(
@@ -197,6 +198,7 @@ fn execute_update_runner_in_place_populates_pool_name_vecs() {
         &paths_existing,
         &mut log_existing,
         2,
+        false,
     )
     .unwrap();
     let mode_existing = std::fs::metadata(ccache_dir_existing.as_std_path())
@@ -265,7 +267,7 @@ fn execute_update_runner_in_place_detail_string_surfaces_pool_names() {
     };
     let delta = make_caches_delta(&paths, Some(vec!["a", "z"]), vec!["m"]);
     let mut log = UndoLog::new();
-    let outcome = execute_update_runner(&delta, &deps, &paths, &mut log, 2).unwrap();
+    let outcome = execute_update_runner(&delta, &deps, &paths, &mut log, 2, false).unwrap();
     let detail = outcome.detail();
     // 3 group ops total: one add (`m`) plus two removes (`a`,`z`);
     // the group-op count rendered in the detail string is
@@ -434,7 +436,7 @@ fn execute_update_runner_in_place_skips_restart_when_bytes_match() {
     let delta = delta_with_all_preserved_drop_ins(&paths);
     prepopulate_on_disk(&paths, &delta);
     let mut log = UndoLog::new();
-    let outcome = execute_update_runner(&delta, &deps, &paths, &mut log, 2).unwrap();
+    let outcome = execute_update_runner(&delta, &deps, &paths, &mut log, 2, false).unwrap();
     // The byte-equality short-circuit must surface
     // as `InPlaceSkipped` so cmd_apply renders the per-action
     // detail line as `no-op (bytes match)`.
@@ -479,7 +481,7 @@ fn execute_update_runner_in_place_restarts_when_unit_file_differs() {
     let unit_file = paths.unit_file(&delta.identity.name);
     std::fs::write(unit_file.as_std_path(), b"[Unit]\nDescription=stale\n").unwrap();
     let mut log = UndoLog::new();
-    execute_update_runner(&delta, &deps, &paths, &mut log, 2).unwrap();
+    execute_update_runner(&delta, &deps, &paths, &mut log, 2, false).unwrap();
 
     let calls = systemd.calls_snapshot();
     assert!(
@@ -552,7 +554,7 @@ fn execute_update_runner_in_place_restarts_when_drop_in_differs() {
     )
     .unwrap();
     let mut log = UndoLog::new();
-    execute_update_runner(&delta, &deps, &paths, &mut log, 2).unwrap();
+    execute_update_runner(&delta, &deps, &paths, &mut log, 2, false).unwrap();
 
     let calls = systemd.calls_snapshot();
     assert!(
@@ -611,7 +613,7 @@ fn execute_update_runner_in_place_restarts_when_managed_orphan_exists() {
     )
     .unwrap();
     let mut log = UndoLog::new();
-    execute_update_runner(&delta, &deps, &paths, &mut log, 2).unwrap();
+    execute_update_runner(&delta, &deps, &paths, &mut log, 2, false).unwrap();
 
     let calls = systemd.calls_snapshot();
     assert!(
@@ -645,7 +647,7 @@ fn execute_update_runner_in_place_before_caches_none_skips_diff() {
     };
     let delta = make_caches_delta(&paths, None, vec!["pool"]);
     let mut log = UndoLog::new();
-    execute_update_runner(&delta, &deps, &paths, &mut log, 2).unwrap();
+    execute_update_runner(&delta, &deps, &paths, &mut log, 2, false).unwrap();
     // before_caches=None ⇒ no caches-list diff is computed.
     // Exercising the no-panic path is the remaining signal.
 }

@@ -29,6 +29,26 @@ pub struct ApplyOptions {
     /// a `Vec<UndoStep>`; on error the list is walked in reverse and
     /// best-effort undone. Default false.
     pub rollback_on_failure: bool,
+    /// `--no-restart`: write files (drop-ins, .env, .path) but skip
+    /// the in-place restart cycle (daemon_reload + stop + start) for
+    /// `UpdateRunner` and `UpdateCachePool` actions. The running unit
+    /// keeps its pre-rewrite loaded config until the operator
+    /// explicitly runs `systemctl restart ghars-runner@NAME.service`
+    /// (or `ghars-cache@POOL.service` equivalent). Recreate-class
+    /// actions (full enumeration: `url` / `runner_version` / `labels`
+    /// / `arch` / `runner_sha256` / `runner_tarball` / `network` for
+    /// runners; `CreateCachePool` + `RemoveCachePool` for pools) are
+    /// STRUCTURALLY undeferrable (they deregister + re-register or
+    /// tear down the unit) so this flag does not affect them.
+    /// `UpdateCachePool` (pool drop-in rewrite from operator
+    /// `[cache_pools]` edits, including `kinds` changes) IS deferred
+    /// by this flag. CAVEAT: re-apply WITHOUT `--no-restart` will
+    /// see byte-matched on-disk drop-ins and take the
+    /// [`ApplyOutcome::InPlaceSkipped`] / [`ApplyOutcome::PoolSkipped`]
+    /// short-circuit — re-apply is NOT a remediation path; operators
+    /// MUST run `systemctl restart` to clear pending state.
+    /// Default false (current restart-on-apply behavior).
+    pub no_restart: bool,
 }
 
 /// What happened when a single action ran. Lifted out of [`super::orchestrator::apply`]
@@ -46,6 +66,11 @@ pub struct ApplyOptions {
 ///   at apply time. Plan reports `Restart` (cannot predict the
 ///   byte-equality short-circuit at `apply.rs::execute_update_runner`).
 /// - [`Self::InPlaceRestarted`]    → [`crate::plan::Disruption::Restart`]
+/// - [`Self::InPlaceRewroteNoRestart`] → [`crate::plan::Disruption::None`]
+///   at apply time (the restart cycle was skipped per
+///   `ApplyOptions::no_restart`; the file rewrites still happened on
+///   disk, but no unit lifecycle change fired). Plan reports `Restart`
+///   (cannot predict the `--no-restart` flag at plan time).
 /// - [`Self::Recreated`]           → [`crate::plan::Disruption::Recreate`]
 ///   (single combined outcome — the inner `execute_remove_runner` +
 ///   `execute_create_runner` are implementation detail and do not
@@ -54,6 +79,10 @@ pub struct ApplyOptions {
 /// - [`Self::Removed`]             → [`crate::plan::Disruption::Recreate`]
 /// - [`Self::PoolCreated`]         → [`crate::plan::Disruption::Recreate`]
 /// - [`Self::PoolUpdated`]         → [`crate::plan::Disruption::Restart`]
+/// - [`Self::PoolRewroteNoRestart`] → [`crate::plan::Disruption::None`]
+///   at apply time (symmetric with [`Self::InPlaceRewroteNoRestart`]
+///   for the cache-pool side: `ApplyOptions::no_restart` skipped the
+///   pool restart cycle; the drop-in rewrite still happened).
 /// - [`Self::PoolSkipped`]         → [`crate::plan::Disruption::None`]
 ///   at apply time. Plan reports `Restart` (cannot predict the
 ///   byte-equality short-circuit at `apply.rs::execute_update_cache_pool`).
@@ -121,6 +150,45 @@ pub enum ApplyOutcome {
         /// side bindings.
         pools_removed: Vec<String>,
     },
+    /// `execute_update_runner` in-place branch wrote one or more
+    /// managed files but `ApplyOptions::no_restart` skipped the
+    /// daemon-reload + stop + start cycle. The bytes are on disk
+    /// (matching what `InPlaceRestarted` would have written); the
+    /// running unit keeps its pre-rewrite loaded config until the
+    /// operator explicitly runs
+    /// `systemctl restart ghars-runner@NAME.service`. Re-applying
+    /// without `--no-restart` is NOT a remediation path — see
+    /// CAVEAT below for the byte-equality short-circuit details.
+    /// Field semantics mirror `InPlaceRestarted`.
+    ///
+    /// CAVEAT: next `ghars apply` without `--no-restart` will see
+    /// byte-matched on-disk drop-ins (this apply wrote them) and
+    /// take the [`Self::InPlaceSkipped`] short-circuit at
+    /// `apply::runners::execute_update_runner` — so the deferred
+    /// restart persists across re-applies until the operator
+    /// explicitly invokes `systemctl restart`.
+    InPlaceRewroteNoRestart {
+        /// Runner name (the `{name}` segment of
+        /// `ghars-runner@{name}.service`) carried on the variant so
+        /// the operator-facing `detail()` string can render a
+        /// copy-pasteable `systemctl restart
+        /// ghars-runner@<name>.service` remediation — the only
+        /// concrete remediation that actually clears the deferred
+        /// state (re-applying without `--no-restart` takes the
+        /// byte-equality short-circuit and leaves the runner
+        /// pending, per the [`Self::InPlaceSkipped`] CAVEAT).
+        name: String,
+        /// Number of managed files whose bytes were rewritten this
+        /// apply (unit text + drop-ins + .env/.path), same accounting
+        /// as [`Self::InPlaceRestarted::files_changed`].
+        files_changed: usize,
+        /// Cache-pool names added since the last apply. Same shape
+        /// and ordering as [`Self::InPlaceRestarted::pools_added`].
+        pools_added: Vec<String>,
+        /// Cache-pool names removed since the last apply. Same shape
+        /// and ordering as [`Self::InPlaceRestarted::pools_removed`].
+        pools_removed: Vec<String>,
+    },
     /// `execute_update_runner` recreate branch — `requires_recreate
     /// = true` dispatched through `execute_remove_runner` followed
     /// by `execute_create_runner`. Their inner outcomes are flattened
@@ -147,6 +215,25 @@ pub enum ApplyOutcome {
     /// side caches-list diff that DOES carry `pools_added` /
     /// `pools_removed`.)
     PoolUpdated,
+    /// `execute_update_cache_pool` rewrote the per-pool drop-in but
+    /// `ApplyOptions::no_restart` skipped the daemon-reload + stop +
+    /// start cycle. Symmetric with [`Self::InPlaceRewroteNoRestart`]
+    /// for the cache-pool side. Same caveat: subsequent `ghars apply`
+    /// without `--no-restart` sees byte-matched bytes and takes the
+    /// [`Self::PoolSkipped`] short-circuit, so deferred pool restarts
+    /// persist across re-applies until manually invoked.
+    PoolRewroteNoRestart {
+        /// Pool name (the `{pool}` segment of
+        /// `ghars-cache@{pool}.service`) carried on the variant so
+        /// the operator-facing `detail()` string can render a
+        /// copy-pasteable `systemctl restart
+        /// ghars-cache@<pool>.service` remediation. Same rationale
+        /// as [`Self::InPlaceRewroteNoRestart::name`].
+        name: String,
+        /// Number of managed files whose bytes were rewritten this
+        /// apply. Mirrors the runner-side `files_changed` field shape.
+        files_changed: usize,
+    },
     /// `execute_update_cache_pool` took the byte-equality short-circuit
     /// (symmetric with [`Self::InPlaceSkipped`]): the
     /// per-pool drop-in directory already existed AND its
@@ -225,6 +312,37 @@ pub enum ApplyOutcome {
     },
 }
 
+/// Append the `(added: ...; removed: ...)` pool-diff suffix to a
+/// detail string. Used by both [`ApplyOutcome::InPlaceRestarted`] and
+/// [`ApplyOutcome::InPlaceRewroteNoRestart`] — same operator-facing
+/// suffix shape, same input-Vec semantics (BTreeSet-difference-sorted
+/// pool names from `execute_update_runner` in-place caches diff).
+///
+/// Suffix shape:
+///   no group ops:                 (no parenthetical, no-op)
+///   added only:                   (added: a, b)
+///   removed only:                 (removed: x, y)
+///   both:                         (added: a, b; removed: x, y)
+///
+/// Pool names inside each comma-separated list are already sorted
+/// at the construction site (BTreeSet difference order in
+/// execute_update_runner). The semicolon between added/removed
+/// groups distinguishes them from intra-group commas without
+/// quoting.
+fn append_pools_tail(s: &mut String, pools_added: &[String], pools_removed: &[String]) {
+    if !pools_added.is_empty() && !pools_removed.is_empty() {
+        s.push_str(&format!(
+            " (added: {}; removed: {})",
+            pools_added.join(", "),
+            pools_removed.join(", "),
+        ));
+    } else if !pools_added.is_empty() {
+        s.push_str(&format!(" (added: {})", pools_added.join(", ")));
+    } else if !pools_removed.is_empty() {
+        s.push_str(&format!(" (removed: {})", pools_removed.join(", ")));
+    }
+}
+
 impl ApplyOutcome {
     /// Compact human-readable detail string for `cmd_apply`'s per-action
     /// `ok: LABEL (...)` line. The label vocabulary is stable —
@@ -243,28 +361,23 @@ impl ApplyOutcome {
                 let mut s =
                     format!("in-place: {files_changed} file(s) changed, {group_ops} group op(s)");
                 // Surface pool names when the caches-list diff was
-                // non-empty so the operator sees WHICH pools moved,
-                // not just how many. Suffix shape:
-                //   no group ops:                 (no parenthetical)
-                //   added only:                   (added: a, b)
-                //   removed only:                 (removed: x, y)
-                //   both:                         (added: a, b; removed: x, y)
-                // Pool names inside each comma-separated list are
-                // already sorted at the construction site (BTreeSet
-                // difference order in execute_update_runner). The
-                // semicolon between added/removed groups distinguishes
-                // them from intra-group commas without quoting.
-                if !pools_added.is_empty() && !pools_removed.is_empty() {
-                    s.push_str(&format!(
-                        " (added: {}; removed: {})",
-                        pools_added.join(", "),
-                        pools_removed.join(", "),
-                    ));
-                } else if !pools_added.is_empty() {
-                    s.push_str(&format!(" (added: {})", pools_added.join(", ")));
-                } else if !pools_removed.is_empty() {
-                    s.push_str(&format!(" (removed: {})", pools_removed.join(", ")));
-                }
+                // non-empty so the operator sees WHICH pools moved.
+                // Suffix shape + sort-order rationale documented on
+                // the helper.
+                append_pools_tail(&mut s, pools_added, pools_removed);
+                s
+            }
+            Self::InPlaceRewroteNoRestart {
+                name,
+                files_changed,
+                pools_added,
+                pools_removed,
+            } => {
+                let group_ops = pools_added.len() + pools_removed.len();
+                let mut s = format!(
+                    "in-place: {files_changed} file(s) changed, {group_ops} group op(s), restart deferred (--no-restart): run `systemctl restart ghars-runner@{name}.service` to complete the rollout"
+                );
+                append_pools_tail(&mut s, pools_added, pools_removed);
                 s
             }
             Self::Recreated => "recreated (deregister + teardown + register + start)".into(),
@@ -272,6 +385,9 @@ impl ApplyOutcome {
             Self::Removed => "removed (GitHub deregister + unit + home)".into(),
             Self::PoolCreated => "pool created (storage + unit)".into(),
             Self::PoolUpdated => "pool updated (drop-in rewrite + restart)".into(),
+            Self::PoolRewroteNoRestart { name, files_changed } => format!(
+                "pool: {files_changed} file(s) changed, restart deferred (--no-restart): run `systemctl restart ghars-cache@{name}.service` to complete the rollout"
+            ),
             Self::PoolSkipped => "pool noop (drop-in bytes match)".into(),
             Self::PoolRemoved => "pool removed (storage + drop-in)".into(),
             Self::NoOp => "noop (in sync)".into(),
@@ -288,6 +404,10 @@ impl ApplyOutcome {
     /// - `"success"` for any successful execution variant
     ///   (Created, Removed, Recreated, `PoolCreated`, `PoolUpdated`,
     ///   `PoolRemoved`, `InPlaceRestarted`)
+    /// - `"deferred-restart"` for `--no-restart` opt-out variants
+    ///   (`InPlaceRewroteNoRestart`, `PoolRewroteNoRestart`); distinct
+    ///   from `"success"` so SOC/SRE tooling can grep for runners /
+    ///   pools that need follow-up manual restart.
     /// - `"in-sync"` for byte-equality short-circuits
     ///   (`InPlaceSkipped`, `PoolSkipped`)
     /// - `"noop"` for [`Self::NoOp`] (planner emitted in-sync rows)
@@ -308,6 +428,9 @@ impl ApplyOutcome {
             | Self::PoolUpdated
             | Self::PoolRemoved
             | Self::InPlaceRestarted { .. } => "success".into(),
+            Self::InPlaceRewroteNoRestart { .. } | Self::PoolRewroteNoRestart { .. } => {
+                "deferred-restart".into()
+            }
             Self::InPlaceSkipped | Self::PoolSkipped => "in-sync".into(),
             Self::NoOp => "noop".into(),
             Self::DryRunSkipped => "dry-run".into(),
@@ -329,6 +452,15 @@ impl ApplyOutcome {
     /// - [`Self::InPlaceRestarted`] → `Restart` (daemon-reload +
     ///   stop+start fired; matches plan-time `Restart` for in-place
     ///   `UpdateRunner`)
+    /// - [`Self::InPlaceRewroteNoRestart`] → `None` (the file rewrites
+    ///   happened on disk but the unit lifecycle was untouched per
+    ///   `--no-restart`; the running process kept its pre-rewrite
+    ///   loaded config so apply-time blast-radius is zero. Operator's
+    ///   plan output would have shown `[restart]` because plan can't
+    ///   predict the flag — the bracket-tag asymmetry is intentional
+    ///   and analogous to the `InPlaceSkipped` plan-vs-apply gap.)
+    /// - [`Self::PoolRewroteNoRestart`] → `None` (symmetric with
+    ///   `InPlaceRewroteNoRestart` for the pool side)
     /// - [`Self::PoolUpdated`] → `Restart` (matches plan-time
     ///   `UpdateCachePool` mapping)
     /// - [`Self::PoolSkipped`] → `None` (apply-time short-circuit
@@ -353,9 +485,12 @@ impl ApplyOutcome {
     #[must_use]
     pub fn disruption(&self) -> crate::plan::Disruption {
         match self {
-            Self::InPlaceSkipped | Self::PoolSkipped | Self::NoOp | Self::DryRunSkipped => {
-                crate::plan::Disruption::None
-            }
+            Self::InPlaceSkipped
+            | Self::PoolSkipped
+            | Self::InPlaceRewroteNoRestart { .. }
+            | Self::PoolRewroteNoRestart { .. }
+            | Self::NoOp
+            | Self::DryRunSkipped => crate::plan::Disruption::None,
             Self::InPlaceRestarted { .. } | Self::PoolUpdated => crate::plan::Disruption::Restart,
             Self::Recreated
             | Self::Created
