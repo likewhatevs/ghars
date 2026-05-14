@@ -35,10 +35,10 @@ pub trait ConfigShell {
     /// `GharsError::Apply` on spawn / non-zero exit.
     fn run_register(&self, ctx: &ConfigShellCtx<'_>) -> Result<()>;
 
-    /// Deregister: `config.sh remove --unattended` with the removal
-    /// token in `ACTIONS_RUNNER_INPUT_TOKEN`. Idempotent — exit code 1
-    /// from a stale runner that's already been deregistered
-    /// server-side is not surfaced as an error.
+    /// Deregister: `config.sh remove` with the removal token in
+    /// `ACTIONS_RUNNER_INPUT_TOKEN`. Idempotent — exit code 1 from a
+    /// stale runner that's already been deregistered server-side is
+    /// not surfaced as an error.
     ///
     /// # Errors
     ///
@@ -134,10 +134,9 @@ pub(super) fn build_register_cmd(ctx: &ConfigShellCtx<'_>) -> Command {
 /// Build the `config.sh remove` Command.
 pub(super) fn build_remove_cmd(ctx: &ConfigShellCtx<'_>) -> Command {
     let mut cmd = Command::new(ctx.bin_dir.join("config.sh"));
-    // --unattended keeps `config.sh remove` non-interactive in the
-    // systemd context where no TTY is available. SEC-05 token routing
-    // is via the env var below; argv carries no secret material.
-    cmd.args(["remove", "--unattended"])
+    // `remove` only accepts --token, --pat, --local; --unattended
+    // is rejected (CommandSettings.cs valid-options allowlist).
+    cmd.arg("remove")
         .env(RUNNER_TOKEN_ENV, ctx.token)
         .env("RUNNER_ALLOW_RUNASROOT", "1")
         .current_dir(ctx.runner_home.as_std_path());

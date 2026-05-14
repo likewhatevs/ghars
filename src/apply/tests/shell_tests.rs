@@ -147,5 +147,8 @@ fn sec05_remove_argv_includes_remove_subcommand() {
     let cmd = build_remove_cmd(&ctx);
     let argv = argv_strings(&cmd);
     assert!(argv.iter().any(|a| a == "remove"), "{argv:?}");
-    assert!(argv.iter().any(|a| a == "--unattended"), "{argv:?}");
+    assert!(
+        !argv.iter().any(|a| a == "--unattended"),
+        "remove argv must not contain --unattended: {argv:?}",
+    );
 }
