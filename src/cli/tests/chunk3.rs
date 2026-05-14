@@ -1018,6 +1018,7 @@ fn dispatch_routing_variants_are_exhaustively_tested() {
         parse_command(&["ghars", "status"]),
         parse_command(&["ghars", "init"]),
         parse_command(&["ghars", "add", "--repo", "o/r"]),
+        parse_command(&["ghars", "cleanup"]),
         parse_command(&["ghars", "logs"]),
         parse_command(&["ghars", "metrics"]),
         parse_command(&["ghars", "completions", "bash"]),
@@ -1027,7 +1028,7 @@ fn dispatch_routing_variants_are_exhaustively_tested() {
         parse_command(&["ghars", "_netns-veth", "x", "/bin/true"]),
     ];
     // Verify exhaustively.
-    let mut counts = [0usize; 13];
+    let mut counts = [0usize; 14];
     for v in variants {
         #[allow(clippy::match_same_arms)]
         let idx = match v {
@@ -1037,19 +1038,20 @@ fn dispatch_routing_variants_are_exhaustively_tested() {
             Command::Status(_) => 3,
             Command::Init(_) => 4,
             Command::Add(_) => 5,
-            Command::Logs(_) => 6,
-            Command::Metrics(_) => 7,
-            Command::Completions { .. } => 8,
-            Command::Manpages { .. } => 9,
-            Command::NetnsSetup { .. } => 10,
-            Command::NetnsTeardown { .. } => 11,
-            Command::NetnsVeth { .. } => 12,
+            Command::Cleanup => 6,
+            Command::Logs(_) => 7,
+            Command::Metrics(_) => 8,
+            Command::Completions { .. } => 9,
+            Command::Manpages { .. } => 10,
+            Command::NetnsSetup { .. } => 11,
+            Command::NetnsTeardown { .. } => 12,
+            Command::NetnsVeth { .. } => 13,
         };
         counts[idx] += 1;
     }
     // Exactly one of each variant landed.
     assert_eq!(
-        counts, [1; 13],
+        counts, [1; 14],
         "every Command variant must round-trip exactly once: {counts:?}"
     );
 }

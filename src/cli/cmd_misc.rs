@@ -1,6 +1,6 @@
-//! `ghars init`, `ghars add`, `ghars logs`, `ghars completions`,
-//! `ghars manpages` command handlers, plus the static
-//! `INIT_EXAMPLE_CONFIG` template.
+//! `ghars init`, `ghars add`, `ghars logs`, `ghars cleanup`,
+//! `ghars completions`, `ghars manpages` command handlers, plus the
+//! static `INIT_EXAMPLE_CONFIG` template.
 
 use std::fs;
 use std::fs::OpenOptions;
@@ -15,7 +15,7 @@ use crate::Result;
 use crate::error::GharsError;
 use crate::paths::Paths;
 use crate::state;
-use crate::systemd::DbusSystemd;
+use crate::systemd::{DbusSystemd, Systemd};
 use crate::validators;
 
 use super::args::{AddArgs, ApplyArgs, Cli, ColorMode, InitArgs, LogsArgs};
@@ -362,4 +362,109 @@ pub(super) fn cmd_manpages(output: &Utf8Path) -> Result<i32> {
         fs::write(dest.as_std_path(), buffer)?;
     }
     Ok(0)
+}
+
+/// Remove all ghars-managed state from the host: stop and disable
+/// every managed unit, remove unit files, drop-in dirs, runner
+/// homes, cache pool storage, runtime files, nft rules, and netns
+/// bind-mounts. Config (`/etc/ghars/ghars.toml`) is left intact so
+/// `ghars apply` can rebuild from scratch.
+pub(super) fn cmd_cleanup(paths: &Paths) -> Result<i32> {
+    if !nix::unistd::geteuid().is_root() {
+        return Err(GharsError::Validation(
+            "cleanup requires root".into(),
+            "run with sudo".into(),
+        ));
+    }
+    let systemd = DbusSystemd::new().ok();
+
+    // 1) Stop and disable all managed runner, cache, and netns units.
+    if let Some(ref sd) = systemd {
+        let actual = state::discover(sd, paths).unwrap_or_default();
+        for name in actual.runners.keys() {
+            let unit = format!("ghars-runner@{name}.service");
+            let _ = sd.stop_unit(&unit);
+            let _ = sd.disable_unit(&unit);
+        }
+        for name in actual.cache_pools.keys() {
+            let unit = format!("ghars-cache@{name}.service");
+            let _ = sd.stop_unit(&unit);
+            let _ = sd.disable_unit(&unit);
+        }
+        // Netns units discovered by glob since state::discover
+        // doesn't track them separately.
+        if let Ok(entries) = fs::read_dir(paths.unit_dir.as_std_path()) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("ghars-net@") && name.ends_with(".service") {
+                    let _ = sd.stop_unit(&name);
+                    let _ = sd.disable_unit(&name);
+                }
+            }
+        }
+    }
+
+    // 2) Remove unit files and drop-in directories.
+    remove_glob(&paths.unit_dir, "ghars-runner@*");
+    remove_glob(&paths.unit_dir, "ghars-cache@*");
+    remove_glob(&paths.unit_dir, "ghars-net@*");
+
+    // 3) Remove runner state, cache pools, runtime, nft rules.
+    rm_rf(&paths.state_dir);
+    rm_rf(&paths.cache_dir);
+    rm_rf(&paths.runtime_dir);
+    let nft_dir = paths.config_dir.join("nft.d");
+    rm_rf(&nft_dir);
+
+    // 4) Remove resolved drop-ins and netns bind-mounts.
+    if let Ok(entries) = fs::read_dir(paths.resolved_conf_d.as_std_path()) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("ghars-") {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+    let netns_dir = std::path::Path::new("/var/run/netns");
+    if netns_dir.exists() {
+        if let Ok(entries) = fs::read_dir(netns_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("ghars-") {
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
+
+    // 5) daemon-reload so systemd forgets the removed units.
+    if let Some(ref sd) = systemd {
+        let _ = sd.daemon_reload();
+    }
+
+    eprintln!("cleanup complete. Config at {} is intact — run `ghars apply` to rebuild.", paths.config_dir.join("ghars.toml"));
+    Ok(0)
+}
+
+fn rm_rf(path: &camino::Utf8Path) {
+    if path.exists() {
+        let _ = fs::remove_dir_all(path.as_std_path());
+    }
+}
+
+fn remove_glob(dir: &camino::Utf8Path, pattern: &str) {
+    let prefix = pattern.trim_end_matches('*');
+    if let Ok(entries) = fs::read_dir(dir.as_std_path()) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with(prefix) {
+                let path = entry.path();
+                if path.is_dir() {
+                    let _ = fs::remove_dir_all(&path);
+                } else {
+                    let _ = fs::remove_file(&path);
+                }
+            }
+        }
+    }
 }

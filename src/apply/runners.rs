@@ -425,6 +425,26 @@ pub(super) fn chown_and_tighten_runner_state(
     if let Some(ccache_dir) = ccache_dir {
         fchown_record_undo(ccache_dir, uid, gid, ".ccache", log)?;
     }
+    // bin_dir itself: the DynamicUser needs write access to create
+    // _work/ (workflow execution) and _diag/ (listener logs). The
+    // DynamicUser already owns runner_home (chowned above) so there
+    // is no additional security exposure — the DynamicUser can
+    // already manipulate entries in runner_home.
+    fchown_record_undo(bin_dir, uid, gid, "bin_dir", log)?;
+    // _diag/ is created by config.sh (as root) during registration.
+    // chown it so the listener can write log files on subsequent
+    // starts.
+    let diag_dir = bin_dir.join("_diag");
+    if diag_dir.as_std_path().exists() {
+        fchown_record_undo(&diag_dir, uid, gid, "_diag", log)?;
+        if let Ok(entries) = fs::read_dir(diag_dir.as_std_path()) {
+            for entry in entries.flatten() {
+                if let Ok(p) = camino::Utf8PathBuf::try_from(entry.path()) {
+                    fchown_record_undo(&p, uid, gid, "_diag entry", log)?;
+                }
+            }
+        }
+    }
     // Runner.Listener resolves its Root from the assembly location
     // (bin_dir/bin/Runner.Listener.dll), so config.sh writes
     // credential files into bin_dir — not runner_home.

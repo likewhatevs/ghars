@@ -109,6 +109,7 @@ pub fn dispatch(cli: Cli) -> Result<i32> {
         }
         Command::Init(args) => cmd_misc::cmd_init(&cli.config, &args, cli.quiet),
         Command::Add(args) => cmd_misc::cmd_add(&cli.config, &paths, &args, color, cli.quiet),
+        Command::Cleanup => cmd_misc::cmd_cleanup(&paths),
         Command::Logs(args) => cmd_misc::cmd_logs(&paths, &args),
         Command::Metrics(args) => cmd_metrics::cmd_metrics(&paths, &args),
         Command::Completions { shell } => {

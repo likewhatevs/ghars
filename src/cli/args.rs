@@ -55,6 +55,10 @@ pub enum Command {
     Init(InitArgs),
     /// Add one runner interactively (prompts then runs apply).
     Add(AddArgs),
+    /// Remove all ghars-managed state, units, and caches. Runners
+    /// are deregistered from GitHub when possible. Use before a
+    /// full re-deploy or to uninstall ghars from a host.
+    Cleanup,
     /// Tail journalctl for one or more runner units.
     Logs(LogsArgs),
     /// Per-runner + total resource accounting via systemd D-Bus.
