@@ -272,6 +272,13 @@ Flags:
   missing unit does not erase the report. Informational only —
   no pass/fail gate. The `just sd-analyze` recipe is a
   convenience wrapper.
+- `--github` — query GitHub's runner-list API for each declared
+  URL and add a `github` column to the RUNNERS table showing
+  each runner's GitHub-side status (`online`, `offline`, or
+  `unknown`). Uses the per-runner PAT from `[auth.NAME]`. Helps
+  triage the "systemd says active, GitHub says offline" drift
+  case before invoking `ghars apply` (which would otherwise
+  reconcile silently via the registration-check loop).
 - Positional `NAMES` — filter to specific runner names.
 
 ### Preflight
@@ -343,6 +350,30 @@ Flags:
 `MemoryCurrent = u64::MAX` is systemd's sentinel for "accounting
 disabled"; `metrics` passes it through verbatim (callers that
 care can compare against `u64::MAX`).
+
+## cleanup
+
+```sh
+sudo ghars cleanup
+```
+
+Removes all ghars-managed state from the host:
+
+- Stops + disables every managed runner / cache-pool / netns unit.
+- Removes unit files (`/etc/systemd/system/ghars-*@*.service`) and
+  drop-in directories.
+- Removes runner homes (`/var/lib/ghars/`), cache pools
+  (`/var/cache/ghars/`), runtime files (`/run/ghars/`), and
+  nft / resolved-conf-d artifacts.
+- Removes netns bind-mounts under `/var/run/netns/ghars-*`.
+- Runs `daemon-reload` so systemd forgets the removed units.
+
+`/etc/ghars/ghars.toml` is left intact — re-running `ghars apply`
+reconverges to the declared spec from scratch.
+
+Requires root and an available systemd D-Bus connection. Fails fast
+with `GharsError::Systemd` if D-Bus is unreachable rather than
+leaving the host half-cleaned.
 
 ## Upgrades
 

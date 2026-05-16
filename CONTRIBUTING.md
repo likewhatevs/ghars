@@ -118,28 +118,6 @@ Source tree: `src/lib.rs`, `src/main.rs`, the modules listed in
 5. Reviewers will read both the diff and the call sites of anything you changed. The architectural rules above are non-negotiable; expect to be asked to refactor if you cross the sync/async boundary or introduce a new tokio dependency.
 6. Squash on merge. Commit subject is imperative; the body explains why.
 
-## Deferred to v0.2
-
-The following capabilities are scoped out of v0.1. The CLI surface
-deliberately omits flags for them so operators don't see options that
-silently do nothing. They will land in v0.2 with the underlying
-implementation.
-
-- **`--refresh-releases` on `plan` / `apply`.** v0.1 always queries
-  the actions/runner releases API on demand whenever a runner
-  spec lacks `runner_version` + `runner_sha256`. Forcing a fresh
-  lookup when those fields ARE pinned (to pick up a republished
-  asset) is v0.2 work that requires plumbing through the cache
-  invalidation path; the flag is omitted until then so it cannot
-  silently no-op.
-
-- **`--output-dir` on `plan`.** v0.1 renders plans only to stdout
-  (text + `--json`) and to the host's canonical paths under `Paths`
-  during apply. Writing the rendered unit files + drop-ins into a
-  caller-chosen scratch directory (for diff review, manifest
-  generation, audit pipelines) is v0.2 work; the flag is omitted
-  until the artifact-writer abstraction lands.
-
 ## Reporting security issues
 
 Do not file public issues for security findings. Email
