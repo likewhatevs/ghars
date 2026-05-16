@@ -107,7 +107,7 @@ impl UnitVerifier for RealVerifier {
 ///   written to (filesystem-level failure; can't proceed).
 /// - `GharsError::Validation` aggregating all per-unit verification
 ///   failures (one `Validation` carrying one error per failing
-///   unit). The caller (`compute_plan` in cli.rs) surfaces this as
+///   unit). The caller (`cli::cmd_plan::compute_plan`) surfaces this as
 ///   a plan failure so the operator sees concrete remediation
 ///   text per unit.
 pub fn verify_plan(
@@ -294,12 +294,12 @@ fn rendered_runner_unit(
     // even with SYSTEMD_UNIT_PATH set. The merged file passes
     // verification as a standalone unit.
     let mut merged = crate::systemd::runner_template_text();
-    for (_basename, body) in drop_ins {
+    for body in drop_ins.values() {
         merged.push('\n');
         merged.push_str(body);
     }
     RenderedUnit {
-        unit_filename: format!("ghars-runner@{name}.service"),
+        unit_filename: crate::paths::runner_unit_name(name),
         drop_ins: BTreeMap::new(),
         merged_body: Some(merged),
     }
@@ -319,7 +319,7 @@ fn rendered_cache_unit(name: &str, drop_in_body: &str) -> RenderedUnit {
     merged.push('\n');
     merged.push_str(drop_in_body);
     RenderedUnit {
-        unit_filename: format!("ghars-cache@{name}.service"),
+        unit_filename: crate::paths::cache_unit_name(name),
         drop_ins: BTreeMap::new(),
         merged_body: Some(merged),
     }

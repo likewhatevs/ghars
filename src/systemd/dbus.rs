@@ -202,8 +202,8 @@ pub trait Systemd {
     /// to a transient UID. Returns `Ok(None)` when the name has not
     /// yet been allocated (systemd's `BUS_ERROR_NO_SUCH_DYNAMIC_USER`)
     /// — this happens before the first unit with the matching
-    /// `User=` name has reached its ExecStart child setup (where
-    /// `dynamic_user_realize` populates the storage_socket).
+    /// `User=` name has reached its `ExecStart` child setup (where
+    /// `dynamic_user_realize` populates the `storage_socket`).
     /// Callers retrieving the UID for a newly-started runner unit
     /// should poll with backoff until either `Some(uid)` returns or
     /// the timeout fires.
@@ -219,7 +219,7 @@ pub trait Systemd {
     /// Returns `GharsError::Systemd` on D-Bus failures other than
     /// `BUS_ERROR_NO_SUCH_DYNAMIC_USER` (which maps to `Ok(None)`),
     /// and on systemd's `NOT_SUPPORTED` reply when running against a
-    /// user-instance manager (DynamicUser is system-instance only).
+    /// user-instance manager (`DynamicUser` is system-instance only).
     fn lookup_dynamic_user_by_name(&self, name: &str) -> Result<Option<u32>>;
 }
 

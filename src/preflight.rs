@@ -313,7 +313,7 @@ fn parse_systemd_version_major(version: &str) -> Option<u32> {
 
 /// `preflight_systemd`: verify systemd is the init process and query
 /// `Manager.Version` over D-Bus. Hard-reject systemd major < 254
-/// because `LogNamespace=` is unconditional in v0.1 unit text.
+/// because `LogNamespace=` is unconditional in the ghars unit template.
 #[must_use]
 pub fn preflight_systemd() -> CheckResult {
     if !Path::new("/run/systemd/system").is_dir() {
@@ -570,8 +570,8 @@ pub fn preflight_runner_libs() -> CheckResult {
 }
 
 /// `preflight_kernel_features`: cgroup v2 unified hierarchy, seccomp,
-/// `CONFIG_NET_NS`, and `CAP_NET_ADMIN`. The first two are required for
-/// the v0.1 unit template; the latter two are required for netns
+/// `CONFIG_NET_NS`, and `CAP_NET_ADMIN`. The first two are required by
+/// the ghars unit template; the latter two are required for netns
 /// network mode.
 #[must_use]
 pub fn preflight_kernel_features() -> CheckResult {

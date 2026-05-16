@@ -28,7 +28,7 @@ fn default_renderer_schema() -> u32 {
     crate::systemd::RENDERER_SCHEMA
 }
 
-/// Deserialize-with helper for the renderer_schema fields: consume
+/// Deserialize-with helper for the `renderer_schema` fields: consume
 /// the operator-supplied u32 from input, then DROP it and return the
 /// runtime constant. Combined with `#[serde(default)]` this makes the
 /// field's deserialized value ALWAYS equal to
@@ -290,7 +290,7 @@ pub struct EffectiveRunnerSpec {
     /// Free-form `MemoryMax=` value. None ⇒ no `10-memory.conf` drop-in.
     pub memory_max: Option<String>,
     /// Pinned runner version (e.g. `"2.334.0"`). None ⇒ release-API
-    /// resolved at apply time (CreateRunner + recreate UpdateRunner
+    /// resolved at apply time (`CreateRunner` + recreate `UpdateRunner`
     /// paths), or inherited from the discovered
     /// `X-Ghars-Effective-Version` annotation for in-place updates
     /// of already-installed runners. Tarball-pinned runners
@@ -343,13 +343,13 @@ pub struct EffectiveRunnerSpec {
     /// Renders into Sites A (.env file) and B (00-ghars.conf
     /// `Environment=` directives) APPENDED after framework-emitted
     /// keys (LAYER 3 of the composition pipeline). Operator keys that
-    /// collide with framework keys (CCACHE_DIR, KTSTR_*, LANG, HOME,
-    /// PATH, TMPDIR, SCCACHE_*, HTTP_PROXY etc.) are rejected at
+    /// collide with framework keys (`CCACHE_DIR`, KTSTR_*, LANG, HOME,
+    /// PATH, TMPDIR, SCCACHE_*, `HTTP_PROXY` etc.) are rejected at
     /// config-load via the deny-list — operator overrides cannot
     /// reach LAYER 3 because they fail validation. See
     /// `crate::validators::validate_environment_spec`.
     ///
-    /// Single source of truth for CCACHE_DIR / KTSTR_* / SCCACHE_*
+    /// Single source of truth for `CCACHE_DIR` / KTSTR_* / SCCACHE_*
     /// emission lives in `crate::systemd::units` renderers — do not
     /// add a second construction site for framework keys.
     pub environment: EnvironmentSpec,
@@ -363,7 +363,7 @@ pub struct EffectiveRunnerSpec {
     /// Renderer schema number captured at `lower_to_effective` time
     /// from [`crate::systemd::RENDERER_SCHEMA`]. Participates in the
     /// canonical-JSON `spec_hash` so a ghars binary upgrade that
-    /// bumps the constant flips every managed runner's spec_hash,
+    /// bumps the constant flips every managed runner's `spec_hash`,
     /// driving the `apply` in-place rewrite path (which is what
     /// rewrites the on-disk drop-ins to match the new renderer
     /// output). Operators never set this directly. NOT
@@ -521,7 +521,7 @@ pub enum NetnsSubnetError {
     OpenMode,
     /// The binding's mode is `Netns` but `subnet` is `None` — the
     /// mode⇒subnet contract is broken. `lower_to_effective`
-    /// allocates a /30 from the v0.1 64-slot pool whenever it
+    /// allocates a /30 from the 64-slot pool whenever it
     /// constructs a Netns binding; reaching this variant means a
     /// caller bypassed the lowering pipeline.
     NetnsMissingSubnet,
@@ -639,8 +639,8 @@ pub struct Hardening {
 
 /// Operator-declared environment composition for runners. Operator-
 /// supplied env vars and PATH additions, merged with framework-emitted
-/// built-ins (LANG / CCACHE_DIR / KTSTR_* / SCCACHE_* / HOME / PATH /
-/// TMPDIR / HTTP_PROXY family / ACTIONS_RUNNER_HOOK_* and per-binding
+/// built-ins (LANG / `CCACHE_DIR` / KTSTR_* / SCCACHE_* / HOME / PATH /
+/// TMPDIR / `HTTP_PROXY` family / `ACTIONS_RUNNER_HOOK`_* and per-binding
 /// cache vars). Precedence is framework < defaults < runner, enforced
 /// at composition time; framework-owned keys are additionally rejected
 /// at config-load via the deny-list in
@@ -648,7 +648,7 @@ pub struct Hardening {
 /// never reach the renderer.
 ///
 /// The merged result lands in BOTH Site A (.env file consumed by
-/// Runner.Listener::LoadAndSetEnv for workflow steps) AND Site B
+/// `Runner.Listener::LoadAndSetEnv` for workflow steps) AND Site B
 /// (00-ghars.conf `Environment=` directives consumed by systemd for
 /// the runner unit process). The two layers carry the same merged
 /// keys; without the both-sites pin a future renderer refactor could
@@ -660,7 +660,7 @@ pub struct Hardening {
 /// cosmetic edits. `spec_hash` is already invariant under reorder via
 /// `serde_json::Value`'s BTreeMap-backed Object (see
 /// `EffectiveRunnerSpec` doc-comment above), but `.env` byte stability
-/// also needs the BTreeMap directly because the renderer iterates in
+/// also needs the `BTreeMap` directly because the renderer iterates in
 /// type order.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -668,9 +668,9 @@ pub struct EnvironmentSpec {
     /// Operator-supplied env vars. Per-key overlay across the
     /// defaults / runner merge: runner-set keys win, then defaults,
     /// then framework built-ins. Validated at config-load against
-    /// the deny-list (security-critical LD_*, shell-hijack BASH_ENV
-    /// etc., ghars-owned CCACHE_DIR etc., HTTP_PROXY family,
-    /// ACTIONS_RUNNER_INPUT_TOKEN, etc.) and the POSIX env-var-name
+    /// the deny-list (security-critical LD_*, shell-hijack `BASH_ENV`
+    /// etc., ghars-owned `CCACHE_DIR` etc., `HTTP_PROXY` family,
+    /// `ACTIONS_RUNNER_INPUT_TOKEN`, etc.) and the POSIX env-var-name
     /// regex `^[A-Z_][A-Z0-9_]*$`. Values are checked for control
     /// characters (`\n` / `\r` / `\0`) at config-load via the same
     /// `check_identity_field` gate the renderer uses for systemd
@@ -678,7 +678,7 @@ pub struct EnvironmentSpec {
     /// double-escaped (`%%`) in the 00-ghars.conf `Environment=`
     /// emission so systemd's specifier expansion does not consume
     /// operator-literal data; the `.env` emission carries the value
-    /// verbatim (Runner.Listener LoadAndSetEnv does not interpret
+    /// verbatim (Runner.Listener `LoadAndSetEnv` does not interpret
     /// `%`).
     #[serde(default)]
     pub vars: BTreeMap<String, String>,
@@ -735,15 +735,15 @@ pub struct ProxySpec {
 }
 
 impl ProxySpec {
-    /// Whether all fields are unset / empty. An empty ProxySpec is
+    /// Whether all fields are unset / empty. An empty `ProxySpec` is
     /// semantically equivalent to no proxy configuration at all —
     /// `render_proxy` returns `Ok(None)` for both `None` and
     /// `Some(empty)`, so the two shapes produce identical render
     /// output. Collapsing `Some(empty)` to `None` at the lowering
     /// boundary (`lower_to_effective` in `compute.rs`) eliminates a
-    /// spec_hash dark input: pre-normalization the canonical-JSON of
+    /// `spec_hash` dark input: pre-normalization the canonical-JSON of
     /// `Some(ProxySpec{..})` differed from `None` and the two would
-    /// flip spec_hash on operator toggle, but the rendered drop-in
+    /// flip `spec_hash` on operator toggle, but the rendered drop-in
     /// body bytes were identical.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -778,12 +778,12 @@ pub struct HooksSpec {
 }
 
 impl HooksSpec {
-    /// Whether both hook fields are unset. An empty HooksSpec
+    /// Whether both hook fields are unset. An empty `HooksSpec`
     /// produces no `ACTIONS_RUNNER_HOOK_JOB_*` env vars —
     /// `render_hooks` returns `Ok(None)` for both `None` and
     /// `Some(empty)`. Collapsing `Some(empty)` to `None` at the
     /// lowering boundary (`lower_to_effective` in `compute.rs`)
-    /// eliminates the parallel spec_hash dark input.
+    /// eliminates the parallel `spec_hash` dark input.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.pre_job.is_none() && self.post_job.is_none()
@@ -1025,8 +1025,9 @@ pub struct NetworkSpec {
     #[serde(default)]
     pub dns: DnsMode,
 
-    /// IPv6 inside the netns. Default `Disabled`. v0.2 will allocate
-    /// a /64 from a configurable ULA pool when set to `Enabled`.
+    /// IPv6 inside the netns. Currently always `Disabled`; the renderer
+    /// rejects `Enabled` because IPv6 ULA pool allocation is not yet
+    /// wired through `lower_to_effective`.
     #[serde(default)]
     pub ipv6: Ipv6Mode,
 }
@@ -1148,7 +1149,10 @@ pub(crate) fn dns_to_annotation(dns: &DnsMode) -> String {
     match dns {
         DnsMode::Forward => "forward".to_owned(),
         DnsMode::Static { servers } => {
-            let joined: Vec<String> = servers.iter().map(|ip| ip.to_string()).collect();
+            let joined: Vec<String> = servers
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect();
             format!("static:{}", joined.join(","))
         }
     }
@@ -1215,7 +1219,7 @@ pub(crate) fn dns_from_annotation(s: &str) -> Option<DnsMode> {
 
 /// Render `Ipv6Mode` to the operator-facing annotation form used in
 /// `X-Ghars-Ipv6=` (00-ghars.conf drop-in): `disabled` / `enabled`.
-/// Plain snake_case enum string matching the X-Ghars-Network-Mode
+/// Plain `snake_case` enum string matching the X-Ghars-Network-Mode
 /// convention.
 ///
 /// Free fn (symmetric with [`dns_to_annotation`]) — keeps the
@@ -1259,28 +1263,17 @@ pub(crate) fn ipv6_from_annotation(s: &str) -> Option<Ipv6Mode> {
     }
 }
 
-/// IPv6 inside the netns. Default `Disabled`. v0.2 will support
-/// `Enabled` with ULA allocation.
+/// IPv6 inside the netns. Default `Disabled`. `Enabled` is reserved
+/// for future ULA-pool allocation support.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Ipv6Mode {
     /// IPv6 disabled inside the netns.
     #[default]
     Disabled,
-    /// Reserved for v0.2; v0.1 apply errors with "IPv6 inside netns
-    /// is V0.2 — set ipv6 = disabled or omit".
+    /// Reserved: apply currently errors with "IPv6 inside netns is not
+    /// yet supported — set ipv6 = disabled or omit".
     Enabled,
-}
-
-/// Load + parse the config file at `path` and run structural
-/// validation.
-///
-/// # Errors
-///
-/// Returns `GharsError::Config` on parse failure and
-/// `GharsError::Validation` on structural / cross-reference failure.
-pub fn load(_path: &camino::Utf8Path) -> crate::Result<Config> {
-    todo!("config loader")
 }
 
 /// Validate every `[network.NAME]` block in `config` using the
@@ -1293,8 +1286,8 @@ pub fn load(_path: &camino::Utf8Path) -> crate::Result<Config> {
 /// matches `load`'s contract; multi-error reporting is a separate
 /// feature.
 ///
-/// Called by `cli::load_config` (alongside the four other post-load
-/// validators that live in `cli.rs`) so every CLI entry point that
+/// Called by `cli::load::load_config` (alongside the four other
+/// post-load validators) so every CLI entry point that
 /// accepts a Config — `cmd_validate`, `cmd_plan`, `cmd_apply`, `cmd_status`,
 /// `cmd_add` — runs this gate uniformly. Each network's per-rule errors
 /// carry the network name in the message so the operator can locate
