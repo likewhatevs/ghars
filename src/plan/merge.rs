@@ -230,7 +230,7 @@ pub fn merge_defaults(
 }
 
 /// Merge `[defaults.environment]` into `[[runner]].environment`:
-///   - `vars`: per-key overlay — defaults BTreeMap is the base, runner
+///   - `vars`: per-key overlay — defaults `BTreeMap` is the base, runner
 ///     entries extend AND override on collision (runner-set keys win
 ///     per the standard scalar-override semantic mirrored from
 ///     `memory_max` etc.).
@@ -243,8 +243,8 @@ pub fn merge_defaults(
 ///     dir).
 ///
 /// Note: this helper does NOT consult the framework-emitted env vars
-/// (LANG / CCACHE_DIR / KTSTR_* / SCCACHE_* / HOME / PATH / TMPDIR /
-/// HTTP_PROXY family / ACTIONS_RUNNER_HOOK_*). Framework < operator
+/// (LANG / `CCACHE_DIR` / KTSTR_* / SCCACHE_* / HOME / PATH / TMPDIR /
+/// `HTTP_PROXY` family / `ACTIONS_RUNNER_HOOK`_*). Framework < operator
 /// precedence is enforced by (a) renderer composition order (framework
 /// emitted first, operator vars appended) and (b) config-load
 /// validation that rejects operator keys colliding with framework-

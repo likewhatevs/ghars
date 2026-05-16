@@ -64,7 +64,7 @@ use crate::config::{EffectiveCacheBinding, EffectiveRunnerSpec};
 ///   `merge_defaults` from [`crate::systemd::RENDERER_SCHEMA`] so a
 ///   ghars binary upgrade that bumps the constant flips every managed
 ///   runner's hash, triggering the in-place rewrite + restart cascade
-///   described at the RENDERER_SCHEMA constant. See
+///   described at the `RENDERER_SCHEMA` constant. See
 ///   `docs/src/operations.md` "Why did my fleet restart on a ghars
 ///   binary upgrade?" for operator-facing semantics + in-flight
 ///   workload impact.

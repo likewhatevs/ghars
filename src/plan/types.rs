@@ -22,10 +22,9 @@ pub struct Plan {
     /// `UpdateRunner` (in-place subset) → `UpdateRunner` (recreate
     /// subset) → `CreateRunner` → `RemoveCachePool` → `NoOp`.
     pub actions: Vec<Action>,
-    /// Non-fatal warnings. Currently always empty: `plan_from` has no
-    /// producers (the field's reader infrastructure exists in
-    /// `cli.rs` for both text and JSON output, but no plan-time site
-    /// pushes into this Vec today).
+    /// Non-fatal warnings surfaced to the operator. Populated from
+    /// `RenderedUnit.warnings` during `plan_from` (e.g.
+    /// `hardening.kvm=false drops /dev/kvm rw`).
     pub warnings: Vec<String>,
     /// `bin.X.Y.Z/` retention count resolved from
     /// `Defaults.keep_versions` (or the
@@ -57,9 +56,9 @@ impl Plan {
     /// `Disruption::Restart` (in-place restart) and
     /// `Disruption::None` (`NoOp`).
     ///
-    /// Lives on `Plan` rather than as a free function in cli.rs
-    /// because the predicate reads only plan data and the disruption
-    /// taxonomy is defined in this module — no CLI state is involved.
+    /// Lives on `Plan` rather than in the CLI layer because the
+    /// predicate reads only plan data and the disruption taxonomy is
+    /// defined in this module — no CLI state is involved.
     /// CLI exit-code helpers wrap this in renderer-side gating.
     #[must_use]
     pub fn has_recreate(&self) -> bool {
@@ -92,7 +91,7 @@ pub struct RunnerPlan {
     /// fork+exec. The next unit stop+start picks up changes.
     pub env_file: String,
     /// Body of `<bin_dir>/.path`. Read once by `runsvc.sh`
-    /// (`export PATH=\`cat .path\``) at runner-process start; inherited
+    /// (`export PATH=$(cat .path)`) at runner-process start; inherited
     /// across exec by every worker / workflow-step subprocess. The
     /// next unit stop+start picks up changes.
     pub path_file: String,
@@ -176,11 +175,11 @@ impl DriftCause {
 /// `classify_recreate_reasons_from_annotations` emits either a
 /// scalar string (10 paths) or a list of strings (2 paths).
 /// Adding `Number` now would be premature — bump schema and add
-/// the variant when a numeric field appears. Likely v0.2
-/// candidates: `count` (pre-expansion runner count),
-/// `keep_versions` (retention prune count). `memory_max` is NOT
-/// a candidate — stays `Option<String>` with `bytesize` parsing
-/// at validate time, so the wire shape is the existing
+/// the variant when a numeric field appears. Future candidates:
+/// `count` (pre-expansion runner count), `keep_versions`
+/// (retention prune count). `memory_max` is NOT a candidate —
+/// stays `Option<String>` with `bytesize` parsing at validate
+/// time, so the wire shape is the existing
 /// `String` variant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldValue {
@@ -428,7 +427,7 @@ pub struct RunnerDelta {
     /// Pre-update on-disk drop-in basenames discovered in the runner's
     /// drop-in directory (alphabetically ordered, parity with
     /// [`Self::before_caches`]). Drives the recreate-class `--diff`
-    /// path in cli.rs: under `--diff`, recreate-class `UpdateRunner`
+    /// path in `cli::render`: under `--diff`, recreate-class `UpdateRunner`
     /// emits a `Removed` line for every basename in this Vec that is
     /// NOT present in `after.drop_ins`, so the operator sees their
     /// `99-custom.conf` (or any other unmanaged drop-in) is being

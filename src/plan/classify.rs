@@ -75,19 +75,18 @@ pub(super) struct DiscoveredAnnotations {
     /// `X-Ghars-Dns` value — plain-string `DnsMode` via
     /// [`crate::config::dns_to_annotation`] / `dns_from_annotation`
     /// (`forward` for Forward, `static:<csv>` for Static). Routes
-    /// as in-place FieldChange (no recreate): a dns mode change
+    /// as in-place `FieldChange` (no recreate): a dns mode change
     /// re-runs `ghars _netns-setup` on the next netns side-unit
     /// restart that the in-place rewrite triggers; no GitHub
     /// registration impact, no provision/teardown asymmetry. Pre-
     /// fix runners (annotation absent) skip the comparison.
     pub(super) dns: Option<crate::config::DnsMode>,
-    /// `X-Ghars-Ipv6` value — simple snake_case enum string
-    /// (`disabled` / `enabled`). v0.1 only `Disabled` is reachable
-    /// (Enabled hard-errors at apply per `Ipv6Mode::Enabled` doc),
-    /// so the annotation is defensive forward-compat. Routes as
-    /// in-place FieldChange when the day comes that Enabled is
-    /// supported. Reconsider recreate-vs-in-place when v0.2 lands
-    /// ipv6=Enabled (subnet provisioning may need recreate).
+    /// `X-Ghars-Ipv6` value — simple `snake_case` enum string
+    /// (`disabled` / `enabled`). Currently only `Disabled` is
+    /// reachable (Enabled hard-errors at apply per `Ipv6Mode::Enabled`
+    /// doc), so the annotation is defensive forward-compat. Routes
+    /// as in-place `FieldChange` when Enabled is supported in the
+    /// future. Subnet provisioning may need recreate at that point.
     pub(super) ipv6: Option<crate::config::Ipv6Mode>,
 }
 
@@ -338,7 +337,7 @@ fn sorted_set_field_diff<'a>(
 ///   2. Add the same `FIELD_NAME` to the bullet list at
 ///      `RunnerDelta::recreate_reasons` doc-comment (`plan/types.rs`).
 ///   3. Add the same `FIELD_NAME` to the vocabulary line at
-///      `docs/src/operations.md` ("Vocabulary: url, runner_version,
+///      `docs/src/operations.md` ("Vocabulary: url, `runner_version`,
 ///      ...") and the trailing-examples line at
 ///      `docs/src/architecture.md` Plan disruption section.
 ///
@@ -618,15 +617,13 @@ pub(super) fn classify_recreate_reasons_from_annotations(
             });
         }
     }
-    // ipv6 change is in-place (defensive forward-compat — v0.1 only
-    // Disabled is reachable; Enabled hard-errors at apply per
+    // ipv6 change is in-place (defensive forward-compat — only
+    // Disabled is reachable today; Enabled hard-errors at apply per
     // `Ipv6Mode::Enabled` doc-comment). Recording a FieldChange
-    // suppresses the uncovered warn on ipv6-only edits (rare in
-    // v0.1) and surfaces the change in plan output if it ever
-    // happens. Same `desired.network.is_some()` guard as dns above.
-    if let (Some(ipv6), Some(desired_net)) =
-        (discovered.ipv6, desired.network.as_ref())
-    {
+    // suppresses the uncovered warn on ipv6-only edits and surfaces
+    // the change in plan output if it ever happens. Same
+    // `desired.network.is_some()` guard as dns above.
+    if let (Some(ipv6), Some(desired_net)) = (discovered.ipv6, desired.network.as_ref()) {
         let desired_ipv6 = desired_net.spec.ipv6;
         if ipv6 != desired_ipv6 {
             out_changes.push(FieldChange {

@@ -34,8 +34,8 @@ use super::types::{
 
 /// First octet of the default netns subnet pool. The full pool is
 /// `NETNS_POOL_BASE.0.0/24` — i.e. `10.200.0.0/24` — yielding 64 /30
-/// slots (Part 9c "IP allocation"). v0.1 hardcodes this; making it
-/// configurable via `[defaults] netns_subnet` is design future scope.
+/// slots (Part 9c "IP allocation"). Hardcoded today; making it
+/// configurable via `[defaults] netns_subnet` is future scope.
 const NETNS_POOL_BASE: [u8; 4] = [10, 200, 0, 0];
 
 /// Number of /30 slots in the default `/24` pool.
@@ -48,7 +48,7 @@ pub(super) const NETNS_POOL_SLOTS: usize = 64;
 /// # Errors
 ///
 /// Returns `GharsError::Validation` when `slot_idx >= NETNS_POOL_SLOTS`,
-/// which means the operator has more netns runners than the v0.1
+/// which means the operator has more netns runners than the
 /// hardcoded /24 pool can accommodate. The error names the runner
 /// hitting the cap so the operator can identify which entry to move.
 pub(super) fn netns_subnet_for_slot(slot_idx: usize, runner_name: &str) -> Result<ipnet::IpNet> {
@@ -58,7 +58,7 @@ pub(super) fn netns_subnet_for_slot(slot_idx: usize, runner_name: &str) -> Resul
                 "netns subnet pool 10.200.0.0/24 exhausted: runner '{runner_name}' \
                  needs slot {slot_idx} but only {NETNS_POOL_SLOTS} /30 slots fit"
             ),
-            "reduce the number of netns runners (max 64 in v0.1) or split across hosts".into(),
+            "reduce the number of netns runners (max 64) or split across hosts".into(),
         ));
     }
     let offset = (slot_idx as u32) * 4;
@@ -80,7 +80,7 @@ pub(super) fn netns_subnet_for_slot(slot_idx: usize, runner_name: &str) -> Resul
 
 /// Compute a [`Plan`] from desired config + discovered actual state.
 ///
-/// v0.1 scope (Part 8 step coverage):
+/// Scope (Part 8 step coverage):
 /// 1. `expand_counts(config)` — flatten count-blocks.
 /// 2. Defaults-merge — runs in [`lower_to_effective`]. Cross-reference
 ///    resolution for auth, caches, network is validated and threaded
@@ -173,7 +173,7 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
     // runner to Netns later does not shift other Netns runners'
     // subnets). Open-mode runners do NOT consume a /30 — the slot
     // helper is only called inside `lower_to_effective`'s Netns
-    // arm — so the v0.1 64-slot /24 cap is real headroom for actual
+    // arm — so the 64-slot /24 cap is real headroom for actual
     // netns runners, not eroded by Open-mode entries that wouldn't
     // use a subnet.
     let mut desired: BTreeMap<String, EffectiveRunnerSpec> = BTreeMap::new();
@@ -269,45 +269,11 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                 // runners that emitted empty Effective-Version annotations
                 // or operator-stripped runners hit this path until the
                 // operator manually corrects the discovered state.
-                if candidate.runner_version.is_none() {
-                    if let Some(v) = discovered_annotations.runner_version.as_deref()
-                        && !v.is_empty()
-                        && crate::validators::validate_version(v).is_ok()
-                    {
-                        // Gate 4: verify the version named in the
-                        // annotation actually exists on disk before
-                        // accepting it as the in-place inheritance
-                        // value. Adversary F1 mitigation: an
-                        // operator who manually edits
-                        // X-Ghars-Effective-Version to a different
-                        // valid version than what's installed
-                        // (e.g. annotation says 2.500.0 but the
-                        // runner's bin.2.500.0/ directory was
-                        // never created) would otherwise have the
-                        // forged value propagate into the spec,
-                        // produce hash equality (both sides
-                        // post-fill match), skip the recreate,
-                        // and let apply write into a non-existent
-                        // bin dir. The unit would then fail
-                        // ConditionPathExists at restart with no
-                        // operator-visible signal until the
-                        // workflow timed out.
-                        //
-                        // Checking runsvc.sh (not just the bin
-                        // dir) catches the half-cleaned-up case
-                        // where the dir exists but the actions/
-                        // runner tarball was partially extracted
-                        // — the unit's ExecStart= would still
-                        // fail at startup, just one syscall later.
-                        let runner_home =
-                            paths.runner_home(&candidate.trust_zone, &candidate.name);
-                        let runsvc_sh =
-                            runner_home.join(format!("bin.{v}/bin/runsvc.sh"));
-                        if runsvc_sh.as_std_path().exists() {
-                            candidate.runner_version = Some(v.to_owned());
-                        }
-                    }
-                }
+                inherit_runner_version_from_annotation(
+                    &mut candidate,
+                    &discovered_annotations,
+                    paths,
+                );
                 let after_spec = with_hash(candidate);
                 let hashes_equal = after_spec.spec_hash == discovered.spec_hash
                     && !discovered.spec_hash.is_empty();
@@ -343,7 +309,7 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
 
                     let mut field_changes: Vec<FieldChange> = Vec::new();
                     let recreate_reasons = classify_recreate_reasons_from_annotations(
-                        &annotations,
+                        annotations,
                         &after_spec,
                         &mut field_changes,
                     );
@@ -794,7 +760,7 @@ pub(super) fn with_hash(mut spec: EffectiveRunnerSpec) -> EffectiveRunnerSpec {
 /// (if not already set) and rendering the unit text + drop-ins.
 /// `RunnerPlan` carries the rendered bytes that apply.rs writes to
 /// disk verbatim, instead of re-rendering.
-/// Build a `RunnerPlan` for the CreateRunner action, extending
+/// Build a `RunnerPlan` for the `CreateRunner` action, extending
 /// `warnings` with any non-fatal advisories the renderer produced
 /// (e.g. `hardening.kvm=false` notes). The Plan-level `warnings`
 /// Vec at `plan_from`'s top is the single sink — without the
@@ -967,7 +933,7 @@ fn trunc_with_warn(cidr: &IpNet, field: &'static str) -> IpNet {
 ///
 /// Without canonicalization at BOTH sites, a cosmetic TOML reorder
 /// `["sccache", "ccache"]` ↔ `["ccache", "sccache"]` flips
-/// `cache_pool_hash` AND every runner's `spec_hash` (serde_json
+/// `cache_pool_hash` AND every runner's `spec_hash` (`serde_json`
 /// preserves Vec order → different JSON bytes → different SHA256),
 /// producing spurious `UpdateCachePool` plans AND `UpdateRunner`
 /// plans for every runner that binds the pool, all with no
@@ -1343,8 +1309,8 @@ pub(super) fn lower_to_effective(
     // mode runners have no namespace and therefore no /30 to
     // allocate, so we skip `netns_subnet_for_slot` and leave
     // `subnet = None`. This both reflects the fact (no subnet
-    // exists) and preserves the v0.1 64-slot pool capacity for
-    // runners that actually need a slot.
+    // exists) and preserves the 64-slot pool capacity for runners
+    // that actually need a slot.
     let network_ref = runner
         .network
         .clone()
@@ -1368,7 +1334,7 @@ pub(super) fn lower_to_effective(
                     // pool, indexed by `slot_idx` (the runner's
                     // position in the expanded list). 64 /30 slots
                     // in a /24 = 64 max simultaneous netns runners
-                    // under v0.1's hardcoded pool. Persistent
+                    // under the hardcoded pool. Persistent
                     // [defaults] netns_subnet config is design
                     // Part 9c future scope.
                     let subnet = netns_subnet_for_slot(slot_idx, &runner.name)?;
@@ -1393,7 +1359,7 @@ pub(super) fn lower_to_effective(
                         })
                     } else {
                         // Open with no policy collapses to the
-                        // implicit-Open shape — preserves the v0.1
+                        // implicit-Open shape — preserves the
                         // spec_hash for no-op Open blocks and keeps
                         // `Some(binding)` ⇔ "directives to render"
                         // as the binding semantics.
@@ -1498,11 +1464,44 @@ pub(super) fn lower_to_effective(
 
 pub(super) fn host_arch() -> Arch {
     // Fallback when defaults.arch and runner.arch are both unset.
-    // x86_64 is the v0.1 reference arch; aarch64 hosts override on
+    // x86_64 is the reference arch; aarch64 hosts override on
     // [defaults] per Part 4 example.
     if cfg!(target_arch = "aarch64") {
         Arch::Aarch64
     } else {
         Arch::X86_64
+    }
+}
+
+/// In-place `runner_version` inheritance from the discovered
+/// X-Ghars-Effective-Version annotation. Required for the post-
+/// `RENDERER_SCHEMA`-bump cascade: every binary upgrade flips
+/// `spec_hash` for every runner, so the in-place arm fires on every
+/// managed runner. If the operator's TOML doesn't pin
+/// `runner_version` (the "implicit latest" pattern), the runner is
+/// already installed at a specific version on disk — the annotation
+/// captured that version at the last apply.
+///
+/// Gates: (1) operator-pinned `runner_version` wins; (2) empty
+/// annotation is treated as None; (3) annotation must pass
+/// `validate_version`; (4) the named `bin.X.Y.Z/bin/runsvc.sh` must
+/// exist on disk — closes the forged-annotation propagation
+/// path (a fabricated `X-Ghars-Effective-Version` cannot ride
+/// hash equality into a non-existent bin dir).
+fn inherit_runner_version_from_annotation(
+    candidate: &mut EffectiveRunnerSpec,
+    discovered_annotations: &DiscoveredAnnotations,
+    paths: &Paths,
+) {
+    if candidate.runner_version.is_none()
+        && let Some(v) = discovered_annotations.runner_version.as_deref()
+        && !v.is_empty()
+        && crate::validators::validate_version(v).is_ok()
+    {
+        let runner_home = paths.runner_home(&candidate.trust_zone, &candidate.name);
+        let runsvc_sh = runner_home.join(format!("bin.{v}/bin/runsvc.sh"));
+        if runsvc_sh.as_std_path().exists() {
+            candidate.runner_version = Some(v.to_owned());
+        }
     }
 }
