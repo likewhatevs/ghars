@@ -1,10 +1,9 @@
 //! Integration tests for TOML config parsing — round-trip via the
-//! `Config` serde derives. The library exposes `config::load` as a
-//! `todo!()` placeholder pending B1 wiring; these tests use
-//! `toml::from_str::<Config>()` directly, which is the implementation
-//! the loader will eventually call. They verify the schema accepts the
-//! shapes documented in Part 4 and rejects malformed shapes via the
-//! `deny_unknown_fields` discipline.
+//! `Config` serde derives. The library exposes `Config` as a pure
+//! serde type; `cli::load::load_config` owns the IO + post-load
+//! validation. These tests use `toml::from_str::<Config>()` directly
+//! to verify the schema accepts the shapes documented in Part 4 and
+//! rejects malformed shapes via the `deny_unknown_fields` discipline.
 //!
 //! These are END-TO-END tests of the schema layer in the sense that
 //! they consume operator-authored TOML and assert what `Config` looks

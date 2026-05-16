@@ -32,13 +32,13 @@
 //! - `env_file_*`                 — `bin.X.Y.Z/.env` body for the
 //!   canonical operator shapes (no-caches, ccache-only, sccache-only,
 //!   combined-kind, multi-binding direct-construct, operator env vars,
-//!   non-default trust_zone). `env_file_ccache_only_binding` /
+//!   non-default `trust_zone`). `env_file_ccache_only_binding` /
 //!   `env_file_non_default_trust_zone` pin the `has_ccache` binding
-//!   gate on the positive side (CCACHE_DIR line present);
+//!   gate on the positive side (`CCACHE_DIR` line present);
 //!   `env_file_no_caches_no_operator_env` / `env_file_sccache_only_binding`
-//!   pin the negative side (no CCACHE_DIR line).
+//!   pin the negative side (no `CCACHE_DIR` line).
 //! - `path_file_*`                — `bin.X.Y.Z/.path` body for the
-//!   minimal, operator-augmented, and non-default name+trust_zone
+//!   minimal, operator-augmented, and non-default `name+trust_zone`
 //!   shapes.
 //! - `nft_rules_minimal`/`_full`  — nft rule pair (host + ns) per
 //!   Part 9c.
@@ -46,9 +46,9 @@
 //! Per-area variant fixtures cover renderer-branch gaps the base
 //! fixtures above leave unpinned. Each area's `<area>_*` family
 //! includes:
-//! - `dropin_00_identity_*` — runner_version=None, runner_sha256/tarball
-//!   Some, arch_aarch64, non_default_trust_zone / runner_name, %-escape
-//!   in operator env vars, DnsMode::Static, Ipv6Mode::Enabled, Open-mode
+//! - `dropin_00_identity_*` — `runner_version=None`, `runner_sha256/tarball`
+//!   Some, `arch_aarch64`, `non_default_trust_zone` / `runner_name`, %-escape
+//!   in operator env vars, `DnsMode::Static`, `Ipv6Mode::Enabled`, Open-mode
 //!   dns/ipv6 emission.
 //! - `dropin_15_resolv_*` — Open vs Netns bind sources (the always-
 //!   emitted drop-in had zero coverage before).
@@ -56,9 +56,9 @@
 //!   `etc_broad_only`, and `kvm_on_only` per-branch isolation pins
 //!   beyond the bundled `_strict` fixture.
 //! - `dropin_30_cache_pool_multi_binding` — per-binding [Unit]
-//!   accumulation + BindPaths multi-entry join.
+//!   accumulation + `BindPaths` multi-entry join.
 //! - `dropin_40_network_open_*_only` — per-field cgroup-BPF isolation
-//!   (ip_allow / ip_deny / restrict_address_families standalone).
+//!   (`ip_allow` / `ip_deny` / `restrict_address_families` standalone).
 //! - `dropin_50_numa_{cpus,memory}_only` — per-field NUMA isolation.
 //! - `dropin_60_proxy_{http,no_proxy,ca_certs}_only` — per-field
 //!   proxy isolation.
@@ -148,7 +148,7 @@ fn dropin<'a>(drop_ins: &'a BTreeMap<String, String>, name: &str) -> &'a str {
 /// Build an `EffectiveRunnerSpec` with a Netns-mode
 /// `EffectiveNetworkBinding` for fixture matrices that vary `dns` /
 /// `ipv6` while keeping every other network field at a stable baseline.
-/// Concentrates the boilerplate that the dns_static / ipv6_enabled /
+/// Concentrates the boilerplate that the `dns_static` / `ipv6_enabled` /
 /// 15-resolv-netns fixtures would otherwise copy-paste verbatim.
 ///
 /// The populated `ip_allow` / `ip_deny` / `restrict_address_families`
@@ -188,7 +188,7 @@ fn spec_with_netns_network(dns: DnsMode, ipv6: Ipv6Mode) -> EffectiveRunnerSpec 
 /// consumers' snapshot bytes. The signature accepts any
 /// `(dns, ipv6)` combo (no `validate_network_spec` mirror) because
 /// direct-construct fixtures are exactly the surface that bypasses
-/// the apply-time validator — adding a debug_assert here would
+/// the apply-time validator — adding a `debug_assert` here would
 /// reject legitimate fixtures that exercise the validator-bypassed
 /// render path.
 fn spec_with_open_network(dns: DnsMode, ipv6: Ipv6Mode) -> EffectiveRunnerSpec {

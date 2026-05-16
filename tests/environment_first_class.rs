@@ -45,7 +45,7 @@ fn base_spec() -> EffectiveRunnerSpec {
 }
 
 /// API-REVIEWER HARD REQ: an operator-declared env var lands in BOTH
-/// the .env file (LAYER 2, consumed by Runner.Listener::LoadAndSetEnv
+/// the .env file (LAYER 2, consumed by `Runner.Listener::LoadAndSetEnv`
 /// for workflow steps) AND the 00-ghars.conf `Environment=` directive
 /// (LAYER 1, consumed by systemd for the runner unit). Without this
 /// pin a future renderer refactor could quietly drop one layer and
@@ -102,7 +102,7 @@ fn operator_env_vars_emit_in_alphabetical_order_in_env_file() {
 /// 00-ghars.conf's `Environment=` directive but emitted VERBATIM in
 /// the .env file. Both consumers see the IDENTICAL literal value
 /// after systemd's specifier expansion (Environment=) or .NET's
-/// LoadAndSetEnv (verbatim line read).
+/// `LoadAndSetEnv` (verbatim line read).
 #[test]
 fn operator_value_with_percent_is_escaped_in_identity_but_verbatim_in_env_file() {
     let mut spec = base_spec();
@@ -328,8 +328,8 @@ fn validator_rejects_invalid_path_entries() {
     );
 }
 
-/// Validator accepts valid environment.vars + path_prepend +
-/// path_append combinations (positive case — pins that valid
+/// Validator accepts valid environment.vars + `path_prepend` +
+/// `path_append` combinations (positive case — pins that valid
 /// operator configs pass cleanly).
 #[test]
 fn validator_accepts_valid_environment_spec() {

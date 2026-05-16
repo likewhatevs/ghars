@@ -442,10 +442,10 @@ fn render_runner_unit_trust_zone_paths() {
 /// `runner_version` is None, `WorkingDirectory` and
 /// `ConditionPathExists` fall back to a literal `bin.latest`
 /// path segment (the renderer's placeholder before apply-time
-/// release-API resolution fills the version). The CreateRunner +
+/// release-API resolution fills the version). The `CreateRunner` +
 /// recreate paths re-render with a resolved version BEFORE the
 /// bytes land on disk; this test covers the plan-time-only render
-/// output that the in-place UpdateRunner intersection arm
+/// output that the in-place `UpdateRunner` intersection arm
 /// produces when the discovered runner has no
 /// X-Ghars-Effective-Version annotation to inherit from.
 #[test]
@@ -466,15 +466,15 @@ fn render_runner_unit_falls_back_to_bin_latest_when_runner_version_is_none() {
     );
 }
 
-/// `BindPaths=/var/lib/ghars/{trust_zone}` is the StateDirectory
+/// `BindPaths=/var/lib/ghars/{trust_zone}` is the `StateDirectory`
 /// replacement that makes the runner home writable inside the
 /// sandbox (the runner home dir is not under
 /// `/var/lib/private/ghars-tz-<TRUST_ZONE>` because ghars creates
-/// the dir ahead of unit-start; systemd's DynamicUser auto-bind
+/// the dir ahead of unit-start; systemd's `DynamicUser` auto-bind
 /// would otherwise try to create a private dir + symlink that
 /// conflicts with the regular dir). The directive must be present
 /// in every runner's 00-ghars.conf regardless of which trust zone
-/// the runner is in. Parametrize over multiple trust_zones to
+/// the runner is in. Parametrize over multiple `trust_zones` to
 /// catch any future hardcoding of the "default" zone name.
 #[test]
 fn render_runner_unit_bind_paths_carries_per_trust_zone() {
