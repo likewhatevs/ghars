@@ -266,7 +266,12 @@ pub(super) fn apply_exit_code(
         }
         return if detailed_exitcode { 2 } else { 0 };
     }
-    if !result.succeeded.is_empty() {
+    // Partial-failure (4) fires when ANY action landed in a non-failed
+    // state. NoOp / DryRunSkipped outcomes go into `skipped`, not
+    // `succeeded`, but they still represent in-sync state that the
+    // operator should know survived the apply — so they count as
+    // "something landed" for precedence over 1/5.
+    if !result.succeeded.is_empty() || !result.skipped.is_empty() {
         return 4;
     }
     let any_auth = result

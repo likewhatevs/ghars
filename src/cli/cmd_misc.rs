@@ -174,7 +174,7 @@ pub(super) fn cmd_add(
     // The runner name is generated above (auto-numbered) when the
     // operator omits --name; either way it must satisfy
     // IDENTIFIER_REGEX so apply downstream accepts it.
-    validators::validate_runner_name(&name)?;
+    super::util::validate_runner_name_with_hint(&name)?;
 
     // Filter empty entries from clap's value_delimiter parse — a
     // trailing or adjacent comma in `--labels foo,,bar` produces a
@@ -232,10 +232,9 @@ pub(super) fn cmd_add(
         return Ok(0);
     }
 
-    // Re-load + apply.
     let apply_args = ApplyArgs {
         only: vec![name],
-        auto_approve: false,
+        auto_approve: args.auto_approve,
         fail_fast: false,
         dry_run: false,
         detailed_exitcode: false,
@@ -251,42 +250,17 @@ pub(super) fn cmd_add(
 
 pub(super) fn cmd_logs(paths: &Paths, args: &LogsArgs) -> Result<i32> {
     let names = if args.names.is_empty() {
-        match DbusSystemd::new() {
-            Ok(s) => state::discover(&s, paths)?
-                .runners
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>(),
-            Err(err) => {
-                // Do not silently substitute an empty discovery —
-                // tail with no names returns a confusing "no runners to
-                // tail" error below; the operator deserves to know that
-                // the underlying cause was a D-Bus failure.
-                eprintln!(
-                    "warning: systemd D-Bus connection failed: {err}; runner state unavailable."
-                );
-                Vec::new()
-            }
-        }
+        super::util::discover_or_warn(paths)?
+            .runners
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
     } else {
-        // Validate operator-supplied names against IDENTIFIER_REGEX
-        // before constructing the journalctl query. journalctl `-u
-        // ghars-runner@$NAME.service` would gleefully spawn for any
-        // string; rejecting bad shapes early gives a clear error and
-        // closes a SEC-35-adjacent injection vector via the unit name.
+        // Validate operator-supplied names against IDENTIFIER_REGEX so
+        // `journalctl -u ghars-runner@$NAME.service` only ever sees a
+        // shape known to the identifier regex.
         for name in &args.names {
-            validators::validate_runner_name(name).map_err(|e| match e {
-                GharsError::Validation(msg, _) => GharsError::Validation(
-                    format!("invalid runner name {name:?}: {msg}"),
-                    format!(
-                        "runner names must use lowercase letters, digits, and dashes; \
-                         start with a letter; end with a letter or digit; \
-                         and be ≤{} characters",
-                        crate::config::IDENTIFIER_MAX_LEN,
-                    ),
-                ),
-                other => other,
-            })?;
+            super::util::validate_runner_name_with_hint(name)?;
         }
         args.names.clone()
     };
@@ -300,7 +274,7 @@ pub(super) fn cmd_logs(paths: &Paths, args: &LogsArgs) -> Result<i32> {
 
     let mut cmd = ProcCommand::new("journalctl");
     for name in &names {
-        cmd.arg("-u").arg(format!("ghars-runner@{name}.service"));
+        cmd.arg("-u").arg(crate::paths::runner_unit_name(name));
     }
     if args.follow {
         cmd.arg("-f");
@@ -337,29 +311,27 @@ pub(super) fn cmd_completions_to<W: io::Write>(shell: clap_complete::Shell, w: &
 pub(super) fn cmd_manpages(output: &Utf8Path) -> Result<i32> {
     fs::create_dir_all(output.as_std_path())?;
     let cmd = Cli::command();
-    let man = clap_mangen::Man::new(cmd.clone());
     let mut buffer: Vec<u8> = Vec::new();
-    man.render(&mut buffer).map_err(GharsError::Io)?;
-    let dest = output.join(format!("{}.1", cmd.get_name()));
-    fs::write(dest.as_std_path(), buffer)?;
-    // Recurse into subcommands so `ghars-status.1`, `ghars-apply.1`,
-    // etc. are emitted alongside the top-level page.
+    clap_mangen::Man::new(cmd.clone())
+        .render(&mut buffer)
+        .map_err(GharsError::Io)?;
+    fs::write(
+        output.join(format!("{}.1", cmd.get_name())).as_std_path(),
+        buffer,
+    )?;
     for sub in cmd.get_subcommands() {
         if sub.is_hide_set() {
             continue;
         }
         let sub_name = format!("{}-{}", cmd.get_name(), sub.get_name());
+        // `Man::title()` overrides the manpage title without requiring
+        // a `&'static` Command name — no Box::leak needed.
         let mut buffer: Vec<u8> = Vec::new();
-        // clap::Command::name takes Into<clap::builder::Str>, which only
-        // From<&'static str>. Leak the per-subcommand name string —
-        // manpage generation runs once per `ghars manpages` invocation
-        // and the leaks are bounded by the subcommand count.
-        let leaked: &'static str = Box::leak(sub_name.clone().into_boxed_str());
-        clap_mangen::Man::new(sub.clone().name(leaked))
+        clap_mangen::Man::new(sub.clone())
+            .title(sub_name.clone())
             .render(&mut buffer)
             .map_err(GharsError::Io)?;
-        let dest = output.join(format!("{sub_name}.1"));
-        fs::write(dest.as_std_path(), buffer)?;
+        fs::write(output.join(format!("{sub_name}.1")).as_std_path(), buffer)?;
     }
     Ok(0)
 }
@@ -376,18 +348,28 @@ pub(super) fn cmd_cleanup(paths: &Paths) -> Result<i32> {
             "run with sudo".into(),
         ));
     }
-    let systemd = DbusSystemd::new().ok();
+    // Refuse to proceed without D-Bus: tearing down unit files while
+    // systemd still has the units loaded leaves managed runners running
+    // with no on-disk unit to control. Fail fast with an actionable hint
+    // instead of half-cleaning.
+    let systemd = DbusSystemd::new().map_err(|e| {
+        GharsError::Systemd(
+            format!("cleanup requires systemd D-Bus: {e}"),
+            "ensure dbus is running and the caller has access to the system bus".into(),
+        )
+    })?;
 
     // 1) Stop and disable all managed runner, cache, and netns units.
-    if let Some(ref sd) = systemd {
+    {
+        let sd = &systemd;
         let actual = state::discover(sd, paths).unwrap_or_default();
         for name in actual.runners.keys() {
-            let unit = format!("ghars-runner@{name}.service");
+            let unit = crate::paths::runner_unit_name(name);
             let _ = sd.stop_unit(&unit);
             let _ = sd.disable_unit(&unit);
         }
         for name in actual.cache_pools.keys() {
-            let unit = format!("ghars-cache@{name}.service");
+            let unit = crate::paths::cache_unit_name(name);
             let _ = sd.stop_unit(&unit);
             let _ = sd.disable_unit(&unit);
         }
@@ -426,21 +408,18 @@ pub(super) fn cmd_cleanup(paths: &Paths) -> Result<i32> {
         }
     }
     let netns_dir = std::path::Path::new("/var/run/netns");
-    if netns_dir.exists() {
-        if let Ok(entries) = fs::read_dir(netns_dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with("ghars-") {
-                    let _ = fs::remove_file(entry.path());
-                }
+    if netns_dir.exists()
+        && let Ok(entries) = fs::read_dir(netns_dir)
+    {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("ghars-") {
+                let _ = fs::remove_file(entry.path());
             }
         }
-    }
 
     // 5) daemon-reload so systemd forgets the removed units.
-    if let Some(ref sd) = systemd {
-        let _ = sd.daemon_reload();
-    }
+    let _ = systemd.daemon_reload();
 
     eprintln!("cleanup complete. Config at {} is intact — run `ghars apply` to rebuild.", paths.config_dir.join("ghars.toml"));
     Ok(0)
@@ -466,5 +445,69 @@ fn remove_glob(dir: &camino::Utf8Path, pattern: &str) {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use camino::Utf8PathBuf;
+
+    #[test]
+    fn rm_rf_silently_succeeds_on_nonexistent_path() {
+        // No assertion: rm_rf takes a non-existent path and must not
+        // panic / propagate. The `if path.exists()` guard handles this.
+        let p = Utf8PathBuf::from("/tmp/ghars-nonexistent-path-for-test-12345");
+        rm_rf(&p);
+    }
+
+    #[test]
+    fn rm_rf_removes_directory_tree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        let nested = root.join("a/b/c");
+        std::fs::create_dir_all(nested.as_std_path()).unwrap();
+        std::fs::write(nested.join("file").as_std_path(), b"hi").unwrap();
+        let target = root.join("a");
+        rm_rf(&target);
+        assert!(!target.as_std_path().exists(), "target dir must be gone");
+    }
+
+    #[test]
+    fn remove_glob_removes_matching_files_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        std::fs::write(root.join("ghars-runner@a.service").as_std_path(), b"").unwrap();
+        std::fs::write(root.join("ghars-runner@b.service").as_std_path(), b"").unwrap();
+        std::fs::write(root.join("unrelated.service").as_std_path(), b"").unwrap();
+        remove_glob(&root, "ghars-runner@*");
+        assert!(!root.join("ghars-runner@a.service").as_std_path().exists());
+        assert!(!root.join("ghars-runner@b.service").as_std_path().exists());
+        assert!(root.join("unrelated.service").as_std_path().exists());
+    }
+
+    #[test]
+    fn remove_glob_removes_matching_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        let drop_in = root.join("ghars-runner@a.service.d");
+        std::fs::create_dir_all(drop_in.as_std_path()).unwrap();
+        std::fs::write(drop_in.join("00-ghars.conf").as_std_path(), b"x").unwrap();
+        remove_glob(&root, "ghars-runner@*");
+        assert!(
+            !drop_in.as_std_path().exists(),
+            "directory matching prefix must be removed (recursively)"
+        );
+    }
+
+    #[test]
+    fn remove_glob_tolerates_nonexistent_dir() {
+        // No assertion: must not panic. fs::read_dir returns Err which
+        // the function silently absorbs.
+        remove_glob(
+            &Utf8PathBuf::from("/tmp/ghars-no-such-dir-for-glob-test"),
+            "anything-*",
+        );
     }
 }

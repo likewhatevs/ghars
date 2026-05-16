@@ -105,14 +105,6 @@ pub struct ValidateArgs {
 }
 
 /// `ghars plan [...]`.
-///
-/// `--refresh-releases` and `--output-dir` are NOT exposed in v0.1 —
-/// they were placeholders for capabilities that don't ship until
-/// v0.2 (see CONTRIBUTING.md "Deferred to v0.2"). v0.1 always
-/// queries the release API on-demand and always writes generated
-/// artifacts to the host paths under `Paths`. Surfacing the flags
-/// without the underlying behavior would silently no-op, which is
-/// the failure mode this omission closes.
 #[derive(clap::Args, Debug)]
 pub struct PlanArgs {
     /// Filter to a subset of runner names (substring match).
@@ -189,9 +181,6 @@ pub struct PlanArgs {
 }
 
 /// `ghars apply [...]`.
-///
-/// `--refresh-releases` is NOT exposed in v0.1 (see [`PlanArgs`] doc
-/// comment + CONTRIBUTING.md "Deferred to v0.2").
 #[derive(clap::Args, Debug)]
 pub struct ApplyArgs {
     /// Filter to a subset of runner names.
@@ -318,6 +307,11 @@ pub struct AddArgs {
     /// Don't apply — just edit the config. Operator runs `ghars apply` next.
     #[arg(long)]
     pub no_apply: bool,
+    /// Skip the interactive y/N apply confirmation. Required for
+    /// non-TTY invocations (CI, cron, systemd-run) that don't pass
+    /// `--no-apply`.
+    #[arg(long)]
+    pub auto_approve: bool,
 }
 
 /// `ghars logs`.

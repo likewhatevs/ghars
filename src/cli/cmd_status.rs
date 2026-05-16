@@ -10,10 +10,9 @@ use crate::error::GharsError;
 use crate::paths::Paths;
 use crate::preflight;
 use crate::state;
-use crate::systemd::DbusSystemd;
 
 use super::args::{ColorMode, StatusArgs};
-use super::cmd_apply::extract_pat_for_api;
+use super::cmd_apply::pat_for_url;
 use super::cmd_metrics::{MetricRow, collect_metrics, render_metrics_text};
 use super::exit_codes::status_exit_code;
 use super::load::load_config;
@@ -52,21 +51,7 @@ pub(super) fn cmd_status(
     let runners = if args.health_only {
         state::ActualState::default()
     } else {
-        let mut actual = match DbusSystemd::new() {
-            Ok(s) => state::discover(&s, paths)?,
-            Err(err) => {
-                // Surface the failure on stderr instead of returning
-                // an empty default silently. State output that omits
-                // managed runners with no warning misleads operators into
-                // thinking nothing is installed when in fact the system
-                // bus is unreachable (sandboxed shell, broken dbus,
-                // missing CAP_SYS_RAWIO inside a container, etc.).
-                eprintln!(
-                    "warning: systemd D-Bus connection failed: {err}; runner state unavailable."
-                );
-                state::ActualState::default()
-            }
-        };
+        let mut actual = super::util::discover_or_warn(paths)?;
         // Populate `actual.orphans` here. state::discover always
         // returns an empty orphans Vec because at the discovery layer we
         // only know "managed" vs "external", not "in-config" vs "out-of-
@@ -77,8 +62,15 @@ pub(super) fn cmd_status(
         // simple set-difference rather than a new pub fn until a second
         // caller needs it (status text renderer covers the orphan
         // column off this same field).
+        //
+        // `expand_counts` is required: a `[[runner]] name="foo" count=3`
+        // block produces on-disk units `foo-1`/`foo-2`/`foo-3` but the
+        // raw `cfg.runners` slice carries only the bare `foo`. Diffing
+        // against unexpanded names would misclassify every count-expanded
+        // runner as an orphan.
+        let expanded = crate::plan::expand_counts(&cfg)?;
         let desired_names: std::collections::HashSet<&str> =
-            cfg.runners.iter().map(|r| r.name.as_str()).collect();
+            expanded.iter().map(|r| r.name.as_str()).collect();
         for name in actual.runners.keys() {
             if !desired_names.contains(name.as_str()) {
                 actual
@@ -96,26 +88,37 @@ pub(super) fn cmd_status(
     };
 
     let github_statuses: std::collections::HashMap<String, String> = if args.github {
-        let pat = extract_pat_for_api(&cfg);
+        // Distinct URLs across all declared runners; count-block siblings
+        // share a URL so dedup via HashSet keeps the API call count
+        // proportional to repos/orgs, not individual runners.
         let urls: std::collections::HashSet<&str> =
             cfg.runners.iter().map(|r| r.url.as_str()).collect();
-        let client = match crate::github::build_blocking_client(cfg.proxy.as_ref()) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("warning: cannot build HTTP client for --github: {e}");
-                return Ok(status_exit_code(&health));
-            }
-        };
-        let mut combined = std::collections::HashMap::new();
-        for url in urls {
-            match crate::github::list_runner_statuses(&client, url, pat.as_deref()) {
-                Ok(map) => combined.extend(map),
-                Err(e) => {
-                    eprintln!("warning: GitHub runner status query failed for {url}: {e}");
+        match crate::github::build_blocking_client(cfg.proxy.as_ref()) {
+            Ok(client) => {
+                let mut combined = std::collections::HashMap::new();
+                for url in urls {
+                    // Per-URL PAT: use whichever auth the runner pointing
+                    // at this URL declared. Multi-auth configs no longer
+                    // collapse to "any PAT".
+                    let pat = pat_for_url(&cfg, url);
+                    match crate::github::list_runner_statuses(&client, url, pat.as_deref()) {
+                        Ok(map) => combined.extend(map),
+                        Err(e) => {
+                            eprintln!("warning: GitHub runner status query failed for {url}: {e}");
+                        }
+                    }
                 }
+                combined
+            }
+            Err(e) => {
+                // Client-build failure: warn and fall through with an
+                // empty map so the rest of the status report (RUNNERS,
+                // METRICS, SCORE) still renders. The pre-fix code
+                // short-circuited mid-render, hiding everything below.
+                eprintln!("warning: cannot build HTTP client for --github: {e}");
+                std::collections::HashMap::new()
             }
         }
-        combined
     } else {
         std::collections::HashMap::new()
     };
@@ -201,9 +204,12 @@ pub(super) fn render_status_text(
                 }
             };
             if has_github {
-                let gh = github_statuses.get(name).map(String::as_str).unwrap_or("-");
-                writeln!(stdout, "  {name:<24} {active:<10} {enabled:<10} {gh:<10} {drift}")
-                    .map_err(GharsError::Io)?;
+                let gh = github_statuses.get(name).map_or("-", String::as_str);
+                writeln!(
+                    stdout,
+                    "  {name:<24} {active:<10} {enabled:<10} {gh:<10} {drift}"
+                )
+                .map_err(GharsError::Io)?;
             } else {
                 writeln!(stdout, "  {name:<24} {active:<10} {enabled:<10} {drift}")
                     .map_err(GharsError::Io)?;
@@ -397,10 +403,10 @@ pub(super) enum ScoreOutcome {
 fn score_unit_names(actual: &state::ActualState) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     for name in actual.runners.keys() {
-        names.push(format!("ghars-runner@{name}.service"));
+        names.push(crate::paths::runner_unit_name(name));
     }
     for name in actual.cache_pools.keys() {
-        names.push(format!("ghars-cache@{name}.service"));
+        names.push(crate::paths::cache_unit_name(name));
     }
     names
 }
@@ -452,10 +458,18 @@ fn run_systemd_analyze_security(unit: &str) -> std::result::Result<String, Strin
         // itself rejected the request. Surface stderr so the
         // operator sees the underlying cause inline rather than
         // having to re-run the command manually.
+        //
+        // ExitStatus::code() returns None when the process was
+        // killed by a signal. Surface "signal-killed" instead of a
+        // magic `-1` so the operator can distinguish the two cases
+        // (exit-status vs signal) at a glance.
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let code = output.status.code().unwrap_or(-1);
+        let exit_label = match output.status.code() {
+            Some(code) => format!("exited {code}"),
+            None => "signal-killed".to_string(),
+        };
         return Err(format!(
-            "systemd-analyze exited {code} for {unit}: {}",
+            "systemd-analyze {exit_label} for {unit}: {}",
             stderr.trim()
         ));
     }
