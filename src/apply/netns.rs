@@ -61,7 +61,7 @@ pub(super) fn provision_netns_artifacts(
     }
 
     // Netns-mode bindings always carry `subnet = Some(/30)` —
-    // `lower_to_effective` allocates the /30 from the v0.1 64-slot
+    // `lower_to_effective` allocates the /30 from the 64-slot
     // pool whenever it constructs a Netns binding. Delegate to
     // `EffectiveNetworkBinding::netns_subnet` for the typed
     // mode⇒subnet contract check; the helper returns a typed
@@ -139,7 +139,7 @@ pub(super) fn provision_netns_artifacts(
     // 4) daemon-reload + enable + start ghars-net@INSTANCE so the
     //    runner unit's `Requires=ghars-net@%i.service` is satisfied
     //    when its own start_unit fires below.
-    let netns_unit = format!("ghars-net@{}.service", spec.name);
+    let netns_unit = crate::paths::netns_unit_name(&spec.name);
     deps.systemd.daemon_reload()?;
     deps.systemd.enable_unit(&netns_unit)?;
     log.push(UndoStep::EnableUnit {
@@ -158,6 +158,15 @@ pub(super) fn provision_netns_artifacts(
 /// the netns is no longer in use) and BEFORE the unit-files are
 /// deleted. Mirrors [`provision_netns_artifacts`] in reverse.
 ///
+/// Note the intentional mode-gate asymmetry with the provision side:
+/// `provision_netns_artifacts` is mode-gated (no-op for Open-mode
+/// runners), but teardown runs unconditionally — open-mode runners
+/// never accrue ghars-net@ side-units, so the per-call D-Bus
+/// `stop_unit`/`disable_unit` return `NoSuchUnit` which the match
+/// arms absorb as a no-op. Removing the gate keeps the teardown
+/// path safe to call for any runner shape (the orchestrator routes
+/// every Remove through here without inspecting the binding mode).
+///
 /// Idempotent: missing files / inactive units do not fail. The
 /// `ghars-net@.service` template at `<unit_dir>/ghars-net@.service` is
 /// NOT removed — other Netns runners may still reference it. (The
@@ -174,7 +183,7 @@ pub(super) fn teardown_netns_artifacts(
     paths: &Paths,
     log: &mut UndoLog,
 ) -> Result<()> {
-    let netns_unit = format!("ghars-net@{name}.service");
+    let netns_unit = crate::paths::netns_unit_name(name);
 
     // 1) Stop + disable. Tolerate NoSuchUnit — open-mode runners
     //    never had a ghars-net@ side-unit, so the D-Bus call returns
@@ -264,10 +273,10 @@ pub(super) fn teardown_netns_artifacts(
 /// /proc reflects the entry, or the PID was recycled mid-poll); we
 /// retry on ENOENT, NOT treat it as success.
 ///
-/// v0.2 optimization: switch to
-/// `ExecMainHandoffTimestampMonotonic` D-Bus property — non-zero means
-/// systemd-executor reached `send_handoff_timestamp`, which is post-
-/// `setup_namespace`, eliminating the poll. v0.1 ships the simple loop.
+/// Future optimization: switch to `ExecMainHandoffTimestampMonotonic`
+/// D-Bus property — non-zero means systemd-executor reached
+/// `send_handoff_timestamp`, which is post-`setup_namespace`,
+/// eliminating the poll. Today ships the simple loop.
 const NETNS_VERIFY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
 const NETNS_VERIFY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(100);
 

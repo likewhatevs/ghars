@@ -36,8 +36,7 @@ use crate::paths::Paths;
 ///   the operator priority of "execute the action" vs "record what
 ///   happened".
 ///
-/// **Recommended logrotate config** (operators install separately —
-/// not bundled in v0.1):
+/// **Recommended logrotate config** (operators install separately):
 /// ```text
 /// /var/log/ghars/apply.log {
 ///     weekly

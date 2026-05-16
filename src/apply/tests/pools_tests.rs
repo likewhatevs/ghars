@@ -352,7 +352,7 @@ fn execute_update_cache_pool_restarts_when_drop_in_differs() {
 /// Pool-side `--no-restart` test — symmetric to the runner-side
 /// `update_runner_in_place_with_no_restart_returns_rewrote_no_restart_and_skips_systemd_calls`
 /// at `runners_tests.rs`. When the on-disk drop-in body diverges
-/// from the rendered body (files_changed > 0) AND `no_restart=true`,
+/// from the rendered body (`files_changed` > 0) AND `no_restart=true`,
 /// the handler MUST return `PoolRewroteNoRestart` AND skip every
 /// systemd lifecycle call (`daemon_reload`, `stop_unit`,
 /// `start_unit`). Same maintenance-window operator workflow as the

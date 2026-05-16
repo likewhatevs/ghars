@@ -160,7 +160,7 @@ impl ConfigShell for RealConfigShell {
         );
         let status = cmd
             .status()
-            .map_err(|e| spawn_err(&format!("config.sh register (path: {})", config_path), &e))?;
+            .map_err(|e| spawn_err(&format!("config.sh register (path: {config_path})"), &e))?;
         if status.success() {
             return Ok(());
         }

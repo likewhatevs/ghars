@@ -47,7 +47,7 @@ pub(super) struct MockSystemd {
     // budget-exhaustion error path without stalling for the full
     // production 5s budget (use the `_with_budget` variant with a
     // small Duration). Default `false` so existing tests inherit
-    // the test-process-uid fallback at line 174.
+    // the test-process-uid fallback in `MockSystemd::dynamic_uid`.
     pub(super) force_no_dynamic_user: Mutex<bool>,
 }
 
@@ -76,7 +76,7 @@ impl MockSystemd {
             .insert(name.into(), uid);
     }
     /// Force `lookup_dynamic_user_by_name` to return `Ok(None)`
-    /// unconditionally (simulating a DynamicUser name that
+    /// unconditionally (simulating a `DynamicUser` name that
     /// systemd never realized). Lets tests exercise
     /// `poll_dynamic_user_uid`'s budget-exhaustion error path.
     pub(super) fn set_force_no_dynamic_user(&self) {

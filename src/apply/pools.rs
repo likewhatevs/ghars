@@ -19,7 +19,7 @@ pub(super) fn execute_create_cache_pool(
     log: &mut UndoLog,
 ) -> Result<ApplyOutcome> {
     let pool = &plan.binding.name;
-    let unit_name = format!("ghars-cache@{pool}.service");
+    let unit_name = crate::paths::cache_unit_name(pool);
 
     // 1) Template unit file. Idempotent: write_root_owned truncates +
     //    rewrites the canonical body every apply so a manually-edited
@@ -75,7 +75,7 @@ pub(super) fn execute_update_cache_pool(
     no_restart: bool,
 ) -> Result<ApplyOutcome> {
     let pool = &delta.binding.name;
-    let unit_name = format!("ghars-cache@{pool}.service");
+    let unit_name = crate::paths::cache_unit_name(pool);
     let drop_in_dir = paths.cache_drop_in_dir(pool);
     let drop_in_dir_existed = drop_in_dir.exists();
     fs::create_dir_all(drop_in_dir.as_std_path())?;
@@ -150,7 +150,7 @@ pub(super) fn execute_remove_cache_pool(
     paths: &Paths,
     log: &mut UndoLog,
 ) -> Result<ApplyOutcome> {
-    let unit_name = format!("ghars-cache@{name}.service");
+    let unit_name = crate::paths::cache_unit_name(name);
     deps.systemd.stop_unit(&unit_name)?;
     log.push(UndoStep::StopUnit {
         name: unit_name.clone(),
