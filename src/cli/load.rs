@@ -20,8 +20,8 @@ use crate::error::GharsError;
 use crate::validators;
 
 /// Load config.toml from `path` using `toml::from_str` +
-/// `std::fs::read_to_string`. The library `config::load` is still a
-/// stub; the CLI does the IO.
+/// `std::fs::read_to_string`. The CLI owns the IO + post-load
+/// validator sweep; `config::Config` is pure serde.
 pub(super) fn load_config(path: &Utf8Path) -> Result<Config> {
     let raw = fs::read_to_string(path.as_std_path()).map_err(|e| {
         GharsError::Config(
@@ -217,12 +217,11 @@ pub(super) fn validate_security_overrides(cfg: &Config) -> Result<()> {
     }
 
     for runner in &cfg.runners {
-        let scope = format!("runner {:?}", runner.name);
         validate_hardening_block(&runner.hardening)
-            .map_err(|e| crate::error::prepend_validation_scope(&scope, e))?;
+            .map_err(|e| crate::error::prepend_runner_scope(&runner.name, e))?;
         if let Some(hooks) = runner.hooks.as_ref() {
             validate_hooks_block(hooks)
-                .map_err(|e| crate::error::prepend_validation_scope(&scope, e))?;
+                .map_err(|e| crate::error::prepend_runner_scope(&runner.name, e))?;
         }
     }
     Ok(())
@@ -602,9 +601,8 @@ pub(super) fn validate_cache_pool_binary_paths(cfg: &Config) -> Result<()> {
 /// with the `runner "NAME":` scope prefix.
 pub(super) fn validate_runner_names(cfg: &Config) -> Result<()> {
     for runner in &cfg.runners {
-        let scope = format!("runner {:?}", runner.name);
         validators::validate_runner_name(&runner.name)
-            .map_err(|e| crate::error::prepend_validation_scope(&scope, e))?;
+            .map_err(|e| crate::error::prepend_runner_scope(&runner.name, e))?;
     }
     Ok(())
 }
@@ -1035,9 +1033,8 @@ pub(super) fn validate_auth_keys(cfg: &Config) -> Result<()> {
 pub(super) fn validate_runner_tarballs(cfg: &Config) -> Result<()> {
     for runner in &cfg.runners {
         if let Some(p) = runner.runner_tarball.as_ref() {
-            let scope = format!("runner {:?}", runner.name);
             validators::validate_runner_tarball(p.as_str())
-                .map_err(|e| crate::error::prepend_validation_scope(&scope, e))?;
+                .map_err(|e| crate::error::prepend_runner_scope(&runner.name, e))?;
         }
     }
     Ok(())
@@ -1132,7 +1129,6 @@ pub(super) fn validate_netns_runner_name_lengths(cfg: &Config) -> Result<()> {
             runner.name.len() + 1 + suffix_digits
         };
         if worst_case_len > validators::NETNS_RUNNER_NAME_MAX_LEN {
-            let scope = format!("runner {:?}", runner.name);
             let msg = if suffix_digits == 0 {
                 format!(
                     "netns mode requires runner name <= {max} chars (kernel \
@@ -1159,8 +1155,8 @@ pub(super) fn validate_netns_runner_name_lengths(cfg: &Config) -> Result<()> {
                 "shorten the runner name to ≤{} chars or switch to network mode 'open'",
                 validators::NETNS_RUNNER_NAME_MAX_LEN
             );
-            return Err(crate::error::prepend_validation_scope(
-                &scope,
+            return Err(crate::error::prepend_runner_scope(
+                &runner.name,
                 GharsError::Validation(msg, hint),
             ));
         }
@@ -1194,9 +1190,8 @@ pub(super) fn validate_netns_runner_name_lengths(cfg: &Config) -> Result<()> {
 /// error with the scope prefix (`runner "NAME":` / `cache_pool "NAME":`).
 pub(super) fn validate_identity_fields(cfg: &Config) -> Result<()> {
     for runner in &cfg.runners {
-        let scope = format!("runner {:?}", runner.name);
         crate::systemd::check_identity_field("trust_zone", &runner.trust_zone)
-            .map_err(|e| crate::error::prepend_validation_scope(&scope, e))?;
+            .map_err(|e| crate::error::prepend_runner_scope(&runner.name, e))?;
     }
     for (name, pool) in &cfg.cache_pools {
         let scope = format!("cache_pool {name:?}");
@@ -1226,9 +1221,8 @@ pub(super) fn validate_identity_fields(cfg: &Config) -> Result<()> {
 /// with the `runner "NAME":` / `cache_pool "NAME":` scope prefix.
 pub(super) fn validate_trust_zone_lengths(cfg: &Config) -> Result<()> {
     for runner in &cfg.runners {
-        let scope = format!("runner {:?}", runner.name);
         validators::validate_trust_zone(&runner.trust_zone)
-            .map_err(|e| crate::error::prepend_validation_scope(&scope, e))?;
+            .map_err(|e| crate::error::prepend_runner_scope(&runner.name, e))?;
     }
     for (name, pool) in &cfg.cache_pools {
         let scope = format!("cache_pool {name:?}");
@@ -1251,7 +1245,7 @@ pub(super) fn validate_trust_zone_lengths(cfg: &Config) -> Result<()> {
 /// - empty/whitespace `path` → `Environment=NAME=` (empty value,
 ///   silently defeats the CA-bundle purpose)
 /// - relative `path` → `BindReadOnlyPaths=<rel>` which systemd
-///   rejects (BindReadOnlyPaths requires absolute paths, parallel
+///   rejects (`BindReadOnlyPaths` requires absolute paths, parallel
 ///   to [`validate_cache_pool_binary_paths`])
 ///
 /// Catching at load surfaces the typo with the operator's

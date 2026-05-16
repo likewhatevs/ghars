@@ -159,3 +159,49 @@ pub(super) fn action_matches_filter(action: &Action, only: &[String]) -> bool {
     let label = action.label();
     only.iter().any(|frag| label.contains(frag.as_str()))
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn action_matches_filter_empty_filter_matches_nothing() {
+        let action = Action::NoOp("buckos: in sync".into());
+        assert!(
+            !action_matches_filter(&action, &[]),
+            "empty filter must NOT match — callers gate on `!only.is_empty()` upstream",
+        );
+    }
+
+    #[test]
+    fn action_matches_filter_substring_matches_runner_name() {
+        let action = Action::NoOp("buckos: in sync".into());
+        assert!(action_matches_filter(&action, &["buckos".into()]));
+    }
+
+    #[test]
+    fn action_matches_filter_no_substring_does_not_match() {
+        let action = Action::NoOp("buckos: in sync".into());
+        assert!(!action_matches_filter(&action, &["other".into()]));
+    }
+
+    #[test]
+    fn action_matches_filter_any_fragment_matches() {
+        // OR semantics across fragments — operator passes `--only a,b`
+        // and either match triggers retention.
+        let action = Action::NoOp("buckos: in sync".into());
+        assert!(action_matches_filter(
+            &action,
+            &["other".into(), "buckos".into()]
+        ));
+    }
+
+    #[test]
+    fn action_matches_filter_label_substring_in_brackets_matches() {
+        // `Action::label()` for NoOp produces `NoOp(REASON)`; the
+        // substring match catches `NoOp` as well as inner tokens.
+        let action = Action::NoOp("buckos".into());
+        assert!(action_matches_filter(&action, &["NoOp".into()]));
+    }
+}

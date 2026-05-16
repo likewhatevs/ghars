@@ -138,21 +138,17 @@ pub(super) fn render_action_line(action: &Action, color: ColorMode, diff: bool) 
             // grep `[recreate]` (text) or use `summary.recreates`
             // (JSON).
             //
-            // Omit the parenthetical when `recreate_reasons` is
-            // empty so the renderer never emits `recreate ()`.
-            // `plan::plan_from` sets `requires_recreate =
-            // !recreate_reasons.is_empty()` post-classify, so this
-            // branch is unreachable from production today. Keep the
-            // guard as defense for hand-constructed `RunnerDelta`
-            // fixtures and any future construction site that decouples
-            // `requires_recreate` from `recreate_reasons` length.
+            // `plan::plan_from` enforces `requires_recreate =
+            // !recreate_reasons.is_empty()` post-classify, so an
+            // `update: recreate ()` output would only happen for a
+            // hand-constructed fixture violating that invariant —
+            // we let the empty-parens output surface as a loud
+            // signal rather than silently masking with a guard.
             let (sigil, mode) = if d.requires_recreate {
-                let mode = if d.recreate_reasons.is_empty() {
-                    "update: recreate".to_string()
-                } else {
-                    format!("update: recreate ({})", d.recreate_reasons.join(","))
-                };
-                ('!', mode)
+                (
+                    '!',
+                    format!("update: recreate ({})", d.recreate_reasons.join(",")),
+                )
             } else {
                 ('~', "update: in-place".into())
             };
@@ -258,14 +254,19 @@ pub(super) fn render_action_line(action: &Action, color: ColorMode, diff: bool) 
                     out.push_str(&block);
                 }
             }
-            // Surface drop-ins the recreate will DELETE. For
-            // each basename present in the discovered pre-update set
-            // (`d.before_drop_in_basenames`) but absent from the
-            // post-recreate set (`d.after.drop_ins`), emit a `-
-            // basename` line. Basename-only — no body block — to
-            // avoid the credential-leakage surface for proxy creds
-            // (e.g. operator's `99-custom.conf` may have referenced
-            // sensitive Environment= values).
+            // Surface drop-ins the recreate will DELETE.
+            //
+            // ASYMMETRY with the in-place Removed path below: recreate-
+            // Removed is basename-only (no body block) because a
+            // recreate tears down EVERY drop-in wholesale — the body
+            // listing would offer little operator-actionable signal
+            // beyond the basename and would re-expose credentials from
+            // proxy / custom drop-ins. In-place Removed shows body
+            // because the operator explicitly removed a single named
+            // drop-in (e.g. by clearing `memory_max`) and the body
+            // content tells them what behavior is going away. JSON
+            // mirrors this asymmetry via the `body_suppressed: true`
+            // marker on recreate-Removed entries.
             //
             // `None` ⇒ "unknown pre-state" (test fixture or any
             // future construction site without a `DiscoveredRunner`);
@@ -324,8 +325,8 @@ pub(super) fn render_action_line(action: &Action, color: ColorMode, diff: bool) 
                 };
                 if let Some((sigil, basename)) = sigil_basename {
                     out.push('\n');
-                    // Same defense-in-depth basename
-                    // escape as the recreate-Removed path at line ~1396.
+                    // Same defense-in-depth basename escape as the
+                    // recreate-Removed path in `render_action_line`.
                     // Drop-in basenames originate from on-disk
                     // filesystem entries via state::discover; an
                     // attacker with write access to the runner's
@@ -787,6 +788,19 @@ pub(super) fn render_apply_emission(
     stdout: &mut impl std::io::Write,
     stderr: &mut impl std::io::Write,
 ) -> std::io::Result<()> {
+    // Track the first I/O error to surface to the caller, but DO NOT
+    // short-circuit — `ghars apply | head` closes stdout early
+    // (SIGPIPE/BrokenPipe), and the pre-fix code returned at the first
+    // failed writeln, swallowing every `fail:` row + rollback advisory
+    // that should have gone to stderr.
+    let mut first_err: Option<std::io::Error> = None;
+    let keep = |r: std::io::Result<()>, first_err: &mut Option<std::io::Error>| {
+        if let Err(e) = r
+            && first_err.is_none()
+        {
+            *first_err = Some(e);
+        }
+    };
     for (label, outcome) in &result.details {
         match outcome {
             apply::ApplyOutcome::NoOp => {
@@ -796,15 +810,18 @@ pub(super) fn render_apply_emission(
                     .unwrap_or(label.as_str());
                 // Hardcoded `[none]` for shape parity with `ok:`/`fail:`
                 // bracket tags — operators parse all rows with one regex.
-                writeln!(stdout, "noop: {reason} [none]")?;
+                keep(writeln!(stdout, "noop: {reason} [none]"), &mut first_err);
             }
             apply::ApplyOutcome::Failed { .. } => {
-                writeln!(
-                    stderr,
-                    "fail: {label} [{}] ({})",
-                    outcome.disruption().label(),
-                    outcome.detail(),
-                )?;
+                keep(
+                    writeln!(
+                        stderr,
+                        "fail: {label} [{}] ({})",
+                        outcome.disruption().label(),
+                        outcome.detail(),
+                    ),
+                    &mut first_err,
+                );
             }
             // Success/skip variants — route through ok: template. Exhaustive
             // so a future variant addition forces a compile-time routing decision.
@@ -820,95 +837,50 @@ pub(super) fn render_apply_emission(
             | apply::ApplyOutcome::PoolSkipped
             | apply::ApplyOutcome::PoolRemoved
             | apply::ApplyOutcome::DryRunSkipped => {
-                writeln!(
-                    stdout,
-                    "ok: {label} [{}] ({})",
-                    outcome.disruption().label(),
-                    outcome.detail(),
-                )?;
+                keep(
+                    writeln!(
+                        stdout,
+                        "ok: {label} [{}] ({})",
+                        outcome.disruption().label(),
+                        outcome.detail(),
+                    ),
+                    &mut first_err,
+                );
             }
         }
     }
-    writeln!(stdout, "{}", render_apply_summary_line(result))?;
+    keep(
+        writeln!(stdout, "{}", render_apply_summary_line(result)),
+        &mut first_err,
+    );
     if let Some(advisory) = render_rollback_advisory(result) {
-        writeln!(stderr, "{advisory}")?;
+        keep(writeln!(stderr, "{advisory}"), &mut first_err);
     }
-    Ok(())
+    match first_err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
-/// Render the rollback-state advisory for a failed `apply` run,
-/// or `None` when no action failed (success path emits no advisory).
-/// The advisory walks `result.failed_undo_logs` (populated by
-/// `apply()` on every Err path) and produces a multi-line block:
-///
-/// ```text
-/// Rollback advisory: N action(s) failed. Manual cleanup may be required:
-///   LABEL_A:
-///     - started ghars-runner@foo.service
-///     - wrote /etc/systemd/system/ghars-runner@foo.service.d/00-ghars.conf
-///   LABEL_B:
-///     - created directory /etc/systemd/system/ghars-cache@build.service.d
-/// ```
+/// Render the rollback-state advisory for a failed `apply` run, or
+/// `None` when nothing needs surfacing. Walks
+/// `result.failed_undo_logs` and emits a header + per-failure list
+/// of recorded mutations (LIFO order — newest mutation first, so an
+/// operator reading top-to-bottom can unwind in the same order
+/// [`apply::undo`] would have).
 ///
 /// Per-step descriptions come from [`apply::UndoStep::describe`] —
-/// past-tense, byte-content omitted, operator-readable. Steps are
-/// listed in REVERSE (LIFO) order — the most recent mutation first —
-/// matching the iteration direction of [`apply::undo`] (apply.rs's
-/// `log.steps().iter().rev()`). The intent: an operator reading
-/// top-to-bottom can apply the inverse of each line and unwind the
-/// state in the same order [`apply::undo`] would have, regardless of
-/// whether `--rollback-on-failure` ran. The verb tokens below come
-/// verbatim from [`apply::UndoStep::describe`] — left column matches
-/// the past-tense strings that function emits for each variant
-/// (`wrote`, `removed file`, `created directory`, …). Right column
-/// is the operator inverse, NOT what `apply::undo` runs (some
-/// inverses are reverse-direction and skipped per
-/// [`apply::UndoStep::is_reverse_direction`]; see "(lossy)" /
-/// "re-run `apply`" entries). When `describe()` gains a variant or
-/// changes a verb, this table MUST be updated in lockstep:
-/// - `wrote PATH`              → `rm PATH`
-/// - `removed file PATH`       → restore from backup (lossy)
-/// - `created directory PATH`  → `rmdir PATH`
-/// - `removed directory PATH`  → re-run `apply` to recreate
-/// - `started UNIT`            → `systemctl stop UNIT`
-/// - `stopped UNIT`            → `systemctl start UNIT`
-/// - `enabled UNIT`            → `systemctl disable UNIT`
-/// - `disabled UNIT`           → `systemctl enable UNIT`
-/// - `registered runner NAME …` → `config.sh remove --token <fresh>`
-/// - `chmod PATH (was 0oMODE)` → `chmod 0oMODE PATH`
-/// - `chown PATH (was UID:GID)` → `chown UID:GID PATH`
+/// past-tense, operator-readable. Entries with empty step lists
+/// (synthetic `daemon_reload` post-loop failure; actions that
+/// errored before recording any side effect) are filtered out; the
+/// header count and body block count both derive from the filtered
+/// set, so an all-empty failure run returns `None` and stderr stays
+/// clean.
 ///
-/// Entries with empty step lists (synthetic `daemon_reload` post-loop
-/// failure; actions that errored before recording any side effect)
-/// are skipped from the per-label block. Header N counts ONLY entries
-/// with non-empty step lists, so header count == body block count
-/// under the mixed case (some empty + some non-empty); empty-step
-/// failures still surface via the per-action `fail:` lines from the
-/// `cmd_apply` detail loop.
-///
-/// Invariant: `result.failed.len() == result.failed_undo_logs.len()`.
-/// `apply::apply` pushes both Vecs in lockstep on every Err arm
-/// (per-action arm and synthetic `daemon_reload` arm in apply.rs).
-/// The lengths can only diverge in hand-constructed `ApplyResult`
-/// test fixtures. `debug_assert_eq!` pins the contract in dev/CI
-/// builds; release builds proceed because `n` (the header count)
-/// and the body loop both derive from `failed_undo_logs`
-/// independently of `failed`.
-///
-/// Returns `None` when no entry in `failed_undo_logs` has a
-/// non-empty step list. A single gate (`n == 0` after filtering)
-/// covers both the no-failures case (`result.failed.is_empty()` ⇒
-/// length-equal invariant ⇒ `failed_undo_logs.is_empty()` ⇒ `n == 0`)
-/// and the all-empty-steps case (synthetic `daemon_reload` post-loop
-/// failure; actions that errored before recording any side effect ⇒
-/// every entry filtered out ⇒ `n == 0`). Returning `None` keeps
-/// stderr clean — the per-action `fail:` lines from the `cmd_apply`
-/// detail loop already communicate the failure count and labels;
-/// the advisory's purpose is "what to clean up", and silence is
-/// more honest than a header rendered by
-/// [`format_rollback_advisory_header`] without a body. Pure function
-/// (no I/O); the caller (`cmd_apply`) routes the returned text to
-/// stderr.
+/// Invariant: `result.failed.len() == result.failed_undo_logs.len()`
+/// — `apply::apply` pushes both Vecs in lockstep on every Err arm.
+/// Hand-constructed test fixtures can violate this; the
+/// `debug_assert_eq!` traps the divergence in dev/CI.
 #[must_use]
 pub(crate) fn render_rollback_advisory(result: &apply::ApplyResult) -> Option<String> {
     debug_assert_eq!(
