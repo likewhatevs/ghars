@@ -26,8 +26,6 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-#[cfg(not(test))]
-use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -339,12 +337,7 @@ pub(super) fn write_record_undo(path: &Utf8Path, bytes: &[u8], log: &mut UndoLog
 
 #[cfg(not(test))]
 fn chown_to_root(f: &File, path: &Utf8Path) -> Result<()> {
-    fchown(
-        f.as_raw_fd(),
-        Some(Uid::from_raw(0)),
-        Some(Gid::from_raw(0)),
-    )
-    .map_err(|e| GharsError::Apply {
+    fchown(f, Some(Uid::from_raw(0)), Some(Gid::from_raw(0))).map_err(|e| GharsError::Apply {
         action: format!("fchown root:root {path}"),
         source: Box::new(GharsError::Io(std::io::Error::from_raw_os_error(e as i32))),
     })?;

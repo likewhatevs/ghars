@@ -128,7 +128,7 @@ pub enum UndoStep {
     /// setgid / sticky); used by undo to restore the pre-call state
     /// when rollback fires. Used by `chmod_record_undo` in
     /// `runners.rs::execute_create_runner`; the helper centralizes
-    /// O_NOFOLLOW symlink-refusal + prior-mode capture + UndoLog
+    /// `O_NOFOLLOW` symlink-refusal + prior-mode capture + `UndoLog`
     /// push so future chmod call sites inherit all three guarantees
     /// automatically without needing to be enumerated in this doc.
     SetMode {
@@ -141,10 +141,10 @@ pub enum UndoStep {
     /// `prior_gid` are the file's owner/group BEFORE the fchown; used
     /// by undo to restore the pre-call ownership when rollback fires.
     /// Used by `fchown_record_undo` in `runners.rs::execute_create_runner`
-    /// to chown the runner's writable set (runner_home, runner_home/tmp,
+    /// to chown the runner's writable set (`runner_home`, `runner_home/tmp`,
     /// .ktstr, .ccache, credential files) to the DynamicUser-allocated
-    /// UID. The helper centralizes O_NOFOLLOW symlink-refusal +
-    /// prior-ownership capture + UndoLog push so future chown call
+    /// UID. The helper centralizes `O_NOFOLLOW` symlink-refusal +
+    /// prior-ownership capture + `UndoLog` push so future chown call
     /// sites inherit all three guarantees automatically.
     SetOwner {
         /// Path whose owner / group was changed.
@@ -468,7 +468,6 @@ fn undo_one(step: &UndoStep, deps: &Deps<'_>) -> Result<()> {
             })
         }
         UndoStep::SetMode { path, prior_mode } => {
-            use std::os::fd::AsRawFd;
             use std::os::unix::fs::OpenOptionsExt;
             // Restore the pre-call mode. Two tolerated edge cases:
             //
@@ -506,10 +505,8 @@ fn undo_one(step: &UndoStep, deps: &Deps<'_>) -> Result<()> {
                 .open(path.as_std_path())
             {
                 Ok(fd) => nix::sys::stat::fchmod(
-                    fd.as_raw_fd(),
-                    nix::sys::stat::Mode::from_bits_retain(
-                        *prior_mode as nix::sys::stat::mode_t,
-                    ),
+                    &fd,
+                    nix::sys::stat::Mode::from_bits_retain(*prior_mode as nix::sys::stat::mode_t),
                 )
                 .map_err(|e| GharsError::Io(std::io::Error::from_raw_os_error(e as i32))),
                 Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
@@ -532,7 +529,6 @@ fn undo_one(step: &UndoStep, deps: &Deps<'_>) -> Result<()> {
             prior_uid,
             prior_gid,
         } => {
-            use std::os::fd::AsRawFd;
             use std::os::unix::fs::OpenOptionsExt;
             // Mirror SetMode's rollback semantics: use the same
             // O_RDONLY + O_NOFOLLOW + O_NONBLOCK open pattern so a
@@ -554,7 +550,7 @@ fn undo_one(step: &UndoStep, deps: &Deps<'_>) -> Result<()> {
                 .open(path.as_std_path())
             {
                 Ok(fd) => nix::unistd::fchown(
-                    fd.as_raw_fd(),
+                    &fd,
                     Some(nix::unistd::Uid::from_raw(*prior_uid)),
                     Some(nix::unistd::Gid::from_raw(*prior_gid)),
                 )

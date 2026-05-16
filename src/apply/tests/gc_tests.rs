@@ -522,8 +522,9 @@ fn gc_stale_staging_dirs_skips_symlink_entries() {
     .duration_since(std::time::UNIX_EPOCH)
     .expect("test clock must be after UNIX epoch");
     let ts = nix::sys::time::TimeSpec::from_duration(new_mtime_since_epoch);
+    let dirfd = std::fs::File::open("/").unwrap();
     nix::sys::stat::utimensat(
-        None,
+        &dirfd,
         trap.as_path(),
         &ts,
         &ts,

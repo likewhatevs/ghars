@@ -10,7 +10,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use fs2::FileExt;
+use fs4::FileExt;
 
 use crate::Result;
 use crate::error::GharsError;
@@ -18,7 +18,7 @@ use crate::paths::Paths;
 
 /// Held POSIX advisory file lock plus the handle that owns it.
 ///
-/// Drop releases via fs2's `unlock` (which is also released by the
+/// Drop releases via fs4's `unlock` (which is also released by the
 /// kernel on process exit if the program crashes mid-apply).
 #[derive(Debug)]
 pub struct ApplyLock {
@@ -36,10 +36,10 @@ impl ApplyLock {
 
 impl Drop for ApplyLock {
     fn drop(&mut self) {
-        // Best-effort truncate so a fresh `apply` does not see a stale
-        // PID. Errors are intentionally swallowed — Drop cannot return
-        // a result and the kernel releases the flock regardless.
-        let _ = self.file.set_len(0);
+        // Release the flock. The kernel also releases it on process
+        // exit if Drop never runs. No truncate here: the next
+        // `acquire_lock` calls `write_pid_to_lock` which truncates
+        // before writing, so any leftover PID is overwritten anyway.
         let _ = FileExt::unlock(&self.file);
     }
 }
@@ -47,9 +47,9 @@ impl Drop for ApplyLock {
 /// Acquire `<runtime_dir>/apply.lock` exclusively, writing this
 /// process's PID into the lock file on success.
 ///
-/// The lock file is opened with mode 0600 and `O_CREAT`. fs2 uses
-/// `flock(2)` on Linux (per fs2-0.4.3/src/lib.rs); the lock is advisory
-/// and released on Drop or process exit.
+/// The lock file is opened with mode 0600 and `O_CREAT`. fs4 uses
+/// `flock(2)` on Linux via rustix; the lock is advisory and released
+/// on Drop or process exit.
 ///
 /// On contention this reads the existing PID from the file and surfaces
 /// `GharsError::ApplyLocked { pid, path }` so the CLI can suggest
@@ -122,13 +122,9 @@ pub fn acquire_lock(paths: &Paths) -> Result<ApplyLock> {
         })?;
     }
 
-    if let Err(e) = FileExt::try_lock_exclusive(&file) {
-        // fs2's `lock_contended_error` is the only recoverable kind;
-        // every other ErrorKind here is a real I/O fault. Match against
-        // it explicitly so a permissions error doesn't masquerade as
-        // contention.
-        let pid = read_pid_from_lock(&lock_path).unwrap_or(0);
-        if e.kind() == fs2::lock_contended_error().kind() {
+    match FileExt::try_lock(&file) {
+        Ok(()) => {}
+        Err(fs4::TryLockError::WouldBlock) => {
             // SEC-19: probe `/proc/<pid>/status`. If the file doesn't
             // exist the PID has exited without releasing the flock
             // (e.g. `kill -9 ghars` mid-apply leaves the lock file on
@@ -138,6 +134,7 @@ pub fn acquire_lock(paths: &Paths) -> Result<ApplyLock> {
             // process that's already gone. `pid <= 0` is treated as
             // unparseable / missing PID: we still surface the error
             // but flag it stale so the operator inspects the file.
+            let pid = read_pid_from_lock(&lock_path).unwrap_or(0);
             let stale = pid <= 0 || !pid_is_alive(pid);
             return Err(GharsError::ApplyLocked {
                 pid,
@@ -145,7 +142,7 @@ pub fn acquire_lock(paths: &Paths) -> Result<ApplyLock> {
                 stale,
             });
         }
-        return Err(GharsError::Io(e));
+        Err(fs4::TryLockError::Error(e)) => return Err(GharsError::Io(e)),
     }
 
     write_pid_to_lock(&file)?;

@@ -5,7 +5,7 @@ use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 
 use camino::Utf8Path;
-use fs2::FileExt;
+use fs4::FileExt;
 
 use crate::error::GharsError;
 
@@ -213,7 +213,7 @@ fn acquire_lock_marks_stale_for_dead_pid() {
         .truncate(false)
         .open(paths.apply_lock().as_std_path())
         .unwrap();
-    FileExt::try_lock_exclusive(&lock_file).unwrap();
+    FileExt::try_lock(&lock_file).unwrap();
 
     let err = acquire_lock(&paths).unwrap_err();
     match err {
