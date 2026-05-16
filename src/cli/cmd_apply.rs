@@ -59,8 +59,19 @@ pub(super) fn cmd_apply(
         return Ok(3);
     }
 
-    // Ensure runtime directories exist on fresh hosts.
-    std::fs::create_dir_all(paths.runtime_dir.as_std_path())?;
+    // Ensure runtime directories exist on fresh hosts. Wrap raw Io
+    // failures in a Validation so non-root invocations get the same
+    // actionable hint as the lock-acquire path (root is required).
+    std::fs::create_dir_all(paths.runtime_dir.as_std_path()).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::PermissionDenied {
+            GharsError::Validation(
+                format!("cannot create runtime dir {}: {e}", paths.runtime_dir),
+                "ghars apply requires root (or CAP_DAC_OVERRIDE); re-run with sudo".into(),
+            )
+        } else {
+            GharsError::Io(e)
+        }
+    })?;
 
     let mut plan = compute_plan(&cfg, paths, &args.only)?;
 
@@ -123,7 +134,7 @@ pub(super) fn cmd_apply(
 
     // Resolve releases for runners that need a tarball download.
     let registry = build_auth_registry(&cfg.auth)?;
-    resolve_plan_releases(&mut plan, &cfg, &registry)?;
+    resolve_plan_releases(&mut plan, &cfg)?;
 
     let systemd = open_dbus()?;
     let tarball = apply::RealTarball;
@@ -186,14 +197,8 @@ pub(super) fn confirm_apply() -> Result<bool> {
 fn resolve_plan_releases(
     plan: &mut crate::plan::Plan,
     cfg: &crate::config::Config,
-    _registry: &std::collections::HashMap<String, Box<dyn crate::auth::TokenSource>>,
 ) -> Result<()> {
     let client = github::build_blocking_client(cfg.proxy.as_ref())?;
-
-    // Extract a PAT from the first auth source that has one, to
-    // authenticate the releases API call. Without auth, GitHub's
-    // rate limit is 60 req/hr per IP which is easily exhausted.
-    let pat_token = extract_pat_for_api(cfg);
 
     for action in &mut plan.actions {
         let runner_plan = match action {
@@ -207,6 +212,11 @@ fn resolve_plan_releases(
         if runner_plan.resolved_release.is_some() {
             continue;
         }
+        // Per-runner PAT (looked up via the runner's `auth_name`) so
+        // multi-auth configs use the right credential for each runner's
+        // releases API call. Without auth the rate limit is 60 req/hr
+        // per IP; with PAT it's 5000 req/hr.
+        let pat_token = pat_for_auth_name(cfg, &runner_plan.spec.auth_name);
         let release = if let Some(ref version) = runner_plan.spec.runner_version {
             github::fetch_release_authenticated(&client, version, runner_plan.spec.arch, pat_token.as_deref())?
         } else {
@@ -242,9 +252,13 @@ fn reconcile_github_registrations(
     cfg: &crate::config::Config,
     paths: &Paths,
 ) -> Result<bool> {
-    let pat = extract_pat_for_api(cfg);
     let client = github::build_blocking_client(cfg.proxy.as_ref())?;
     let mut reconciled = false;
+
+    // Expand counts so `foo-1` / `foo-2` map to their per-runner auth
+    // (the parent `foo` block's `auth_name`). Without expansion, every
+    // count-generated runner falls through to no-match.
+    let expanded = crate::plan::expand_counts(cfg)?;
 
     for action in &plan.actions {
         let noop_name = match action {
@@ -258,16 +272,15 @@ fn reconcile_github_registrations(
             _ => continue,
         };
 
-        // Find the runner's URL. Count-expanded names (ktstr-x64-1)
-        // won't match cfg.runners directly (which has the base name
-        // ktstr-x64 with count=N). Try exact match first, then prefix.
-        let url = cfg.runners.iter()
-            .find(|r| r.name == noop_name)
-            .or_else(|| cfg.runners.iter().find(|r| noop_name.starts_with(&r.name)))
-            .map(|r| r.url.as_str());
-        let Some(url) = url else {
+        // Exact match against the post-expansion name set. Prefix match
+        // (the previous heuristic) was non-deterministic: a runner
+        // `foo-bar` would prefix-match a count-block `foo`'s sibling
+        // `foo-1` and pick whichever block was listed first in TOML.
+        let Some(runner) = expanded.iter().find(|r| r.name == noop_name) else {
             continue;
         };
+        let url = runner.url.as_str();
+        let pat = runner_pat(cfg, runner);
 
         match github::runner_is_registered(
             &client,
@@ -282,14 +295,31 @@ fn reconcile_github_registrations(
                     "runner not registered on GitHub; wiping on-disk state to force re-registration"
                 );
                 // Remove the unit file so the next plan sees the runner
-                // as missing and emits CreateRunner.
+                // as missing and emits CreateRunner. Surface fs failures
+                // via tracing::warn! so an operator can debug a
+                // reconciliation that silently no-op'd because the file
+                // was locked or the dir held mounts.
                 let unit = paths.unit_file(&noop_name);
-                if unit.exists() {
-                    let _ = std::fs::remove_file(unit.as_std_path());
+                if unit.exists()
+                    && let Err(e) = std::fs::remove_file(unit.as_std_path())
+                {
+                    tracing::warn!(
+                        runner = %noop_name,
+                        path = %unit,
+                        error = %e,
+                        "failed to remove unit file during GitHub reconciliation"
+                    );
                 }
                 let dropin_dir = paths.drop_in_dir(&noop_name);
-                if dropin_dir.exists() {
-                    let _ = std::fs::remove_dir_all(dropin_dir.as_std_path());
+                if dropin_dir.exists()
+                    && let Err(e) = std::fs::remove_dir_all(dropin_dir.as_std_path())
+                {
+                    tracing::warn!(
+                        runner = %noop_name,
+                        path = %dropin_dir,
+                        error = %e,
+                        "failed to remove drop-in dir during GitHub reconciliation"
+                    );
                 }
                 reconciled = true;
             }
@@ -305,29 +335,123 @@ fn reconcile_github_registrations(
     Ok(reconciled)
 }
 
-/// Read the PAT value from the config's auth source for API auth.
-pub(super) fn extract_pat_for_api(cfg: &crate::config::Config) -> Option<String> {
-    for (_name, spec) in &cfg.auth {
-        match spec {
-            crate::config::AuthSpec::Pat { token_env, token_file } => {
-                if let Some(env_var) = token_env {
-                    if let Ok(val) = std::env::var(env_var) {
-                        if !val.is_empty() {
-                            return Some(val);
-                        }
-                    }
-                }
-                if let Some(path) = token_file {
-                    if let Ok(val) = std::fs::read_to_string(path.as_std_path()) {
-                        let trimmed = val.trim().to_string();
-                        if !trimmed.is_empty() {
-                            return Some(trimmed);
-                        }
-                    }
-                }
-            }
-            _ => continue,
-        }
+/// Resolve a PAT value for a specific auth-section entry.
+///
+/// Looks up `auth_name` in `cfg.auth` and resolves its PAT (env var or
+/// root-owned 0o600 file) via [`crate::auth::resolve_pat_for_api`].
+/// Returns `None` when the auth source is not a PAT, the env var is
+/// unset, or the file is unreadable / mode-rejected.
+pub(super) fn pat_for_auth_name(cfg: &crate::config::Config, auth_name: &str) -> Option<String> {
+    crate::auth::resolve_pat_for_api(cfg.auth.get(auth_name)?)
+}
+
+/// Resolve the effective `auth_name` for a `RunnerSpec`: per-runner
+/// `auth` if set, else `defaults.auth`, else `None`.
+fn effective_auth_name<'a>(
+    cfg: &'a crate::config::Config,
+    runner: &'a crate::config::RunnerSpec,
+) -> Option<&'a str> {
+    runner.auth.as_deref().or(cfg.defaults.auth.as_deref())
+}
+
+/// Resolve a PAT for a specific runner using its effective `auth_name`.
+pub(super) fn runner_pat(
+    cfg: &crate::config::Config,
+    runner: &crate::config::RunnerSpec,
+) -> Option<String> {
+    pat_for_auth_name(cfg, effective_auth_name(cfg, runner)?)
+}
+
+/// Resolve a PAT for a given GitHub URL by looking up the first runner
+/// declared against it.
+pub(super) fn pat_for_url(cfg: &crate::config::Config, url: &str) -> Option<String> {
+    let runner = cfg.runners.iter().find(|r| r.url == url)?;
+    runner_pat(cfg, runner)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::plan::{Plan, RunnerPlan};
+
+    fn make_create_action_with_tarball() -> Action {
+        let mut spec = crate::config::EffectiveRunnerSpec {
+            environment: crate::config::EnvironmentSpec::default(),
+            name: "buckos".into(),
+            url: "https://github.com/example/repo".into(),
+            arch: crate::config::Arch::X86_64,
+            labels: vec![],
+            memory_max: None,
+            runner_version: Some("2.334.0".into()),
+            runner_sha256: None,
+            runner_tarball: Some("/tarballs/runner.tar.gz".into()),
+            auth_name: "pat".into(),
+            caches: vec![],
+            trust_zone: "default".into(),
+            network: None,
+            proxy: None,
+            hooks: None,
+            hardening: crate::config::Hardening::default(),
+            allowed_cpus: None,
+            allowed_memory_nodes: None,
+            spec_hash: "sha256:dead".into(),
+            config_source: "/etc/ghars/ghars.toml".into(),
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
+        };
+        let _ = &mut spec;
+        Action::CreateRunner(RunnerPlan {
+            spec,
+            resolved_release: None,
+            effective_unit_text: String::new(),
+            drop_ins: std::collections::BTreeMap::new(),
+            env_file: String::new(),
+            path_file: String::new(),
+            spec_hash: "sha256:dead".into(),
+        })
     }
-    None
+
+    /// `resolve_plan_releases` must short-circuit (no HTTP call) when
+    /// every `CreateRunner` action carries a pinned `runner_tarball`.
+    /// Pin the no-network short-circuit so a future regression that
+    /// removed the early-continue doesn't silently make every test that
+    /// invokes `resolve_plan_releases` fetch from GitHub.
+    #[test]
+    fn resolve_plan_releases_skips_actions_with_tarball_pinned() {
+        let mut plan = Plan {
+            actions: vec![make_create_action_with_tarball()],
+            warnings: Vec::new(),
+            keep_versions: 2,
+        };
+        let cfg = crate::config::Config::default();
+        // No proxy → `build_blocking_client` constructs a client without
+        // touching the network. The per-action loop then short-circuits
+        // on `runner_tarball.is_some()` before any HTTP call.
+        resolve_plan_releases(&mut plan, &cfg)
+            .expect("tarball-pinned plan must not require network");
+    }
+
+    /// Empty plan: no `CreateRunner` / recreate `UpdateRunner` actions, so
+    /// the function returns Ok without ever exercising the per-action
+    /// release-fetch path.
+    #[test]
+    fn resolve_plan_releases_returns_ok_for_empty_plan() {
+        let mut plan = Plan::default();
+        let cfg = crate::config::Config::default();
+        resolve_plan_releases(&mut plan, &cfg).expect("empty plan must succeed");
+        assert!(plan.actions.is_empty());
+    }
+
+    /// `confirm_apply` must error with `GharsError::Interactive` when
+    /// stdin is not a TTY (non-TTY = CI / cron / pipe). The test runner's
+    /// stdin is reliably non-TTY, so this exercises the production
+    /// branch directly.
+    #[test]
+    fn confirm_apply_errors_on_non_tty_stdin() {
+        let err = confirm_apply().expect_err("non-TTY stdin must surface Interactive");
+        assert!(
+            matches!(err, GharsError::Interactive(_, _)),
+            "expected Interactive variant, got {err:?}"
+        );
+    }
 }
