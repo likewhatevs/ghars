@@ -234,10 +234,11 @@ back to the host netns and the action aborts with
 The companion `ghars-net@.service` template owns the netns
 creation:
 
-- `ExecStart=+/usr/bin/ghars _netns-setup %i` (`+` runs as root
-  regardless of `User=`).
-- `ExecStart=+/usr/sbin/nft -f /etc/ghars/nft.d/%i-host.nft`
-- `ExecStart=+/usr/bin/ghars _netns-veth %i /usr/sbin/nft -f /etc/ghars/nft.d/%i-ns.nft`
+- `ExecStart=+ghars _netns-setup %i` (`+` runs as root regardless
+  of `User=`; `ghars` and `nft` are resolved via the unit's
+  `Environment=PATH=…` set in the template).
+- `ExecStart=+nft -f /etc/ghars/nft.d/%i-host.nft`
+- `ExecStart=+ghars _netns-veth %i nft -f /etc/ghars/nft.d/%i-ns.nft`
 
 The netns at `/var/run/netns/ghars-%i` is bind-mounted (persistent
 across unit deactivation). `StopWhenUnneeded=no` keeps the

@@ -3,8 +3,8 @@
 The lifecycle is **config → plan → apply**. The TOML file is the
 source of truth; `ghars plan` reads desired state and discovers
 actual state; `ghars apply` converges. Side effects flow through a
-single critical section serialized by an exclusive POSIX advisory
-lock on `<runtime_dir>/apply.lock`.
+single critical section serialized by an exclusive flock(2)
+advisory lock on `<runtime_dir>/apply.lock` (via `fs4`).
 
 ## Module map
 
@@ -38,7 +38,7 @@ The crate ships a single `[[bin]]` target:
 
 ### 1. Config load (`config.rs`, `cli::load::load_config`)
 
-`cli::load_config` reads `--config PATH` (default
+`cli::load::load_config` reads `--config PATH` (default
 `/etc/ghars/ghars.toml`), runs `toml::from_str`, then runs the
 post-parse validator chain documented in
 [Configuration](./configuration.md#validators). Every validator
@@ -148,10 +148,11 @@ exit-code 8 path.
 
 `apply` is the single entry point. Its lifecycle:
 
-1. Acquire `<runtime_dir>/apply.lock` via `fs2::FileExt`
-   (POSIX advisory exclusive lock). The lock file embeds the
-   holding apply's PID; another apply that finds the file fails
-   with `GharsError::ApplyLocked` carrying the lock-holder's PID.
+1. Acquire `<runtime_dir>/apply.lock` via `fs4::FileExt`
+   (POSIX advisory exclusive lock through `flock(2)`). The lock
+   file embeds the holding apply's PID; another apply that finds
+   the file fails with `GharsError::ApplyLocked` carrying the
+   lock-holder's PID.
 2. (skipped under `--dry-run`) GC stale
    `.NAME.tmp.PID.COUNTER` temp files under `unit_dir`,
    per-runner drop-in dirs, per-pool drop-in dirs,
@@ -180,7 +181,7 @@ exit-code 8 path.
 6. (skipped under `--dry-run`) Issue a single
    `Manager.Reload` (`daemon-reload`) at the end.
 7. Release the lock on Drop (the `_lock` variable goes out of
-   scope; `fs2`'s `FileExt::unlock` runs as the file handle
+   scope; `fs4`'s `FileExt::unlock` runs as the file handle
    drops).
 
 ### 6. Phase order (`apply::sort_into_phases`)
@@ -227,11 +228,13 @@ Each action produces exactly one `ApplyOutcome` row in
 |----------------------------|----------------------------------------------------------------------|
 | `InPlaceSkipped`           | byte-equality short-circuit fired; no reload, no restart             |
 | `InPlaceRestarted`         | files changed AND/OR cache-pool diff; reload + stop + start          |
+| `InPlaceRewroteNoRestart`  | `--no-restart` wrote drop-ins / `.env` / `.path` but skipped reload + restart; running unit keeps pre-rewrite config until `systemctl restart` |
 | `Recreated`                | recreate-class `UpdateRunner` (remove → create flatten)              |
 | `Created`                  | `CreateRunner` finished                                              |
 | `Removed`                  | `RemoveRunner` finished                                              |
 | `PoolCreated`              | `CreateCachePool` finished                                           |
 | `PoolUpdated`              | `UpdateCachePool` rewrote the drop-in                                |
+| `PoolRewroteNoRestart`     | `--no-restart` rewrote the pool drop-in but skipped reload + restart; running pool unit keeps pre-rewrite config until `systemctl restart` |
 | `PoolSkipped`              | byte-equality short-circuit fired on the pool path                   |
 | `PoolRemoved`              | `RemoveCachePool` finished                                           |
 | `NoOp`                     | planner emitted in-sync                                              |
@@ -272,10 +275,11 @@ failure).
 |-------------------------------|---------------------------------------------------------------|
 | `ghars validate [--deep]`     | parse + structural validation. `--deep` round-trips auth tokens against GitHub. |
 | `ghars plan [...]`            | discover + diff + print. Flags: `--only`, `--json`, `--diff`, `--detailed-exitcode`, `--detailed-exitcode-recreate`. |
-| `ghars apply [...]`           | run plan, prompt, execute. Flags: `--auto-approve`, `--fail-fast`, `--rollback-on-failure`, `--dry-run`, `--diff`, `--detailed-exitcode`, `--detailed-exitcode-recreate`. |
-| `ghars status [...]`          | SYSTEM HEALTH + RUNNERS table. Flags: `--json`, `--metrics`, `--health-only`, `--runners-only`, plus positional names. |
+| `ghars apply [...]`           | run plan, prompt, execute. Flags: `--only`, `--auto-approve`, `--fail-fast`, `--rollback-on-failure`, `--dry-run`, `--diff`, `--no-restart`, `--detailed-exitcode`, `--detailed-exitcode-recreate`. |
+| `ghars status [...]`          | SYSTEM HEALTH + RUNNERS table. Flags: `--json`, `--metrics`, `--health-only`, `--runners-only`, `--score`, `--github`, plus positional names. |
 | `ghars init [--output PATH]`  | scaffold `ghars.toml`. Per-runner system identities are NOT created here. |
-| `ghars add [...]`             | append `[[runner]]` block + run `apply` unless `--no-apply`. Flags: `--repo`, `--name`, `--labels`, `--auth`. |
+| `ghars add [...]`             | append `[[runner]]` block + run `apply` unless `--no-apply`. Flags: `--repo`, `--name`, `--labels`, `--auth`, `--no-apply`, `--auto-approve`. |
+| `ghars cleanup`               | remove every ghars-managed unit, state dir, cache pool, runtime file, nft rule, and resolved drop-in. Deregisters runners from GitHub where possible. Leaves `ghars.toml` intact. |
 | `ghars logs [...]`            | wraps `journalctl -u ghars-runner@NAME.service`. Flags: `--follow`, `-n LINES`, `--since SPEC`. |
 | `ghars metrics [...]`         | per-runner + total memory / CPU / IO / tasks via systemd D-Bus. |
 | `ghars completions <shell>`   | emit shell completions to stdout.                              |

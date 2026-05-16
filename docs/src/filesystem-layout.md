@@ -269,7 +269,8 @@ time rather than at config-load.
 
 `apply.lock` (`/run/ghars/apply.lock`) is the apply critical
 section. POSIX advisory exclusive lock via
-`fs2::FileExt::try_lock_exclusive`. Mode 0600 at create time. The
+`fs4::FileExt::try_lock` (which calls `flock(2)`). Mode 0600 at
+create time. The
 file body is the holding apply's PID; `acquire_lock` reads it on
 contention and returns
 `GharsError::ApplyLocked { pid, path, stale }` so the operator
@@ -323,6 +324,7 @@ A condensed table of "I'm looking for X — where is it?":
 | looking for                           | path                                                              |
 |---------------------------------------|-------------------------------------------------------------------|
 | the config file                       | `/etc/ghars/ghars.toml`                                           |
+| the credentials root                  | `/etc/credstore.encrypted/ghars/` (`Paths.credentials_dir`)        |
 | a runner's home dir                   | `/var/lib/ghars/<TRUST_ZONE>/ghars-<NAME>/`                       |
 | a runner's installed binary           | `/var/lib/ghars/<TRUST_ZONE>/ghars-<NAME>/bin.<VERSION>/`         |
 | a runner's `runsvc.sh`                | `/var/lib/ghars/<TRUST_ZONE>/ghars-<NAME>/bin.<VERSION>/bin/runsvc.sh` |
@@ -332,6 +334,7 @@ A condensed table of "I'm looking for X — where is it?":
 | a cache pool's unit                   | `/etc/systemd/system/ghars-cache@<POOL>.service`                  |
 | a cache pool's drop-ins               | `/etc/systemd/system/ghars-cache@<POOL>.service.d/*.conf`         |
 | the apply lock                        | `/run/ghars/apply.lock`                                           |
+| a runner's registration token drop    | `/run/ghars/<NAME>.token` (transient; created and removed within `execute_create_runner`) |
 | the audit log                         | `/var/log/ghars/apply.log`                                        |
 | nft rules for runner X                | `/etc/ghars/nft.d/<NAME>-host.nft`, `/etc/ghars/nft.d/<NAME>-ns.nft` |
 | the netns                             | `/var/run/netns/ghars-<NAME>`                                     |

@@ -12,7 +12,7 @@ to converge. That's it.
   starts services.
 - Each runner gets its own systemd unit with a hardened sandbox profile.
 - Optional network namespace isolation with nftables egress rules.
-- Optional shared ccache/sccache pools.
+- Optional shared ccache/sccache/ktstr pools.
 
 ## What ghars is not
 

@@ -198,8 +198,8 @@ Flags:
 ### Concurrency
 
 `apply` acquires `<runtime_dir>/apply.lock` (default
-`/run/ghars/apply.lock`) via `fs2::FileExt::try_lock_exclusive`
-(POSIX advisory exclusive lock, non-blocking). The file is mode
+`/run/ghars/apply.lock`) via `fs4::FileExt::try_lock` (POSIX
+advisory exclusive lock through `flock(2)`, non-blocking). The file is mode
 0600; the body holds the holder's PID. On contention the call
 returns `GharsError::ApplyLocked { pid, path, stale }`; see
 [Troubleshooting → "another apply is running"](#another-apply-is-running)

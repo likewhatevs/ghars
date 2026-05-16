@@ -112,8 +112,11 @@ sudo ghars add --repo OWNER/REPO
 
 `ghars add` appends a `[[runner]]` block, then runs `apply` unless
 `--no-apply` is passed. Flags: `--name`, `--labels`,
-`--auth`, `--no-apply`. The default name is
+`--auth`, `--no-apply`, `--auto-approve`. The default name is
 `OWNER-REPO-N` where `N` picks the next free index.
+`--auto-approve` is required when stdin is not a TTY (CI, cron,
+`systemd-run`) and `--no-apply` is not passed — otherwise the
+embedded `apply` returns exit 7 at the y/N prompt.
 
 ## First plan
 
@@ -152,7 +155,7 @@ Apply prints the same plan, prompts `y/N`, and on confirmation
 dispatches each action. The apply loop:
 
 1. Acquires `<runtime_dir>/apply.lock` (POSIX advisory exclusive
-   lock via `fs2::FileExt`).
+   lock via `fs4::FileExt`, which calls `flock(2)`).
 2. GCs stale `.NAME.tmp.PID.COUNTER` temp files and stale
    `<state_dir>/.staging/<name>-<version>-<pid>/` staging dirs left
    behind by previous applies that crashed mid-write.
@@ -167,6 +170,8 @@ dispatches each action. The apply loop:
 
 Useful flags:
 
+- `--only NAMES` — filter to a comma-separated subset of runner
+  names (same shape as on `plan`).
 - `--auto-approve` — skip the y/N prompt.
 - `--fail-fast` — stop on first action failure.
 - `--rollback-on-failure` — best-effort: when an action's handler
@@ -176,6 +181,14 @@ Useful flags:
 - `--dry-run` — render artifacts but do not write them. The lock
   is still acquired (so concurrent dry-runs serialize) but no
   D-Bus calls or filesystem writes occur.
+- `--diff` — show full drop-in body content in the pre-confirm
+  preview. Same secret-leakage caveat as on `plan` — see
+  [Operations](./operations.md).
+- `--no-restart` — write drop-ins / `.env` / `.path` now but defer
+  the in-place restart cycle. Recreate-class actions proceed
+  unconditionally; the operator runs `systemctl restart` later.
+  See [Operations](./operations.md) for the maintenance-window
+  workflow.
 - `--detailed-exitcode` and `--detailed-exitcode-recreate` —
   same semantics as on `plan`.
 
@@ -187,8 +200,8 @@ sudo ghars status
 
 `status` prints two sections: SYSTEM HEALTH (preflight checks) and
 RUNNERS (managed-unit table with drift annotations). Filters:
-`--health-only`, `--runners-only`, `--metrics`, `--json`, plus
-positional names.
+`--health-only`, `--runners-only`, `--metrics`, `--score`,
+`--github`, `--json`, plus positional names.
 
 Tail the runner's journal:
 
@@ -243,12 +256,13 @@ cargo install --path .                                  # crate not on crates.io
 sudo ghars init                                         # write /etc/ghars/ghars.toml (mode 0640)
 sudoedit /etc/ghars/ghars.toml                          # add [auth.pat] + GHARS_PAT
 export GHARS_PAT=ghp_...
-sudo -E ghars add --repo OWNER/REPO                     # appends [[runner]] + applies
+sudo -E ghars add --repo OWNER/REPO --auto-approve      # appends [[runner]] + applies
 sudo -E ghars status                                    # confirm
 ```
 
 `ghars add` prompts only for what's not on the command line; with
-`--auth pat` and `GHARS_PAT` set, it is non-interactive end-to-end.
+`--auth pat`, `--auto-approve`, and `GHARS_PAT` set, it is
+non-interactive end-to-end.
 The `-E` is required for `sudo` to preserve `GHARS_PAT` past the
 default `env_reset` policy.
 

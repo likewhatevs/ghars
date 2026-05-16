@@ -86,7 +86,7 @@ RENAME_EXCHANGE).
 serializes every `apply` invocation against the host. The file is
 opened at mode 0600 (or chmodded down if a wider-mode pre-existing
 file is found, with diagnostic), and acquired via
-`fs2::FileExt::try_lock_exclusive` (POSIX advisory exclusive lock,
+`fs4::FileExt::try_lock` (POSIX advisory exclusive lock,
 non-blocking).
 
 ```rust,ignore
@@ -94,13 +94,17 @@ let file = OpenOptions::new()
     .read(true).write(true).create(true)
     .mode(0o600)
     .open(lock_path.as_std_path())?;
-FileExt::try_lock_exclusive(&file).map_err(|e| {
-    // On contention: read the lock body for the holding PID, probe
-    // /proc/<pid>/status for liveness, return ApplyLocked { pid, path, stale }.
-})?;
+match FileExt::try_lock(&file) {
+    Ok(()) => {}
+    Err(fs4::TryLockError::WouldBlock) => {
+        // On contention: read the lock body for the holding PID, probe
+        // /proc/<pid>/status for liveness, return ApplyLocked { pid, path, stale }.
+    }
+    Err(fs4::TryLockError::Error(e)) => return Err(GharsError::Io(e)),
+}
 ```
 
-`fs2` calls `flock(2)`; the lock auto-releases when the file
+`fs4` calls `flock(2)`; the lock auto-releases when the file
 handle drops (process exit, explicit `Drop`).
 
 The lock body holds the holding apply's PID. On contention,
@@ -373,7 +377,7 @@ Effects:
 - `unsafe_code = "forbid"` — every place that needs a syscall
   goes through a safe wrapper crate (`nix` for `renameat2`;
   `libc` for `O_NOFOLLOW` / `O_NONBLOCK` constants threaded
-  through `OpenOptionsExt::custom_flags`; `fs2` for `flock`).
+  through `OpenOptionsExt::custom_flags`; `fs4` for `flock`).
 - `missing_docs = "warn"` — every public item has a doc comment.
 - `pedantic` clippy is warn-level; `unwrap_used` and
   `expect_used` are warn-level so production code paths cannot

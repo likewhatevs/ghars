@@ -157,7 +157,7 @@ unwind.
 
 ```toml
 [cache_pools.build]
-kinds        = ["ccache", "sccache"]      # one or both
+kinds        = ["ccache", "sccache"]      # one or more
 size         = "200G"                     # bytesize-parsed
 mode         = "shared"                   # shared | isolated; default shared
 trust_zone   = "default"                  # default "default"
@@ -168,9 +168,14 @@ sleep_path   = "/usr/bin/sleep"           # optional override
 Fields:
 
 - `kinds` (`Vec<CacheKind>`) — the kinds the pool hosts. Values
-  `ccache` and `sccache`. ccache uses cooperative `flock` on a
-  shared dir; sccache satisfies its sole-maintainer contract via
-  one server unit per pool.
+  `ccache`, `sccache`, and `ktstr`. ccache uses cooperative
+  `flock` on a shared dir; sccache satisfies its sole-maintainer
+  contract via one server unit per pool. `ktstr` is a forward-
+  compatibility marker — declaring it parses and validates
+  cleanly but does not yet gate runtime behavior. The
+  per-trust-zone `.ktstr` dir and the `KTSTR_LOCK_DIR` /
+  `KTSTR_CACHE_DIR` env vars are emitted unconditionally for
+  every runner regardless of which pools it binds.
 - `size` (`String`) — pool size, parsed by `bytesize` at validate
   time. Drives `CCACHE_MAXSIZE` and `SCCACHE_CACHE_SIZE` in the
   rendered drop-in.
@@ -227,8 +232,8 @@ Remediation: drop all but one pool of the offending kind from
 [network.isolated]
 mode                      = "netns"
 allowed_egress            = [
-  { addr = "proxy.example", port = 3128, proto = "tcp", comment = "outbound proxy" },
-  { addr = "192.0.2.0/24",  port = { start = 1024, end = 65535 } },
+  { addr = "192.0.2.84",   port = 3128, proto = "tcp", comment = "outbound proxy" },
+  { addr = "192.0.2.0/24", port = { start = 1024, end = 65535 } },
 ]
 ip_allow                  = ["192.0.2.10/32"]    # IPAddressAllow (cgroup-BPF)
 ip_deny                   = ["0.0.0.0/0"]        # IPAddressDeny
@@ -602,9 +607,9 @@ Operator-declared env var names are rejected against a deny-list
 with per-tier rationale:
 
 - **Tier 1 (LD\_\* injection)**: `LD_PRELOAD`, `LD_LIBRARY_PATH`,
-  `LD_AUDIT`, `LD_DEBUG`, `LD_BIND_NOW`, `LD_PROFILE`,
-  `LD_TRACE_LOADED_OBJECTS`, `GLIBC_TUNABLES`, `MALLOC_TRACE` —
-  dynamic-loader attack surface.
+  `LD_AUDIT`, `LD_DEBUG`, `LD_DEBUG_OUTPUT`, `LD_BIND_NOW`,
+  `LD_BIND_NOT`, `LD_PROFILE`, `LD_TRACE_LOADED_OBJECTS`,
+  `GLIBC_TUNABLES`, `MALLOC_TRACE` — dynamic-loader attack surface.
 - **Tier 2 (shell hijack)**: `IFS`, `BASH_ENV`, `ENV`, `BASHOPTS`,
   `SHELLOPTS`, `PS4`, `PROMPT_COMMAND` — shell-execution
   hijacking before workflow steps see env.
@@ -756,7 +761,7 @@ re-traverses the parent `Config`.
 
 ## Validators
 
-Run by `cli::load_config` in this order; first failure short-
+Run by `cli::load::load_config` in this order; first failure short-
 circuits:
 
 1. `validate_networks` — egress rule address + port shape, DNS
@@ -846,7 +851,7 @@ mode  = "shared"
 [network.isolated]
 mode                      = "netns"
 allowed_egress            = [
-  { addr = "proxy.example", port = 3128, proto = "tcp", comment = "outbound proxy" },
+  { addr = "192.0.2.84", port = 3128, proto = "tcp", comment = "outbound proxy" },
 ]
 ip_allow                  = ["192.0.2.10/32"]
 ip_deny                   = ["0.0.0.0/0"]
