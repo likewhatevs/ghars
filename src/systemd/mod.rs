@@ -31,14 +31,13 @@
 
 mod dbus;
 mod nft;
+mod templates;
 mod units;
 
 pub use dbus::{DbusSystemd, OwnedObjectPath, Systemd, UnitListEntry, validate_drop_in};
 pub use nft::{NftRules, render_nft_rules};
-pub use units::{
-    RENDERER_SCHEMA, RenderedUnit, cache_template_text, netns_template_text,
-    render_cache_drop_in, render_runner_unit, runner_template_text,
-};
+pub use templates::{cache_template_text, netns_template_text, runner_template_text};
+pub use units::{RENDERER_SCHEMA, RenderedUnit, render_cache_drop_in, render_runner_unit};
 
 // `check_identity_field` is `pub(crate)` in `units`; re-export at the
 // matching visibility so existing call sites at
