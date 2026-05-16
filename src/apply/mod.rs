@@ -36,6 +36,7 @@ mod runners;
 mod shell;
 mod tarball;
 mod undo;
+mod update_runner;
 mod writes;
 
 #[cfg(test)]

@@ -30,7 +30,7 @@ pub struct ApplyOptions {
     /// best-effort undone. Default false.
     pub rollback_on_failure: bool,
     /// `--no-restart`: write files (drop-ins, .env, .path) but skip
-    /// the in-place restart cycle (daemon_reload + stop + start) for
+    /// the in-place restart cycle (`daemon_reload` + stop + start) for
     /// `UpdateRunner` and `UpdateCachePool` actions. The running unit
     /// keeps its pre-rewrite loaded config until the operator
     /// explicitly runs `systemctl restart ghars-runner@NAME.service`
@@ -107,6 +107,7 @@ pub struct ApplyOptions {
 ///   tagged `fail:` row signals the same blast-radius class the plan
 ///   would have shown.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ApplyOutcome {
     /// `execute_update_runner` in-place branch took the
     /// `files_changed == 0 && pools_added.is_empty() &&
@@ -164,7 +165,7 @@ pub enum ApplyOutcome {
     /// CAVEAT: next `ghars apply` without `--no-restart` will see
     /// byte-matched on-disk drop-ins (this apply wrote them) and
     /// take the [`Self::InPlaceSkipped`] short-circuit at
-    /// `apply::runners::execute_update_runner` — so the deferred
+    /// `apply::update_runner::execute_update_runner` — so the deferred
     /// restart persists across re-applies until the operator
     /// explicitly invokes `systemctl restart`.
     InPlaceRewroteNoRestart {
@@ -325,8 +326,8 @@ pub enum ApplyOutcome {
 ///   both:                         (added: a, b; removed: x, y)
 ///
 /// Pool names inside each comma-separated list are already sorted
-/// at the construction site (BTreeSet difference order in
-/// execute_update_runner). The semicolon between added/removed
+/// at the construction site (`BTreeSet` difference order in
+/// `execute_update_runner`). The semicolon between added/removed
 /// groups distinguishes them from intra-group commas without
 /// quoting.
 fn append_pools_tail(s: &mut String, pools_added: &[String], pools_removed: &[String]) {
@@ -508,6 +509,7 @@ impl ApplyOutcome {
 /// returned `Ok` or `Err` — even on early-out the partial picture is
 /// preserved so the CLI can render it.
 #[derive(Debug, Default)]
+#[non_exhaustive]
 pub struct ApplyResult {
     /// Action labels that succeeded (`Action::label()`). See
     /// [`Self::details`] for the unified per-action rendering source.
@@ -562,7 +564,7 @@ pub struct ApplyResult {
     /// compile unchanged. The ordering invariant is preserved:
     /// `failed[i].0 == failed_undo_logs[i].0` for every `i`. The
     /// advisory rendering is policy-only — apply layer is data-only,
-    /// rendering lives in cli.rs `cmd_apply` per layering.
+    /// rendering lives in `cli::cmd_apply` per layering.
     pub failed_undo_logs: Vec<(String, Vec<UndoStep>)>,
 }
 

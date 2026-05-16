@@ -7,7 +7,6 @@ use crate::plan::{Action, Plan};
 
 use super::super::orchestrator::apply;
 use super::super::outcome::{ApplyOptions, ApplyOutcome};
-use super::super::runners::execute_update_runner;
 use super::super::undo::{Deps, UndoLog, UndoStep};
 use super::caches_tests::make_caches_delta;
 use super::common::{
@@ -106,9 +105,9 @@ fn execute_update_runner_recreate_full_success_systemd_call_sequence() {
 ///
 /// Pin via: same recreate fixture as
 /// `execute_update_runner_recreate_full_success_systemd_call_sequence`
-/// (line ~25) but with `no_restart=true` passed to
-/// `execute_update_runner`. Asserts (i) the outcome is `Recreated`
-/// (not `InPlaceRewroteNoRestart`), (ii) both stop+disable+enable+start
+/// but with `no_restart=true` passed to `execute_update_runner`.
+/// Asserts (i) the outcome is `Recreated` (not
+/// `InPlaceRewroteNoRestart`), (ii) both stop+disable+enable+start
 /// systemd calls fire — the recreate lifecycle proceeds normally.
 #[test]
 fn execute_update_runner_recreate_with_no_restart_still_runs_lifecycle() {

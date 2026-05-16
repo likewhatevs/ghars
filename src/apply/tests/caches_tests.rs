@@ -12,7 +12,6 @@ use crate::systemd::render_runner_unit;
 
 use super::super::orchestrator::apply;
 use super::super::outcome::{ApplyOptions, ApplyOutcome};
-use super::super::runners::execute_update_runner;
 use super::super::undo::{Deps, UndoLog};
 use super::common::{MockConfigShell, MockSystemd, MockTarball, make_paths, make_spec};
 
@@ -377,7 +376,7 @@ pub(super) fn delta_with_all_preserved_drop_ins(paths: &Paths) -> RunnerDelta {
 /// Pre-populate `paths.unit_dir` with the rendered unit + every
 /// drop-in body that `delta.after` would emit, plus `.env` and `.path`
 /// in the versioned bin dir. Mirrors what `execute_update_runner` (and
-/// the prior CreateRunner) would have written on a successful prior
+/// the prior `CreateRunner`) would have written on a successful prior
 /// apply. Used by the skip tests.
 pub(super) fn prepopulate_on_disk(paths: &Paths, delta: &RunnerDelta) {
     std::fs::create_dir_all(paths.unit_dir.as_std_path()).unwrap();

@@ -1,14 +1,13 @@
 //! Per-runner action handlers: create / remove / update (in-place + recreate).
 
 use std::fs;
-use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
 
 use crate::Result;
 use crate::config::NetworkMode;
 use crate::error::GharsError;
 use crate::paths::Paths;
-use crate::plan::{DropInChangeKind, RunnerDelta, RunnerIdentity, RunnerPlan};
+use crate::plan::{RunnerIdentity, RunnerPlan};
 use crate::state::MANAGED_DROP_IN_BASENAMES;
 use crate::systemd::render_runner_unit;
 
@@ -28,40 +27,30 @@ use camino::Utf8PathBuf;
 /// with `O_RDONLY | O_NOFOLLOW` BEFORE chmod'ing it. `O_NOFOLLOW`
 /// causes the kernel to return ELOOP if the path is itself a
 /// symlink, so a symlink target is rejected ATOMICALLY at open
-/// time — no lstat-then-chmod race window. The chmod then runs
-/// against the path `/proc/self/fd/{fd}` — a kernel-magic path
-/// that resolves to the file the fd points to. Because the fd
-/// was bound at open time with O_NOFOLLOW protection, no
-/// subsequent path-resolution race can redirect the chmod to a
-/// different inode. This closes the planted-symlink vector that
-/// the deleted `set_tree_permissions` cascade exposed (a
-/// compromised sibling DynamicUser in the same trust_zone,
-/// which shares the trust-zone-allocated UID, planting
-/// `runner_home/tmp` or `runner_home/.credentials*` as a symlink
-/// to a sensitive root-owned path like `/etc/shadow`).
+/// time — no lstat-then-chmod race window. The chmod runs
+/// against `/proc/self/fd/{fd}`, a kernel-magic path that
+/// resolves to the file the fd points to; the `O_NOFOLLOW`
+/// binding at open time means no subsequent path-resolution race
+/// can redirect the chmod to a different inode. Closes the
+/// planted-symlink vector a compromised sibling `DynamicUser` in
+/// the same `trust_zone` could otherwise exploit (e.g. planting
+/// `runner_home/.credentials*` as a symlink to `/etc/shadow`).
 ///
 /// `O_RDONLY` is the access mode; apply runs as root so it
 /// always succeeds against the target's DAC. `O_PATH` would be
 /// lighter-weight but Linux rejects chmod via
-/// `/proc/self/fd/{fd}` when fd was opened O_PATH (returns
-/// ENOTSUP — the O_PATH handle is too "lightweight" for
-/// metadata mutation). `lchmod` is not in Rust's std, and the
-/// `fchmodat2(..., AT_SYMLINK_NOFOLLOW)` syscall (which is what
-/// glibc 2.38+ routes `fchmodat(..., AT_SYMLINK_NOFOLLOW)` to)
-/// was only added to Linux in 6.6 (commit 09da082b07bb), so the
-/// O_RDONLY+O_NOFOLLOW + /proc/self/fd pattern is the portable
-/// safe form for kernels >=4.x.
+/// `/proc/self/fd/{fd}` when fd was opened `O_PATH` (returns
+/// ENOTSUP). `lchmod` is not in Rust's std, and
+/// `fchmodat2(..., AT_SYMLINK_NOFOLLOW)` was only added to Linux
+/// in 6.6, so `O_RDONLY+O_NOFOLLOW` + /proc/self/fd is the
+/// portable safe form for kernels >=4.x.
 ///
-/// The Stage 1 clamp of `runner_home` to 0o755 in
-/// `execute_create_runner` is a SECONDARY defense layer: even if
-/// a hypothetical regression weakened the O_NOFOLLOW open here,
-/// a sibling DynamicUser could not write to runner_home (mode
-/// 0o755 root:root) during apply and so could not plant a
-/// symlink at any of the chmod sites under it. The pre-Stage-1
+/// Defense in depth: the Stage 1 clamp of `runner_home` to
+/// 0o755 in `execute_create_runner` denies sibling
+/// `DynamicUser` writes during the apply window; the pre-Stage-1
 /// entry sweep at `sweep_runner_home_for_planted_entries`
-/// catches PRE-existing planted entries; Stage 1 prevents NEW
-/// planting during the apply window; this O_NOFOLLOW helper
-/// catches anything that slips past both.
+/// catches PRE-existing planted entries; this `O_NOFOLLOW`
+/// helper catches anything that slips past both.
 ///
 /// `prior_mode` is masked to `0o7777` — the standard permission
 /// bits including setuid / setgid / sticky. The pre-call mode is
@@ -73,17 +62,17 @@ use camino::Utf8PathBuf;
 /// `context` is a short operator-readable label identifying the
 /// call site within `execute_create_runner` (e.g. `"tz_dir"`,
 /// `"runner_home (Stage 1)"`, `".credentials_rsaparams"`). It
-/// surfaces in the action label of the GharsError on failure so
+/// surfaces in the action label of the `GharsError` on failure so
 /// an operator reading the diagnostic can immediately tell which
 /// of the helper's eight call sites errored. The runner name is
 /// also included so multi-runner applies disambiguate per
 /// failing runner.
 ///
-/// SetMode UndoLog push is GATED on `prior_mode != mode`: a
+/// `SetMode` `UndoLog` push is GATED on `prior_mode != mode`: a
 /// no-op chmod (re-apply against an unchanged on-disk state)
 /// records nothing. This keeps the rollback advisory free of
 /// noise lines that describe chmod-to-current-mode operations.
-fn chmod_record_undo(
+pub(super) fn chmod_record_undo(
     path: &camino::Utf8Path,
     mode: u32,
     context: &str,
@@ -158,7 +147,7 @@ fn chmod_record_undo(
     // choice if a caller ever needs to set setuid / setgid / sticky
     // beyond what nix's `Mode` bitflags enumerates).
     nix::sys::stat::fchmod(
-        fd.as_raw_fd(),
+        &fd,
         nix::sys::stat::Mode::from_bits_retain(mode as nix::sys::stat::mode_t),
     )
     .map_err(|e| GharsError::Apply {
@@ -182,7 +171,7 @@ fn chmod_record_undo(
 
 /// Pre-apply sweep of `runner_home` direct children. Refuses to
 /// proceed if any entry is a symlink, FIFO, device file, or
-/// socket. These can only arise from a sibling DynamicUser
+/// socket. These can only arise from a sibling `DynamicUser`
 /// planting them during a prior failed apply's 0o777 window OR
 /// from operator manual intervention.
 ///
@@ -199,11 +188,10 @@ fn chmod_record_undo(
 /// indefinitely in `chmod_record_undo`. Devices and sockets have
 /// similar uncovered semantics through path-based file ops.
 ///
-/// Why direct children only (not recursive): the recursive
-/// approach is what the deleted `set_tree_permissions` cascade
-/// did, and it has TOCTOU-during-walk problems of its own. The
-/// chmod and config.sh code paths only touch direct children
-/// of runner_home (`.runner`, `.credentials*`, `tmp`) plus
+/// Why direct children only (not recursive): a recursive walk
+/// has TOCTOU-during-walk problems of its own. The chmod and
+/// config.sh code paths only touch direct children of
+/// `runner_home` (`.runner`, `.credentials*`, `tmp`) plus
 /// the bin.X.Y.Z/ subtree (which is laid down by
 /// `install_binary` after this sweep with mode bits from the
 /// tarball headers). Deeper paths are not on the attack
@@ -320,14 +308,18 @@ pub(super) fn fchown_record_undo(
             });
         }
     };
-    // Read the pre-call uid/gid via `fstat` through `/proc/self/fd`
-    // (atomic with the open — no path-resolution race).
-    let proc_path = format!("/proc/self/fd/{}", fd.as_raw_fd());
-    let meta = fs::metadata(&proc_path)?;
+    // Read the pre-call uid/gid via `fstat` on the already-open fd
+    // (atomic with the open — no path-resolution race, and no
+    // dependency on /proc which can be missing in chroots and
+    // minimal containers).
+    let meta = fd.metadata().map_err(|e| GharsError::Apply {
+        action: format!("chown {context} at {path}"),
+        source: Box::new(GharsError::Io(e)),
+    })?;
     let prior_uid = meta.uid();
     let prior_gid = meta.gid();
     nix::unistd::fchown(
-        fd.as_raw_fd(),
+        &fd,
         Some(nix::unistd::Uid::from_raw(uid)),
         Some(nix::unistd::Gid::from_raw(gid)),
     )
@@ -346,53 +338,23 @@ pub(super) fn fchown_record_undo(
     Ok(())
 }
 
-/// `fchown` the runner's writable set to the DynamicUser-allocated
-/// UID, then chmod tighten modes to DynamicUser-only access. Extracted
-/// from `execute_create_runner` so a test can drive this path
-/// directly without needing `CAP_CHOWN` (callers in production pass
-/// the real allocated UID from `poll_dynamic_user_uid`; tests
-/// pass the test process's own UID, which Linux allows non-root
-/// to `fchown` to).
+/// `fchown` the runner's writable set to the `DynamicUser`-allocated
+/// UID, then chmod tighten modes to `DynamicUser`-only access.
 ///
-/// `fchown` ALL paths first, THEN `chmod` tighten ALL paths. The
-/// order is correctness-critical:
-///   - After chown, ownership is the DynamicUser UID. The
-///     subsequent chmod tighten leaves OWNER bits intact (0o7xx
-///     family), so the DynamicUser can still read/write its own
-///     files post-tighten.
-///   - The reverse order (tighten first, chown second) would
-///     leave a window where files are at the tightened mode but
-///     still owned by root, blocking the runner from credential
-///     read.
+/// **Ordering invariant**: chown ALL paths first, THEN chmod
+/// tighten ALL paths. Tightening first would leave files at the
+/// tightened mode while still owned by root, blocking the runner
+/// from credential read during the window between the two passes.
 ///
-/// Modes applied:
-///   - `runner_home` → 0o700 (was 0o777 — non-owner access removed)
-///   - `runner_tmp` → 0o700 (same)
-///   - `.ktstr` → 0o770 (group is the trust-zone UID == owner UID for
-///     DynamicUser, so group bits are equivalent to owner; 0o770
-///     leaves room for a future separate trust-zone group with read
-///     access)
-///   - `.ccache` → 0o770 (same rationale as `.ktstr` — but gated on
-///     ccache binding presence: skipped entirely when `ccache_dir` is
-///     None, see body. Callers pass None for runners with no
-///     `[cache_pools.NAME]` binding of `kinds = ["ccache"]`, per
-///     the `has_ccache` binding gate in `execute_create_runner`)
-///   - `.runner` / `.credentials*` → 0o600 (owner-only read; world
-///     no longer sees OAuth credentials or the RSA private key)
+/// Target modes: `runner_home` / `runner_tmp` → 0o700; `.ktstr` /
+/// `.ccache` → 0o770 (group reserved for future trust-zone share);
+/// `.runner` / `.credentials*` → 0o600.
 ///
-/// Two gating axes coexist in this helper:
-///   - `.ccache` is gated at the PARAMETER layer (`ccache_dir:
-///     Option<&Utf8Path>`): callers pass None when the runner spec
-///     has no ccache-kind binding, gated upstream at
-///     `execute_create_runner` where the binding is known.
-///   - Credential files (`.runner`, `.credentials`,
-///     `.credentials_rsaparams`) are existence-gated INSIDE the
-///     helper: a runner whose `config.sh` skipped one (e.g.
-///     PAT-authenticated runners may not produce
-///     `.credentials_rsaparams`) silently skips its chown + chmod
-///     entry. The difference: ccache gating is by spec (config-
-///     known); credential gating is by `config.sh` output (runtime-
-///     observed).
+/// Gating: `.ccache` skipped when `ccache_dir = None` (caller's
+/// spec-time gate); credential files (`.runner`, `.credentials`,
+/// `.credentials_rsaparams`) existence-gated inside the helper
+/// because `config.sh` output varies by auth mechanism.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn chown_and_tighten_runner_state(
     runner_home: &camino::Utf8Path,
     runner_tmp: &camino::Utf8Path,
@@ -533,14 +495,14 @@ pub(super) fn restore_operator_drop_ins(
 /// as a change vs the pre-write absent state; 0..=2 for `conditional
 /// = true`). Both files always written via the same writer per call.
 ///
-/// `conditional = false`: CreateRunner path. Every CreateRunner
+/// `conditional = false`: `CreateRunner` path. Every `CreateRunner`
 /// writes fresh `.env` / `.path` content; `write_record_undo` snapshots
 /// `prior_content = None` (file doesn't exist yet) and pushes
 /// `UndoStep::WriteFile` so a partial-create rollback unlinks the
 /// file rather than restoring prior content (see the call site
 /// doc-comment for the operator-facing degraded-mode implication).
 ///
-/// `conditional = true`: in-place UpdateRunner path.
+/// `conditional = true`: in-place `UpdateRunner` path.
 /// `read_then_write_if_changed` byte-compares the rendered content
 /// against the on-disk file and writes only when they differ; the
 /// caller uses the returned count to decide whether to trigger
@@ -577,25 +539,37 @@ pub(super) fn write_env_path_files(
     }
 }
 
-/// Find the most recent `bin.X.Y.Z/` directory under runner_home that
+/// Find the most recent `bin.X.Y.Z/` directory under `runner_home` that
 /// contains config.sh. Used by remove/undo paths that need to run
 /// config.sh but don't have the version from a plan.
+///
+/// Ordering: sort by directory mtime, newest first. mtime mirrors the
+/// retention pruner in `extract::prune_old_bin_versions` so this helper
+/// and the pruner agree on which version is "current". Lexicographic
+/// sort would mis-order across version-string transitions where digit
+/// width changes (e.g. `bin.2.334.0` sorts BEFORE `bin.2.34.0`); mtime
+/// is install-time-correct regardless of version-string shape.
 pub(super) fn find_active_bin_dir(runner_home: &camino::Utf8Path) -> crate::Result<Utf8PathBuf> {
-    let mut candidates: Vec<Utf8PathBuf> = Vec::new();
+    let mut candidates: Vec<(std::time::SystemTime, Utf8PathBuf)> = Vec::new();
     if let Ok(entries) = fs::read_dir(runner_home.as_std_path()) {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if name_str.starts_with("bin.") && entry.path().join("config.sh").exists() {
-                if let Ok(utf8) = Utf8PathBuf::try_from(entry.path()) {
-                    candidates.push(utf8);
-                }
+            if name_str.starts_with("bin.")
+                && entry.path().join("config.sh").exists()
+                && let Ok(utf8) = Utf8PathBuf::try_from(entry.path())
+                && let Ok(meta) = entry.metadata()
+                && let Ok(mtime) = meta.modified()
+            {
+                candidates.push((mtime, utf8));
             }
         }
     }
-    candidates.sort();
-    candidates.pop().ok_or_else(|| {
-        GharsError::Apply {
+    candidates.sort_by(|a, b| a.0.cmp(&b.0));
+    candidates
+        .pop()
+        .map(|(_, p)| p)
+        .ok_or_else(|| GharsError::Apply {
             action: format!("find config.sh under {runner_home}"),
             source: Box::new(GharsError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -625,10 +599,10 @@ pub(super) fn execute_create_runner(
 
     // Clean up stale DynamicUser symlinks from previous runs.
     let home_std = runner_home.as_std_path();
-    if let Ok(meta) = fs::symlink_metadata(home_std) {
-        if meta.file_type().is_symlink() {
-            let _ = fs::remove_file(home_std);
-        }
+    if let Ok(meta) = fs::symlink_metadata(home_std)
+        && meta.file_type().is_symlink()
+    {
+        let _ = fs::remove_file(home_std);
     }
     fs::create_dir_all(home_std)?;
 
@@ -651,8 +625,7 @@ pub(super) fn execute_create_runner(
     // (FIFO open with `O_RDONLY` blocks until a writer opens, hanging
     // apply indefinitely).
     //
-    // Recursive sweep would re-introduce the same TOCTOU-during-
-    // walk class as the deleted `set_tree_permissions` cascade — we
+    // Recursive sweep would introduce TOCTOU-during-walk — we
     // intentionally stay non-recursive. Only direct children matter:
     // `config.sh` and the post-`config.sh` chmod loop write at
     // `runner_home/.runner` / `.credentials` / `.credentials_rsaparams`,
@@ -753,11 +726,9 @@ pub(super) fn execute_create_runner(
         // fallback surface as a loud panic rather than installing
         // into `bin.local/` while the unit drop-in references
         // `bin.latest/` (the pre-fix broken-from-birth shape).
-        let version = spec
-            .runner_version
-            .clone()
-            .expect(
-                "tarball-pinned spec.runner_version: guaranteed Some by \
+        #[allow(clippy::expect_used)]
+        let version = spec.runner_version.clone().expect(
+            "tarball-pinned spec.runner_version: guaranteed Some by \
                  lower_to_effective's tarball+no-version validation gate",
             );
         (local.clone(), version)
@@ -812,10 +783,11 @@ pub(super) fn execute_create_runner(
     let token = mint_token(deps.auth, &spec.auth_name, &spec.url, false)?;
 
     // 4) Run `config.sh --url ... --token ...` — registers the runner
-    //    with GitHub. SEC-05 mitigation note in trait doc; v0.1 still
-    //    passes the token via `argv` pending the token-drop env-var
-    //    pattern's full design. Pass `&token.value` so `token`
-    //    stays owned in this frame and zeroizes on `Drop` at end of fn.
+    //    with GitHub. SEC-05 mitigation note in trait doc; today
+    //    still passes the token via `argv` pending the token-drop
+    //    env-var pattern's full design. Pass `&token.value` so
+    //    `token` stays owned in this frame and zeroizes on `Drop`
+    //    at end of fn.
     deps.config_shell.run_register(&ConfigShellCtx {
         runner_home: &runner_home,
         bin_dir: &bin_dir,
@@ -970,22 +942,13 @@ pub(super) fn execute_create_runner(
     // above) keeps the modes the tarball headers wrote — 0o755 for
     // `runsvc.sh` / `Runner.Listener` / native binaries, 0o644 for
     // managed assemblies, 0o644 for the `.env` / `.path` files
-    // `write_record_undo` just laid down. The pre-fix
-    // `set_tree_permissions(tz_dir, 0o777)` cascade opened ALL of
-    // these to 0o777, making `runsvc.sh` world-writable — a
-    // workflow-step-RCE persistence vector. With the cascade gone,
-    // those modes stay correct.
-    //
-    // The cascade also used path-based `fs::set_permissions` which
-    // follows symlinks (it's `chmod(2)`, not `lchmod`). Combined with
-    // the recursive walk and ghars-runs-as-root, an operator-
-    // writable path under `runner_home` with a planted symlink to,
-    // e.g., `/etc` would have caused root to chmod `/etc/*` → 0o777, a
-    // full local privilege escalation — the well-known
-    // TOCTOU-during-recursive-chmod-on-operator-writable-trees
-    // vulnerability class. The deletion closes the class by
-    // construction (no walk → no follow), not by trying to walk
-    // safely.
+    // `write_record_undo` just laid down. Do NOT add a recursive
+    // chmod cascade here: a path-based `fs::set_permissions` walk
+    // follows symlinks (`chmod(2)`, not `lchmod`) and combined with
+    // root + operator-writable subtree could chmod `/etc/*` → 0o777
+    // through a planted symlink. Touch only the specific files this
+    // helper knows about, via the symlink-refusing `chmod_record_undo`
+    // (`O_NOFOLLOW`).
     let mut normalized = Vec::with_capacity(3);
     for basename in [".runner", ".credentials", ".credentials_rsaparams"] {
         // Runner.Listener resolves its Root from the assembly location
@@ -1026,7 +989,7 @@ pub(super) fn execute_create_runner(
 
     // 7) `daemon-reload` happens once at the end of `apply()`; do NOT
     //    call it here. Enable + start.
-    let unit_name = format!("ghars-runner@{}.service", spec.name);
+    let unit_name = crate::paths::runner_unit_name(&spec.name);
     deps.systemd.enable_unit(&unit_name)?;
     log.push(UndoStep::EnableUnit {
         name: unit_name.clone(),
@@ -1167,10 +1130,10 @@ pub(super) fn execute_create_runner(
 
 /// Poll `systemd.lookup_dynamic_user_by_name` with exponential
 /// backoff (10ms doubling to 100ms cap, 5s total budget) until
-/// the DynamicUser name allocates or the budget is exhausted.
+/// the `DynamicUser` name allocates or the budget is exhausted.
 ///
 /// systemd's Manager.LookupDynamicUserByName returns
-/// BUS_ERROR_NO_SUCH_DYNAMIC_USER until the unit's ExecStart
+/// `BUS_ERROR_NO_SUCH_DYNAMIC_USER` until the unit's `ExecStart`
 /// child runs `dynamic_user_realize` and registers the name. The
 /// poll budget accommodates the typical fork+realize latency
 /// (tens of ms in practice) plus headroom for slow-start machines.
@@ -1202,50 +1165,46 @@ pub(super) fn poll_dynamic_user_uid_with_budget(
     let mut iterations: u32 = 0;
     loop {
         iterations += 1;
-        match systemd.lookup_dynamic_user_by_name(name)? {
-            Some(uid) => {
-                // Observability per-CreateRunner. Lets operators
-                // confirm the 5s budget and the doc-comment's
-                // "tens of ms" typical claim against fleet
-                // production data via `RUST_LOG=ghars=info`.
-                // Subsequent runners in the same trust zone
-                // typically resolve on iteration 1 (zero-iterations-
-                // of-sleep) because the DynamicUser name is
-                // already realized; only the first runner per
-                // trust zone after a cold boot hits the
-                // realize-side socket-population wait.
-                let elapsed = start.elapsed();
-                tracing::info!(
-                    trust_zone_user = %name,
-                    uid,
-                    iterations,
-                    elapsed_ms = elapsed.as_millis() as u64,
-                    "DynamicUser UID resolved via Manager.LookupDynamicUserByName"
-                );
-                return Ok(uid);
-            }
-            None => {
-                if start.elapsed() >= budget {
-                    return Err(GharsError::Apply {
-                        action: format!("resolve DynamicUser UID for {name}"),
-                        source: Box::new(GharsError::Systemd(
-                            format!(
-                                "Manager.LookupDynamicUserByName({name}) returned \
-                                 NoSuchDynamicUser for {budget:?} — the runner unit \
-                                 likely failed to start or systemd is unhealthy"
-                            ),
-                            "inspect `systemctl status ghars-runner@*.service` and \
-                             the unit's journal. If the unit started successfully, \
-                             this may be a systemd D-Bus latency issue — re-run \
-                             apply and report if it persists."
-                                .into(),
-                        )),
-                    });
-                }
-                std::thread::sleep(interval);
-                interval = (interval * 2).min(Duration::from_millis(100));
-            }
+        if let Some(uid) = systemd.lookup_dynamic_user_by_name(name)? {
+            // Observability per-CreateRunner. Lets operators
+            // confirm the 5s budget and the doc-comment's
+            // "tens of ms" typical claim against fleet
+            // production data via `RUST_LOG=ghars=info`.
+            // Subsequent runners in the same trust zone
+            // typically resolve on iteration 1 (zero-iterations-
+            // of-sleep) because the DynamicUser name is
+            // already realized; only the first runner per
+            // trust zone after a cold boot hits the
+            // realize-side socket-population wait.
+            let elapsed = start.elapsed();
+            tracing::info!(
+                trust_zone_user = %name,
+                uid,
+                iterations,
+                elapsed_ms = elapsed.as_millis() as u64,
+                "DynamicUser UID resolved via Manager.LookupDynamicUserByName"
+            );
+            return Ok(uid);
         }
+        if start.elapsed() >= budget {
+            return Err(GharsError::Apply {
+                action: format!("resolve DynamicUser UID for {name}"),
+                source: Box::new(GharsError::Systemd(
+                    format!(
+                        "Manager.LookupDynamicUserByName({name}) returned \
+                         NoSuchDynamicUser for {budget:?} — the runner unit \
+                         likely failed to start or systemd is unhealthy"
+                    ),
+                    "inspect `systemctl status ghars-runner@*.service` and \
+                     the unit's journal. If the unit started successfully, \
+                     this may be a systemd D-Bus latency issue — re-run \
+                     apply and report if it persists."
+                        .into(),
+                )),
+            });
+        }
+        std::thread::sleep(interval);
+        interval = (interval * 2).min(Duration::from_millis(100));
     }
 }
 
@@ -1255,7 +1214,7 @@ pub(super) fn execute_remove_runner(
     paths: &Paths,
     log: &mut UndoLog,
 ) -> Result<ApplyOutcome> {
-    let unit_name = format!("ghars-runner@{}.service", identity.name);
+    let unit_name = crate::paths::runner_unit_name(&identity.name);
     let runner_home = paths.runner_home(&identity.trust_zone, &identity.name);
 
     // 1) Stop the unit. systemd's `StopUnit` is idempotent — non-running
@@ -1389,370 +1348,3 @@ pub(super) fn execute_remove_runner(
     Ok(ApplyOutcome::Removed)
 }
 
-pub(super) fn execute_update_runner(
-    delta: &RunnerDelta,
-    deps: &Deps<'_>,
-    paths: &Paths,
-    log: &mut UndoLog,
-    keep_versions: u32,
-    no_restart: bool,
-) -> Result<ApplyOutcome> {
-    if delta.requires_recreate {
-        // Recreate path: stop + remove + create. The plan emits this
-        // when an identity-bound field changed (`url`, `runner_version`,
-        // `labels`, `arch`, `runner_sha256`, `runner_tarball`, `network`).
-        //
-        // The undo log threading here propagates BOTH inner calls'
-        // pushes. If create fails partway, undo walks: create's pushes
-        // (reverse, lossless), then remove's pushes (reverse-direction
-        // variants → warn-and-skip per design). Net effect on
-        // recreate-rollback: the partial new state is unwound; the old
-        // state stays gone (genuinely lossy — re-running apply is the
-        // recovery path).
-        //
-        // Collapse the inner `Removed` + `Created` outcomes into
-        // a single `Recreated` — the user-facing contract is one row
-        // per `Action`, and the inner remove+create are
-        // implementation detail of the recreate path.
-        // Snapshot operator-territory drop-ins (basenames NOT in
-        // `MANAGED_DROP_IN_BASENAMES` — typically `99-*.conf` from
-        // `systemctl edit`) BEFORE `execute_remove_runner` wipes
-        // `drop_in_dir` via `fs::remove_dir_all`.
-        // Without this snapshot, the operator's override file
-        // vanishes on remove and never comes back on create
-        // (`execute_create_runner` only emits managed basenames).
-        // Operators reporting "my `systemctl edit` override
-        // disappeared after a `runner_version` bump" hit this class.
-        //
-        // The snapshot reads file bodies into memory before the
-        // wipe; the restore re-writes them post-create with the
-        // same byte content + ownership via `write_record_undo`,
-        // so the recreate cascade preserves operator overrides
-        // end-to-end. In-place updates already preserve them via
-        // the `MANAGED_DROP_IN_BASENAMES` guard at the deletion
-        // loop in `execute_update_runner` (covered by
-        // `update_runner_in_place_preserves_operator_drop_ins`);
-        // this commit closes the recreate-path equivalent gap
-        // adversary A9 flagged.
-        let recreate_drop_in_dir = paths.drop_in_dir(&delta.identity.name);
-        let operator_drop_ins = snapshot_operator_drop_ins(&recreate_drop_in_dir);
-        execute_remove_runner(&delta.identity, deps, paths, log)?;
-        execute_create_runner(&delta.after, deps, paths, log, keep_versions)?;
-        restore_operator_drop_ins(&recreate_drop_in_dir, &operator_drop_ins, log)?;
-        return Ok(ApplyOutcome::Recreated);
-    }
-
-    // In-place path: rewrite drop-ins (template body unchanged because
-    // it is identical across runners) and let the next `daemon-reload`
-    // pick them up. Restart only when a `[Service]`-section value changed
-    // — `RunnerDelta` does not yet distinguish `[Service]` from `[Unit]`
-    // drift, so to avoid spurious restarts we skip the `daemon-reload` +
-    // stop + start when (a) every managed file's on-disk bytes match
-    // what we would render and (b) the caches-list diff is empty.
-    // The byte comparison reuses `read_prior` snapshots that were
-    // already needed for rollback.
-    // Track `files_changed` (count) and pool names
-    // (Vec) so the apply outcome row can carry both `files_changed`
-    // and the WHICH-pools detail for `cmd_apply`'s per-action line.
-    // The `is_empty()` checks at the `daemon-reload` gate below
-    // preserve the short-circuit semantics ("skip rewrite when bytes
-    // match"): the gate fires iff `files_changed == 0` AND both
-    // pool Vecs are empty. The public-detail "group op(s)" count
-    // is `pools_added.len() + pools_removed.len()` at render time
-    // — operator-visible vocabulary is retained for compatibility
-    // with existing log scrapes; no system-level group operation
-    // is dispatched.
-    let mut files_changed: usize = 0;
-    let mut pools_added: Vec<String> = Vec::new();
-    let mut pools_removed: Vec<String> = Vec::new();
-
-    // Compute the caches-list diff for the operator-facing
-    // "added: …; removed: …" detail string.
-    //
-    // No system-level group reconciliation runs here. Cache reach
-    // is materialized by socket-DAC + `BindPaths` under `DynamicUser`
-    // (cache server runs at the same `trust_zone` `DynamicUser` as the
-    // runner), not by `/etc/group` membership. The set diff below
-    // captures `pools_added` / `pools_removed` purely for the
-    // detail surface ("runner X gained pool Y / lost pool Z");
-    // the runner unit's `30-cache-pool.conf` drop-in (re-rendered
-    // below) carries the `BindPaths` entries that actually grant
-    // pool access.
-    //
-    // The diff is computed from the discovered `X-Ghars-Caches`
-    // annotation (`delta.before_caches`) against the desired
-    // post-update binding list (`delta.after.spec.caches`). When
-    // the discovered annotation is absent (`None`) — pre-annotation
-    // runner or operator-stripped `00-ghars.conf` — we skip the diff
-    // entirely rather than guess at the prior membership; the next
-    // apply will land annotations and a future caches-list edit
-    // can reconcile from a known baseline.
-    if let Some(before) = delta.before_caches.as_ref() {
-        let after_set: std::collections::BTreeSet<&str> = delta
-            .after
-            .spec
-            .caches
-            .iter()
-            .map(|b| b.name.as_str())
-            .collect();
-        let before_set: std::collections::BTreeSet<&str> =
-            before.iter().map(String::as_str).collect();
-        // Sort by collecting into `BTreeSet` first so the operations
-        // run in deterministic alphabetical order — easier for tests
-        // and for operator log readability.
-        for added in after_set.difference(&before_set) {
-            // Capture the pool NAME for operator-facing detail surface.
-            pools_added.push((*added).to_string());
-        }
-        for removed in before_set.difference(&after_set) {
-            pools_removed.push((*removed).to_string());
-        }
-    }
-
-    // Write managed unit text (this block) and drop-ins (loop
-    // further down). The `00-ghars.conf` `X-Ghars-Caches` annotation
-    // lives in the drop-in body written by the `for (name, body)
-    // in &delta.after.drop_ins` loop, NOT in the systemd template
-    // body written here.
-    let unit_file = paths.unit_file(&delta.identity.name);
-    if read_then_write_if_changed(&unit_file, delta.after.effective_unit_text.as_bytes(), log)? {
-        files_changed += 1;
-    }
-    let drop_in_dir = paths.drop_in_dir(&delta.identity.name);
-    let drop_in_dir_existed = drop_in_dir.exists();
-    fs::create_dir_all(drop_in_dir.as_std_path())?;
-    if !drop_in_dir_existed {
-        log.push(UndoStep::CreateDir {
-            path: drop_in_dir.clone(),
-        });
-        // `CreateDir` is itself a filesystem mutation — count it as a
-        // change so the `daemon-reload` + restart still fires the first
-        // time we plant a runner's drop-in directory, even on a runner
-        // whose drop-in basenames all happen to byte-match a prior
-        // hand-edit (vanishingly unlikely but cheap to be correct).
-        files_changed += 1;
-    }
-    // Remove ghars-managed drop-ins flagged `DropInChangeKind::Removed`
-    // by Stage 2 (rendered side has no entry, on-disk side does).
-    // Stage 2 walks the union of rendered + discovered keys, so
-    // operator-edited `99-*.conf` and any other non-managed name CAN
-    // appear here as `Removed` entries. The `MANAGED_DROP_IN_BASENAMES`
-    // guard below is the load-bearing safety mechanism that keeps
-    // `systemctl edit` overrides intact: we only delete basenames
-    // ghars itself would emit. Anything else is operator territory
-    // and is left untouched, even when Stage 2 classifies it as
-    // `Removed`.
-    for change in &delta.drop_in_changes {
-        if let DropInChangeKind::Removed { .. } = &change.change {
-            if !MANAGED_DROP_IN_BASENAMES.contains(&change.basename.as_str()) {
-                continue;
-            }
-            let path = drop_in_dir.join(&change.basename);
-            let prior = read_prior(&path);
-            // Differentiate "file is missing" (`ENOENT` — already
-            // removed, treat as no-op success) from any other I/O
-            // failure (`EACCES` on read-only mount, `EBUSY` on a held
-            // descriptor, `EROFS`, etc. — the file is still present
-            // and the convergence target was NOT reached). The
-            // pre-fix `is_ok()` collapsed every `Err` into a silent
-            // skip, so a real `EACCES` would let `apply` claim
-            // success while leaving the stale drop-in on disk.
-            match fs::remove_file(path.as_std_path()) {
-                Ok(()) => {
-                    if let Some(content) = prior {
-                        log.push(UndoStep::RemoveFile { path, content });
-                    }
-                    files_changed += 1;
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    // Already gone — operator concurrently removed
-                    // or Stage 2 saw a race. Convergence target is
-                    // satisfied, no `UndoStep` to push (nothing to
-                    // restore), no `files_changed` bump (we did NOT
-                    // mutate disk this apply).
-                }
-                Err(e) => return Err(GharsError::Io(e)),
-            }
-        }
-    }
-    // Write each desired drop-in. `read_then_write_if_changed` snapshots
-    // the on-disk prior and short-circuits when the bytes already match
-    // The `Preserved` Stage 2 verdict is not used as an
-    // optimization here: it is plan-time, and on-disk bytes can drift
-    // between plan and apply (e.g. operator edit landed after `ghars
-    // plan` rendered output). Trusting `Preserved` would preserve that
-    // drift instead of converging — the byte comparison inside
-    // `read_then_write_if_changed` is the authoritative check and runs
-    // every time.
-    for (name, body) in &delta.after.drop_ins {
-        let dest = drop_in_dir.join(name);
-        if read_then_write_if_changed(&dest, body.as_bytes(), log)? {
-            files_changed += 1;
-        }
-    }
-
-    // Materialize the trust-zone-shared `.ccache` dir if the
-    // in-place update ADDED a ccache binding (or refreshed an existing
-    // one). Without this, an operator who edits a no-cache runner to
-    // add `caches = ["build"]` (a ccache pool) gets the new drop-in
-    // body + `.env` emission (`CCACHE_DIR=/var/lib/ghars/<TZ>/.ccache`,
-    // gated on `has_ccache` in `render_runner_env_file`) but the dir on
-    // disk was never created — workflow steps' ccache wrappers would
-    // try to write to a non-existent path. The `if !exists()` gate
-    // around the create + chmod is load-bearing (not redundant
-    // idempotency): a pre-existing `.ccache` from a sibling runner's
-    // prior `CreateRunner` apply was already chowned + tightened to
-    // 0o770 by `chown_and_tighten_runner_state`; re-chmodding to
-    // 0o777 here would mode-thrash the sibling's post-`StartUnit`
-    // tightening and re-widen world access on a shared dir that
-    // another running runner is reading. Regression-pinned at
-    // `caches_tests::execute_update_runner_in_place_populates_pool_name_vecs`
-    // (pre-stages 0o770, asserts mode stays 0o770 after this block).
-    // The reverse direction (removing the last ccache binding) leaves
-    // a stale empty dir; harmless (no env var points at it anymore
-    // once the renderer's `has_ccache` gate drops the emission) and
-    // avoids cross-runner racy rmdir (another runner in the same
-    // `trust_zone` may still need the dir).
-    //
-    // KNOWN GAP: the freshly-created `.ccache` here stays root-owned
-    // at 0o777 because `execute_update_runner` does NOT call
-    // `chown_and_tighten_runner_state` post-`StartUnit` (only
-    // `execute_create_runner` does, at the
-    // `chown_and_tighten_runner_state` call site in
-    // `execute_create_runner`).
-    // The dir is functionally writable by the `DynamicUser` via the
-    // world bit, but the ownership posture diverges from the
-    // `CreateRunner` path (which produces DynamicUser-owned 0o770).
-    // Self-heals on the next `CreateRunner` in the same `trust_zone`.
-    let after_has_ccache = delta
-        .after
-        .spec
-        .caches
-        .iter()
-        .any(|b| b.kinds.contains(&crate::config::CacheKind::Ccache));
-    if after_has_ccache {
-        let tz_dir_inplace = paths.state_dir.join(&delta.identity.trust_zone);
-        let ccache_dir_inplace = tz_dir_inplace.join(".ccache");
-        if !ccache_dir_inplace.as_std_path().exists() {
-            fs::create_dir_all(ccache_dir_inplace.as_std_path())?;
-            chmod_record_undo(&ccache_dir_inplace, 0o777, ".ccache (in-place)", log)?;
-        }
-    }
-
-    // Rewrite `.env` and `.path`. `CreateRunner` writes them once, but
-    // in-place updates that change env-affecting fields (cache binding
-    // flip, future operator-declared env vars) would otherwise leave
-    // the systemd `Environment=` directives (rewritten in the drop-in
-    // loop above; LAYER 1, reaches the `Runner.Listener` process) and
-    // the workflow-step env (via `Runner.Listener`'s `LoadAndSetEnv` at
-    // process start, which reads `.env` once; LAYER 2) out of sync.
-    //
-    // The pure-function producers `render_runner_env_file` and
-    // `render_runner_path_file` consume only `EffectiveRunnerSpec`
-    // fields (no `runner_version`), so the bytes here are byte-identical
-    // to what `CreateRunner` wrote for the same spec. The byte-compare
-    // in `read_then_write_if_changed` makes this a no-op when nothing
-    // changed.
-    //
-    // `bin_dir` is computed from `delta.after.spec.runner_version`
-    // directly rather than `find_active_bin_dir`'s lex-sort: in-place
-    // updates never change `runner_version` (that's a recreate-class
-    // field), so the running runner's bin dir matches the desired
-    // spec's version. An empty `runner_version` here means plan emitted
-    // a malformed in-place delta — fail loudly rather than silently
-    // skip the `.env`/`.path` rewrite.
-    let runner_home = paths.runner_home(&delta.identity.trust_zone, &delta.identity.name);
-    let version = delta.after.spec.runner_version.as_deref().ok_or_else(|| GharsError::Apply {
-        action: format!("UpdateRunner({}): rewrite .env/.path", delta.identity.name),
-        source: Box::new(GharsError::Validation(
-            "in-place delta missing runner_version; cannot locate bin dir for .env/.path rewrite".into(),
-            format!(
-                "the runner's 00-ghars.conf is missing the X-Ghars-Effective-Version \
-                 annotation (operator-stripped, pre-annotation legacy runner, or invalid \
-                 value). Fix by: (a) set `runner_version = \"X.Y.Z\"` in ghars.toml to \
-                 match the installed version (check with \
-                 `ls /var/lib/ghars/<TRUST_ZONE>/ghars-{name}/bin.*`), OR (b) remove the \
-                 runner from ghars.toml and re-add it so a fresh CreateRunner re-fetches \
-                 the latest release from the GitHub API",
-                name = delta.identity.name,
-            ),
-        )),
-    })?;
-    let bin_dir = runner_home.join(format!("bin.{version}"));
-    files_changed += write_env_path_files(
-        &bin_dir,
-        delta.after.env_file.as_bytes(),
-        delta.after.path_file.as_bytes(),
-        log,
-        true,
-    )?;
-
-    // Skip `daemon-reload` + stop + start when nothing on disk
-    // changed AND the caches-list diff was empty. A non-empty
-    // `pools_added`/`pools_removed` implies the `30-cache-pool.conf`
-    // drop-in was re-rendered (its body changed when bindings
-    // changed), so `files_changed > 0` in that case — but the
-    // pool-Vec checks below stay as belt-and-suspenders so a
-    // future code path that records pool changes without
-    // re-rendering can't slip past the restart gate.
-    // `verify_runner_netns` runs only when we actually start the
-    // unit; otherwise the prior PID is still in the netns we
-    // already verified on the last apply.
-    if files_changed == 0 && pools_added.is_empty() && pools_removed.is_empty() {
-        tracing::info!(
-            runner = delta.identity.name.as_str(),
-            "in-place: all managed bytes match on disk and caches list is unchanged; skipping daemon-reload + restart"
-        );
-        return Ok(ApplyOutcome::InPlaceSkipped);
-    }
-    // `--no-restart` opt-out: files (drop-ins, `.env`, `.path`) were
-    // already written above; skip the `daemon-reload` + stop + start
-    // cycle so the running unit keeps its pre-rewrite loaded config
-    // until the operator manually restarts via `systemctl restart
-    // ghars-runner@NAME.service` or re-runs apply without the flag.
-    // CAVEAT: re-apply without `--no-restart` will see byte-matched
-    // on-disk drop-ins (this apply wrote them) and take the
-    // `InPlaceSkipped` short-circuit above, so the deferred restart
-    // persists across re-applies until an explicit
-    // `systemctl restart` invocation. The end-of-apply
-    // `daemon_reload` at `orchestrator::apply` still fires —
-    // it's a cache-flush of systemd's unit-file index, no unit
-    // lifecycle change, so it's harmless to running workloads.
-    if no_restart {
-        return Ok(ApplyOutcome::InPlaceRewroteNoRestart {
-            name: delta.identity.name.clone(),
-            files_changed,
-            pools_added,
-            pools_removed,
-        });
-    }
-    let unit_name = format!("ghars-runner@{}.service", delta.identity.name);
-    // Ensure every cache pool directory referenced by this runner's
-    // BindPaths= exists before restart. Symmetric with the
-    // execute_create_runner guard — covers in-place updates that
-    // add a new sccache binding to an existing runner.
-    for cache_binding in &delta.after.spec.caches {
-        let pool_dir = paths.cache_pool_dir(&cache_binding.name);
-        fs::create_dir_all(pool_dir.as_std_path())?;
-    }
-    deps.systemd.daemon_reload()?;
-    deps.systemd.stop_unit(&unit_name)?;
-    log.push(UndoStep::StopUnit {
-        name: unit_name.clone(),
-    });
-    deps.systemd.start_unit(&unit_name)?;
-    log.push(UndoStep::StartUnit {
-        name: unit_name.clone(),
-    });
-    if matches!(
-        delta.after.spec.network.as_ref().map(|n| &n.spec.mode),
-        Some(NetworkMode::Netns)
-    ) {
-        verify_runner_netns(&unit_name, deps.systemd)?;
-    }
-    Ok(ApplyOutcome::InPlaceRestarted {
-        files_changed,
-        pools_added,
-        pools_removed,
-    })
-}

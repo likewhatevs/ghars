@@ -14,7 +14,7 @@ use super::phases::sort_into_phases;
 use super::pools::{
     execute_create_cache_pool, execute_remove_cache_pool, execute_update_cache_pool,
 };
-use super::runners::{execute_create_runner, execute_remove_runner, execute_update_runner};
+use super::runners::{execute_create_runner, execute_remove_runner};
 use super::undo::{Deps, UndoLog, undo};
 
 /// Apply a plan to the host.
@@ -138,95 +138,16 @@ pub fn apply(
                 result.details.push((label, outcome));
             }
             Err(e) => {
-                if opts.rollback_on_failure {
-                    // Best-effort: swallow undo errors (each step
-                    // already logs internally via tracing::warn!) so
-                    // the original action error stays the visible
-                    // failure.
-                    let _ = undo(&log, deps, paths);
-                }
-                // Capture the inner-error display BEFORE the
-                // wrap, so the `ApplyOutcome::Failed` row carries
-                // only the cause (the wrapping `GharsError::Apply`
-                // would re-include the label that already appears
-                // in the `(label, ApplyOutcome)` tuple).
-                //
-                // Escape ASCII control characters in the
-                // captured display before storing. The Display impls
-                // for `GharsError` interpolate operator-supplied
-                // strings (config paths, auth names, hostnames) — a
-                // hostile string that survived upstream validation
-                // could carry `\x1b[…m` sequences that would
-                // manipulate the terminal when cmd_apply later writes
-                // the row to stderr. Escape at the construction site
-                // so every consumer of `ApplyOutcome::Failed` sees
-                // already-safe bytes (cli.rs render path, programmatic
-                // consumers, PartialEq comparisons in tests). Side
-                // effect: avoids per-render clone overhead by
-                // making the stored string already terminal-safe
-                // (ANSI/C0/DEL escape only).
-                //
-                // Secret-leakage policy lives at `crate::error`
-                // module-level docs; paths ARE allowed in Display
-                // output; tokens/env-values/PEM bytes are NOT
-                // (enforced at every error-construction site, not by
-                // this helper).
-                let error_summary = escape_control_chars(&e.to_string()).into_owned();
-                // SEC-36 audit log entry — failure path. The
-                // `outcome` field carries the control-char-safe
-                // error display so downstream consumers (jq
-                // pipelines, ELK ingestion) see exactly the same
-                // diagnostic the operator saw on stderr. Best-
-                // effort: a logging failure must not change the
-                // failure-handling path below.
-                write_audit_log_entry(paths, &label, &error_summary);
-                let wrapped = GharsError::Apply {
-                    action: label.clone(),
-                    source: Box::new(e),
-                };
-                // Per-action audit row — the Failed variant is pushed
-                // to `details` alongside the existing `failed` push so
-                // the in-execution-order Vec covers every processed
-                // action. Under fail_fast, actions after the first
-                // failure are never pushed.
-                // `result.failed` keeps the typed GharsError chain
-                // for programmatic consumers (exit-code mapping,
-                // rollback advisories).
-                result.details.push((
-                    label.clone(),
-                    ApplyOutcome::Failed {
-                        error_summary,
-                        plan_disruption,
-                    },
-                ));
-                // Single failed.push covers both fail_fast and
-                // accumulate-and-continue paths — the only difference
-                // is whether the loop short-circuits afterwards.
-                result.failed.push((label.clone(), wrapped));
-                // Per-action mutation manifest — consume the
-                // UndoLog to surface what landed on disk before the
-                // action errored. Pushed AFTER `result.failed` so the
-                // `failed[i].0 == failed_undo_logs[i].0` ordering
-                // invariant holds. cmd_apply walks this Vec to render
-                // the rollback-state advisory on stderr.
-                // The steps describe ATTEMPTED
-                // mutations, not guaranteed-residual state. `undo` is
-                // best-effort regardless of mode:
-                // - `rollback_on_failure=true`: `undo` walked the log
-                //   in reverse, attempted each forward-direction
-                //   inverse, and SKIPPED reverse-direction steps
-                //   (`is_reverse_direction()`). Per-step failures
-                //   were swallowed and logged via `tracing::warn`,
-                //   NOT surfaced to the operator — so even after
-                //   `undo`, residual state may remain (skipped
-                //   reverse-direction steps + forward-direction
-                //   steps whose inverse failed).
-                // - `rollback_on_failure=false`: `undo` did not run.
-                //   Every step represents on-disk state the operator
-                //   must clean up manually.
-                // Either way, the advisory's steps are a cleanup
-                // checklist, not a "still pending" guarantee.
-                result.failed_undo_logs.push((label, log.into_steps()));
+                record_action_failure(
+                    e,
+                    label,
+                    plan_disruption,
+                    log,
+                    deps,
+                    paths,
+                    opts.rollback_on_failure,
+                    &mut result,
+                );
                 if opts.fail_fast {
                     let _ = deps.systemd.daemon_reload();
                     return Ok(result);
@@ -286,6 +207,49 @@ pub fn apply(
     Ok(result)
 }
 
+/// Per-action failure handling: optional rollback, audit log emission,
+/// terminal-safe error summary, and the three coordinated pushes to
+/// `result.failed`, `result.details`, and `result.failed_undo_logs`
+/// that maintain the `failed[i].0 == failed_undo_logs[i].0` ordering
+/// invariant.
+///
+/// The error summary is `escape_control_chars`'d so a hostile string
+/// that survived upstream validation cannot inject ANSI escapes via
+/// the operator's terminal when `cmd_apply` later renders the row.
+#[allow(clippy::too_many_arguments)]
+fn record_action_failure(
+    e: GharsError,
+    label: String,
+    plan_disruption: crate::plan::Disruption,
+    log: UndoLog,
+    deps: &Deps<'_>,
+    paths: &Paths,
+    rollback_on_failure: bool,
+    result: &mut ApplyResult,
+) {
+    if rollback_on_failure {
+        // Best-effort: swallow undo errors (each step logs via
+        // tracing::warn!) so the original action error stays the
+        // visible failure.
+        let _ = undo(&log, deps, paths);
+    }
+    let error_summary = escape_control_chars(&e.to_string()).into_owned();
+    write_audit_log_entry(paths, &label, &error_summary);
+    let wrapped = GharsError::Apply {
+        action: label.clone(),
+        source: Box::new(e),
+    };
+    result.details.push((
+        label.clone(),
+        ApplyOutcome::Failed {
+            error_summary,
+            plan_disruption,
+        },
+    ));
+    result.failed.push((label.clone(), wrapped));
+    result.failed_undo_logs.push((label, log.into_steps()));
+}
+
 /// Execute one [`Action`] against the host.
 ///
 /// Pure dispatch — every variant routes to a per-action handler.
@@ -308,7 +272,7 @@ pub fn apply(
 /// established architectural pattern.
 ///
 /// `no_restart` violates the pattern intentionally: the restart
-/// decision lives INSIDE [`super::runners::execute_update_runner`]
+/// decision lives INSIDE [`super::update_runner::execute_update_runner`]
 /// and [`super::pools::execute_update_cache_pool`] (at the gate
 /// just before `daemon_reload + stop_unit + start_unit`), so
 /// keeping the consumption at orchestrator level would require
