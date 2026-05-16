@@ -159,14 +159,18 @@ pub fn runner_is_registered(
     // Use a direct HTTP request instead of http_get_payload (which
     // deserializes into ReleaseApiPayload). The runners endpoint
     // returns a different JSON shape.
-    let mut req = client.get(&api_url)
+    let mut req = client
+        .get(&api_url)
         .header("Accept", "application/vnd.github+json");
     if let Some(token) = pat {
         req = req.header("Authorization", format!("Bearer {token}"));
     }
     let resp = req.send().map_err(|e| {
         GharsError::GitHub(
-            format!("GitHub runners API request failed: {}: {api_url}", format_error_chain(&e)),
+            format!(
+                "GitHub runners API request failed: {}: {api_url}",
+                format_error_chain(&e)
+            ),
             "check network connectivity".into(),
         )
     })?;

@@ -554,9 +554,7 @@ fn undo_one(step: &UndoStep, deps: &Deps<'_>) -> Result<()> {
                     Some(nix::unistd::Uid::from_raw(*prior_uid)),
                     Some(nix::unistd::Gid::from_raw(*prior_gid)),
                 )
-                .map_err(|e| {
-                    GharsError::Io(std::io::Error::from_raw_os_error(e as i32))
-                }),
+                .map_err(|e| GharsError::Io(std::io::Error::from_raw_os_error(e as i32))),
                 Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
                     tracing::warn!(
                         path = path.as_str(),

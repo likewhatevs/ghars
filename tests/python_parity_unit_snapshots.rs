@@ -275,10 +275,8 @@ fn dropin_00_identity_with_runner_sha256_snapshot() {
     // emits whatever the field holds VERBATIM, so the on-disk
     // annotation lands as `X-Ghars-Runner-Sha256=<bare-hex>`.
     let mut spec = base_spec();
-    spec.runner_sha256 = Some(
-        "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdef0123"
-            .into(),
-    );
+    spec.runner_sha256 =
+        Some("abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdef0123".into());
     let r = render_runner_unit(&spec).unwrap();
     insta::assert_snapshot!(
         "dropin_00_identity_with_runner_sha256",
@@ -477,7 +475,10 @@ fn dropin_15_resolv_open_snapshot() {
     // but had zero snapshot coverage before this fixture. Cross-ref
     // `render_resolv_bind` open-mode branch in `systemd/units.rs`.
     let r = render_runner_unit(&base_spec()).unwrap();
-    insta::assert_snapshot!("dropin_15_resolv_open", dropin(&r.drop_ins, "15-resolv.conf"));
+    insta::assert_snapshot!(
+        "dropin_15_resolv_open",
+        dropin(&r.drop_ins, "15-resolv.conf")
+    );
 }
 
 #[test]
@@ -492,7 +493,10 @@ fn dropin_15_resolv_netns_snapshot() {
     // `render_resolv_bind` netns branch in `systemd/units.rs`.
     let spec = spec_with_netns_network(DnsMode::Forward, Ipv6Mode::Disabled);
     let r = render_runner_unit(&spec).unwrap();
-    insta::assert_snapshot!("dropin_15_resolv_netns", dropin(&r.drop_ins, "15-resolv.conf"));
+    insta::assert_snapshot!(
+        "dropin_15_resolv_netns",
+        dropin(&r.drop_ins, "15-resolv.conf")
+    );
 }
 
 #[test]
@@ -573,8 +577,7 @@ fn dropin_20_hardening_extra_capabilities_snapshot() {
     // Cross-ref `render_hardening` extra_capabilities branch in
     // `systemd/units.rs`.
     let mut spec = base_spec();
-    spec.hardening.extra_capabilities =
-        vec!["CAP_NET_BIND_SERVICE".into(), "CAP_NET_RAW".into()];
+    spec.hardening.extra_capabilities = vec!["CAP_NET_BIND_SERVICE".into(), "CAP_NET_RAW".into()];
     let r = render_runner_unit(&spec).unwrap();
     insta::assert_snapshot!(
         "dropin_20_hardening_extra_capabilities",
@@ -1037,9 +1040,7 @@ fn dropin_60_proxy_ca_certs_only_snapshot() {
         no_proxy: vec![],
         ca_certs: vec![CaCertBinding {
             env: "NODE_EXTRA_CA_CERTS".into(),
-            path: Utf8PathBuf::from(
-                "/etc/pki/ca-trust/source/anchors/squid-proxy-ca.pem",
-            ),
+            path: Utf8PathBuf::from("/etc/pki/ca-trust/source/anchors/squid-proxy-ca.pem"),
         }],
     });
     let r = render_runner_unit(&spec).unwrap();
@@ -1436,8 +1437,12 @@ fn env_file_multi_binding_direct_construct_snapshot() {
 #[test]
 fn env_file_operator_environment_vars_snapshot() {
     let mut spec = base_spec();
-    spec.environment.vars.insert("DEPLOY_TARGET".into(), "buckos-ci".into());
-    spec.environment.vars.insert("RUST_LOG".into(), "info".into());
+    spec.environment
+        .vars
+        .insert("DEPLOY_TARGET".into(), "buckos-ci".into());
+    spec.environment
+        .vars
+        .insert("RUST_LOG".into(), "info".into());
     spec.caches.push(EffectiveCacheBinding {
         name: "build".into(),
         kinds: vec![CacheKind::Ccache],
@@ -1469,10 +1474,7 @@ fn env_file_operator_env_var_with_percent_snapshot() {
         .vars
         .insert("WITH_PERCENT".into(), "100%done".into());
     let r = render_runner_unit(&spec).unwrap();
-    insta::assert_snapshot!(
-        "env_file_operator_env_var_with_percent",
-        r.env_file
-    );
+    insta::assert_snapshot!("env_file_operator_env_var_with_percent", r.env_file);
 }
 
 #[test]
@@ -1732,24 +1734,15 @@ fn nft_rules_dns_static_two_servers_snapshot() {
             ip_deny: vec![],
             restrict_address_families: vec![],
             dns: DnsMode::Static {
-                servers: vec![
-                    "1.1.1.1".parse().unwrap(),
-                    "8.8.8.8".parse().unwrap(),
-                ],
+                servers: vec!["1.1.1.1".parse().unwrap(), "8.8.8.8".parse().unwrap()],
             },
             ipv6: Ipv6Mode::Disabled,
         },
         subnet: Some("10.200.0.0/30".parse::<IpNet>().unwrap()),
     };
     let rules = render_nft_rules("buckos", &binding).unwrap();
-    insta::assert_snapshot!(
-        "nft_rules_dns_static_two_servers_host",
-        rules.host_rules
-    );
-    insta::assert_snapshot!(
-        "nft_rules_dns_static_two_servers_ns",
-        rules.ns_rules
-    );
+    insta::assert_snapshot!("nft_rules_dns_static_two_servers_host", rules.host_rules);
+    insta::assert_snapshot!("nft_rules_dns_static_two_servers_ns", rules.ns_rules);
 }
 
 #[test]
@@ -1777,14 +1770,8 @@ fn nft_rules_non_default_runner_name_snapshot() {
         subnet: Some("10.200.0.0/30".parse::<IpNet>().unwrap()),
     };
     let rules = render_nft_rules("wkr-2", &binding).unwrap();
-    insta::assert_snapshot!(
-        "nft_rules_non_default_runner_name_host",
-        rules.host_rules
-    );
-    insta::assert_snapshot!(
-        "nft_rules_non_default_runner_name_ns",
-        rules.ns_rules
-    );
+    insta::assert_snapshot!("nft_rules_non_default_runner_name_host", rules.host_rules);
+    insta::assert_snapshot!("nft_rules_non_default_runner_name_ns", rules.ns_rules);
 }
 
 /// Regression pin for the `.snap.new`-hand-rename anti-pattern.
@@ -1812,8 +1799,8 @@ fn snap_files_must_not_carry_assertion_line_header() {
     // where a workspace-member sub-Cargo invocation lands cwd elsewhere
     // and `read_dir("tests/snapshots")` errors with a misleading message.
     let snap_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots");
-    let entries = std::fs::read_dir(&snap_dir)
-        .expect("tests/snapshots/ directory must be readable");
+    let entries =
+        std::fs::read_dir(&snap_dir).expect("tests/snapshots/ directory must be readable");
     let mut violations: Vec<String> = Vec::new();
     for entry in entries {
         let path = entry.expect("snap dir entry must be readable").path();

@@ -12,10 +12,8 @@
 use std::collections::BTreeMap;
 
 use camino::Utf8PathBuf;
-use ghars::config::{
-    Arch, EffectiveRunnerSpec, EnvironmentSpec, Hardening,
-};
-use ghars::systemd::{render_runner_unit, RENDERER_SCHEMA};
+use ghars::config::{Arch, EffectiveRunnerSpec, EnvironmentSpec, Hardening};
+use ghars::systemd::{RENDERER_SCHEMA, render_runner_unit};
 
 fn base_spec() -> EffectiveRunnerSpec {
     EffectiveRunnerSpec {
@@ -37,8 +35,7 @@ fn base_spec() -> EffectiveRunnerSpec {
         hardening: Hardening::default(),
         allowed_cpus: None,
         allowed_memory_nodes: None,
-        spec_hash: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-            .into(),
+        spec_hash: "sha256:0000000000000000000000000000000000000000000000000000000000000000".into(),
         config_source: "/etc/ghars/ghars.toml".into(),
         renderer_schema: RENDERER_SCHEMA,
     }
@@ -54,7 +51,9 @@ fn base_spec() -> EffectiveRunnerSpec {
 #[test]
 fn operator_env_var_lands_in_both_env_file_and_identity_drop_in() {
     let mut spec = base_spec();
-    spec.environment.vars.insert("MY_OPERATOR_VAR".into(), "value42".into());
+    spec.environment
+        .vars
+        .insert("MY_OPERATOR_VAR".into(), "value42".into());
 
     let unit = render_runner_unit(&spec).expect("render must succeed");
     let env_file = &unit.env_file;
@@ -106,16 +105,22 @@ fn operator_env_vars_emit_in_alphabetical_order_in_env_file() {
 #[test]
 fn operator_value_with_percent_is_escaped_in_identity_but_verbatim_in_env_file() {
     let mut spec = base_spec();
-    spec.environment.vars.insert("MY_PATH_TEMPLATE".into(), "%C/operator-supplied".into());
+    spec.environment
+        .vars
+        .insert("MY_PATH_TEMPLATE".into(), "%C/operator-supplied".into());
 
     let unit = render_runner_unit(&spec).expect("render must succeed");
 
     assert!(
-        unit.env_file.contains("MY_PATH_TEMPLATE=%C/operator-supplied\n"),
+        unit.env_file
+            .contains("MY_PATH_TEMPLATE=%C/operator-supplied\n"),
         ".env must carry operator value VERBATIM (LoadAndSetEnv doesn't expand %); got:\n{}",
         unit.env_file
     );
-    let identity = unit.drop_ins.get("00-ghars.conf").expect("identity drop-in");
+    let identity = unit
+        .drop_ins
+        .get("00-ghars.conf")
+        .expect("identity drop-in");
     assert!(
         identity.contains("Environment=MY_PATH_TEMPLATE=%%C/operator-supplied\n"),
         "00-ghars.conf must escape % to %% so systemd does NOT expand operator value; got:\n{identity}"
@@ -280,17 +285,13 @@ fn validator_rejects_env_var_value_with_newline() {
     use ghars::validators::validate_environment_spec;
 
     let mut vars = BTreeMap::new();
-    vars.insert(
-        "FOO".into(),
-        "value-with\nMALICIOUS_VAR=bar".into(),
-    );
+    vars.insert("FOO".into(), "value-with\nMALICIOUS_VAR=bar".into());
     let spec = EnvironmentSpec {
         vars,
         path_prepend: vec![],
         path_append: vec![],
     };
-    let err = validate_environment_spec(&spec)
-        .expect_err("newline in value must reject");
+    let err = validate_environment_spec(&spec).expect_err("newline in value must reject");
     assert!(
         format!("{err}").contains("control character"),
         "newline rejection must name the control-character class; got: {err}"

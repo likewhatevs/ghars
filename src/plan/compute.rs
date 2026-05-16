@@ -1259,15 +1259,21 @@ pub(super) fn lower_to_effective(
                 .collect();
             if refs.len() > 1 {
                 let process_constraint = match kind {
-                    CacheKind::Ccache => "ccache reads ONE CCACHE_DIR per process \
-                                          (single-CCACHE_DIR-per-process by upstream design)",
-                    CacheKind::Sccache => "sccache supports only ONE server UDS per process; \
+                    CacheKind::Ccache => {
+                        "ccache reads ONE CCACHE_DIR per process \
+                                          (single-CCACHE_DIR-per-process by upstream design)"
+                    }
+                    CacheKind::Sccache => {
+                        "sccache supports only ONE server UDS per process; \
                                            the rendered SCCACHE_SERVER_UDS would be clobbered \
-                                           last-writer-wins",
-                    CacheKind::Ktstr => "ktstr resolves a single KTSTR_CACHE_DIR per process \
+                                           last-writer-wins"
+                    }
+                    CacheKind::Ktstr => {
+                        "ktstr resolves a single KTSTR_CACHE_DIR per process \
                                          (env::var lookup with no list semantics); \
                                          the rendered KTSTR_CACHE_DIR / KTSTR_LOCK_DIR \
-                                         would be clobbered last-writer-wins",
+                                         would be clobbered last-writer-wins"
+                    }
                 };
                 return Err(GharsError::Validation(
                     format!(

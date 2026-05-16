@@ -727,7 +727,10 @@ caches = ["obj-a", "obj-b", "obj-c"]
     );
     let err = plan_from(&cfg, &ActualState::default(), &Paths::default()).unwrap_err();
     let msg = format!("{err}");
-    assert!(msg.contains('3'), "msg must surface the count for n>2; got: {msg}");
+    assert!(
+        msg.contains('3'),
+        "msg must surface the count for n>2; got: {msg}"
+    );
     assert!(
         msg.contains("obj-a") && msg.contains("obj-b") && msg.contains("obj-c"),
         "msg must name ALL three conflicting pools (not just first 2); got: {msg}"

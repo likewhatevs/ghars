@@ -147,10 +147,7 @@ fn extract_tarball_rejects_symlink_escape() {
     let tarball = write_tar(&tmp, "t.tar.gz", &gz);
     let out = dest_dir(&tmp, "out");
     let err = extract_tarball(&tarball, &out).unwrap_err();
-    assert!(
-        err.to_string().contains("absolute link target"),
-        "{err}"
-    );
+    assert!(err.to_string().contains("absolute link target"), "{err}");
     assert!(!out.join("bad-symlink").exists());
 }
 
@@ -353,10 +350,7 @@ fn extract_tarball_rejects_overlapping_symlink_then_regular_file() {
     let err = extract_tarball(&tarball, &out).unwrap_err();
     // Same-named symlink overwrite uses an ABSOLUTE target
     // (`/etc/passwd`), so the filter rejects with "absolute link target".
-    assert!(
-        err.to_string().contains("absolute link target"),
-        "{err}"
-    );
+    assert!(err.to_string().contains("absolute link target"), "{err}");
 }
 
 #[test]

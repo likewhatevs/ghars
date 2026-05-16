@@ -472,9 +472,7 @@ pub(super) fn validate_no_duplicate_kinds_within_pool(cfg: &Config) -> Result<()
             if count > 1 {
                 let label = kind.label();
                 return Err(GharsError::Validation(
-                    format!(
-                        "cache_pool {name:?}: declares `{label}` {count} times in `kinds`"
-                    ),
+                    format!("cache_pool {name:?}: declares `{label}` {count} times in `kinds`"),
                     format!(
                         "drop the duplicate `{label}` entry from [cache_pools.{name}] \
                          kinds — each cache kind is single-valued per process and a \
@@ -1267,16 +1265,11 @@ pub(super) fn validate_trust_zone_lengths(cfg: &Config) -> Result<()> {
 /// `runner "NAME" proxy.ca_certs[N]:` scope naming the offending
 /// entry index and which field failed.
 pub(super) fn validate_proxy_ca_certs_nonempty(cfg: &Config) -> Result<()> {
-    fn check_one_proxy(
-        proxy: &crate::config::ProxySpec,
-        scope_prefix: &str,
-    ) -> Result<()> {
+    fn check_one_proxy(proxy: &crate::config::ProxySpec, scope_prefix: &str) -> Result<()> {
         for (idx, binding) in proxy.ca_certs.iter().enumerate() {
             if binding.env.trim().is_empty() {
                 return Err(GharsError::Validation(
-                    format!(
-                        "{scope_prefix} ca_certs[{idx}]: empty or whitespace-only `env` field"
-                    ),
+                    format!("{scope_prefix} ca_certs[{idx}]: empty or whitespace-only `env` field"),
                     "set ca_certs[N].env to the env var name systemd should export \
                      for this CA bundle (e.g. NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE) \
                      — an empty/whitespace `env` emits a malformed `Environment==<path>` \
@@ -1350,16 +1343,11 @@ pub(super) fn validate_proxy_ca_certs_nonempty(cfg: &Config) -> Result<()> {
 /// `runner "NAME" proxy.no_proxy[N]:` scope naming the offending
 /// entry index.
 pub(super) fn validate_proxy_no_proxy_nonempty_entries(cfg: &Config) -> Result<()> {
-    fn check_one_proxy(
-        proxy: &crate::config::ProxySpec,
-        scope_prefix: &str,
-    ) -> Result<()> {
+    fn check_one_proxy(proxy: &crate::config::ProxySpec, scope_prefix: &str) -> Result<()> {
         for (idx, entry) in proxy.no_proxy.iter().enumerate() {
             if entry.trim().is_empty() {
                 return Err(GharsError::Validation(
-                    format!(
-                        "{scope_prefix} no_proxy[{idx}]: empty or whitespace-only entry"
-                    ),
+                    format!("{scope_prefix} no_proxy[{idx}]: empty or whitespace-only entry"),
                     "remove the empty/whitespace entry — it produces a malformed \
                      comma-separated NO_PROXY env var (leading/trailing/adjacent \
                      empty token) that strict-parsing HTTP clients reject. If you \

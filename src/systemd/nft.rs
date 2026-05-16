@@ -386,7 +386,11 @@ fn egress_rule_lines(
              validate_egress_comment must run before render_nft_rules"
         );
     }
-    let daddr = if addr.contains(':') { "ip6 daddr" } else { "ip daddr" };
+    let daddr = if addr.contains(':') {
+        "ip6 daddr"
+    } else {
+        "ip daddr"
+    };
     match port {
         PortSpec::Single(p) => {
             let mut line = format!("{daddr} {addr} {proto} dport {p} accept");

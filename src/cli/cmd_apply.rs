@@ -194,10 +194,7 @@ pub(super) fn confirm_apply() -> Result<bool> {
 /// action that lacks a `runner_tarball` and has no `resolved_release`.
 /// Uses the GitHub releases API with PAT authentication (5000 req/hr
 /// vs 60 unauthenticated).
-fn resolve_plan_releases(
-    plan: &mut crate::plan::Plan,
-    cfg: &crate::config::Config,
-) -> Result<()> {
+fn resolve_plan_releases(plan: &mut crate::plan::Plan, cfg: &crate::config::Config) -> Result<()> {
     let client = github::build_blocking_client(cfg.proxy.as_ref())?;
 
     for action in &mut plan.actions {
@@ -218,9 +215,18 @@ fn resolve_plan_releases(
         // per IP; with PAT it's 5000 req/hr.
         let pat_token = pat_for_auth_name(cfg, &runner_plan.spec.auth_name);
         let release = if let Some(ref version) = runner_plan.spec.runner_version {
-            github::fetch_release_authenticated(&client, version, runner_plan.spec.arch, pat_token.as_deref())?
+            github::fetch_release_authenticated(
+                &client,
+                version,
+                runner_plan.spec.arch,
+                pat_token.as_deref(),
+            )?
         } else {
-            github::fetch_latest_release_authenticated(&client, runner_plan.spec.arch, pat_token.as_deref())?
+            github::fetch_latest_release_authenticated(
+                &client,
+                runner_plan.spec.arch,
+                pat_token.as_deref(),
+            )?
         };
         // Also populate spec.runner_version so the downstream
         // renderer + execute_create_runner see the resolved version
@@ -282,12 +288,7 @@ fn reconcile_github_registrations(
         let url = runner.url.as_str();
         let pat = runner_pat(cfg, runner);
 
-        match github::runner_is_registered(
-            &client,
-            url,
-            &noop_name,
-            pat.as_deref(),
-        ) {
+        match github::runner_is_registered(&client, url, &noop_name, pat.as_deref()) {
             Ok(true) => {}
             Ok(false) => {
                 tracing::warn!(

@@ -270,8 +270,7 @@ fn additive_path_merge(
     defaults: &[camino::Utf8PathBuf],
     runner: &[camino::Utf8PathBuf],
 ) -> Vec<camino::Utf8PathBuf> {
-    let mut out: Vec<camino::Utf8PathBuf> =
-        Vec::with_capacity(defaults.len() + runner.len());
+    let mut out: Vec<camino::Utf8PathBuf> = Vec::with_capacity(defaults.len() + runner.len());
     let mut seen: HashSet<camino::Utf8PathBuf> = HashSet::new();
     for p in defaults.iter().chain(runner.iter()) {
         if seen.insert(p.clone()) {

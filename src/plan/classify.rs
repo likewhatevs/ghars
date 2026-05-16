@@ -605,9 +605,7 @@ pub(super) fn classify_recreate_reasons_from_annotations(
     // `""`; ipv6: enabled → `disabled`) where one shows the absent
     // network as empty-string and the other as the Disabled
     // default. Skip both when desired.network is None.
-    if let (Some(dns), Some(desired_net)) =
-        (discovered.dns.as_ref(), desired.network.as_ref())
-    {
+    if let (Some(dns), Some(desired_net)) = (discovered.dns.as_ref(), desired.network.as_ref()) {
         let desired_dns = &desired_net.spec.dns;
         if dns != desired_dns {
             out_changes.push(FieldChange {

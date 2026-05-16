@@ -283,18 +283,10 @@ fn undo_set_mode_restores_prior_mode() {
         .unwrap()
         .join("victim.file");
     std::fs::write(path.as_std_path(), b"x").unwrap();
-    std::fs::set_permissions(
-        path.as_std_path(),
-        std::fs::Permissions::from_mode(0o600),
-    )
-    .unwrap();
+    std::fs::set_permissions(path.as_std_path(), std::fs::Permissions::from_mode(0o600)).unwrap();
     // Simulate the apply having chmodded the path to 0o777 and
     // recorded prior_mode = 0o600 in the log.
-    std::fs::set_permissions(
-        path.as_std_path(),
-        std::fs::Permissions::from_mode(0o777),
-    )
-    .unwrap();
+    std::fs::set_permissions(path.as_std_path(), std::fs::Permissions::from_mode(0o777)).unwrap();
     let systemd = MockSystemd::default();
     let config_shell = MockConfigShell::default();
     let tarball = MockTarball::default();
@@ -335,12 +327,10 @@ fn undo_set_mode_restores_prior_mode_on_directory() {
         .unwrap()
         .join("victim_dir");
     std::fs::create_dir(dir.as_std_path()).unwrap();
-    std::fs::set_permissions(dir.as_std_path(), std::fs::Permissions::from_mode(0o755))
-        .unwrap();
+    std::fs::set_permissions(dir.as_std_path(), std::fs::Permissions::from_mode(0o755)).unwrap();
     // Simulate the apply having chmodded the dir to 0o777
     // (mirrors runner_home Stage 2 reopen).
-    std::fs::set_permissions(dir.as_std_path(), std::fs::Permissions::from_mode(0o777))
-        .unwrap();
+    std::fs::set_permissions(dir.as_std_path(), std::fs::Permissions::from_mode(0o777)).unwrap();
     let systemd = MockSystemd::default();
     let config_shell = MockConfigShell::default();
     let tarball = MockTarball::default();
@@ -389,11 +379,7 @@ fn undo_set_mode_refuses_symlink_target() {
         .unwrap()
         .join("victim.real");
     std::fs::write(victim.as_std_path(), b"original").unwrap();
-    std::fs::set_permissions(
-        victim.as_std_path(),
-        std::fs::Permissions::from_mode(0o644),
-    )
-    .unwrap();
+    std::fs::set_permissions(victim.as_std_path(), std::fs::Permissions::from_mode(0o644)).unwrap();
     let original_victim_mode = std::fs::metadata(victim.as_std_path())
         .unwrap()
         .permissions()
@@ -534,8 +520,7 @@ fn undo_set_owner_restores_prior_owner() {
         prior_uid: our_uid,
         prior_gid: our_gid,
     });
-    undo(&log, &deps, &paths)
-        .expect("SetOwner undo to self uid/gid must succeed without EPERM");
+    undo(&log, &deps, &paths).expect("SetOwner undo to self uid/gid must succeed without EPERM");
     let post = std::fs::metadata(file.as_std_path()).unwrap();
     assert_eq!(post.uid(), our_uid, "uid round-tripped");
     assert_eq!(post.gid(), our_gid, "gid round-tripped");
@@ -563,8 +548,7 @@ fn undo_set_owner_tolerates_missing_path() {
         prior_uid: 0,
         prior_gid: 0,
     });
-    undo(&log, &deps, &paths)
-        .expect("SetOwner undo on missing path must be best-effort");
+    undo(&log, &deps, &paths).expect("SetOwner undo on missing path must be best-effort");
 }
 
 #[test]
@@ -587,8 +571,7 @@ fn undo_set_owner_refuses_symlink_target() {
     let swapped_path = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf())
         .unwrap()
         .join("swapped.symlink");
-    std::os::unix::fs::symlink(victim.as_std_path(), swapped_path.as_std_path())
-        .unwrap();
+    std::os::unix::fs::symlink(victim.as_std_path(), swapped_path.as_std_path()).unwrap();
 
     let systemd = MockSystemd::default();
     let config_shell = MockConfigShell::default();

@@ -1531,7 +1531,6 @@ fn plan_invariant_recreate_implies_non_empty_reasons_across_all_field_classes() 
             upd.recreate_reasons,
         );
     }
-
 }
 
 /// Drive every in-place classifier path (`memory_max`, `auth_name`,

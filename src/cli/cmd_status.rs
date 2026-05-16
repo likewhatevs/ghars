@@ -138,9 +138,22 @@ pub(super) fn cmd_status(
     };
 
     if args.json {
-        return render_status_json(&health, &runners, &metrics_rows, &score_rows, &github_statuses);
+        return render_status_json(
+            &health,
+            &runners,
+            &metrics_rows,
+            &score_rows,
+            &github_statuses,
+        );
     }
-    render_status_text(&health, &runners, &metrics_rows, &score_rows, &args.names, &github_statuses)
+    render_status_text(
+        &health,
+        &runners,
+        &metrics_rows,
+        &score_rows,
+        &args.names,
+        &github_statuses,
+    )
 }
 
 pub(super) fn render_status_text(
@@ -296,7 +309,10 @@ pub(super) fn render_status_json(
                 #[allow(clippy::expect_used)]
                 obj.as_object_mut()
                     .expect("serde_json::json!({...}) always returns Object")
-                    .insert("github_status".into(), serde_json::Value::String(gh.clone()));
+                    .insert(
+                        "github_status".into(),
+                        serde_json::Value::String(gh.clone()),
+                    );
             }
             if !unmanaged.is_empty() {
                 #[allow(clippy::expect_used)]

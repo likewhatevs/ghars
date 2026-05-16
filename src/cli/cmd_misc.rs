@@ -417,11 +417,15 @@ pub(super) fn cmd_cleanup(paths: &Paths) -> Result<i32> {
                 let _ = fs::remove_file(entry.path());
             }
         }
+    }
 
     // 5) daemon-reload so systemd forgets the removed units.
     let _ = systemd.daemon_reload();
 
-    eprintln!("cleanup complete. Config at {} is intact — run `ghars apply` to rebuild.", paths.config_dir.join("ghars.toml"));
+    eprintln!(
+        "cleanup complete. Config at {} is intact — run `ghars apply` to rebuild.",
+        paths.config_dir.join("ghars.toml")
+    );
     Ok(0)
 }
 

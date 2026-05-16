@@ -1204,10 +1204,11 @@ pub(crate) fn dns_from_annotation(s: &str) -> Option<DnsMode> {
         return None;
     };
     if rest.is_empty() {
-        return Some(DnsMode::Static { servers: Vec::new() });
+        return Some(DnsMode::Static {
+            servers: Vec::new(),
+        });
     }
-    let parsed: Option<Vec<IpAddr>> =
-        rest.split(',').map(|t| t.parse::<IpAddr>().ok()).collect();
+    let parsed: Option<Vec<IpAddr>> = rest.split(',').map(|t| t.parse::<IpAddr>().ok()).collect();
     if parsed.is_none() {
         tracing::warn!(
             value = %s,
@@ -1367,10 +1368,7 @@ pub(crate) fn validate_runner_versions(cfg: &Config) -> Result<()> {
     for runner in &cfg.runners {
         if let Some(v) = &runner.runner_version {
             crate::validators::validate_version(v).map_err(|e| {
-                crate::error::prepend_validation_scope(
-                    &format!("[runner.{}]", runner.name),
-                    e,
-                )
+                crate::error::prepend_validation_scope(&format!("[runner.{}]", runner.name), e)
             })?;
         }
     }
@@ -1506,7 +1504,8 @@ mod tests {
         // reject at config-load with the [defaults] scope prefix.
         let mut cfg = Config::default();
         cfg.defaults.runner_version = Some("2.334".into());
-        let err = validate_runner_versions(&cfg).expect_err("malformed defaults version must reject");
+        let err =
+            validate_runner_versions(&cfg).expect_err("malformed defaults version must reject");
         let msg = format!("{err}");
         assert!(
             msg.contains("[defaults]"),
@@ -1545,8 +1544,7 @@ mod tests {
             allowed_memory_nodes: None,
             environment: EnvironmentSpec::default(),
         });
-        let err = validate_runner_versions(&cfg)
-            .expect_err("trailing-space version must reject");
+        let err = validate_runner_versions(&cfg).expect_err("trailing-space version must reject");
         let msg = format!("{err}");
         assert!(
             msg.contains("[runner.buckos]"),
@@ -1619,10 +1617,10 @@ mod tests {
                 "renderer_schema": {spoofed}
             }}"#
         );
-        let binding: EffectiveCacheBinding =
-            serde_json::from_str(&json).expect("must deserialize");
+        let binding: EffectiveCacheBinding = serde_json::from_str(&json).expect("must deserialize");
         assert_eq!(
-            binding.renderer_schema, runtime,
+            binding.renderer_schema,
+            runtime,
             "deserialize_with must drop operator-supplied {spoofed} and return runtime constant {runtime}; got {actual}",
             actual = binding.renderer_schema
         );

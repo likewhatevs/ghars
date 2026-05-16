@@ -133,7 +133,6 @@ pub struct RenderedUnit {
 /// this constant exists to prevent).
 pub const RENDERER_SCHEMA: u32 = 4;
 
-
 // --- Runner unit + drop-ins renderer (Part 9 / 9d / 9e) ------------------
 
 /// Render the canonical runner unit template + all applicable
@@ -291,8 +290,16 @@ pub(crate) fn render_runner_env_file(spec: &EffectiveRunnerSpec) -> Result<Strin
     if has_ccache {
         let _ = writeln!(s, "CCACHE_DIR=/var/lib/ghars/{}/.ccache", spec.trust_zone);
     }
-    let _ = writeln!(s, "KTSTR_LOCK_DIR=/var/lib/ghars/{}/.ktstr", spec.trust_zone);
-    let _ = writeln!(s, "KTSTR_CACHE_DIR=/var/lib/ghars/{}/.ktstr", spec.trust_zone);
+    let _ = writeln!(
+        s,
+        "KTSTR_LOCK_DIR=/var/lib/ghars/{}/.ktstr",
+        spec.trust_zone
+    );
+    let _ = writeln!(
+        s,
+        "KTSTR_CACHE_DIR=/var/lib/ghars/{}/.ktstr",
+        spec.trust_zone
+    );
     for binding in &spec.caches {
         if binding.kinds.contains(&CacheKind::Ccache) {
             let _ = writeln!(s, "CCACHE_MAXSIZE={}", binding.size);
@@ -364,10 +371,7 @@ pub(crate) fn render_runner_path_file(spec: &EffectiveRunnerSpec) -> Result<Stri
     for p in &spec.environment.path_append {
         check("environment.path_append[]", p.as_str())?;
     }
-    Ok(format!(
-        "{path}\n",
-        path = compose_runner_path(spec)
-    ))
+    Ok(format!("{path}\n", path = compose_runner_path(spec)))
 }
 
 /// Compose the runner's PATH string from framework segments and
@@ -849,11 +853,7 @@ fn render_identity(spec: &EffectiveRunnerSpec) -> Result<String> {
     // (TemporaryFileSystem, BindReadOnlyPaths, DynamicUser) still
     // applies -- only the auto-chown is lost.
     // BindPaths= makes the runner home writable inside the sandbox.
-    let _ = writeln!(
-        s,
-        "BindPaths=/var/lib/ghars/{}",
-        spec.trust_zone
-    );
+    let _ = writeln!(s, "BindPaths=/var/lib/ghars/{}", spec.trust_zone);
     // WorkingDirectory points at the versioned bin dir so the runner
     // finds ./externals/, ./bin/Runner.Listener, etc. relative to cwd.
     // `version` falls back to "latest" when runner_version is None.
@@ -1134,11 +1134,7 @@ fn render_hardening(
             .map(String::as_str)
             .collect();
         families.sort_unstable();
-        let _ = writeln!(
-            s,
-            "RestrictAddressFamilies={}",
-            families.join(" ")
-        );
+        let _ = writeln!(s, "RestrictAddressFamilies={}", families.join(" "));
     }
 
     if !h.extra_syscalls.is_empty() {
@@ -1158,11 +1154,7 @@ fn render_hardening(
         // first-token mode-switch hazard documented at
         // `systemd/src/core/load-fragment.c` config_parse_syscall_filter
         // cannot arise from sort reordering.
-        let mut syscalls: Vec<&str> = h
-            .extra_syscalls
-            .iter()
-            .map(String::as_str)
-            .collect();
+        let mut syscalls: Vec<&str> = h.extra_syscalls.iter().map(String::as_str).collect();
         syscalls.sort_unstable();
         let _ = writeln!(s, "SystemCallFilter={}", syscalls.join(" "));
     }
@@ -1193,17 +1185,9 @@ fn render_hardening(
         // mount_path_compare's PID-1-user-space resort as the
         // reason operator order is preserved for spec_hash
         // byte-equality.
-        let mut caps: Vec<&str> = h
-            .extra_capabilities
-            .iter()
-            .map(String::as_str)
-            .collect();
+        let mut caps: Vec<&str> = h.extra_capabilities.iter().map(String::as_str).collect();
         caps.sort_unstable();
-        let _ = writeln!(
-            s,
-            "CapabilityBoundingSet={}",
-            caps.join(" ")
-        );
+        let _ = writeln!(s, "CapabilityBoundingSet={}", caps.join(" "));
     }
 
     // BindReadOnlyPaths handling. systemd.exec(5)
@@ -1515,10 +1499,7 @@ fn render_numa(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
     // that aren't operator intent. Production paths normalize at
     // `merge_defaults`, but defense-in-depth at the renderer protects
     // direct-construct callers.
-    let cpus = spec
-        .allowed_cpus
-        .as_deref()
-        .filter(|s| !s.is_empty());
+    let cpus = spec.allowed_cpus.as_deref().filter(|s| !s.is_empty());
     let mems = spec
         .allowed_memory_nodes
         .as_deref()
@@ -1851,7 +1832,8 @@ pub fn render_cache_drop_in(
         let _ = writeln!(
             s,
             "ReadWritePaths=%C/ghars/pools/{pool} %t/ghars /var/lib/ghars/{tz}",
-            pool = binding.name, tz = binding.trust_zone
+            pool = binding.name,
+            tz = binding.trust_zone
         );
     } else {
         // ccache-only pool — the unit exists to own the CacheDirectory

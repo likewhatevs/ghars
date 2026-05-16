@@ -386,7 +386,10 @@ impl ApplyOutcome {
             Self::Removed => "removed (GitHub deregister + unit + home)".into(),
             Self::PoolCreated => "pool created (storage + unit)".into(),
             Self::PoolUpdated => "pool updated (drop-in rewrite + restart)".into(),
-            Self::PoolRewroteNoRestart { name, files_changed } => format!(
+            Self::PoolRewroteNoRestart {
+                name,
+                files_changed,
+            } => format!(
                 "pool: {files_changed} file(s) changed, restart deferred (--no-restart): run `systemctl restart ghars-cache@{name}.service` to complete the rollout"
             ),
             Self::PoolSkipped => "pool noop (drop-in bytes match)".into(),

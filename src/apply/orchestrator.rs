@@ -16,6 +16,7 @@ use super::pools::{
 };
 use super::runners::{execute_create_runner, execute_remove_runner};
 use super::undo::{Deps, UndoLog, undo};
+use super::update_runner::execute_update_runner;
 
 /// Apply a plan to the host.
 ///
@@ -115,7 +116,14 @@ pub fn apply(
         // row can carry it through to cmd_apply rendering.
         // `Action::disruption` reads no state and is cheap.
         let plan_disruption = action.disruption();
-        match execute(&action, deps, paths, &mut log, plan.keep_versions, opts.no_restart) {
+        match execute(
+            &action,
+            deps,
+            paths,
+            &mut log,
+            plan.keep_versions,
+            opts.no_restart,
+        ) {
             Ok(outcome) => {
                 // SEC-36 audit log entry — emitted per-action AFTER
                 // the side effects have landed but BEFORE the

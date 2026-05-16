@@ -8,6 +8,7 @@ use crate::plan::{Action, Plan};
 use super::super::orchestrator::apply;
 use super::super::outcome::{ApplyOptions, ApplyOutcome};
 use super::super::undo::{Deps, UndoLog, UndoStep};
+use super::super::update_runner::execute_update_runner;
 use super::caches_tests::make_caches_delta;
 use super::common::{
     MockConfigShell, MockSystemd, MockTarball, MockTokenSource, make_paths, make_release,
@@ -206,7 +207,8 @@ fn execute_update_runner_recreate_remove_failure_skips_create() {
     delta.recreate_reasons = vec!["url"];
     delta.after.resolved_release = Some(make_release());
 
-    let err = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2, false).unwrap_err();
+    let err =
+        execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2, false).unwrap_err();
     // Sanity: the error originated from the auth path (mint_token
     // for the remove deregister step).
     let rendered = format!("{err}");
@@ -296,7 +298,8 @@ fn execute_update_runner_recreate_create_failure_after_remove() {
     assert!(delta.after.spec.runner_tarball.is_none());
     assert!(delta.after.resolved_release.is_none());
 
-    let err = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2, false).unwrap_err();
+    let err =
+        execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2, false).unwrap_err();
     let rendered = format!("{err}");
     assert!(
         rendered.contains("no runner_tarball") && rendered.contains("no resolved release"),
@@ -370,7 +373,8 @@ fn execute_update_runner_recreate_orphan_identity_skips_token_mint() {
     delta.identity.url = String::new();
     delta.after.resolved_release = Some(make_release());
 
-    let outcome = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2, false).unwrap();
+    let outcome =
+        execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2, false).unwrap();
     assert!(
         matches!(outcome, ApplyOutcome::Recreated),
         "recreate path returns Recreated; got {outcome:?}"
@@ -433,7 +437,8 @@ fn execute_update_runner_recreate_returns_recreated_outcome_not_inner() {
     delta.recreate_reasons = vec!["url"];
     delta.after.resolved_release = Some(make_release());
 
-    let outcome = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2, false).unwrap();
+    let outcome =
+        execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2, false).unwrap();
     match outcome {
         ApplyOutcome::Recreated => {}
         ApplyOutcome::Removed | ApplyOutcome::Created => panic!(
@@ -493,7 +498,8 @@ fn execute_update_runner_recreate_stop_unit_failure_skips_create() {
     delta.recreate_reasons = vec!["url"];
     delta.after.resolved_release = Some(make_release());
 
-    let err = execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2, false).unwrap_err();
+    let err =
+        execute_update_runner(&delta, &deps, &paths, &mut UndoLog::new(), 2, false).unwrap_err();
     let rendered = format!("{err}");
     assert!(
         rendered.contains("stop_unit") && rendered.contains("injected failure"),

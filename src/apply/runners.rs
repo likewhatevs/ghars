@@ -443,9 +443,7 @@ pub(super) fn chown_and_tighten_runner_state(
 /// recreate (the operator override is lost, but the recreate
 /// proceeds; a hard error here would block the version bump
 /// driving the recreate).
-pub(super) fn snapshot_operator_drop_ins(
-    drop_in_dir: &camino::Utf8Path,
-) -> Vec<(String, Vec<u8>)> {
+pub(super) fn snapshot_operator_drop_ins(drop_in_dir: &camino::Utf8Path) -> Vec<(String, Vec<u8>)> {
     let Ok(read_dir) = std::fs::read_dir(drop_in_dir.as_std_path()) else {
         return Vec::new();
     };
@@ -575,8 +573,7 @@ pub(super) fn find_active_bin_dir(runner_home: &camino::Utf8Path) -> crate::Resu
                 std::io::ErrorKind::NotFound,
                 format!("no bin.*/config.sh found under {runner_home}"),
             ))),
-        }
-    })
+        })
 }
 
 pub(super) fn execute_create_runner(
@@ -730,7 +727,7 @@ pub(super) fn execute_create_runner(
         let version = spec.runner_version.clone().expect(
             "tarball-pinned spec.runner_version: guaranteed Some by \
                  lower_to_effective's tarball+no-version validation gate",
-            );
+        );
         (local.clone(), version)
     } else {
         let release = plan.resolved_release.as_ref().ok_or_else(|| {
@@ -1347,4 +1344,3 @@ pub(super) fn execute_remove_runner(
     // The end-of-apply `daemon_reload` picks up the unit file removal.
     Ok(ApplyOutcome::Removed)
 }
-

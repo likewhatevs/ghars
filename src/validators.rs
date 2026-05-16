@@ -1529,8 +1529,7 @@ pub fn validate_hook_script(path: &Utf8Path) -> Result<()> {
     // lines that systemd resolves to `/` at unit-load, exposing the
     // entire host filesystem to the runner.
     if let Some(parent) = path.parent()
-        && (parent.as_str().is_empty()
-            || crate::path_util::binds_filesystem_root(parent))
+        && (parent.as_str().is_empty() || crate::path_util::binds_filesystem_root(parent))
     {
         return Err(validation(
             format!(
@@ -1713,38 +1712,55 @@ fn validate_env_var_name(name: &str) -> Result<()> {
     }
     if RESERVED_LD_FAMILY.contains(&name) {
         return Err(validation(
-            format!("env var name `{name}` is rejected (LD_* env vars enable shared-library injection — dynamic-loader attack surface)"),
+            format!(
+                "env var name `{name}` is rejected (LD_* env vars enable shared-library injection — dynamic-loader attack surface)"
+            ),
             "pick a different name; if you need to override loader behavior for a specific workflow, do it inside a wrapper script the step invokes",
         ));
     }
     if RESERVED_SHELL_HIJACK.contains(&name) {
         return Err(validation(
-            format!("env var name `{name}` is rejected (BASH_ENV / IFS / etc. enable shell-execution hijacking before workflow steps see env)"),
+            format!(
+                "env var name `{name}` is rejected (BASH_ENV / IFS / etc. enable shell-execution hijacking before workflow steps see env)"
+            ),
             "pick a different name; shell behavior should be configured inside the step's script, not via cross-step env",
         ));
     }
     if RESERVED_GHARS_OWNED.contains(&name) {
         let dedicated = match name {
             "PATH" => "use environment.path_prepend / environment.path_append",
-            "HOME" | "USER" | "LOGNAME" | "SHELL" | "TMPDIR" => "set by the runner unit per trust_zone — not operator-configurable",
+            "HOME" | "USER" | "LOGNAME" | "SHELL" | "TMPDIR" => {
+                "set by the runner unit per trust_zone — not operator-configurable"
+            }
             "LANG" => "fixed to C.UTF-8 by ghars",
             "CCACHE_DIR" | "CCACHE_MAXSIZE" => "set via [[cache_pools.NAME]] kinds = [\"ccache\"]",
             "KTSTR_LOCK_DIR" | "KTSTR_CACHE_DIR" => "set per trust_zone by ghars",
             n if n.starts_with("SCCACHE_") => "set via [[cache_pools.NAME]] kinds = [\"sccache\"]",
-            "HTTP_PROXY" | "http_proxy" | "HTTPS_PROXY" | "https_proxy" | "NO_PROXY" | "no_proxy" => "set via [proxy] / [[runner.proxy]]",
-            "ACTIONS_RUNNER_INPUT_TOKEN" => "set by the runner-registration flow; operator override would corrupt registration",
-            "ACTIONS_RUNNER_HOOK_JOB_STARTED" | "ACTIONS_RUNNER_HOOK_JOB_COMPLETED" => "set via [[runner.hooks]]",
-            "RUNNER_ALLOW_RUNASROOT" => "ghars never runs the runner as root; operator override would not change that",
+            "HTTP_PROXY" | "http_proxy" | "HTTPS_PROXY" | "https_proxy" | "NO_PROXY"
+            | "no_proxy" => "set via [proxy] / [[runner.proxy]]",
+            "ACTIONS_RUNNER_INPUT_TOKEN" => {
+                "set by the runner-registration flow; operator override would corrupt registration"
+            }
+            "ACTIONS_RUNNER_HOOK_JOB_STARTED" | "ACTIONS_RUNNER_HOOK_JOB_COMPLETED" => {
+                "set via [[runner.hooks]]"
+            }
+            "RUNNER_ALLOW_RUNASROOT" => {
+                "ghars never runs the runner as root; operator override would not change that"
+            }
             _ => "use the dedicated config surface for this key",
         };
         return Err(validation(
-            format!("env var name `{name}` is rejected (rendered into Environment= and .env from ghars internal state — use a different key)"),
+            format!(
+                "env var name `{name}` is rejected (rendered into Environment= and .env from ghars internal state — use a different key)"
+            ),
             dedicated,
         ));
     }
     if !ENV_VAR_NAME_REGEX.is_match(name) {
         return Err(validation(
-            format!("env var name `{name}` does not match POSIX env-var-name shape `^[A-Z_][A-Z0-9_]*$`"),
+            format!(
+                "env var name `{name}` does not match POSIX env-var-name shape `^[A-Z_][A-Z0-9_]*$`"
+            ),
             "operator-declared env var names must use uppercase letters, digits, and underscores only, with a leading letter or underscore",
         ));
     }
@@ -1760,7 +1776,9 @@ fn validate_env_var_value(key: &str, value: &str) -> Result<()> {
     for c in value.chars() {
         if c == '\n' || c == '\r' || c == '\0' || c.is_control() {
             return Err(validation(
-                format!("env var `{key}` value contains a control character (newline / carriage return / NUL / other control char)"),
+                format!(
+                    "env var `{key}` value contains a control character (newline / carriage return / NUL / other control char)"
+                ),
                 "values must be single-line printable text; multi-line values would inject a second Environment= directive into 00-ghars.conf and a second KEY=VALUE line into .env",
             ));
         }

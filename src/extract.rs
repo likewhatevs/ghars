@@ -580,9 +580,7 @@ fn verify_extracted_inside_dest(
     // `./` or `.`). These are the tarball's root directory entry and
     // don't extract content outside dest. Their parent is dest's
     // parent, which would fail the starts_with check.
-    let has_normal = raw
-        .components()
-        .any(|c| matches!(c, Component::Normal(_)));
+    let has_normal = raw.components().any(|c| matches!(c, Component::Normal(_)));
     if !has_normal {
         return Ok(());
     }

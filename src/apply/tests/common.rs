@@ -301,10 +301,7 @@ impl Tarball for MockTarball {
         // mock's mode IS the test's pinned production-equivalent
         // value.
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(
-            runsvc.as_std_path(),
-            std::fs::Permissions::from_mode(0o755),
-        )?;
+        std::fs::set_permissions(runsvc.as_std_path(), std::fs::Permissions::from_mode(0o755))?;
         Ok(bin)
     }
     fn prune_old_versions(&self, runner_home: &Utf8Path, keep_versions: u32) -> Result<usize> {
@@ -359,7 +356,10 @@ impl ConfigShell for MockConfigShell {
         for (basename, body) in &[
             (".runner", &b"{\"mock_runner\":\"...\"}"[..]),
             (".credentials", &b"{\"mock_creds\":\"...\"}"[..]),
-            (".credentials_rsaparams", &b"{\"mock_rsa_params\":\"...\"}"[..]),
+            (
+                ".credentials_rsaparams",
+                &b"{\"mock_rsa_params\":\"...\"}"[..],
+            ),
         ] {
             let path = bd.join(basename);
             std::fs::write(&path, body)?;
