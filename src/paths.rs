@@ -6,6 +6,29 @@
 
 use camino::Utf8PathBuf;
 
+/// Canonical systemd unit-file name for a runner instance:
+/// `ghars-runner@<name>.service`. Centralizes the template-instance
+/// encoding so D-Bus calls, journalctl invocations, and unit-file
+/// path builders all agree on the encoding.
+#[must_use]
+pub fn runner_unit_name(name: &str) -> String {
+    format!("ghars-runner@{name}.service")
+}
+
+/// Canonical systemd unit-file name for a cache-pool instance:
+/// `ghars-cache@<pool>.service`.
+#[must_use]
+pub fn cache_unit_name(pool: &str) -> String {
+    format!("ghars-cache@{pool}.service")
+}
+
+/// Canonical systemd unit-file name for a netns side-unit instance:
+/// `ghars-net@<name>.service`.
+#[must_use]
+pub fn netns_unit_name(name: &str) -> String {
+    format!("ghars-net@{name}.service")
+}
+
 /// Filesystem paths consumed by ghars during plan/apply.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paths {
@@ -86,14 +109,14 @@ impl Paths {
     /// `<unit_dir>/ghars-runner@<name>.service` — runner unit file.
     #[must_use]
     pub fn unit_file(&self, name: &str) -> Utf8PathBuf {
-        self.unit_dir.join(format!("ghars-runner@{name}.service"))
+        self.unit_dir.join(runner_unit_name(name))
     }
 
     /// `<unit_dir>/ghars-runner@<name>.service.d` — drop-in directory for
     /// per-runner overrides on the runner template unit.
     #[must_use]
     pub fn drop_in_dir(&self, name: &str) -> Utf8PathBuf {
-        self.unit_dir.join(format!("ghars-runner@{name}.service.d"))
+        self.unit_dir.join(format!("{}.d", runner_unit_name(name)))
     }
 
     /// `<unit_dir>/ghars-cache@.service` — canonical cache template unit
@@ -117,7 +140,7 @@ impl Paths {
     /// `EnableUnitFiles` / `Start` / `Stop`.
     #[must_use]
     pub fn netns_unit_file(&self, name: &str) -> Utf8PathBuf {
-        self.unit_dir.join(format!("ghars-net@{name}.service"))
+        self.unit_dir.join(netns_unit_name(name))
     }
 
     /// `<unit_dir>/ghars-cache@<pool>.service` — per-pool cache unit
@@ -126,14 +149,14 @@ impl Paths {
     /// `EnableUnitFiles` / `Start` / `Stop`.
     #[must_use]
     pub fn cache_unit_file(&self, pool: &str) -> Utf8PathBuf {
-        self.unit_dir.join(format!("ghars-cache@{pool}.service"))
+        self.unit_dir.join(cache_unit_name(pool))
     }
 
     /// `<unit_dir>/ghars-cache@<pool>.service.d` — drop-in directory for
     /// per-pool overrides on the cache template unit.
     #[must_use]
     pub fn cache_drop_in_dir(&self, pool: &str) -> Utf8PathBuf {
-        self.unit_dir.join(format!("ghars-cache@{pool}.service.d"))
+        self.unit_dir.join(format!("{}.d", cache_unit_name(pool)))
     }
 
     /// `<cache_dir>/pools/<pool>` — per-pool cache storage directory

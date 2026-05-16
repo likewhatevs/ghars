@@ -8,11 +8,8 @@
 use std::io::{self, Write};
 
 use crate::Result;
-use crate::error::GharsError;
+use crate::error::{GharsError, human_bytes};
 use crate::paths::Paths;
-use crate::state;
-use crate::systemd::DbusSystemd;
-use crate::validators;
 use zbus::blocking::{Connection, Proxy};
 use zbus::zvariant::OwnedObjectPath;
 
@@ -30,38 +27,14 @@ pub(super) struct MetricRow {
 
 pub(super) fn cmd_metrics(paths: &Paths, args: &MetricsArgs) -> Result<i32> {
     let names = if args.names.is_empty() {
-        match DbusSystemd::new() {
-            Ok(s) => state::discover(&s, paths)?
-                .runners
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>(),
-            Err(err) => {
-                // Surface the failure rather than returning an empty
-                // metrics table that hides why nothing is shown.
-                eprintln!(
-                    "warning: systemd D-Bus connection failed: {err}; runner state unavailable."
-                );
-                Vec::new()
-            }
-        }
+        super::util::discover_or_warn(paths)?
+            .runners
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
     } else {
-        // Validate operator-supplied names against IDENTIFIER_REGEX
-        // before the D-Bus per-unit query (`Manager.GetUnit
-        // ghars-runner@$NAME.service`) is constructed.
         for name in &args.names {
-            validators::validate_runner_name(name).map_err(|e| match e {
-                GharsError::Validation(msg, _) => GharsError::Validation(
-                    format!("invalid runner name {name:?}: {msg}"),
-                    format!(
-                        "runner names must use lowercase letters, digits, and dashes; \
-                         start with a letter; end with a letter or digit; \
-                         and be ≤{} characters",
-                        crate::config::IDENTIFIER_MAX_LEN,
-                    ),
-                ),
-                other => other,
-            })?;
+            super::util::validate_runner_name_with_hint(name)?;
         }
         args.names.clone()
     };
@@ -95,7 +68,7 @@ pub(super) fn collect_metrics(names: &[String]) -> Result<Vec<MetricRow>> {
     })?;
     let mut rows: Vec<MetricRow> = Vec::with_capacity(names.len());
     for name in names {
-        let unit = format!("ghars-runner@{name}.service");
+        let unit = crate::paths::runner_unit_name(name);
         let row = match read_metrics(&connection, &manager, &unit, name) {
             Ok(row) => row,
             Err(err) => {
@@ -258,8 +231,4 @@ pub(super) fn render_metrics_json(rows: &[MetricRow], no_total: bool) -> Result<
         .map_err(|e| GharsError::Io(io::Error::other(format!("encode metrics json: {e}"))))?;
     writeln!(stdout).map_err(GharsError::Io)?;
     Ok(0)
-}
-
-pub(super) fn human_bytes(n: u64) -> String {
-    bytesize::ByteSize::b(n).to_string()
 }

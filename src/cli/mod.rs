@@ -65,6 +65,7 @@ mod exit_codes;
 mod json;
 mod load;
 mod render;
+mod util;
 
 pub use args::{
     AddArgs, ApplyArgs, Cli, ColorMode, Command, InitArgs, LogsArgs, MetricsArgs, PlanArgs,
@@ -79,11 +80,13 @@ use crate::paths::Paths;
 
 /// Dispatch a parsed CLI to its handler. Returns the process exit code.
 ///
-/// Subcommands route to the library functions per Part 5; the netns
-/// helpers are the only handlers that intentionally bypass the config
-/// loader because they read per-instance state from
+/// Subcommands route to the library functions per Part 5. The
+/// netns helpers and `cleanup` intentionally bypass the config
+/// loader — netns reads per-instance state from
 /// `<config_dir>/netns.d/INSTANCE.toml` written ahead of time by
-/// `apply`.
+/// `apply`; `cleanup` removes all ghars-managed state regardless of
+/// what the config currently declares (operators may have already
+/// deleted `ghars.toml` before cleanup).
 ///
 /// # Errors
 ///

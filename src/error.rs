@@ -6,8 +6,9 @@
 //!
 //! # Secret-leakage policy
 //!
-//! `cli.rs::cmd_apply` renders failed actions via `writeln!(io::stderr(),
-//! "fail: {label}: {err}")`, which formats `GharsError` through `Display`.
+//! `cli::cmd_apply::cmd_apply` renders failed actions via
+//! `writeln!(io::stderr(), "fail: {label}: {err}")`, which formats
+//! `GharsError` through `Display`.
 //! Operator stderr can be captured by journalctl, log shippers, CI
 //! transcripts, or the operator's terminal scrollback — none of which are
 //! authoritative on whether they will be transmitted off-host.
@@ -78,6 +79,12 @@ pub enum GharsError {
     /// or "run from a TTY"; mapping these to a separate variant lets
     /// shell wrappers and CI gating scripts branch on the cause
     /// without parsing the error message.
+    ///
+    /// Routing: `cmd_apply::confirm_apply` returns this as the `Err`
+    /// arm; the error escapes up through `dispatch` to `main.rs`
+    /// where `err_to_exit_code` maps it to 7. Subcommands that
+    /// might prompt should return this variant directly rather than
+    /// catching it locally.
     #[error("interactive: {0}\n  hint: {hint}", hint = .1)]
     Interactive(String, String),
     /// Preflight checks failing (OS, KVM, systemd version, etc).
@@ -196,8 +203,8 @@ pub type Result<T> = std::result::Result<T, GharsError>;
 /// `validation: runner "buckos": <original message>` instead of an
 /// unscoped error the operator must hunt down.
 ///
-/// The pattern was open-coded as a 7-line closure in three validators
-/// in `cli.rs` (`validate_security_overrides`,
+/// The pattern was open-coded as a 7-line closure in three
+/// validators in `cli::load` (`validate_security_overrides`,
 /// `validate_cache_pool_names`, `validate_identity_fields`), each
 /// closure used at multiple call sites within its function. Single-
 /// sourced here so future validators get the same scope-prefix shape
@@ -225,6 +232,15 @@ pub(crate) fn prepend_validation_scope(scope: &str, err: GharsError) -> GharsErr
         }
         other => other,
     }
+}
+
+/// Convenience wrapper: build a `runner NAME` scope and prefix it
+/// onto the error. Consolidates the `format!("runner {:?}", name)`
+/// + `prepend_validation_scope` pair that appears at every per-
+/// runner validator site (load.rs and friends).
+#[must_use]
+pub(crate) fn prepend_runner_scope(runner_name: &str, err: GharsError) -> GharsError {
+    prepend_validation_scope(&format!("runner {runner_name:?}"), err)
 }
 
 /// Depth cap for `format_error_chain` traversal. Defends against
@@ -322,7 +338,7 @@ pub(crate) fn format_error_chain(err: &(dyn std::error::Error + 'static)) -> Str
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     //! `ApplyResult` error rendering must not leak build-machine
-    //! paths or stack traces. The cli.rs `cmd_apply` per-failed-action
+    //! paths or stack traces. `cli::cmd_apply`'s per-failed-action
     //! emission prints `{err}` — `err: &GharsError` resolves to
     //! Display, NOT Debug. These tests pin the Display contract: only
     //! operator-actionable content (variant tag + free-form message +

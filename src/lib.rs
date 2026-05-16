@@ -13,6 +13,7 @@ pub mod config;
 pub mod error;
 pub mod extract;
 pub mod github;
+pub(crate) mod http_cap;
 pub mod netns;
 pub(crate) mod path_util;
 pub mod paths;
@@ -32,77 +33,11 @@ pub use paths::Paths;
 /// extract.rs can't drift.
 pub const USER_AGENT: &str = concat!("ghars/", env!("CARGO_PKG_VERSION"));
 
-/// Defense-in-depth: escape ASCII control characters (C0 + DEL) before
-/// terminal emission. Preserves printable ASCII and valid UTF-8
-/// multibyte. Returns `Cow::Borrowed` when no escaping needed.
-///
-/// Identifies escape candidates via `char::is_ascii_control()` — true
-/// for `0x00..=0x1f` (C0) and `0x7f` (DEL). Each control char is
-/// rewritten via `char::escape_default()`, which produces `\n`/`\r`/
-/// `\t` for the three named ones and `\u{NN}` for the rest (NUL
-/// emits `\u{0}`, ESC `\u{1b}`, DEL `\u{7f}`, etc.). All output is
-/// printable ASCII; no terminal escape sequence survives.
-///
-/// Bytes `>= 0x80` (the start of every multibyte UTF-8 sequence) pass
-/// through unchanged. This preserves i18n filenames (Cyrillic, Han,
-/// emoji) at the cost of leaving the C1 control range
-/// (`U+0080..=U+009F`) unescaped — those codepoints are valid UTF-8
-/// continuation bytes inside multibyte sequences and aggressive
-/// escaping would mangle non-ASCII strings.
-///
-/// Used by:
-/// - `apply::ApplyOutcome::Failed.error_summary` construction at apply
-///   time (defends downstream `cmd_apply` stderr emission against
-///   ANSI-escape-laden `GharsError::to_string()` output);
-/// - `apply::UndoStep::describe` when formatting per-variant path /
-///   name / url fields (defends every consumer of the rollback log,
-///   not just the cli.rs advisory render path);
-/// - `cli::render_rollback_advisory` interpolates two operator-
-///   supplied fields per failure entry; both are escaped before
-///   stderr emission:
-///   - **per-failure label** (`Action::label()` keys of
-///     `result.failed_undo_logs`) — escaped at the per-failure
-///     sub-block emission inside `render_rollback_advisory` via
-///     `escape_control_chars(label)`. Defense-in-depth —
-///     `IDENTIFIER_REGEX` rejects control chars at config-load, but
-///     a regex relaxation must not silently reintroduce ANSI hijack
-///     risk on the rollback advisory.
-///   - **per-step `describe()` output** — second pass over
-///     `UndoStep::describe()`'s already-escaped output. Idempotent
-///     (pinned by `escape_control_chars_is_idempotent` in lib.rs),
-///     so the redundancy costs only one byte scan; closes the seam
-///     if a future `describe()` arm forgets the per-field escape.
-/// - `cli::render_action_line` and `cli::plan_to_json_value` when
-///   emitting drop-in basenames (defends against on-disk filesystem
-///   entries that bypassed config-load validation). Two distinct call
-///   site classes share this defense:
-///   - **recreate path**: iterates
-///     `RunnerDelta::before_drop_in_basenames` (text in
-///     `render_action_line`, JSON inline inside `plan_to_json_value`).
-///   - **in-place path**: iterates `RunnerDelta::drop_in_changes`,
-///     where each `DropInChange::basename` is escaped — text in
-///     `render_action_line` and JSON inside `drop_in_change_to_json`
-///     (the helper called from the in-place mapper inside
-///     `plan_to_json_value`).
-/// - `cli::push_indented_body` and `cli::push_indented_unified_diff`
-///   when emitting drop-in body content under `--diff`. The
-///   `Created.after`, `Removed.before`, and `Modified.{before,after}`
-///   bytes originate from operator-authored drop-in files (or on-disk
-///   discovery). Each line passes through `escape_control_chars`
-///   before emission — so the 12-space indent prefix and the
-///   intentional `\x1b[32m` / `\x1b[31m` / `\x1b[0m` ANSI wraps
-///   (only the unified-diff path emits these, and only with color
-///   enabled) survive structurally while hostile body bytes are
-///   replaced with the printable `\u{NN}` form. The escape happens
-///   on the line CONTENT before any color wrapping, so the
-///   `+`/`-`/`@` sigil-detection branches still match.
-///
-/// Fast path: scans bytes (not chars) — `is_ascii_control` is a
-/// byte-level test and the scan terminates at the first hit, so clean
-/// ASCII / clean UTF-8 inputs return `Cow::Borrowed` with one O(n)
-/// linear scan and no allocation. Inputs containing at least one
-/// control byte allocate once (`String::with_capacity(s.len())`) and
-/// pay one additional O(n) char-iter pass to build the escaped form.
+/// Escape ASCII control characters (C0 + DEL) before terminal emission;
+/// preserve printable ASCII and valid UTF-8 multibyte. Returns
+/// `Cow::Borrowed` when no escaping is needed. C1 controls
+/// (`U+0080..=U+009F`) pass through — they collide with UTF-8
+/// continuation bytes and aggressive escaping mangles non-ASCII text.
 #[must_use]
 pub(crate) fn escape_control_chars(s: &str) -> Cow<'_, str> {
     if !s.bytes().any(|b| b.is_ascii_control()) {
