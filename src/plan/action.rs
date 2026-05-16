@@ -5,6 +5,7 @@ use super::types::{CachePoolDelta, CachePoolPlan, RunnerDelta, RunnerIdentity, R
 
 /// One scheduled action in a `Plan`.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Action {
     /// Create a new runner from scratch (registration + systemd unit + start).
     CreateRunner(RunnerPlan),
@@ -45,6 +46,7 @@ pub enum Action {
 /// guard with `disruption >= Disruption::Recreate` without
 /// hand-rolling a comparator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum Disruption {
     /// No scheduled host mutation. `Action::NoOp` emits this; the
     /// in-place `UpdateRunner` short-circuit at
