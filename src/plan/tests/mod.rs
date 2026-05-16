@@ -39,8 +39,12 @@ pub(super) use super::types::{
     FieldValue, Plan, RunnerDelta, RunnerIdentity, RunnerPlan,
 };
 
-mod part1;
-mod part2;
+mod part1a;
+mod part1b;
+mod part2a1;
+mod part2a2;
+mod part2b1;
+mod part2b2;
 mod part3;
 
 pub(super) fn pat_auth() -> IndexMap<String, AuthSpec> {

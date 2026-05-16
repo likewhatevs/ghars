@@ -32,7 +32,7 @@ pub(crate) use clap::Parser;
 pub(crate) use crate::Result;
 pub(crate) use crate::apply;
 pub(crate) use crate::config::Config;
-pub(crate) use crate::error::GharsError;
+pub(crate) use crate::error::{GharsError, human_bytes};
 pub(crate) use crate::paths::Paths;
 pub(crate) use crate::plan::{self, Action, Plan};
 pub(crate) use crate::preflight;
@@ -45,6 +45,7 @@ fn add_args_for(repo: &str, name: Option<&str>, auth: Option<&str>) -> AddArgs {
         labels: vec![],
         auth: auth.map(String::from),
         no_apply: true,
+        auto_approve: false,
     }
 }
 
@@ -676,7 +677,13 @@ fn capture_apply_emission(result: &apply::ApplyResult) -> (String, String) {
     )
 }
 
-mod chunk1;
-mod chunk2;
-mod chunk3;
-mod chunk4;
+mod chunk1a;
+mod chunk1b;
+mod chunk2a;
+mod chunk2b;
+mod chunk3a1;
+mod chunk3a2;
+mod chunk3b1;
+mod chunk3b2;
+mod chunk4a;
+mod chunk4b;
