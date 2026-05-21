@@ -53,7 +53,7 @@ pub(super) fn cmd_validate(
     // apply`. The validate command must be a strict superset gate —
     // anything `plan` would reject, `validate` must reject too.
     let verifier = crate::unit_verify::RealVerifier;
-    crate::unit_verify::verify_plan(&plan, &paths.runtime_dir, &verifier)?;
+    crate::unit_verify::verify_plan(&plan, &paths, &paths.runtime_dir, &verifier)?;
 
     if args.deep {
         // Round-trip token mints. We do NOT print or persist the
@@ -151,7 +151,7 @@ pub(super) fn compute_plan(cfg: &Config, paths: &Paths, only: &[String]) -> Resu
     // GharsError::Validation; cmd_plan / cmd_apply surface them
     // verbatim alongside config-time validation failures.
     let verifier = crate::unit_verify::RealVerifier;
-    crate::unit_verify::verify_plan(&plan, &paths.runtime_dir, &verifier)?;
+    crate::unit_verify::verify_plan(&plan, paths, &paths.runtime_dir, &verifier)?;
     Ok(plan)
 }
 

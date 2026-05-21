@@ -133,6 +133,7 @@ impl UnitVerifier for RealVerifier {
 ///   text per unit.
 pub fn verify_plan(
     plan: &Plan,
+    paths: &crate::paths::Paths,
     runtime_dir: &camino::Utf8Path,
     verifier: &dyn UnitVerifier,
 ) -> Result<()> {
@@ -147,7 +148,7 @@ pub fn verify_plan(
     }
     fs::create_dir_all(staging.as_std_path())?;
 
-    let result = verify_plan_inner(plan, staging.as_std_path(), verifier);
+    let result = verify_plan_inner(plan, paths, staging.as_std_path(), verifier);
     // Best-effort cleanup; a failed cleanup must not mask the
     // verification result. Tracing surfaces the residue path so
     // operators can investigate stale dirs under runtime_dir.
@@ -161,16 +162,39 @@ pub fn verify_plan(
     result
 }
 
-fn verify_plan_inner(plan: &Plan, staging: &Path, verifier: &dyn UnitVerifier) -> Result<()> {
+fn verify_plan_inner(
+    plan: &Plan,
+    paths: &crate::paths::Paths,
+    staging: &Path,
+    verifier: &dyn UnitVerifier,
+) -> Result<()> {
     // Collect `RenderedUnit` (unit_filename, drop_ins) values for
     // every action that produces a rendered unit + drop-in surface.
     // NoOp, RemoveRunner, and RemoveCachePool produce no rendered
     // bytes — their effect on disk is removal, which has nothing to
     // verify syntax-wise (we cannot verify a file that won't exist).
     let mut units: Vec<RenderedUnit> = Vec::new();
+    // Track cache pools staged via Create/Update actions vs. cache
+    // pools referenced by runner units. Any reference NOT covered by a
+    // staged action needs its current on-disk drop-in copied into
+    // staging too — otherwise the runner unit's `Requires=ghars-
+    // cache@<pool>.service` resolves to the bare cache template (which
+    // ghars stages unconditionally below) with no per-instance drop-in
+    // and verify rejects the runner with "ghars-cache@<pool>.service:
+    // Service has no ExecStart=, ExecStop=, or SuccessAction=.
+    // Refusing." The host's /etc/systemd/system is deliberately
+    // excluded from SYSTEMD_UNIT_PATH (see `RealVerifier::verify` for
+    // why), so the drop-in must arrive via staging.
+    let mut staged_cache_pools: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+    let mut referenced_cache_pools: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
     for action in &plan.actions {
         match action {
             Action::CreateRunner(p) => {
+                for c in &p.spec.caches {
+                    referenced_cache_pools.insert(c.name.clone());
+                }
                 units.push(rendered_runner_unit(
                     &p.spec.name,
                     &p.effective_unit_text,
@@ -178,6 +202,9 @@ fn verify_plan_inner(plan: &Plan, staging: &Path, verifier: &dyn UnitVerifier) -
                 ));
             }
             Action::UpdateRunner(d) => {
+                for c in &d.after.spec.caches {
+                    referenced_cache_pools.insert(c.name.clone());
+                }
                 if d.requires_recreate {
                     units.push(rendered_runner_unit(
                         &d.identity.name,
@@ -198,12 +225,34 @@ fn verify_plan_inner(plan: &Plan, staging: &Path, verifier: &dyn UnitVerifier) -
                 }
             }
             Action::CreateCachePool(p) => {
+                staged_cache_pools.insert(p.binding.name.clone());
                 units.push(rendered_cache_unit(&p.binding.name, &p.drop_in_body));
             }
             Action::UpdateCachePool(d) => {
+                staged_cache_pools.insert(d.binding.name.clone());
                 units.push(rendered_cache_unit(&d.binding.name, &d.drop_in_body));
             }
             Action::RemoveRunner(_) | Action::RemoveCachePool(_) | Action::NoOp(_) => {}
+        }
+    }
+    // Backfill cache pools referenced by runner units but not staged
+    // via a Create/Update action (the typical case: runners being
+    // created or updated against an unchanged pool). Read the current
+    // on-disk drop-in from the production unit dir and stage it so
+    // the dependency target resolves the same merged shape verify
+    // would see at runtime.
+    for pool_name in referenced_cache_pools.difference(&staged_cache_pools) {
+        let drop_in_path = paths.cache_drop_in_dir(pool_name).join("00-ghars.conf");
+        match fs::read_to_string(drop_in_path.as_std_path()) {
+            Ok(body) => units.push(rendered_cache_unit(pool_name, &body)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // No on-disk drop-in — pool is referenced but neither
+                // staged this plan nor present on disk. Skip staging;
+                // verify will surface a clear "ghars-cache@<pool>.
+                // service has no ExecStart=" error pointing the
+                // operator at the missing pool.
+            }
+            Err(e) => return Err(GharsError::Io(e)),
         }
     }
 
@@ -408,7 +457,7 @@ mod tests {
         let runtime = camino::Utf8Path::from_path(tmp.path()).unwrap();
         let verifier = StubVerifier::default();
         let plan = empty_plan();
-        verify_plan(&plan, runtime, &verifier).unwrap();
+        verify_plan(&plan, &crate::paths::Paths::default(), runtime, &verifier).unwrap();
         assert!(verifier.calls.lock().unwrap().is_empty());
     }
 
@@ -441,7 +490,7 @@ mod tests {
             warnings: vec![],
             keep_versions: 2,
         };
-        verify_plan(&plan, runtime, &verifier).unwrap();
+        verify_plan(&plan, &crate::paths::Paths::default(), runtime, &verifier).unwrap();
         let calls = verifier.calls.lock().unwrap();
         assert_eq!(calls.len(), 2);
         let names: Vec<String> = calls
@@ -486,7 +535,8 @@ mod tests {
             warnings: vec![],
             keep_versions: 2,
         };
-        let err = verify_plan(&plan, runtime, &verifier).unwrap_err();
+        let err =
+            verify_plan(&plan, &crate::paths::Paths::default(), runtime, &verifier).unwrap_err();
         let GharsError::Validation(msg, _hint) = err else {
             panic!("expected Validation error; got {err:?}");
         };
@@ -527,7 +577,7 @@ mod tests {
             warnings: vec![],
             keep_versions: 2,
         };
-        verify_plan(&plan, runtime, &verifier).unwrap();
+        verify_plan(&plan, &crate::paths::Paths::default(), runtime, &verifier).unwrap();
         assert!(
             verifier.calls.lock().unwrap().is_empty(),
             "remove + noop actions must produce no verify calls"
@@ -548,7 +598,7 @@ mod tests {
             warnings: vec![],
             keep_versions: 2,
         };
-        verify_plan(&plan, runtime, &verifier).unwrap();
+        verify_plan(&plan, &crate::paths::Paths::default(), runtime, &verifier).unwrap();
         let calls = verifier.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(
@@ -599,7 +649,7 @@ mod tests {
             warnings: vec![],
             keep_versions: 2,
         };
-        verify_plan(&plan, runtime, &verifier).unwrap();
+        verify_plan(&plan, &crate::paths::Paths::default(), runtime, &verifier).unwrap();
         let body = verifier
             .seen_body
             .lock()
@@ -661,7 +711,7 @@ mod tests {
             warnings: vec![],
             keep_versions: 2,
         };
-        verify_plan(&plan, runtime, &verifier).unwrap();
+        verify_plan(&plan, &crate::paths::Paths::default(), runtime, &verifier).unwrap();
         assert_eq!(
             *verifier.saw_regular_file.lock().unwrap(),
             Some(true),
