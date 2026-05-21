@@ -1983,6 +1983,17 @@ pub fn render_cache_drop_in(
         // bypass that gate; check the bytes here too so the rendered
         // unit cannot smuggle a newline or NUL into ExecStart=.
         check_identity_field("caches[].sccache_path", sccache_path.as_str())?;
+        // ExecStart= reset before the canonical ExecStart line. systemd
+        // appends ExecStart= directives across drop-ins rather than
+        // replacing — without the empty reset, any inherited ExecStart
+        // (a stale 99-*.conf operator override, or a same-name drop-in
+        // from another search-path layer) compounds with this one and
+        // unit load fails with "more than one ExecStart= setting, which
+        // is only allowed for Type=oneshot services. Refusing." The
+        // reset clears the list so the next line is the sole entry.
+        // Mirrors the same pattern in the runner unit's 00-ghars.conf
+        // drop-in (see `render_identity`).
+        s.push_str("ExecStart=\n");
         let _ = writeln!(s, "ExecStart={sccache_path} --start-server");
         // sccache --start-server forks: parent exits, child listens.
         // Override the template's Type=simple for sccache pools.
@@ -2039,7 +2050,24 @@ pub fn render_cache_drop_in(
             )
         })?;
         check_identity_field("caches[].sleep_path", sleep_path.as_str())?;
+        // ExecStart= reset (see the Pooled branch above for the
+        // rationale). Without this, a Pooled→PerRunner transition
+        // would append the new sleep ExecStart to the still-loaded
+        // sccache ExecStart from the prior drop-in and systemd's
+        // multi-ExecStart-on-Type=simple gate would refuse the unit.
+        // Same load-bearing reset on ccache-only pools too — defense
+        // against any stale operator drop-in carrying an ExecStart.
+        s.push_str("ExecStart=\n");
         let _ = writeln!(s, "ExecStart={sleep_path} infinity");
+        // Explicit Type=simple. Pairs with the Pooled branch's
+        // `Type=forking` override so the rendered drop-in always
+        // pins a Type= matching its ExecStart shape; without this
+        // the sleep-stub branch would rely on the template default
+        // and a stale `Type=forking` from any other drop-in in the
+        // search path (operator 99-*.conf, prior Pooled-mode body
+        // still being read by `systemd-analyze verify` during the
+        // apply transition) would mismatch the sleep ExecStart.
+        s.push_str("Type=simple\n");
         let _ = writeln!(s, "ReadWritePaths=%C/ghars/pools/{}", binding.name);
     }
 

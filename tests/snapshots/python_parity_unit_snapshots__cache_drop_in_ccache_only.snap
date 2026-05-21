@@ -10,5 +10,7 @@ X-Ghars-Config-Source=/etc/ghars/ghars.toml
 
 [Service]
 User=ghars-tz-default
+ExecStart=
 ExecStart=/usr/bin/sleep infinity
+Type=simple
 ReadWritePaths=%C/ghars/pools/build
