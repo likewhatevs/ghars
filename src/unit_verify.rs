@@ -57,27 +57,38 @@ impl UnitVerifier for RealVerifier {
     fn verify(&self, unit_path: &Path) -> std::result::Result<(), String> {
         // `--no-pager` keeps output unbuffered + line-oriented for
         // direct stderr capture.
-        // Set SYSTEMD_UNIT_PATH to the staging directory ALONE (no
-        // trailing colon) so systemd-analyze resolves drop-ins ONLY
-        // from the staged `<unit>.service.d/` trees, never from the
-        // host's /etc/systemd/system. The trailing-colon form
-        // (`<dir>:`) is APPEND semantics per systemd.unit(5):
-        // "An empty string after the colon appends the default."
-        // That causes drop-ins like the existing
-        // /etc/systemd/system/ghars-cache@<pool>.service.d/00-ghars.conf
-        // to merge alongside the staged content; the rendered unit
-        // ends up with ExecStart= from BOTH the staged drop-in (or
-        // inlined merged body) AND the on-disk pre-existing one,
-        // which systemd rejects as "Service has more than one
-        // ExecStart= setting" for non-oneshot services. Dropping the
-        // trailing colon limits the search path to the staging dir
-        // only — the rendered units are self-contained (either
-        // merged_body or staged drop-ins) and need nothing else.
+        // SYSTEMD_UNIT_PATH search list:
+        //   <staging_dir>:/usr/lib/systemd/system:/lib/systemd/system
+        //
+        // - `<staging_dir>` first so the staged template + drop-ins
+        //   (or inlined `merged_body`) win.
+        // - `/usr/lib/systemd/system` + `/lib/systemd/system` second
+        //   so OS-shipped units (`sysinit.target`, `network-online.
+        //   target`, etc. that any non-trivial unit transitively
+        //   requires) resolve. Without these, systemd-analyze rejects
+        //   the rendered unit with "Unit sysinit.target not found."
+        //
+        // Deliberately EXCLUDES `/etc/systemd/system` and `/run/systemd
+        // /system`. Those are where ghars writes the production drop-
+        // ins — including the pre-existing 00-ghars.conf this verify
+        // is about to replace. The trailing-colon form (`<dir>:`)
+        // per systemd.unit(5) "appends the default" which INCLUDES
+        // /etc; the pre-existing drop-in there would merge alongside
+        // the staged version and the rendered unit ends up with
+        // ExecStart= from BOTH sources, failing "Service has more
+        // than one ExecStart= setting" for non-oneshot services.
+        // Naming only the OS-shipped roots gives verify enough to
+        // resolve dependency targets without exposing it to the
+        // host's editable unit tree.
         let staging_dir = unit_path
             .parent()
             .ok_or_else(|| format!("unit_path {unit_path:?} has no parent"))?;
+        let search_path = format!(
+            "{}:/usr/lib/systemd/system:/lib/systemd/system",
+            staging_dir.display(),
+        );
         let output = Command::new("/usr/bin/systemd-analyze")
-            .env("SYSTEMD_UNIT_PATH", staging_dir.display().to_string())
+            .env("SYSTEMD_UNIT_PATH", search_path)
             .args([
                 "--no-pager",
                 "verify",
