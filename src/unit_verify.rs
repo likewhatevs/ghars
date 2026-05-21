@@ -57,17 +57,27 @@ impl UnitVerifier for RealVerifier {
     fn verify(&self, unit_path: &Path) -> std::result::Result<(), String> {
         // `--no-pager` keeps output unbuffered + line-oriented for
         // direct stderr capture.
-        // Set SYSTEMD_UNIT_PATH to the staging directory so
-        // systemd-analyze resolves drop-ins from the staged
-        // `<unit>.service.d/` trees, not from the host's
-        // /etc/systemd/system. Without this, drop-ins are invisible
-        // and template-instanced units fail with "Service has no
-        // ExecStart=" even when the drop-in supplies one.
+        // Set SYSTEMD_UNIT_PATH to the staging directory ALONE (no
+        // trailing colon) so systemd-analyze resolves drop-ins ONLY
+        // from the staged `<unit>.service.d/` trees, never from the
+        // host's /etc/systemd/system. The trailing-colon form
+        // (`<dir>:`) is APPEND semantics per systemd.unit(5):
+        // "An empty string after the colon appends the default."
+        // That causes drop-ins like the existing
+        // /etc/systemd/system/ghars-cache@<pool>.service.d/00-ghars.conf
+        // to merge alongside the staged content; the rendered unit
+        // ends up with ExecStart= from BOTH the staged drop-in (or
+        // inlined merged body) AND the on-disk pre-existing one,
+        // which systemd rejects as "Service has more than one
+        // ExecStart= setting" for non-oneshot services. Dropping the
+        // trailing colon limits the search path to the staging dir
+        // only — the rendered units are self-contained (either
+        // merged_body or staged drop-ins) and need nothing else.
         let staging_dir = unit_path
             .parent()
             .ok_or_else(|| format!("unit_path {unit_path:?} has no parent"))?;
         let output = Command::new("/usr/bin/systemd-analyze")
-            .env("SYSTEMD_UNIT_PATH", format!("{}:", staging_dir.display()))
+            .env("SYSTEMD_UNIT_PATH", staging_dir.display().to_string())
             .args([
                 "--no-pager",
                 "verify",
