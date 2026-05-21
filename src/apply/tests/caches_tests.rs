@@ -34,6 +34,7 @@ pub(super) fn make_caches_delta(
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::Pooled,
             renderer_schema: crate::systemd::RENDERER_SCHEMA,
         })
         .collect();

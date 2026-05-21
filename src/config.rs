@@ -435,13 +435,29 @@ pub struct EffectiveCacheBinding {
     /// `spec_hash`.
     #[serde(skip, default)]
     pub sleep_path: Option<Utf8PathBuf>,
+    /// sccache server topology — mirror of
+    /// [`CachePoolSpec::server_mode`]. Participates in
+    /// `cache_pool_hash` AND `spec_hash` (runner-side) so a flip
+    /// triggers `UpdateCachePool` AND `UpdateRunner` for every
+    /// referencing runner.
+    ///
+    /// NOT `#[serde(skip)]` — the field is part of the canonical
+    /// hash domain. The renderer branches on this in BOTH
+    /// `render_cache_drop_in` (pool drop-in: sccache server vs
+    /// sleep stub) AND `render_cache_pool` (runner drop-in:
+    /// `SCCACHE_SERVER_UDS` override + `SCCACHE_NO_DAEMON` vs
+    /// `SCCACHE_DIR` override), so any change rewrites both sides
+    /// in lockstep via the spec-hash + cache-pool-hash plan.
+    #[serde(default)]
+    pub server_mode: SccacheServerMode,
     /// Renderer schema number captured at binding-resolution time
     /// from [`crate::systemd::RENDERER_SCHEMA`]. Mirror of
     /// `EffectiveRunnerSpec::renderer_schema` for the cache-pool
     /// hash domain — a renderer change that flips
     /// `render_cache_drop_in` output for the same `(name, kinds,
-    /// size, mode, trust_zone)` bumps the constant, which flips
-    /// `cache_pool_hash` and drives the in-place pool-rewrite path.
+    /// size, mode, trust_zone, server_mode)` bumps the constant,
+    /// which flips `cache_pool_hash` and drives the in-place
+    /// pool-rewrite path.
     ///
     /// NOT `#[serde(skip)]` — participation in the `cache_pool_hash`
     /// domain is the entire point of the field. Contrast with
@@ -871,12 +887,20 @@ pub struct CachePoolSpec {
     /// Optional override for the sleep binary path. Must be absolute
     /// when set (validator-enforced). When omitted, plan-time
     /// resolution auto-detects by probing `/usr/bin/sleep` then
-    /// `/bin/sleep` via `Path::exists`. Only consulted when the pool
-    /// is ccache-only (`!kinds.contains(Sccache)`); sccache-serving
-    /// pools use the sccache process as the unit's `ExecStart` so sleep
-    /// is never invoked.
+    /// `/bin/sleep` via `Path::exists`. Consulted for ccache-only
+    /// pools AND for sccache pools running with
+    /// `server_mode = "per_runner"` (both use sleep as the unit's
+    /// `ExecStart` to keep the pool unit alive without spawning a
+    /// server). `server_mode = "pooled"` sccache pools put the
+    /// sccache server on `ExecStart` directly and never invoke sleep.
     #[serde(default)]
     pub sleep_path: Option<Utf8PathBuf>,
+    /// sccache server topology. Only consulted for sccache-serving
+    /// pools (`kinds` contains `Sccache`); ccache-only pools ignore
+    /// this field. See [`SccacheServerMode`] for the semantic
+    /// difference between `Pooled` (default) and `PerRunner`.
+    #[serde(default)]
+    pub server_mode: SccacheServerMode,
 }
 
 /// Default trust zone — used by both `RunnerSpec.trust_zone` and
@@ -950,6 +974,83 @@ pub enum CacheMode {
     Shared,
     /// Single runner exclusive.
     Isolated,
+}
+
+/// sccache server topology. Only consulted for sccache-serving pools
+/// (`kinds` contains `Sccache`); ccache-only pools ignore this field.
+///
+/// - `Pooled` (default): one sccache server per pool, all runners
+///   referencing the pool connect as clients via the shared UDS at
+///   `/run/ghars/cache-<pool>.sock`. Cache hits and misses serialize
+///   through the single server process. Lowest disk-cache duplication
+///   (one quota enforcer, one in-memory LRU map) but a single-threaded
+///   server bottleneck under concurrent multi-runner load.
+/// - `PerRunner`: each runner referencing the pool runs its own
+///   sccache server (auto-spawned on first `RUSTC_WRAPPER=sccache`
+///   invocation, listening on the runner's per-instance UDS at
+///   `/run/ghars/<runner>/sccache.sock` from the runner template).
+///   All per-runner servers point `SCCACHE_DIR` at the shared pool
+///   directory `/var/cache/ghars/pools/<pool>/sccache`, so on-disk
+///   cache content is shared via the filesystem. The cache pool unit
+///   (`ghars-cache@<pool>.service`) still runs but its `ExecStart=`
+///   becomes `<sleep_path> infinity` (same stub used by ccache-only
+///   pools), preserving the `CacheDirectory=` ownership + lifecycle
+///   without spawning a server.
+///
+/// # `PerRunner` mode caveats — sccache contract violation
+///
+/// sccache's `lru_disk_cache` documents that it "expects to have
+/// sole maintenance of the contents" of its cache directory (see
+/// upstream `sccache/src/lru_disk_cache/mod.rs`). `PerRunner` mode
+/// deliberately violates this contract by pointing multiple sccache
+/// server processes at the same `SCCACHE_DIR`. Concrete failure
+/// modes the operator should accept before opting in:
+///
+/// - **LRU desync**: each server's in-memory LRU map is independent.
+///   Server A may evict (and delete) a file that server B still
+///   tracks as present; B's next `get` returns an io error rather
+///   than a clean miss. Effect: occasional cache errors that fall
+///   back to fresh compilation. Rate is proportional to how full
+///   the cache is (LRU eviction frequency).
+/// - **Tempfile scan on restart**: sccache's init scan removes every
+///   `.sccachetmp*` entry in `SCCACHE_DIR`. If server A restarts
+///   while server B is committing a write, B's in-flight tempfile is
+///   collateral damage; the commit fails and the cache entry is
+///   lost. `SCCACHE_IDLE_TIMEOUT=0` is forced for `PerRunner` mode
+///   (no scheduled re-init from idle timeouts) but unit restarts
+///   (config reload, runner recycling) still trigger a scan.
+/// - **N×size disk usage**: each per-runner server enforces
+///   `SCCACHE_CACHE_SIZE` against its own view of the shared dir.
+///   Steady-state on-disk usage can grow to
+///   `N_runners × size` before any server evicts. Size the disk
+///   accordingly — the operator-supplied `size` is a per-server
+///   quota in `PerRunner`, not a pool-wide cap.
+/// - **All servers share `trust_zone` DAC**: cache files written by
+///   one runner are readable by every other runner in the same
+///   `trust_zone`. The same was already true for `Pooled` (single
+///   server's writes are visible via the shared UDS), so this is
+///   not a regression — but `PerRunner` advertises per-runner
+///   "isolation" implicitly and operators should not infer cache
+///   data isolation from the topology.
+///
+/// Use `PerRunner` when concurrent-runner CPU contention on a
+/// single sccache server process is the bottleneck. Use `Pooled`
+/// when LRU coherence matters more than parallelism — small
+/// deployments, single-runner hosts, or workloads sensitive to
+/// occasional cache errors.
+///
+/// Switching modes is a [`super::plan::action::Action::UpdateCachePool`]
+/// trigger (field is `Serialize`d into `cache_pool_hash`, so any
+/// flip rewrites the pool drop-in and every referencing runner's
+/// `30-cache-pool.conf`).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SccacheServerMode {
+    /// One shared sccache server per pool — current default.
+    #[default]
+    Pooled,
+    /// Per-runner sccache servers sharing the pool's on-disk cache.
+    PerRunner,
 }
 
 /// `[network.NAME]` declaration. Drives nft rule generation +

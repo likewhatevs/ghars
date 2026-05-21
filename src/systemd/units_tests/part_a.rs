@@ -153,6 +153,7 @@ fn render_runner_env_file_gates_ccache_dir_on_ccache_binding() {
         trust_zone: "default".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep".into()),
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     });
     let env_c = render_runner_env_file(&spec_c).unwrap();
@@ -173,6 +174,7 @@ fn render_runner_env_file_gates_ccache_dir_on_ccache_binding() {
         trust_zone: "default".into(),
         sccache_path: Some("/usr/bin/sccache".into()),
         sleep_path: None,
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     });
     let env_s = render_runner_env_file(&spec_s).unwrap();
@@ -195,6 +197,7 @@ fn render_runner_env_file_gates_ccache_dir_on_ccache_binding() {
             trust_zone: "default".into(),
             sccache_path: Some("/usr/bin/sccache".into()),
             sleep_path: Some("/usr/bin/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::Pooled,
             renderer_schema: crate::systemd::RENDERER_SCHEMA,
         });
     let env_combined = render_runner_env_file(&spec_combined).unwrap();
@@ -216,6 +219,7 @@ fn render_runner_env_file_emits_per_binding_lines_by_kind() {
         trust_zone: "default".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep".into()),
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     });
     let env = render_runner_env_file(&spec).unwrap();
@@ -238,6 +242,7 @@ fn render_runner_env_file_emits_per_binding_lines_by_kind() {
         trust_zone: "default".into(),
         sccache_path: Some("/usr/bin/sccache".into()),
         sleep_path: None,
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     });
     let env2 = render_runner_env_file(&spec2).unwrap();
@@ -298,6 +303,7 @@ fn render_runner_env_file_emits_one_ccache_maxsize_per_binding_in_source_order()
         trust_zone: "default".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep".into()),
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     });
     spec.caches.push(crate::config::EffectiveCacheBinding {
@@ -308,6 +314,7 @@ fn render_runner_env_file_emits_one_ccache_maxsize_per_binding_in_source_order()
         trust_zone: "default".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep".into()),
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     });
     let env = render_runner_env_file(&spec).unwrap();
@@ -469,6 +476,7 @@ fn render_identity_rejects_newline_in_cache_name() {
         trust_zone: "default".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep".into()),
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     });
     assert_render_identity_rejects(&spec, "caches[].name", "newline", '\n');
@@ -1018,6 +1026,7 @@ fn render_cache_pool_rejects_newline_in_caches_size() {
         trust_zone: "default".into(),
         sccache_path: Some("/usr/bin/sccache".into()),
         sleep_path: None,
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     }];
     let err = render_runner_unit(&spec).unwrap_err();
@@ -1283,6 +1292,7 @@ fn render_cache_drop_in_rejects_newline_in_binding_size() {
         trust_zone: "default".into(),
         sccache_path: Some("/usr/bin/sccache".into()),
         sleep_path: None,
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     };
     let err = render_cache_drop_in(&binding, "/etc/ghars/ghars.toml", "sha256:abcd")
@@ -1313,6 +1323,7 @@ fn render_cache_drop_in_rejects_newline_in_sccache_path() {
         trust_zone: "default".into(),
         sccache_path: Some("/usr/bin/sccache\nINJECTED=1".into()),
         sleep_path: None,
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     };
     let err = render_cache_drop_in(&binding, "/etc/ghars/ghars.toml", "sha256:abcd")
@@ -1344,6 +1355,7 @@ fn render_cache_drop_in_rejects_newline_in_sleep_path() {
         trust_zone: "default".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep\nINJECTED=1".into()),
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     };
     let err = render_cache_drop_in(&binding, "/etc/ghars/ghars.toml", "sha256:abcd")
@@ -1380,6 +1392,7 @@ fn render_cache_drop_in_rejects_nul_in_sccache_path() {
         trust_zone: "default".into(),
         sccache_path: Some("/usr/bin/sccache\0attacker".into()),
         sleep_path: None,
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     };
     let err = render_cache_drop_in(&binding, "/etc/ghars/ghars.toml", "sha256:abcd")

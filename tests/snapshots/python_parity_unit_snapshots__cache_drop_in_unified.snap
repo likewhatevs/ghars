@@ -6,6 +6,7 @@ expression: body
 X-Ghars-Spec-Hash=sha256:abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdef0123
 X-Ghars-Pool-Name=build
 X-Ghars-Pool-Kinds=ccache,sccache
+X-Ghars-Sccache-Mode=pooled
 X-Ghars-Config-Source=/etc/ghars/ghars.toml
 
 [Service]

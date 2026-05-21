@@ -1,0 +1,13 @@
+---
+source: tests/python_parity_unit_snapshots.rs
+expression: "dropin(&r.drop_ins, \"30-cache-pool.conf\")"
+---
+[Unit]
+Requires=ghars-cache@build.service
+After=ghars-cache@build.service
+
+[Service]
+Environment=SCCACHE_DIR=/var/cache/ghars/pools/build/sccache
+Environment=SCCACHE_CACHE_SIZE=200G
+Environment=SCCACHE_IDLE_TIMEOUT=0
+BindPaths=/var/cache/ghars/pools/build

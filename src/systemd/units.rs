@@ -22,6 +22,7 @@ use ipnet::IpNet;
 
 use crate::config::{
     CacheKind, EffectiveCacheBinding, EffectiveRunnerSpec, EtcBindStyle, Hardening, NetworkMode,
+    SccacheServerMode,
 };
 use crate::path_util::binds_filesystem_root;
 use crate::{GharsError, Result};
@@ -131,7 +132,7 @@ pub struct RenderedUnit {
 /// false negatives (a missed bump) leave operators stranded on stale
 /// drop-ins requiring manual `rm -rf` to force convergence (the bug
 /// this constant exists to prevent).
-pub const RENDERER_SCHEMA: u32 = 4;
+pub const RENDERER_SCHEMA: u32 = 5;
 
 // --- Runner unit + drop-ins renderer (Part 9 / 9d / 9e) ------------------
 
@@ -305,18 +306,66 @@ pub(crate) fn render_runner_env_file(spec: &EffectiveRunnerSpec) -> Result<Strin
             let _ = writeln!(s, "CCACHE_MAXSIZE={}", binding.size);
         }
         if binding.kinds.contains(&CacheKind::Sccache) {
-            let _ = writeln!(
-                s,
-                "SCCACHE_SERVER_UDS=/run/ghars/cache-{}.sock",
-                binding.name
-            );
-            s.push_str("SCCACHE_NO_DAEMON=1\n");
-            let _ = writeln!(s, "SCCACHE_CACHE_SIZE={}", binding.size);
-            let _ = writeln!(
-                s,
-                "SCCACHE_DIR=/var/cache/ghars/pools/{}/sccache",
-                binding.name
-            );
+            // SCCACHE_* propagation to workflow steps. LoadAndSetEnv
+            // (Runner.Listener) reads this .env at runner startup and
+            // calls Environment.SetEnvironmentVariable per line; the
+            // values land in Runner.Worker and every subprocess it
+            // spawns. Anything written here OVERRIDES the systemd
+            // Environment= directives because .env is applied AFTER
+            // unit startup, INSIDE the listener process.
+            //
+            // The emission must therefore agree with
+            // render_cache_pool's 30-cache-pool.conf branching: a
+            // mismatch lets the .env clobber the drop-in's careful
+            // per-runner override and the runtime resolves to the
+            // wrong server topology.
+            match binding.server_mode {
+                SccacheServerMode::Pooled => {
+                    let _ = writeln!(
+                        s,
+                        "SCCACHE_SERVER_UDS=/run/ghars/cache-{}.sock",
+                        binding.name
+                    );
+                    s.push_str("SCCACHE_NO_DAEMON=1\n");
+                    let _ = writeln!(s, "SCCACHE_CACHE_SIZE={}", binding.size);
+                    let _ = writeln!(
+                        s,
+                        "SCCACHE_DIR=/var/cache/ghars/pools/{}/sccache",
+                        binding.name
+                    );
+                }
+                SccacheServerMode::PerRunner => {
+                    // Do NOT emit SCCACHE_SERVER_UDS: keep the
+                    // template's per-runner UDS at
+                    // `%t/ghars/%i/sccache.sock` (already propagated to
+                    // the worker via the systemd Environment= line). Do
+                    // NOT emit SCCACHE_NO_DAEMON: the runner's wrapper
+                    // must be free to auto-spawn its own per-runner
+                    // server. Emit SCCACHE_DIR pointing at the shared
+                    // pool directory so every per-runner server reads/
+                    // writes the same on-disk cache. Emit
+                    // SCCACHE_CACHE_SIZE as the per-server quota
+                    // (operators should size the disk for
+                    // N_runners × size per the SccacheServerMode doc).
+                    let _ = writeln!(s, "SCCACHE_CACHE_SIZE={}", binding.size);
+                    let _ = writeln!(
+                        s,
+                        "SCCACHE_DIR=/var/cache/ghars/pools/{}/sccache",
+                        binding.name
+                    );
+                    // SCCACHE_IDLE_TIMEOUT=0 prevents the per-runner
+                    // server from exiting after 600s idle (sccache
+                    // default). An idle-timeout exit followed by a
+                    // fresh spawn re-runs sccache's init() scan over
+                    // the SHARED pool directory, which deletes every
+                    // `.sccachetmp*` file in the dir — including
+                    // in-flight writes from OTHER per-runner servers.
+                    // Keep the server alive for the lifetime of the
+                    // runner unit (systemd stop will kill it via
+                    // KillMode=control-group anyway).
+                    s.push_str("SCCACHE_IDLE_TIMEOUT=0\n");
+                }
+            }
         }
     }
     // LAYER 3: operator-declared env vars (BTreeMap alphabetical
@@ -1312,20 +1361,103 @@ fn render_cache_pool(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
             // from LAYER 2.
         }
         if c.kinds.contains(&CacheKind::Sccache) {
-            let _ = writeln!(
-                s,
-                "Environment=SCCACHE_SERVER_UDS=/run/ghars/cache-{}.sock",
-                c.name
-            );
-            // Pool-side server is the sole owner; runners are clients.
-            // SCCACHE_NO_DAEMON=1 prevents auto-spawn.
-            s.push_str("Environment=SCCACHE_NO_DAEMON=1\n");
-            let _ = writeln!(s, "Environment=SCCACHE_CACHE_SIZE={}", c.size);
-            needs_run_ghars = true;
-            // Pool dir is also bound so sccache disk reads succeed even
-            // when the runner needs to inspect cache shape locally.
-            if !bind_paths.contains(&pool_dir) {
-                bind_paths.push(pool_dir);
+            match c.server_mode {
+                SccacheServerMode::Pooled => {
+                    // Pooled mode: runner is a client of the shared
+                    // pool server. Override the template's per-runner
+                    // SCCACHE_SERVER_UDS with the pool socket and
+                    // suppress auto-daemon-spawn so the runner cannot
+                    // accidentally start its own server alongside the
+                    // pool's. SCCACHE_DIR is NOT emitted here — the
+                    // runner's sccache wrapper only needs UDS reach to
+                    // the pool server; the server alone owns SCCACHE_DIR
+                    // (set in the cache pool unit's 00-ghars.conf).
+                    let _ = writeln!(
+                        s,
+                        "Environment=SCCACHE_SERVER_UDS=/run/ghars/cache-{}.sock",
+                        c.name
+                    );
+                    s.push_str("Environment=SCCACHE_NO_DAEMON=1\n");
+                    let _ = writeln!(s, "Environment=SCCACHE_CACHE_SIZE={}", c.size);
+                    needs_run_ghars = true;
+                    // Pool dir is also bound so sccache disk reads
+                    // succeed even when the runner needs to inspect
+                    // cache shape locally.
+                    if !bind_paths.contains(&pool_dir) {
+                        bind_paths.push(pool_dir);
+                    }
+                }
+                SccacheServerMode::PerRunner => {
+                    // PerRunner mode: the runner spawns its OWN sccache
+                    // server (auto-started on first invocation since no
+                    // SCCACHE_NO_DAEMON is set). The template's
+                    // per-runner SCCACHE_SERVER_UDS at
+                    // `%t/ghars/%i/sccache.sock` (in the runner's own
+                    // RuntimeDirectory) is the bind target — we do NOT
+                    // override it. The shared on-disk cache lives at
+                    // the pool's CacheDirectory; SCCACHE_DIR is
+                    // overridden here to point there so every
+                    // per-runner server reads/writes the shared cache.
+                    // The concurrent-writer caveats (sccache's
+                    // "expects sole maintenance" contract, per-server
+                    // LRU desync, N×size disk usage) are documented on
+                    // the SccacheServerMode enum.
+                    //
+                    // LAYER 1 vs LAYER 2 emission for PerRunner: these
+                    // `Environment=` lines (Layer 1) set the env for
+                    // the runner unit's process tree (Runner.Listener,
+                    // Runner.Worker). The matching `.env` lines in
+                    // `render_runner_env_file` (Layer 2) override this
+                    // inside the workflow worker via LoadAndSetEnv —
+                    // the worker is where the sccache wrapper actually
+                    // runs as `RUSTC_WRAPPER`. Emitting on BOTH layers
+                    // is defense in depth: Layer 1 covers any
+                    // listener-tree process that reads SCCACHE_DIR
+                    // (`sccache --show-stats` invoked outside a
+                    // workflow step, debugging via `systemctl exec`,
+                    // etc.), Layer 2 covers the workflow-step
+                    // invocation path. A regression that drops Layer 2
+                    // alone would silently break PerRunner at the
+                    // workflow worker level because the .env's
+                    // pooled-mode SCCACHE_* keys would clobber Layer 1.
+                    let _ = writeln!(s, "Environment=SCCACHE_DIR={pool_dir}/sccache");
+                    let _ = writeln!(s, "Environment=SCCACHE_CACHE_SIZE={}", c.size);
+                    // SCCACHE_IDLE_TIMEOUT=0 keeps the per-runner
+                    // server alive for the lifetime of the runner
+                    // unit. Without this, the server exits after 600s
+                    // idle (sccache default) and the next invocation
+                    // re-spawns + re-init-scans the SHARED pool dir.
+                    // Two consequences of an idle-timeout restart:
+                    // (a) sccache's init removes every `.sccachetmp*`
+                    //     entry in SCCACHE_DIR, clobbering in-flight
+                    //     writes from OTHER per-runner servers
+                    //     actively committing to the shared cache;
+                    // (b) the freshly-spawned server rebuilds its
+                    //     in-memory LruCache index by scanning disk,
+                    //     which only partially heals the per-server
+                    //     LRU-view divergence (entries other servers
+                    //     have evicted-but-not-yet-deleted are
+                    //     re-discovered; this server's still-tracked
+                    //     entries that other servers DELETED stay
+                    //     tracked until next scan or until next get()
+                    //     surfaces the missing file as a cache
+                    //     error). IDLE_TIMEOUT=0 eliminates (a) and
+                    //     reduces (b) to "happens on runner unit
+                    //     restart only" rather than "happens every
+                    //     600s idle". KillMode=control-group on the
+                    //     runner unit handles teardown at unit stop.
+                    s.push_str("Environment=SCCACHE_IDLE_TIMEOUT=0\n");
+                    // Pool dir bound so the per-runner server can
+                    // read/write the shared on-disk cache. The
+                    // `/run/ghars` host bind is intentionally NOT
+                    // added in PerRunner mode — there's no shared
+                    // socket to reach, and the per-runner UDS lives
+                    // inside the runner's own RuntimeDirectory which
+                    // is already accessible.
+                    if !bind_paths.contains(&pool_dir) {
+                        bind_paths.push(pool_dir);
+                    }
+                }
             }
             emitted_anything = true;
         }
@@ -1735,6 +1867,22 @@ pub fn render_cache_drop_in(
     let mut pool_kinds: Vec<&str> = binding.kinds.iter().map(|k| k.label()).collect();
     pool_kinds.sort_unstable();
     let _ = writeln!(s, "X-Ghars-Pool-Kinds={}", pool_kinds.join(","));
+    // X-Ghars-Sccache-Mode annotates the sccache server topology so
+    // `systemctl cat ghars-cache@<pool>.service` surfaces which
+    // configuration is in effect — important because the pool unit's
+    // ExecStart looks identical between ccache-only and PerRunner
+    // sccache pools (both are `sleep infinity`). Without this
+    // annotation, an operator inspecting a PerRunner pool unit sees
+    // no signal that sccache is running per-runner via auto-spawn on
+    // the runner side. Emitted only for sccache-serving pools
+    // (kind-irrelevant for ccache-only).
+    if serves_sccache {
+        let mode_label = match binding.server_mode {
+            SccacheServerMode::Pooled => "pooled",
+            SccacheServerMode::PerRunner => "per_runner",
+        };
+        let _ = writeln!(s, "X-Ghars-Sccache-Mode={mode_label}");
+    }
     let _ = writeln!(s, "X-Ghars-Config-Source={config_source}");
     s.push('\n');
 
@@ -1753,7 +1901,20 @@ pub fn render_cache_drop_in(
     // emission is consistent with the runner unit's own User= name
     // (set in the per-runner 00-ghars.conf drop-in).
     let _ = writeln!(s, "User=ghars-tz-{}", binding.trust_zone);
-    if serves_sccache {
+    // PerRunner mode: the pool unit is a `sleep infinity` stub (same
+    // shape as ccache-only). It owns the shared CacheDirectory but
+    // spawns no sccache server — each runner's own sccache daemon
+    // reads/writes the shared dir via BindPaths. None of the SCCACHE_*
+    // env vars are needed on the pool unit because no sccache process
+    // runs here. Operator-facing systemctl-show is also less misleading:
+    // there's no SCCACHE_SERVER_UDS on a unit that doesn't host a
+    // server. Pool-side SCCACHE_* emission is gated on
+    // `pool_runs_sccache` so the ccache-only / PerRunner-sccache /
+    // ccache+PerRunner-sccache cases all collapse to "no pool-side
+    // sccache env" identically.
+    let pool_runs_sccache =
+        serves_sccache && !matches!(binding.server_mode, SccacheServerMode::PerRunner);
+    if pool_runs_sccache {
         let _ = writeln!(
             s,
             "Environment=SCCACHE_DIR=%C/ghars/pools/{}/sccache",
@@ -1791,25 +1952,28 @@ pub fn render_cache_drop_in(
         // never the path actually consumed at runtime).
     }
 
-    if serves_sccache {
+    if pool_runs_sccache {
         // sccache_path is the plan-time resolution of either the
         // operator pin (`[cache_pools.NAME].sccache_path = "/..."`)
         // or the canonical-search auto-detect (`/usr/local/bin/sccache`
         // then `/usr/bin/sccache`). The plan layer guarantees `Some`
         // here: `resolve_cache_pool_paths` produces `Some(path)`
-        // exactly when `kinds.contains(Sccache)`, which is the
-        // `serves_sccache` branch we're in. None at this site is a
-        // plan-layer invariant violation, not an operator-facing
-        // error, so the renderer treats it as a programmer bug.
+        // exactly when the pool runs sccache server-side (sccache
+        // kind AND `server_mode = pooled`). PerRunner pools don't
+        // run sccache server-side, so sccache_path is None and we
+        // take the sleep branch below. None at this site (with
+        // `pool_runs_sccache` true) is a plan-layer invariant
+        // violation, not an operator-facing error.
         let sccache_path = binding.sccache_path.as_ref().ok_or_else(|| {
             GharsError::Validation(
                 format!(
                     "render_cache_drop_in: binding for pool '{}' serves sccache \
-                     but sccache_path is None; resolve_cache_pool_paths should have populated it",
+                     in `pooled` server_mode but sccache_path is None; \
+                     resolve_cache_pool_paths should have populated it",
                     binding.name
                 ),
                 "this is a ghars bug — the plan layer must resolve sccache_path \
-                 before invoking the renderer for sccache-serving pools"
+                 before invoking the renderer for pooled sccache pools"
                     .into(),
             )
         })?;
@@ -1836,25 +2000,41 @@ pub fn render_cache_drop_in(
             tz = binding.trust_zone
         );
     } else {
-        // ccache-only pool — the unit exists to own the CacheDirectory
-        // and act as a Requires= anchor (StopWhenUnneeded handles
-        // lifecycle). sleep infinity is the simplest way to keep
-        // Type=simple alive without consuming resources. sleep_path
-        // is the plan-time resolution of either the operator pin
-        // (`[cache_pools.NAME].sleep_path = "/..."`) or the
-        // canonical-search auto-detect (`/usr/bin/sleep` then
-        // `/bin/sleep`). The plan layer guarantees `Some` for the
-        // ccache-only branch we're in (symmetric with sccache_path
-        // above) — None here is a programmer bug, not operator-facing.
+        // Sleep-stub branch — fires for both ccache-only pools AND
+        // sccache pools running `server_mode = per_runner`. The unit
+        // exists to own the CacheDirectory and act as a Requires=
+        // anchor (StopWhenUnneeded handles lifecycle); the directory
+        // is the only mechanism. sleep infinity keeps Type=simple
+        // alive without consuming resources.
+        //
+        // Type= is intentionally NOT emitted here. The cache template
+        // declares `Type=simple` (templates.rs); the Pooled branch
+        // above overrides with `Type=forking` (sccache --start-server
+        // double-forks). On a Pooled→PerRunner transition the apply
+        // path rewrites this entire 00-ghars.conf body atomically, so
+        // the `Type=forking` line vanishes and systemd falls back to
+        // the template default `Type=simple` (correct for sleep).
+        // Emitting an explicit `Type=simple` here would be redundant
+        // (same as template) and would mislead readers into thinking
+        // a Type= reset was needed for the transition.
+        //
+        // sleep_path is the plan-time resolution of either the
+        // operator pin (`[cache_pools.NAME].sleep_path = "/..."`) or
+        // the canonical-search auto-detect (`/usr/bin/sleep` then
+        // `/bin/sleep`). `resolve_cache_pool_paths` populates
+        // sleep_path for ccache-only AND PerRunner sccache pools —
+        // both reach this branch. None at this site is a plan-layer
+        // invariant violation, not operator-facing.
         let sleep_path = binding.sleep_path.as_ref().ok_or_else(|| {
             GharsError::Validation(
                 format!(
-                    "render_cache_drop_in: binding for ccache-only pool '{}' \
-                     has sleep_path = None; resolve_cache_pool_paths should have populated it",
-                    binding.name
+                    "render_cache_drop_in: binding for pool '{}' (kinds={:?}, \
+                     server_mode={:?}) has sleep_path = None; \
+                     resolve_cache_pool_paths should have populated it",
+                    binding.name, binding.kinds, binding.server_mode,
                 ),
                 "this is a ghars bug — the plan layer must resolve sleep_path \
-                 before invoking the renderer for ccache-only pools"
+                 for ccache-only pools and for PerRunner sccache pools"
                     .into(),
             )
         })?;

@@ -208,6 +208,7 @@ fn cfg_with_pool(name: &str, kinds: Vec<crate::config::CacheKind>) -> Config {
             // (not just the relevant one) keeps this helper kind-agnostic.
             sccache_path: Some("/usr/bin/sccache".into()),
             sleep_path: Some("/usr/bin/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     cfg
@@ -1244,6 +1245,7 @@ fn plan_update_runner_caches_change_is_in_place_with_field_change() {
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     cfg.cache_pools.insert(
@@ -1255,6 +1257,7 @@ fn plan_update_runner_caches_change_is_in_place_with_field_change() {
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
 
@@ -1269,6 +1272,7 @@ fn plan_update_runner_caches_change_is_in_place_with_field_change() {
         trust_zone: "default".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep".into()),
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     };
     let mut old_spec = merge_defaults(

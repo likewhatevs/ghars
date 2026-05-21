@@ -45,6 +45,7 @@ fn plan_noop_when_caches_reorder_only() {
                 trust_zone: "default".into(),
                 sccache_path: None,
                 sleep_path: Some("/usr/bin/sleep".into()),
+                server_mode: crate::config::SccacheServerMode::Pooled,
             },
         );
         cfg.cache_pools.insert(
@@ -56,6 +57,7 @@ fn plan_noop_when_caches_reorder_only() {
                 trust_zone: "default".into(),
                 sccache_path: Some("/usr/bin/sccache".into()),
                 sleep_path: None,
+                server_mode: crate::config::SccacheServerMode::Pooled,
             },
         );
         cfg

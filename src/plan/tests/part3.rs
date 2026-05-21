@@ -46,6 +46,7 @@ fn spec_with_cache_names(names: &[&str]) -> EffectiveRunnerSpec {
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::Pooled,
             renderer_schema: crate::systemd::RENDERER_SCHEMA,
         })
         .collect();
@@ -361,6 +362,7 @@ fn delta_before_caches_is_sorted_for_display() {
             trust_zone: "default".into(),
             sccache_path: Some("/usr/bin/sccache".into()),
             sleep_path: Some("/usr/bin/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     // OLD spec: 3 ccache bindings synthesized directly. This predates
@@ -380,6 +382,7 @@ fn delta_before_caches_is_sorted_for_display() {
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::Pooled,
             renderer_schema: crate::systemd::RENDERER_SCHEMA,
         })
         .collect();
@@ -614,6 +617,7 @@ fn plan_validates_trust_zone_mismatch_with_referenced_cache_pool() {
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     let err = plan_from(&cfg, &empty_actual(), &empty_paths()).unwrap_err();
@@ -914,6 +918,7 @@ fn discovered_annotations_round_trip_for_all_fields() {
             trust_zone: "audited".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::Pooled,
             renderer_schema: crate::systemd::RENDERER_SCHEMA,
         },
         EffectiveCacheBinding {
@@ -924,6 +929,7 @@ fn discovered_annotations_round_trip_for_all_fields() {
             trust_zone: "audited".into(),
             sccache_path: Some("/usr/bin/sccache".into()),
             sleep_path: None,
+            server_mode: crate::config::SccacheServerMode::Pooled,
             renderer_schema: crate::systemd::RENDERER_SCHEMA,
         },
     ];
@@ -1711,6 +1717,7 @@ fn build_caches_in_place_plan() -> Plan {
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     cfg.cache_pools.insert(
@@ -1722,6 +1729,7 @@ fn build_caches_in_place_plan() -> Plan {
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     let mut old_runner = cfg.runners[0].clone();
@@ -1734,6 +1742,7 @@ fn build_caches_in_place_plan() -> Plan {
         trust_zone: "default".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep".into()),
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     };
     let mut old_spec = merge_defaults(

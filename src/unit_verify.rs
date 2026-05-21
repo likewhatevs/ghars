@@ -711,6 +711,7 @@ mod tests {
             trust_zone: "default".into(),
             sccache_path: Some("/usr/bin/sccache".into()),
             sleep_path: None,
+            server_mode: crate::config::SccacheServerMode::Pooled,
             renderer_schema: crate::systemd::RENDERER_SCHEMA,
         }
     }

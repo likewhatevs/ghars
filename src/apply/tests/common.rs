@@ -471,6 +471,7 @@ pub(super) fn make_pool_plan(name: &str, kinds: Vec<crate::config::CacheKind>) -
         // binding holds None.
         sccache_path: serves_sccache.then(|| "/usr/bin/sccache".into()),
         sleep_path: (!serves_sccache).then(|| "/usr/bin/sleep".into()),
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     };
     let body =

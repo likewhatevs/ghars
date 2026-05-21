@@ -264,6 +264,7 @@ fn into_cache_pool_plan_populates_renderer_schema_from_runtime_constant() {
         trust_zone: "default".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep".into()),
+        server_mode: crate::config::SccacheServerMode::Pooled,
     };
     let plan = into_cache_pool_plan("build".into(), &pool, "/etc/ghars/ghars.toml")
         .expect("into_cache_pool_plan must succeed for a ccache-only pool");
@@ -304,6 +305,7 @@ fn into_cache_pool_plan_kinds_permutation_invariant_for_spec_hash() {
         trust_zone: "default".into(),
         sccache_path: Some("/usr/bin/sccache".into()),
         sleep_path: None,
+        server_mode: crate::config::SccacheServerMode::Pooled,
     };
     let permuted = CachePoolSpec {
         kinds: vec![CacheKind::Ccache, CacheKind::Sccache],
@@ -375,6 +377,7 @@ fn lower_to_effective_kinds_permutation_invariant_for_runner_spec_hash() {
                 trust_zone: "default".into(),
                 sccache_path: Some("/usr/bin/sccache".into()),
                 sleep_path: None,
+                server_mode: crate::config::SccacheServerMode::Pooled,
             },
         );
         cfg
@@ -454,6 +457,7 @@ fn lower_to_effective_populates_renderer_schema_on_every_cache_binding() {
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     cfg.cache_pools.insert(
@@ -465,6 +469,7 @@ fn lower_to_effective_populates_renderer_schema_on_every_cache_binding() {
             trust_zone: "default".into(),
             sccache_path: Some("/usr/bin/sccache".into()),
             sleep_path: None,
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
 
@@ -693,6 +698,7 @@ fn merge_defaults_caches_threaded_verbatim() {
         trust_zone: "default".into(),
         sccache_path: Some("/usr/bin/sccache".into()),
         sleep_path: None,
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     }];
     let eff_single = merge_defaults(
@@ -723,6 +729,7 @@ fn merge_defaults_caches_threaded_verbatim() {
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::Pooled,
             renderer_schema: crate::systemd::RENDERER_SCHEMA,
         },
         EffectiveCacheBinding {
@@ -733,6 +740,7 @@ fn merge_defaults_caches_threaded_verbatim() {
             trust_zone: "default".into(),
             sccache_path: Some("/usr/bin/sccache".into()),
             sleep_path: None,
+            server_mode: crate::config::SccacheServerMode::Pooled,
             renderer_schema: crate::systemd::RENDERER_SCHEMA,
         },
         EffectiveCacheBinding {
@@ -743,6 +751,7 @@ fn merge_defaults_caches_threaded_verbatim() {
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::Pooled,
             renderer_schema: crate::systemd::RENDERER_SCHEMA,
         },
     ];

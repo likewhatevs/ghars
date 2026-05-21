@@ -661,6 +661,7 @@ fn create_runner_with_sccache_only_binding_skips_ccache_dir() {
         trust_zone: "default".into(),
         sccache_path: Some("/usr/bin/sccache".into()),
         sleep_path: None,
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     });
     plan.env_file = crate::systemd::render_runner_env_file(&plan.spec).unwrap();
@@ -714,6 +715,7 @@ fn create_runner_with_combined_kind_pool_creates_ccache_dir() {
         trust_zone: "default".into(),
         sccache_path: Some("/usr/bin/sccache".into()),
         sleep_path: Some("/usr/bin/sleep".into()),
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     });
     plan.env_file = crate::systemd::render_runner_env_file(&plan.spec).unwrap();
@@ -806,6 +808,7 @@ fn create_runner_with_ccache_binding_creates_ccache_dir() {
         trust_zone: "default".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep".into()),
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     });
     // Re-render env_file + path_file so the in-place rewrite path
@@ -894,6 +897,7 @@ fn create_runner_pushes_set_mode_undo_step_for_every_chmod_site() {
         trust_zone: "default".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep".into()),
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     });
     plan.env_file = crate::systemd::render_runner_env_file(&plan.spec).unwrap();

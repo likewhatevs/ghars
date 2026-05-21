@@ -688,6 +688,7 @@ fn dropin_30_cache_pool_sccache_only_snapshot() {
         trust_zone: "default".into(),
         sccache_path: Some("/usr/bin/sccache".into()),
         sleep_path: None,
+        server_mode: ghars::config::SccacheServerMode::Pooled,
         renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     });
     let r = render_runner_unit(&spec).unwrap();
@@ -711,6 +712,7 @@ fn dropin_30_cache_pool_unified_snapshot() {
         trust_zone: "default".into(),
         sccache_path: Some("/usr/bin/sccache".into()),
         sleep_path: None,
+        server_mode: ghars::config::SccacheServerMode::Pooled,
         renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     });
     let r = render_runner_unit(&spec).unwrap();
@@ -747,6 +749,7 @@ fn dropin_30_cache_pool_multi_binding_snapshot() {
         trust_zone: "default".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep".into()),
+        server_mode: ghars::config::SccacheServerMode::Pooled,
         renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     });
     spec.caches.push(EffectiveCacheBinding {
@@ -757,6 +760,7 @@ fn dropin_30_cache_pool_multi_binding_snapshot() {
         trust_zone: "default".into(),
         sccache_path: Some("/usr/bin/sccache".into()),
         sleep_path: None,
+        server_mode: ghars::config::SccacheServerMode::Pooled,
         renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     });
     let r = render_runner_unit(&spec).unwrap();
@@ -764,6 +768,87 @@ fn dropin_30_cache_pool_multi_binding_snapshot() {
         "dropin_30_cache_pool_multi_binding",
         dropin(&r.drop_ins, "30-cache-pool.conf")
     );
+}
+
+/// Byte-exact pin for the runner-side `30-cache-pool.conf` body
+/// when the pool runs in `server_mode = "per_runner"`. Differs from
+/// the Pooled-mode snapshot in three places:
+/// - NO `Environment=SCCACHE_SERVER_UDS=` override (the template's
+///   per-runner UDS at `%t/ghars/%i/sccache.sock` stays in effect).
+/// - NO `Environment=SCCACHE_NO_DAEMON=1` (the per-runner sccache
+///   wrapper auto-spawns its own server).
+/// - HAS `Environment=SCCACHE_DIR=...` pointing at the shared pool
+///   directory `/var/cache/ghars/pools/<pool>/sccache`.
+/// - HAS `Environment=SCCACHE_IDLE_TIMEOUT=0` so the per-runner
+///   server stays alive for the runner unit's lifetime (avoids
+///   re-init churn on the shared on-disk cache).
+/// - `BindPaths` emits ONLY the pool dir, not `/run/ghars` (no shared
+///   socket to reach in `PerRunner` mode).
+///
+/// A regression in any of the five conditional sites
+/// (`render_cache_pool`, `render_runner_env_file`, the `BindPaths`
+/// accumulator, the `needs_run_ghars` gate, the env block emission)
+/// flips this snapshot — surfacing the divergence immediately
+/// instead of waiting for a runtime failure.
+#[test]
+fn dropin_30_cache_pool_sccache_per_runner_snapshot() {
+    let mut spec = base_spec();
+    spec.caches.push(EffectiveCacheBinding {
+        name: "build".into(),
+        kinds: vec![CacheKind::Sccache],
+        size: "200G".into(),
+        mode: CacheMode::Shared,
+        trust_zone: "default".into(),
+        // PerRunner pools resolve sccache_path for the runtime
+        // existence check but the renderer does NOT consume it (the
+        // pool unit has no sccache ExecStart). The binding carries
+        // None to keep the renderer's gating self-consistent.
+        sccache_path: None,
+        // sleep_path is populated because the pool unit's ExecStart
+        // is the sleep stub. Not consumed by the runner-side drop-in
+        // either, but kept for symmetry with the pool drop-in.
+        sleep_path: Some("/usr/bin/sleep".into()),
+        server_mode: ghars::config::SccacheServerMode::PerRunner,
+        renderer_schema: ghars::systemd::RENDERER_SCHEMA,
+    });
+    let r = render_runner_unit(&spec).unwrap();
+    insta::assert_snapshot!(
+        "dropin_30_cache_pool_sccache_per_runner",
+        dropin(&r.drop_ins, "30-cache-pool.conf")
+    );
+}
+
+/// Byte-exact pin for the runner's `.env` body when the pool runs
+/// in `server_mode = "per_runner"`. `.env` is loaded by
+/// Runner.Listener's `LoadAndSetEnv` and propagated to workflow
+/// worker subprocesses via `Environment.SetEnvironmentVariable` —
+/// these env vars OVERRIDE the systemd `Environment=` directives
+/// for any subprocess spawned by the worker (rustc, sccache wrapper,
+/// etc.).
+///
+/// PerRunner-mode `.env` MUST NOT emit `SCCACHE_SERVER_UDS` (would
+/// clobber the template's per-runner UDS) or `SCCACHE_NO_DAEMON=1`
+/// (would block the auto-spawn). It MUST emit `SCCACHE_DIR`
+/// (workflow-visible cache directory) and `SCCACHE_IDLE_TIMEOUT=0`
+/// (keep the per-runner server alive). A regression that forgets to
+/// branch the `.env` emission on `server_mode` would put the
+/// pooled-mode keys back in and silently break per-runner runtime.
+#[test]
+fn env_file_sccache_per_runner_snapshot() {
+    let mut spec = base_spec();
+    spec.caches.push(EffectiveCacheBinding {
+        name: "build".into(),
+        kinds: vec![CacheKind::Sccache],
+        size: "200G".into(),
+        mode: CacheMode::Shared,
+        trust_zone: "default".into(),
+        sccache_path: None,
+        sleep_path: Some("/usr/bin/sleep".into()),
+        server_mode: ghars::config::SccacheServerMode::PerRunner,
+        renderer_schema: ghars::systemd::RENDERER_SCHEMA,
+    });
+    let r = render_runner_unit(&spec).unwrap();
+    insta::assert_snapshot!("env_file_sccache_per_runner", r.env_file);
 }
 
 #[test]
@@ -1151,6 +1236,7 @@ fn cache_drop_in_ccache_only_snapshot() {
         trust_zone: "default".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep".into()),
+        server_mode: ghars::config::SccacheServerMode::Pooled,
         renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     };
     let body = render_cache_drop_in(
@@ -1172,6 +1258,7 @@ fn cache_drop_in_sccache_only_snapshot() {
         trust_zone: "default".into(),
         sccache_path: Some("/usr/bin/sccache".into()),
         sleep_path: None,
+        server_mode: ghars::config::SccacheServerMode::Pooled,
         renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     };
     let body = render_cache_drop_in(
@@ -1181,6 +1268,43 @@ fn cache_drop_in_sccache_only_snapshot() {
     )
     .unwrap();
     insta::assert_snapshot!("cache_drop_in_sccache_only", body);
+}
+
+/// Byte-exact pin for the cache pool unit's `00-ghars.conf` body
+/// when `server_mode = "per_runner"`. Differs from the Pooled-mode
+/// sccache snapshot in two structural places:
+/// - NO `Environment=SCCACHE_*` lines (the pool unit hosts no
+///   sccache server in `PerRunner` mode).
+/// - `ExecStart=<sleep_path> infinity` instead of
+///   `ExecStart=<sccache_path> --start-server` (matches the
+///   ccache-only branch byte-for-byte except for the
+///   `X-Ghars-Pool-Kinds=sccache` annotation).
+///
+/// A regression in `render_cache_drop_in`'s `pool_runs_sccache`
+/// gate that leaks `SCCACHE_*` env into a `PerRunner` pool drop-in
+/// would flip this snapshot.
+#[test]
+fn cache_drop_in_sccache_per_runner_snapshot() {
+    let binding = EffectiveCacheBinding {
+        name: "build".into(),
+        kinds: vec![CacheKind::Sccache],
+        size: "200G".into(),
+        mode: CacheMode::Shared,
+        trust_zone: "default".into(),
+        // PerRunner: pool unit doesn't run sccache server; binding
+        // carries None to match plan-time resolution.
+        sccache_path: None,
+        sleep_path: Some("/usr/bin/sleep".into()),
+        server_mode: ghars::config::SccacheServerMode::PerRunner,
+        renderer_schema: ghars::systemd::RENDERER_SCHEMA,
+    };
+    let body = render_cache_drop_in(
+        &binding,
+        "/etc/ghars/ghars.toml",
+        "sha256:abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdef0123",
+    )
+    .unwrap();
+    insta::assert_snapshot!("cache_drop_in_sccache_per_runner", body);
 }
 
 #[test]
@@ -1193,6 +1317,7 @@ fn cache_drop_in_unified_snapshot() {
         trust_zone: "default".into(),
         sccache_path: Some("/usr/bin/sccache".into()),
         sleep_path: None,
+        server_mode: ghars::config::SccacheServerMode::Pooled,
         renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     };
     let body = render_cache_drop_in(
@@ -1222,6 +1347,7 @@ fn cache_drop_in_non_default_trust_zone_snapshot() {
         trust_zone: "buckos-prod".into(),
         sccache_path: Some("/usr/bin/sccache".into()),
         sleep_path: None,
+        server_mode: ghars::config::SccacheServerMode::Pooled,
         renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     };
     let body = render_cache_drop_in(
@@ -1251,6 +1377,7 @@ fn cache_drop_in_non_default_pool_name_snapshot() {
         trust_zone: "default".into(),
         sccache_path: Some("/usr/bin/sccache".into()),
         sleep_path: None,
+        server_mode: ghars::config::SccacheServerMode::Pooled,
         renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     };
     let body = render_cache_drop_in(
@@ -1282,6 +1409,7 @@ fn cache_drop_in_ktstr_only_snapshot() {
         trust_zone: "default".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep".into()),
+        server_mode: ghars::config::SccacheServerMode::Pooled,
         renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     };
     let body = render_cache_drop_in(
@@ -1326,6 +1454,7 @@ fn env_file_ccache_only_binding_snapshot() {
         trust_zone: "default".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep".into()),
+        server_mode: ghars::config::SccacheServerMode::Pooled,
         renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     });
     let r = render_runner_unit(&spec).unwrap();
@@ -1343,6 +1472,7 @@ fn env_file_combined_kind_binding_snapshot() {
         trust_zone: "default".into(),
         sccache_path: Some("/usr/bin/sccache".into()),
         sleep_path: Some("/usr/bin/sleep".into()),
+        server_mode: ghars::config::SccacheServerMode::Pooled,
         renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     });
     let r = render_runner_unit(&spec).unwrap();
@@ -1366,6 +1496,7 @@ fn env_file_sccache_only_binding_snapshot() {
         trust_zone: "default".into(),
         sccache_path: Some("/usr/bin/sccache".into()),
         sleep_path: None,
+        server_mode: ghars::config::SccacheServerMode::Pooled,
         renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     });
     let r = render_runner_unit(&spec).unwrap();
@@ -1392,6 +1523,7 @@ fn env_file_non_default_trust_zone_snapshot() {
         trust_zone: "buckos-prod".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep".into()),
+        server_mode: ghars::config::SccacheServerMode::Pooled,
         renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     });
     let r = render_runner_unit(&spec).unwrap();
@@ -1418,6 +1550,7 @@ fn env_file_multi_binding_direct_construct_snapshot() {
         trust_zone: "default".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep".into()),
+        server_mode: ghars::config::SccacheServerMode::Pooled,
         renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     });
     spec.caches.push(EffectiveCacheBinding {
@@ -1428,6 +1561,7 @@ fn env_file_multi_binding_direct_construct_snapshot() {
         trust_zone: "default".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep".into()),
+        server_mode: ghars::config::SccacheServerMode::Pooled,
         renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     });
     let r = render_runner_unit(&spec).unwrap();
@@ -1451,6 +1585,7 @@ fn env_file_operator_environment_vars_snapshot() {
         trust_zone: "default".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep".into()),
+        server_mode: ghars::config::SccacheServerMode::Pooled,
         renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     });
     let r = render_runner_unit(&spec).unwrap();
@@ -1512,6 +1647,7 @@ fn env_file_two_sccache_bindings_snapshot() {
         trust_zone: "default".into(),
         sccache_path: Some("/usr/bin/sccache".into()),
         sleep_path: None,
+        server_mode: ghars::config::SccacheServerMode::Pooled,
         renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     });
     spec.caches.push(EffectiveCacheBinding {
@@ -1522,6 +1658,7 @@ fn env_file_two_sccache_bindings_snapshot() {
         trust_zone: "default".into(),
         sccache_path: Some("/usr/bin/sccache".into()),
         sleep_path: None,
+        server_mode: ghars::config::SccacheServerMode::Pooled,
         renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     });
     let r = render_runner_unit(&spec).unwrap();
@@ -1547,6 +1684,7 @@ fn env_file_ktstr_kind_binding_snapshot() {
         trust_zone: "default".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep".into()),
+        server_mode: ghars::config::SccacheServerMode::Pooled,
         renderer_schema: ghars::systemd::RENDERER_SCHEMA,
     });
     let r = render_runner_unit(&spec).unwrap();

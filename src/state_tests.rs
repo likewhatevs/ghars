@@ -298,6 +298,7 @@ fn render_runner_unit_basenames_are_all_in_managed_list() {
             trust_zone: "default".into(),
             sccache_path: Some("/usr/bin/sccache".into()),
             sleep_path: None,
+            server_mode: crate::config::SccacheServerMode::Pooled,
             renderer_schema: crate::systemd::RENDERER_SCHEMA,
         }],
         trust_zone: "default".into(),

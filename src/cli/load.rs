@@ -154,6 +154,7 @@ pub(super) fn load_config(path: &Utf8Path) -> Result<Config> {
     validate_no_duplicate_kinds_within_pool(&cfg)?;
     validate_cache_pool_names(&cfg)?;
     validate_cache_pool_binary_paths(&cfg)?;
+    validate_sccache_server_mode_requires_sccache(&cfg)?;
     validate_runner_names(&cfg)?;
     validate_auth_keys(&cfg)?;
     validate_pat_xor(&cfg)?;
@@ -575,6 +576,44 @@ pub(super) fn validate_cache_pool_binary_paths(cfg: &Config) -> Result<()> {
                     "relative paths resolve against process CWD which varies between \
                      invocations (operator shell vs. root apply); use an absolute path \
                      (e.g. /usr/bin/sleep)"
+                        .into(),
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Reject `[cache_pools.NAME] server_mode = "per_runner"` on pools whose
+/// `kinds` does not contain `sccache`. The field only affects sccache
+/// server topology; setting it on a ccache-only pool is silently
+/// ignored (`render_cache_drop_in` and `render_cache_pool` only branch
+/// on `server_mode` inside the `kinds.contains(Sccache)` arm), so the
+/// operator gets no signal that their config is meaningless. Surface
+/// the mismatch at config load with a scoped error and a remediation
+/// hint.
+///
+/// `server_mode = "pooled"` (the default) is always valid; setting it
+/// explicitly on a ccache-only pool is harmless (matches the
+/// behavior-irrelevant default).
+///
+/// # Errors
+///
+/// `GharsError::Validation` naming the pool, with a hint to either
+/// add `sccache` to `kinds` or drop `server_mode`.
+pub(super) fn validate_sccache_server_mode_requires_sccache(cfg: &Config) -> Result<()> {
+    use crate::config::{CacheKind, SccacheServerMode};
+    for (name, pool) in &cfg.cache_pools {
+        if matches!(pool.server_mode, SccacheServerMode::PerRunner)
+            && !pool.kinds.contains(&CacheKind::Sccache)
+        {
+            return Err(crate::error::prepend_validation_scope(
+                &format!("cache_pool {name:?}"),
+                crate::error::GharsError::Validation(
+                    "server_mode = \"per_runner\" requires `sccache` in kinds".into(),
+                    "either add `\"sccache\"` to [cache_pools.{NAME}] kinds or drop \
+                     server_mode (the field only affects sccache server topology; \
+                     ccache pools use a daemon-less filesystem mode and ignore it)"
                         .into(),
                 ),
             ));

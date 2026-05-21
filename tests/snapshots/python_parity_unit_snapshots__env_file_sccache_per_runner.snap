@@ -1,0 +1,10 @@
+---
+source: tests/python_parity_unit_snapshots.rs
+expression: r.env_file
+---
+LANG=C.UTF-8
+KTSTR_LOCK_DIR=/var/lib/ghars/default/.ktstr
+KTSTR_CACHE_DIR=/var/lib/ghars/default/.ktstr
+SCCACHE_CACHE_SIZE=200G
+SCCACHE_DIR=/var/cache/ghars/pools/build/sccache
+SCCACHE_IDLE_TIMEOUT=0

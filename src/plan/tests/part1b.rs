@@ -677,6 +677,7 @@ fn plan_validates_trust_zone_mismatch() {
             trust_zone: "untrusted".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     let err = plan_from(&cfg, &empty_actual(), &empty_paths()).unwrap_err();
@@ -932,6 +933,7 @@ fn plan_emits_create_cache_pool_per_referenced_pool() {
             trust_zone: "default".into(),
             sccache_path: Some("/usr/bin/sccache".into()),
             sleep_path: None,
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     let plan = plan_from(&cfg, &empty_actual(), &empty_paths()).unwrap();
@@ -968,6 +970,7 @@ fn plan_renders_cache_pool_drop_in_body_at_plan_time() {
             trust_zone: "default".into(),
             sccache_path: Some("/usr/bin/sccache".into()),
             sleep_path: None,
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     let plan = plan_from(&cfg, &empty_actual(), &empty_paths()).unwrap();
@@ -1013,6 +1016,7 @@ fn plan_renders_ccache_only_pool_with_sleep_infinity_execstart() {
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     let plan = plan_from(&cfg, &empty_actual(), &empty_paths()).unwrap();
@@ -1080,6 +1084,7 @@ fn plan_rejects_pool_with_unresolvable_sccache_pin() {
             trust_zone: "default".into(),
             sccache_path: Some("not/an/absolute/path".into()),
             sleep_path: None,
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     let err = plan_from(&cfg, &empty_actual(), &empty_paths()).unwrap_err();
@@ -1581,6 +1586,7 @@ proptest::proptest! {
                 trust_zone: "default".into(),
                 sccache_path: Some("/usr/bin/sccache".into()),
                 sleep_path: None,
+                server_mode: crate::config::SccacheServerMode::Pooled,
                 renderer_schema: crate::systemd::RENDERER_SCHEMA,
             })
             .collect();
@@ -1716,6 +1722,7 @@ proptest::proptest! {
                 trust_zone: "default".into(),
                 sccache_path: Some("/usr/bin/sccache".into()),
                 sleep_path: None,
+                server_mode: crate::config::SccacheServerMode::Pooled,
                 renderer_schema: crate::systemd::RENDERER_SCHEMA,
             })
             .collect();

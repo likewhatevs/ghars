@@ -519,6 +519,7 @@ fn render_omits_30_cache_pool_for_ccache_filesystem_only() {
         trust_zone: "default".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep".into()),
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     });
     let r = render_runner_unit(&spec).unwrap();
@@ -567,6 +568,7 @@ fn render_omits_30_cache_pool_for_multi_ccache_only_spec() {
         trust_zone: "default".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep".into()),
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     });
     spec.caches.push(EffectiveCacheBinding {
@@ -577,6 +579,7 @@ fn render_omits_30_cache_pool_for_multi_ccache_only_spec() {
         trust_zone: "default".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep".into()),
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     });
     let r = render_runner_unit(&spec).unwrap();
@@ -600,6 +603,7 @@ fn render_emits_cache_pool_for_sccache() {
         trust_zone: "default".into(),
         sccache_path: Some("/usr/bin/sccache".into()),
         sleep_path: None,
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     });
     let r = render_runner_unit(&spec).unwrap();
@@ -1516,6 +1520,7 @@ fn render_cache_drop_in_for_sccache_only() {
         // resolved value rather than re-hardcoding.
         sccache_path: Some("/usr/local/bin/sccache".into()),
         sleep_path: None,
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     };
     let body = render_cache_drop_in(&binding, "/etc/ghars/ghars.toml", "sha256:abcd").unwrap();
@@ -1551,6 +1556,7 @@ fn render_cache_drop_in_for_ccache_only_uses_sleep_infinity() {
         // rather than the previous hardcoded /usr/bin/sleep.
         sccache_path: None,
         sleep_path: Some("/bin/sleep".into()),
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     };
     let body = render_cache_drop_in(&binding, "/etc/ghars/ghars.toml", "sha256:abcd").unwrap();
@@ -1587,6 +1593,7 @@ fn render_cache_drop_in_for_both_kinds_emits_unified_unit() {
         // reads sleep for sccache-serving pools).
         sccache_path: Some("/usr/bin/sccache".into()),
         sleep_path: None,
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     };
     let body = render_cache_drop_in(&binding, "/etc/ghars/ghars.toml", "sha256:abcd").unwrap();
@@ -1646,6 +1653,7 @@ fn render_cache_drop_in_emits_canonical_pool_kinds_csv() {
         trust_zone: "default".into(),
         sccache_path: Some("/usr/bin/sccache".into()),
         sleep_path: None,
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     };
 
@@ -1718,6 +1726,7 @@ fn render_cache_drop_in_relies_on_template_umask_no_exec_start_post_shim() {
             trust_zone: "default".into(),
             sccache_path: serves_sccache.then(|| "/usr/bin/sccache".into()),
             sleep_path: (!serves_sccache).then(|| "/usr/bin/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::Pooled,
             renderer_schema: crate::systemd::RENDERER_SCHEMA,
         };
         let body = render_cache_drop_in(&binding, "/etc/ghars/ghars.toml", "sha256:abcd").unwrap();

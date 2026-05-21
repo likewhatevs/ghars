@@ -872,6 +872,7 @@ fn validate_cache_pool_names_rejects_oversize_pool_with_exit_code_six() {
             trust_zone: "default".into(),
             sccache_path: Some("/usr/bin/sccache".into()),
             sleep_path: None,
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     let err = validate_cache_pool_names(&cfg).expect_err("oversize pool name must reject");
@@ -918,6 +919,7 @@ fn validate_cache_pool_names_accepts_runner_caches_at_max_len() {
             trust_zone: "default".into(),
             sccache_path: Some("/usr/bin/sccache".into()),
             sleep_path: None,
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     cfg.runners[0].caches = vec![at_max.clone()];
@@ -949,6 +951,7 @@ fn validate_cache_pool_binary_paths_rejects_relative_sccache_path() {
             trust_zone: "default".into(),
             sccache_path: Some("relative/sccache".into()),
             sleep_path: None,
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     let err =
@@ -982,6 +985,7 @@ fn validate_cache_pool_binary_paths_rejects_relative_sleep_path() {
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: Some("relative/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     let err = validate_cache_pool_binary_paths(&cfg).expect_err("relative sleep_path must reject");
@@ -1017,6 +1021,7 @@ fn validate_cache_pool_binary_paths_accepts_absolute_pins_and_none() {
             trust_zone: "default".into(),
             sccache_path: Some("/opt/sccache/bin/sccache".into()),
             sleep_path: Some("/usr/bin/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     // Pool 2: both fields None (auto-detect at plan time).
@@ -1029,6 +1034,7 @@ fn validate_cache_pool_binary_paths_accepts_absolute_pins_and_none() {
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: None,
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     validate_cache_pool_binary_paths(&cfg).expect("absolute pins + None must pass");

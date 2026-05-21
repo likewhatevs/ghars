@@ -166,6 +166,7 @@ fn fake_cache_binding(name: &str) -> crate::config::EffectiveCacheBinding {
         trust_zone: "default".into(),
         sccache_path: None,
         sleep_path: Some("/usr/bin/sleep".into()),
+        server_mode: crate::config::SccacheServerMode::Pooled,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     }
 }
@@ -430,6 +431,7 @@ fn insert_cache_pool(cfg: &mut Config, name: &str, kinds: Vec<crate::config::Cac
             // is not universally present.
             sccache_path: Some("/usr/bin/sccache".into()),
             sleep_path: Some("/usr/bin/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
 }

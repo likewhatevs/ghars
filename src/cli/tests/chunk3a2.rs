@@ -156,6 +156,7 @@ fn validate_identity_fields_rejects_cache_pool_trust_zone_with_newline() {
             trust_zone: "secure\nzone".into(),
             sccache_path: Some("/usr/bin/sccache".into()),
             sleep_path: None,
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     let err = validate_identity_fields(&cfg).expect_err("must reject newline");
@@ -258,6 +259,7 @@ fn validate_trust_zone_lengths_accepts_cache_pool_at_max_len() {
             trust_zone: at_max,
             sccache_path: Some("/usr/bin/sccache".into()),
             sleep_path: None,
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     validate_trust_zone_lengths(&cfg).unwrap_or_else(|e| {
@@ -285,6 +287,7 @@ fn validate_trust_zone_lengths_rejects_cache_pool_one_past_max_len() {
             trust_zone: oversize.clone(),
             sccache_path: Some("/usr/bin/sccache".into()),
             sleep_path: None,
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     let err = validate_trust_zone_lengths(&cfg).expect_err("must reject");
@@ -794,6 +797,7 @@ fn validate_cache_pool_kinds_nonempty_rejects_empty_kinds_vec() {
             trust_zone: "default".into(),
             sccache_path: Some("/usr/bin/sccache".into()),
             sleep_path: Some("/usr/bin/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     let err = validate_cache_pool_kinds_nonempty(&cfg)
@@ -868,6 +872,7 @@ fn validate_no_duplicate_kinds_within_pool_rejects_duplicate_ccache() {
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     let err = validate_no_duplicate_kinds_within_pool(&cfg)
@@ -907,6 +912,7 @@ fn validate_no_duplicate_kinds_within_pool_rejects_duplicate_sccache() {
             trust_zone: "default".into(),
             sccache_path: Some("/usr/bin/sccache".into()),
             sleep_path: None,
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     let err = validate_no_duplicate_kinds_within_pool(&cfg)
@@ -948,6 +954,7 @@ fn validate_no_duplicate_kinds_within_pool_rejects_duplicate_ktstr() {
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     let err = validate_no_duplicate_kinds_within_pool(&cfg)
@@ -980,6 +987,7 @@ fn validate_no_duplicate_kinds_within_pool_rejects_triple_ccache() {
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     let err = validate_no_duplicate_kinds_within_pool(&cfg)
@@ -1016,6 +1024,7 @@ fn validate_no_duplicate_kinds_within_pool_rejects_dup_in_mixed_kinds_pool() {
             trust_zone: "default".into(),
             sccache_path: Some("/usr/bin/sccache".into()),
             sleep_path: None,
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     let err = validate_no_duplicate_kinds_within_pool(&cfg)
@@ -1165,4 +1174,104 @@ fn validate_proxy_ca_certs_nonempty_rejects_whitespace_only_path() {
         msg.contains("empty or whitespace-only `path`"),
         "error must name the whitespace-or-empty failure mode: {msg}"
     );
+}
+
+// -------- validate_sccache_server_mode_requires_sccache -------------
+
+/// Reject `[cache_pools.NAME] server_mode = "per_runner"` on a pool
+/// that does NOT contain `sccache` in `kinds`. The field only affects
+/// sccache server topology; setting it on a ccache-only pool is
+/// silently ignored by the renderer (gated inside
+/// `kinds.contains(Sccache)`), so the operator gets no signal that
+/// their config is meaningless without this validator.
+#[test]
+fn validate_sccache_server_mode_rejects_per_runner_on_ccache_only_pool() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.cache_pools.insert(
+        "obj".into(),
+        crate::config::CachePoolSpec {
+            kinds: vec![crate::config::CacheKind::Ccache],
+            size: "10G".into(),
+            mode: crate::config::CacheMode::default(),
+            trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::PerRunner,
+        },
+    );
+    let err = crate::cli::load::validate_sccache_server_mode_requires_sccache(&cfg)
+        .expect_err("PerRunner on ccache-only pool must reject");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("\"obj\"") && msg.contains("per_runner") && msg.contains("sccache"),
+        "error must name the pool, the offending mode, and the missing kind: {msg}"
+    );
+}
+
+#[test]
+fn validate_sccache_server_mode_accepts_per_runner_on_sccache_pool() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.cache_pools.insert(
+        "build".into(),
+        crate::config::CachePoolSpec {
+            kinds: vec![crate::config::CacheKind::Sccache],
+            size: "200G".into(),
+            mode: crate::config::CacheMode::default(),
+            trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: None,
+            server_mode: crate::config::SccacheServerMode::PerRunner,
+        },
+    );
+    crate::cli::load::validate_sccache_server_mode_requires_sccache(&cfg)
+        .expect("PerRunner on sccache pool must pass validation");
+}
+
+/// Combined-kind pool (`ccache` + `sccache`) with `PerRunner` is valid —
+/// the ccache half uses filesystem mode and the sccache half runs
+/// per-runner servers. The validator should accept it because the
+/// `sccache` kind is present.
+#[test]
+fn validate_sccache_server_mode_accepts_per_runner_on_combined_pool() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.cache_pools.insert(
+        "combined".into(),
+        crate::config::CachePoolSpec {
+            kinds: vec![
+                crate::config::CacheKind::Ccache,
+                crate::config::CacheKind::Sccache,
+            ],
+            size: "200G".into(),
+            mode: crate::config::CacheMode::default(),
+            trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: None,
+            server_mode: crate::config::SccacheServerMode::PerRunner,
+        },
+    );
+    crate::cli::load::validate_sccache_server_mode_requires_sccache(&cfg)
+        .expect("PerRunner on combined ccache+sccache pool must pass validation");
+}
+
+/// Pooled (default) on a ccache-only pool is harmless because the
+/// field is ignored by the renderer for non-sccache kinds — the
+/// validator MUST accept it so operators who explicitly set the
+/// default don't trip the reject path.
+#[test]
+fn validate_sccache_server_mode_accepts_pooled_on_ccache_only_pool() {
+    let mut cfg = cfg_with_runner_trust_zone("buckos", "default".into());
+    cfg.cache_pools.insert(
+        "obj".into(),
+        crate::config::CachePoolSpec {
+            kinds: vec![crate::config::CacheKind::Ccache],
+            size: "10G".into(),
+            mode: crate::config::CacheMode::default(),
+            trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: Some("/usr/bin/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::Pooled,
+        },
+    );
+    crate::cli::load::validate_sccache_server_mode_requires_sccache(&cfg)
+        .expect("Pooled (default) on ccache-only pool must pass validation");
 }

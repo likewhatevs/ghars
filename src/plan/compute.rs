@@ -15,7 +15,7 @@ use ipnet::IpNet;
 use crate::Result;
 use crate::config::{
     Arch, CacheKind, CachePoolSpec, Config, EffectiveCacheBinding, EffectiveNetworkBinding,
-    EffectiveRunnerSpec, NetworkMode, NetworkSpec, RunnerSpec,
+    EffectiveRunnerSpec, NetworkMode, NetworkSpec, RunnerSpec, SccacheServerMode,
 };
 use crate::error::GharsError;
 use crate::paths::Paths;
@@ -966,6 +966,7 @@ pub(super) fn into_cache_pool_plan(
         trust_zone: pool.trust_zone.clone(),
         sccache_path,
         sleep_path,
+        server_mode: pool.server_mode,
         renderer_schema: crate::systemd::RENDERER_SCHEMA,
     };
     let spec_hash = cache_pool_hash(&binding);
@@ -1006,18 +1007,44 @@ fn resolve_cache_pool_paths(
     pool: &CachePoolSpec,
 ) -> Result<(Option<Utf8PathBuf>, Option<Utf8PathBuf>)> {
     let serves_sccache = pool.kinds.contains(&CacheKind::Sccache);
-    // sleep is only used as the ExecStart on ccache-only pools.
-    // sccache-serving pools (whether or not they also serve ccache)
-    // put the sccache server on ExecStart and never invoke sleep.
-    let needs_sleep = !serves_sccache;
+    let per_runner = serves_sccache && matches!(pool.server_mode, SccacheServerMode::PerRunner);
+    // sleep is used as the ExecStart for:
+    // - ccache-only pools (the pool unit just holds the
+    //   `CacheDirectory=` alive; no daemon to run);
+    // - sccache pools with `server_mode = per_runner` (each runner
+    //   spawns its own sccache server; the pool unit similarly only
+    //   holds the shared `CacheDirectory=` alive).
+    // `server_mode = pooled` sccache pools put the sccache server on
+    // `ExecStart` directly and never invoke sleep.
+    let needs_sleep = !serves_sccache || per_runner;
+    // sccache binary is required for ANY sccache-serving pool:
+    // - Pooled: the pool unit's ExecStart launches sccache directly
+    //   (`<sccache_path> --start-server`); the resolved path is
+    //   interpolated verbatim into the rendered ExecStart=.
+    // - PerRunner: the pool unit does NOT invoke sccache (sleep stub
+    //   ExecStart), but every runner referencing the pool spawns its
+    //   own sccache server via `RUSTC_WRAPPER=sccache` resolving
+    //   through the runner unit's PATH. If sccache is absent on the
+    //   host the runtime spawn fails for every workflow build; the
+    //   plan-time existence check here surfaces the missing binary
+    //   at apply time with an actionable scope (`cache_pool 'NAME':
+    //   sccache not found`). The resolved path is unused by the
+    //   renderer for PerRunner pools (see `sccache_path` below) but
+    //   the existence check itself is the load-bearing artifact.
     let sccache_path = if serves_sccache {
-        Some(resolve_one_binary(
+        let resolved = resolve_one_binary(
             pool_name,
             "sccache_path",
             "sccache",
             pool.sccache_path.as_deref(),
             &["/usr/local/bin/sccache", "/usr/bin/sccache"],
-        )?)
+        )?;
+        // Renderer reads `binding.sccache_path` only for Pooled pools
+        // (`render_cache_drop_in`'s `pool_runs_sccache` arm); for
+        // PerRunner the binding carries `None` to keep the renderer's
+        // gating self-consistent (sccache_path present ↔ pool unit
+        // hosts the sccache server).
+        if per_runner { None } else { Some(resolved) }
     } else {
         None
     };
@@ -1107,6 +1134,7 @@ pub(super) fn collect_referenced_cache_pools(
                     trust_zone: binding.trust_zone.clone(),
                     sccache_path: binding.sccache_path.clone(),
                     sleep_path: binding.sleep_path.clone(),
+                    server_mode: binding.server_mode,
                 },
             );
         }
@@ -1205,6 +1233,7 @@ pub(super) fn lower_to_effective(
             trust_zone: pool.trust_zone.clone(),
             sccache_path,
             sleep_path,
+            server_mode: pool.server_mode,
             renderer_schema: crate::systemd::RENDERER_SCHEMA,
         });
     }

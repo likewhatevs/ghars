@@ -133,6 +133,7 @@ mod tests {
             trust_zone: "default".into(),
             sccache_path: Some("/usr/bin/sccache".into()),
             sleep_path: None,
+            server_mode: crate::config::SccacheServerMode::Pooled,
             renderer_schema: crate::systemd::RENDERER_SCHEMA,
         };
         let other = EffectiveCacheBinding {
@@ -166,6 +167,7 @@ mod tests {
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: None,
+            server_mode: crate::config::SccacheServerMode::Pooled,
             renderer_schema: 1,
         };
         let bumped = EffectiveCacheBinding {
@@ -222,6 +224,112 @@ mod tests {
             "renderer_schema MUST participate in spec_hash so a ghars \
              binary upgrade that bumps RENDERER_SCHEMA forces an \
              apply-time drop-in rewrite + restart"
+        );
+    }
+
+    /// `cache_pool_hash` MUST include `server_mode` in its hash domain.
+    /// A flip from `Pooled` to `PerRunner` (or back) changes the pool
+    /// drop-in body — `ExecStart` switches between
+    /// `<sccache_path> --start-server` and `<sleep_path> infinity`,
+    /// the `SCCACHE_*` env block appears or vanishes. Without
+    /// participation in the hash, the plan layer would emit `NoOp` on
+    /// `server_mode` flips and the on-disk drop-in would diverge from
+    /// the operator's stated topology.
+    ///
+    /// A future regression adding `#[serde(skip)]` to `server_mode`
+    /// (mirroring the pattern at `sccache_path` / `sleep_path` which
+    /// ARE host-resolved fields legitimately skipped from the hash)
+    /// would silently break this contract; this test catches that by
+    /// constructing two bindings differing ONLY in `server_mode` and
+    /// asserting distinct hashes.
+    #[test]
+    fn cache_pool_hash_includes_server_mode() {
+        let base = EffectiveCacheBinding {
+            name: "build".into(),
+            kinds: vec![CacheKind::Sccache],
+            size: "200G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: None,
+            server_mode: crate::config::SccacheServerMode::Pooled,
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
+        };
+        let flipped = EffectiveCacheBinding {
+            server_mode: crate::config::SccacheServerMode::PerRunner,
+            ..base.clone()
+        };
+        assert_ne!(
+            cache_pool_hash(&base),
+            cache_pool_hash(&flipped),
+            "server_mode MUST participate in cache_pool_hash so an \
+             operator flipping `[cache_pools.NAME] server_mode = ...` \
+             forces an apply-time pool drop-in rewrite (ExecStart + \
+             SCCACHE_* env block differ between Pooled and PerRunner)"
+        );
+    }
+
+    /// Mirror of `cache_pool_hash_includes_server_mode` for `spec_hash`.
+    /// `EffectiveCacheBinding` is embedded in `EffectiveRunnerSpec.caches`,
+    /// so a `server_mode` flip on a referenced pool MUST also flip the
+    /// runner's `spec_hash` and drive an `UpdateRunner` cascade — the
+    /// runner-side `30-cache-pool.conf` body differs between modes
+    /// (`SCCACHE_SERVER_UDS` override + `SCCACHE_NO_DAEMON` vs
+    /// `SCCACHE_DIR` override; `/run/ghars` bind only in Pooled).
+    /// Without participation,
+    /// the runner's drop-in would stay frozen in the prior mode while
+    /// the pool's drop-in flipped, producing a split-brain runtime.
+    #[test]
+    fn spec_hash_includes_server_mode() {
+        use crate::config::{EffectiveRunnerSpec, EnvironmentSpec, Hardening};
+        let binding_pooled = EffectiveCacheBinding {
+            name: "build".into(),
+            kinds: vec![CacheKind::Sccache],
+            size: "200G".into(),
+            mode: CacheMode::Shared,
+            trust_zone: "default".into(),
+            sccache_path: None,
+            sleep_path: None,
+            server_mode: crate::config::SccacheServerMode::Pooled,
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
+        };
+        let binding_per_runner = EffectiveCacheBinding {
+            server_mode: crate::config::SccacheServerMode::PerRunner,
+            ..binding_pooled.clone()
+        };
+        let base = EffectiveRunnerSpec {
+            environment: EnvironmentSpec::default(),
+            name: "a".into(),
+            url: "https://github.com/example/a".into(),
+            arch: crate::config::Arch::X86_64,
+            labels: vec!["a".into()],
+            memory_max: None,
+            runner_version: None,
+            runner_sha256: None,
+            runner_tarball: None,
+            auth_name: "pat".into(),
+            caches: vec![binding_pooled],
+            trust_zone: "default".into(),
+            network: None,
+            proxy: None,
+            hooks: None,
+            hardening: Hardening::default(),
+            allowed_cpus: None,
+            allowed_memory_nodes: None,
+            spec_hash: String::new(),
+            config_source: "/etc/ghars/ghars.toml".into(),
+            renderer_schema: crate::systemd::RENDERER_SCHEMA,
+        };
+        let flipped = EffectiveRunnerSpec {
+            caches: vec![binding_per_runner],
+            ..base.clone()
+        };
+        assert_ne!(
+            spec_hash(&base),
+            spec_hash(&flipped),
+            "server_mode flip on a referenced cache pool MUST flip \
+             the runner's spec_hash so the runner's 30-cache-pool.conf \
+             drop-in rewrites in lockstep with the pool's drop-in"
         );
     }
 }

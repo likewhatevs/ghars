@@ -461,6 +461,7 @@ fn discovered_annotations_caches_round_trip_canonical_sort() {
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     cfg.cache_pools.insert(
@@ -472,6 +473,7 @@ fn discovered_annotations_caches_round_trip_canonical_sort() {
             trust_zone: "default".into(),
             sccache_path: Some("/usr/local/bin/sccache".into()),
             sleep_path: None,
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     cfg.runners[0].caches = vec!["pool-z".into(), "pool-a".into()];
@@ -564,6 +566,7 @@ fn render_unchanged_on_caches_reorder_post_merge() {
             trust_zone: "default".into(),
             sccache_path: None,
             sleep_path: Some("/usr/bin/sleep".into()),
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     cfg.cache_pools.insert(
@@ -575,6 +578,7 @@ fn render_unchanged_on_caches_reorder_post_merge() {
             trust_zone: "default".into(),
             sccache_path: Some("/usr/local/bin/sccache".into()),
             sleep_path: None,
+            server_mode: crate::config::SccacheServerMode::Pooled,
         },
     );
     cfg.runners[0].caches = vec!["pool-z".into(), "pool-a".into()];
@@ -639,6 +643,7 @@ fn render_unchanged_on_caches_reorder_post_merge() {
                 trust_zone: "default".into(),
                 sccache_path: None,
                 sleep_path: Some("/usr/bin/sleep".into()),
+                server_mode: crate::config::SccacheServerMode::Pooled,
                 renderer_schema: crate::systemd::RENDERER_SCHEMA,
             },
             EffectiveCacheBinding {
@@ -649,6 +654,7 @@ fn render_unchanged_on_caches_reorder_post_merge() {
                 trust_zone: "default".into(),
                 sccache_path: None,
                 sleep_path: Some("/usr/bin/sleep".into()),
+                server_mode: crate::config::SccacheServerMode::Pooled,
                 renderer_schema: crate::systemd::RENDERER_SCHEMA,
             },
         ],
