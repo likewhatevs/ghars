@@ -184,12 +184,14 @@ fn hooks_spec_is_empty_matches_render_hooks_early_return() {
     let with_pre = crate::config::HooksSpec {
         pre_job: Some(Utf8PathBuf::from("/etc/ghars/hooks/pre.sh")),
         post_job: None,
+        cleanup_workdir: None,
     };
     assert!(!with_pre.is_empty());
 
     let with_post = crate::config::HooksSpec {
         pre_job: None,
         post_job: Some(Utf8PathBuf::from("/etc/ghars/hooks/post.sh")),
+        cleanup_workdir: None,
     };
     assert!(!with_post.is_empty());
 }

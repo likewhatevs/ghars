@@ -437,14 +437,83 @@ so `--diff` output can leak those credentials. See
 
 ```toml
 [hooks]
-pre_job  = "/opt/gha-hooks/pre-job.sh"
-post_job = "/opt/gha-hooks/post-job.sh"
+pre_job          = "/opt/gha-hooks/pre-job.sh"
+post_job         = "/opt/gha-hooks/post-job.sh"
+# cleanup_workdir = false               # opt out of between-jobs cleanup (default: on)
 ```
 
-Maps to `ACTIONS_RUNNER_HOOK_JOB_STARTED` /
-`ACTIONS_RUNNER_HOOK_JOB_COMPLETED` env vars on the runner.
-`validators::validate_hook_script` enforces every check below at
-config load (SEC-12); the order matches the source:
+`pre_job` and `post_job` are operator-supplied script paths;
+`cleanup_workdir` toggles ghars's default between-jobs cleanup
+hook (enabled when omitted or `true`).
+
+### `pre_job`
+
+Wired directly into `Environment=ACTIONS_RUNNER_HOOK_JOB_STARTED=`
+in the runner's `70-hooks.conf` drop-in. actions/runner invokes it
+before every job (`Runner.Worker/JobExtension.cs`); the script
+runs as the runner's `DynamicUser`-allocated identity inside the
+runner's mount namespace, with cwd set to `$GITHUB_WORKSPACE`.
+
+### `post_job` + `cleanup_workdir` (between-jobs cleanup)
+
+ghars's default is to bound disk growth on long-lived
+(non-`--ephemeral`) self-hosted runners by wiping per-job state
+between jobs — the only mechanism the runner exposes for that
+(`ExecStopPost=` on the unit fires only on unit stop, not between
+jobs).
+
+When `cleanup_workdir` is omitted or `true` (the default):
+
+- `Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED=` is wired to a
+  per-runner script at `/var/lib/ghars/<TRUST_ZONE>/ghars-<NAME>/ghars-cleanup.sh`
+  that ghars generates and installs at apply time.
+- If `[hooks].post_job` is set, the cleanup script execs it FIRST
+  via extension-aware dispatch (`.sh` → `bash -e <path>`, `.ps1`
+  → `pwsh -command ". '<path>'"`; `.js` post_job is not supported
+  in chained mode — set `cleanup_workdir = false` to restore
+  direct wiring for `.js` hooks). The operator script sees
+  `_work/` populated; its exit code propagates so an operator hook
+  failure still fails the job (pre-cleanup-feature contract
+  preserved).
+- The cleanup script then `cd /`'s out of `$GITHUB_WORKSPACE`
+  (avoiding "wipe the running shell's cwd dir" inconsistency) and
+  wipes:
+  - `_work/` contents EXCEPT `_actions/` (downloaded action
+    cache), `_tool/` (toolcache, populated by `actions/setup-*`),
+    and `_PipelineMapping/` (runner's per-repo pipeline-dir
+    tracking — wiping forces every subsequent job to
+    re-initialize tracking).
+  - The runner-private `$TMPDIR`
+    (`/var/lib/ghars/<TRUST_ZONE>/ghars-<NAME>/tmp`) — workflow
+    steps that respect `$TMPDIR` (Python `tempfile`, `mktemp`,
+    bash temp ops) write here, NOT to `/tmp`.
+  - The runner unit's `PrivateTmp=`-namespaced `/tmp` (workflow
+    steps that hardcode `/tmp` ignoring `$TMPDIR`).
+- Cleanup `rm` failures (busy mount, EACCES on root-owned
+  artifacts dropped by rootful `docker run --rm -v $PWD:/work`)
+  are swallowed so an unremovable file never fails an otherwise-
+  successful job.
+
+When `cleanup_workdir = false`:
+
+- `Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED=` is wired
+  directly to `post_job` (or omitted if no `post_job`), matching
+  the pre-cleanup-feature contract.
+- The operator is responsible for managing disk growth (custom
+  cleanup logic in `post_job`, periodic external sweep, or
+  switching the runner to `--ephemeral` mode — not currently a
+  ghars option).
+- Use this when workflows write persistent state under
+  `_work/<pipeline>/...` that the workflow author expects to
+  amortize across jobs (custom toolchain caches outside `_tool/`,
+  etc.), or when debugging a workflow failure that depends on
+  inspecting `_work/` after the job completes.
+
+### `validate_hook_script` (SEC-12)
+
+`validators::validate_hook_script` enforces every check below on
+both `pre_job` and `post_job` at config load (SEC-12); the order
+matches the source:
 
 - **Absolute path required** — `path.starts_with('/')`. Relative
   paths resolve against the runner's cwd at exec time, which is
@@ -472,14 +541,25 @@ config load (SEC-12); the order matches the source:
   principal can rewrite the script, the root-owned check above
   is moot. Operator remediation: `chmod go-w <path>`.
 
+The ghars-generated `ghars-cleanup.sh` is laid down by `ghars
+apply` as root-owned mode `0o755` and lives under the runner home
+(already bound writable inside the sandbox via the `00-ghars.conf`
+`BindPaths=/var/lib/ghars/<TRUST_ZONE>` directive), so no extra
+`BindReadOnlyPaths=` entry is required for it.
+
+### Per-runner override + empty collapse
+
 Per-runner override via `[[runner]].hooks` replaces the singleton
 for that runner.
 
-A `[hooks]` block with both fields unset (`pre_job = None`,
-`post_job = None`) is normalized to None at the lowering boundary
-(`lower_to_effective`); the `70-hooks.conf` drop-in is not emitted
-and `spec_hash` matches the no-`[hooks]` runner shape. Same
-precedent as `[proxy]` empty-collapse.
+A `[hooks]` block with all three fields unset (`pre_job = None`,
+`post_job = None`, `cleanup_workdir = None`) is normalized to None
+at the lowering boundary (`lower_to_effective`); the singleton
+configuration is treated identically to no `[hooks]` block at all,
+and the `70-hooks.conf` drop-in falls back to the
+default-on cleanup wiring. Same precedent as `[proxy]` empty-
+collapse. Setting `cleanup_workdir` explicitly (to either
+`true` or `false`) keeps the block non-empty.
 
 ## `[[runner]]`
 

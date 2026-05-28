@@ -57,3 +57,12 @@ pub(crate) use units::check_identity_field;
 // `cfg(test)` so non-test builds don't emit an unused-import warning.
 #[cfg(test)]
 pub(crate) use units::{render_runner_env_file, render_runner_path_file};
+
+// `render_cleanup_script` is the per-runner job-completion hook body.
+// Production callers consume it via `RenderedUnit { cleanup_script }`
+// returned from `render_runner_unit`; tests under `src/apply/tests/`
+// and `tests/` rebuild canonical plan bytes for assertion. Mirror of
+// the `render_runner_env_file` / `_path_file` re-export pattern above
+// — `cfg(test)` keeps non-test builds free of unused-import warnings.
+#[cfg(test)]
+pub(crate) use units::render_cleanup_script;

@@ -408,6 +408,7 @@ mod tests {
             drop_ins: std::collections::BTreeMap::new(),
             env_file: String::new(),
             path_file: String::new(),
+            cleanup_script: String::new(),
             spec_hash: "sha256:dead".into(),
         })
     }

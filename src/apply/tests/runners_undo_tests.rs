@@ -611,6 +611,7 @@ fn update_runner_in_place_treats_already_missing_managed_dropin_as_no_op() {
             // tripping on empty-string fixtures.
             env_file: crate::systemd::render_runner_env_file(&after).unwrap(),
             path_file: crate::systemd::render_runner_path_file(&after).unwrap(),
+            cleanup_script: crate::systemd::render_cleanup_script(&after).unwrap(),
             spec_hash: "sha256:after".into(),
         },
         requires_recreate: false,
@@ -700,6 +701,7 @@ fn update_runner_in_place_propagates_eacces_on_managed_dropin_remove() {
             // targets drop-in deletion, not .env/.path bytes).
             env_file: crate::systemd::render_runner_env_file(&after).unwrap(),
             path_file: crate::systemd::render_runner_path_file(&after).unwrap(),
+            cleanup_script: crate::systemd::render_cleanup_script(&after).unwrap(),
             spec_hash: "sha256:after".into(),
         },
         requires_recreate: false,
@@ -925,6 +927,7 @@ fn update_runner_in_place_rewrites_env_and_path_when_content_differs() {
             drop_ins: BTreeMap::new(),
             env_file: expected_env.clone(),
             path_file: expected_path.clone(),
+            cleanup_script: rendered.cleanup_script.clone(),
             spec_hash: "sha256:after".into(),
         },
         requires_recreate: false,
@@ -1005,6 +1008,20 @@ fn update_runner_in_place_does_not_rewrite_env_when_content_matches() {
     let unit_file = paths.unit_file("a");
     std::fs::write(unit_file.as_std_path(), rendered.template.as_bytes()).unwrap();
 
+    // Pre-stage ghars-cleanup.sh at runner_home with byte-identical
+    // body + 0o755 mode so the in-place cleanup-script write +
+    // chmod both short-circuit.
+    let cleanup_path = paths.runner_cleanup_script("default", "a");
+    std::fs::write(cleanup_path.as_std_path(), rendered.cleanup_script.as_bytes()).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            cleanup_path.as_std_path(),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+
     let delta = crate::plan::RunnerDelta {
         identity: crate::plan::RunnerIdentity {
             name: "a".into(),
@@ -1019,6 +1036,7 @@ fn update_runner_in_place_does_not_rewrite_env_when_content_matches() {
             drop_ins: BTreeMap::new(),
             env_file: expected_env.clone(),
             path_file: expected_path.clone(),
+            cleanup_script: rendered.cleanup_script.clone(),
             spec_hash: "sha256:after".into(),
         },
         requires_recreate: false,
@@ -1113,6 +1131,7 @@ fn update_runner_in_place_with_no_restart_returns_rewrote_no_restart_and_skips_s
             drop_ins: BTreeMap::new(),
             env_file: rendered.env_file.clone(),
             path_file: rendered.path_file.clone(),
+            cleanup_script: rendered.cleanup_script.clone(),
             spec_hash: "sha256:after".into(),
         },
         requires_recreate: false,
@@ -1241,6 +1260,20 @@ fn update_runner_in_place_byte_match_returns_skipped_regardless_of_no_restart() 
         rendered.path_file.as_bytes(),
     )
     .unwrap();
+    // Pre-stage ghars-cleanup.sh at runner_home with byte-identical
+    // body + 0o755 mode so the in-place cleanup-script write +
+    // chmod both short-circuit (otherwise files_changed bumps and
+    // the InPlaceSkipped path doesn't fire).
+    let cleanup_path = paths.runner_cleanup_script("default", "a");
+    std::fs::write(cleanup_path.as_std_path(), rendered.cleanup_script.as_bytes()).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            cleanup_path.as_std_path(),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
 
     let delta = crate::plan::RunnerDelta {
         identity: crate::plan::RunnerIdentity {
@@ -1256,6 +1289,7 @@ fn update_runner_in_place_byte_match_returns_skipped_regardless_of_no_restart() 
             drop_ins: BTreeMap::new(),
             env_file: rendered.env_file.clone(),
             path_file: rendered.path_file.clone(),
+            cleanup_script: rendered.cleanup_script.clone(),
             spec_hash: "sha256:after".into(),
         },
         requires_recreate: false,

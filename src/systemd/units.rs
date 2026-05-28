@@ -96,6 +96,20 @@ pub struct RenderedUnit {
     /// start; inherited across exec by every subprocess. Single line,
     /// newline-terminated.
     pub path_file: String,
+    /// Body of the runner's per-job cleanup script
+    /// (`<runner_home>/ghars-cleanup.sh`). Always emitted. Wired
+    /// into the runner unit via `Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED=`
+    /// in `70-hooks.conf`. actions/runner invokes it via `bash -e`
+    /// after every job, so the per-job `_work/<repo>` checkouts and
+    /// the PrivateTmp=-namespaced `/tmp` get wiped between jobs —
+    /// disks on long-lived (non-`--ephemeral`) runners stay bounded.
+    /// `_work/_actions/` (downloaded action cache) and `_work/_tool/`
+    /// (toolcache) are preserved. When the operator configured
+    /// `[hooks].post_job`, the cleanup script execs theirs first so
+    /// the operator hook sees `_work/` populated; the operator's exit
+    /// code propagates to the runner (so an operator hook failure
+    /// still fails the job, matching the pre-cleanup-feature contract).
+    pub cleanup_script: String,
     /// Render-time advisories surfaced to the plan engine. The plan
     /// engine concatenates these into `Plan.warnings` so apply prints
     /// them before executing. Examples: "kvm=false drops /dev/kvm rw
@@ -132,7 +146,7 @@ pub struct RenderedUnit {
 /// false negatives (a missed bump) leave operators stranded on stale
 /// drop-ins requiring manual `rm -rf` to force convergence (the bug
 /// this constant exists to prevent).
-pub const RENDERER_SCHEMA: u32 = 5;
+pub const RENDERER_SCHEMA: u32 = 6;
 
 // --- Runner unit + drop-ins renderer (Part 9 / 9d / 9e) ------------------
 
@@ -224,11 +238,13 @@ pub fn render_runner_unit(spec: &EffectiveRunnerSpec) -> Result<RenderedUnit> {
 
     let env_file = render_runner_env_file(spec)?;
     let path_file = render_runner_path_file(spec)?;
+    let cleanup_script = render_cleanup_script(spec)?;
     Ok(RenderedUnit {
         template: runner_template_text(),
         drop_ins,
         env_file,
         path_file,
+        cleanup_script,
         warnings,
     })
 }
@@ -1723,41 +1739,63 @@ fn render_proxy(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
 }
 
 fn render_hooks(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
-    let Some(h) = spec.hooks.as_ref() else {
-        return Ok(None);
-    };
-    if h.pre_job.is_none() && h.post_job.is_none() {
-        return Ok(None);
-    }
     // Defense-in-depth: `pre_job` / `post_job` are operator-supplied
     // host paths (config.rs `HooksSpec` fields are `Option<Utf8PathBuf>`)
-    // interpolated into `Environment=ACTIONS_RUNNER_HOOK_JOB_*` and
-    // `BindReadOnlyPaths=` lines. A newline embedded in the Utf8 path
-    // string (Utf8PathBuf is a UTF-8 wrapper, not a control-char filter)
-    // would split the env value or escape into a separate
-    // BindReadOnlyPaths directive. Validate both bytes-on-disk surfaces
-    // before any are written.
-    if let Some(p) = &h.pre_job {
+    // interpolated into `Environment=ACTIONS_RUNNER_HOOK_JOB_*=` and
+    // `BindReadOnlyPaths=` lines. A newline embedded in the Utf8
+    // path string (Utf8PathBuf is a UTF-8 wrapper, not a control-char
+    // filter) would split the env value or escape into a separate
+    // BindReadOnlyPaths directive. Validate before emitting.
+    let user_pre_job = spec.hooks.as_ref().and_then(|h| h.pre_job.as_ref());
+    let user_post_job = spec.hooks.as_ref().and_then(|h| h.post_job.as_ref());
+    if let Some(p) = user_pre_job {
         check_identity_field("hooks.pre_job", p.as_str())?;
     }
-    if let Some(p) = &h.post_job {
+    if let Some(p) = user_post_job {
         check_identity_field("hooks.post_job", p.as_str())?;
     }
+
+    let cleanup_enabled = cleanup_workdir_enabled(spec);
+
+    // Early-return when nothing to emit. Drop-in is skipped when
+    // BOTH the cleanup wiring is opt-out AND the operator supplied
+    // no pre/post hook — preserves the pre-cleanup-feature
+    // empty-HooksSpec → no 70-hooks.conf contract for that
+    // configuration shape.
+    if !cleanup_enabled && user_pre_job.is_none() && user_post_job.is_none() {
+        return Ok(None);
+    }
+
     let mut s = String::new();
     s.push_str("[Service]\n");
-    if let Some(p) = &h.pre_job {
+    if let Some(p) = user_pre_job {
         let _ = writeln!(s, "Environment=ACTIONS_RUNNER_HOOK_JOB_STARTED={p}");
     }
-    if let Some(p) = &h.post_job {
+    // JOB_COMPLETED wiring:
+    //   cleanup enabled (default) → ghars-cleanup.sh (chains the
+    //     operator post_job INSIDE the script).
+    //   cleanup disabled          → operator post_job directly (or
+    //     omit if no operator post_job — pre-cleanup behavior).
+    if cleanup_enabled {
+        let cleanup_path = cleanup_script_path(spec);
+        let _ = writeln!(s, "Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED={cleanup_path}");
+    } else if let Some(p) = user_post_job {
         let _ = writeln!(s, "Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED={p}");
     }
-    // Bind the parent directory of each hook script (deduped if pre and
-    // post share the parent). Hook scripts must be reachable through
-    // the runner's mount namespace.
+
+    // Bind the parent directory of each operator-supplied hook script
+    // (deduped). The ghars-cleanup.sh path lives under the runner home
+    // which is already bound writable by `00-ghars.conf`'s
+    // `BindPaths=/var/lib/ghars/<trust_zone>`, so no extra bind is
+    // needed for the cleanup script itself. When cleanup_workdir is
+    // enabled, the operator's post_job is chained from inside
+    // ghars-cleanup.sh — its parent dir still needs to be bound so
+    // the script can read it from inside the runner's mount
+    // namespace.
     //
     // SEC-12 defense-in-depth: `check_no_root_bind` refuses to emit
-    // `BindReadOnlyPaths=/` if any hook's parent resolves to the
-    // filesystem root via component-walk normalization.
+    // `BindReadOnlyPaths=/` if any operator hook's parent resolves
+    // to the filesystem root via component-walk normalization.
     // `validators::validate_hook_script` applies the same check at
     // config-load via `crate::path_util::binds_filesystem_root`, but
     // keeping the check here covers any caller that bypasses the
@@ -1765,8 +1803,8 @@ fn render_hooks(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
     // test harnesses).
     let mut parents: Vec<String> = Vec::new();
     for (field, opt_p) in [
-        ("hooks.pre_job", &h.pre_job),
-        ("hooks.post_job", &h.post_job),
+        ("hooks.pre_job", user_pre_job),
+        ("hooks.post_job", user_post_job),
     ] {
         let Some(p) = opt_p else {
             continue;
@@ -1786,6 +1824,273 @@ fn render_hooks(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
         let _ = writeln!(s, "BindReadOnlyPaths={}", parents.join(" "));
     }
     Ok(Some(s))
+}
+
+/// Whether ghars's default between-jobs cleanup hook is wired into
+/// `ACTIONS_RUNNER_HOOK_JOB_COMPLETED` for this runner. Returns
+/// `true` when `[hooks].cleanup_workdir` is `None` (default) or
+/// `Some(true)`; returns `false` only when explicitly
+/// `Some(false)`. Centralized so `render_hooks` and other call
+/// sites agree on the gate.
+pub(crate) fn cleanup_workdir_enabled(spec: &EffectiveRunnerSpec) -> bool {
+    spec.hooks
+        .as_ref()
+        .and_then(|h| h.cleanup_workdir)
+        .unwrap_or(true)
+}
+
+/// Absolute path to the per-runner `ghars-cleanup.sh` script under
+/// the runner home. Mirrors `Paths::runner_cleanup_script`; the
+/// renderer is path-only (no `Paths` value) so the literal is built
+/// from `spec.trust_zone` and `spec.name`. Stays in sync with
+/// `Paths::runner_cleanup_script` via the test
+/// `cleanup_script_path_matches_paths_helper` in `units_tests`.
+fn cleanup_script_path(spec: &EffectiveRunnerSpec) -> String {
+    format!(
+        "/var/lib/ghars/{}/ghars-{}/ghars-cleanup.sh",
+        spec.trust_zone, spec.name
+    )
+}
+
+/// Single-quote-escape `s` for safe interpolation into a bash
+/// single-quoted string literal. The only character that ends a
+/// single-quoted string in bash is `'` itself; replace each `'`
+/// with the canonical `'\''` close-escape-open sequence. All other
+/// bytes (including `$`, `\`, backticks, spaces, newlines) pass
+/// through unchanged because single-quoted strings perform no
+/// interpretation. Operator hook paths pass `check_identity_field`
+/// before reaching this helper, so they cannot contain newlines /
+/// nulls / control chars — but single quotes are not blocked by
+/// that gate, so this escape closes the remaining shell-injection
+/// surface.
+fn bash_single_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        if c == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// Render the body of the per-runner `ghars-cleanup.sh` script.
+///
+/// The script is wired into the runner via
+/// `Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED=` (emitted by
+/// [`render_hooks`] when `[hooks].cleanup_workdir` is enabled —
+/// default). actions/runner invokes
+/// `ACTIONS_RUNNER_HOOK_JOB_COMPLETED` after every job — for
+/// long-lived (non-`--ephemeral`) runners that is the ONLY
+/// between-jobs hook the runner exposes (`ExecStopPost=` fires on
+/// unit stop, not between jobs).
+///
+/// Invocation contract (from `actions/runner`
+/// `Runner.Worker/Handlers/ScriptHandler.cs` L213-216 +
+/// `ScriptHandlerHelpers.cs` `_defaultArguments`): scripts with
+/// the `.sh` extension are exec'd as `bash -e <path>` on the
+/// `JobHookProvider` non-action path (the `if (shell == "bash") {
+/// argFormat = GetScriptArgumentsFormat("sh"); }` branch).
+/// `ExecutionContext.Result = TaskResult.Failed` fires on a non-zero
+/// script exit code (ScriptHandler.cs L344-356), so the cleanup
+/// script's exit code MUST be 0 when the only failure is in the
+/// cleanup itself — otherwise we'd fail successful jobs. The
+/// operator's `[hooks].post_job` exit code, when chained, IS
+/// propagated so an operator hook failure still fails the job
+/// (pre-cleanup-feature contract preserved).
+///
+/// Script structure:
+/// 1. `set -u` plus `op_exit=0` baseline. No `set -e` at the
+///    script level — we add it selectively via `bash -e
+///    "$user_post_job"` and `|| op_exit=$?` so cleanup failures stay
+///    non-fatal.
+/// 2. `cd /` before any cleanup commands. Hook cwd is
+///    `$GITHUB_WORKSPACE` inside `_work/<pipeline>/<workspace>/`
+///    (ScriptHandler.cs L167-168); wiping the script's own cwd
+///    directory has inconsistent semantics across kernels.
+/// 3. When `[hooks].post_job` is configured, exec it via
+///    extension-aware dispatch mirroring upstream
+///    (`HostContext.cs` `GetDefaultShellForScript`): `.ps1` →
+///    `pwsh -command ". '$path'"`; `.js` is unsupported by the
+///    wrapper (operator must set `cleanup_workdir = false` to
+///    restore direct wiring); else → `bash -e "$path"`. Its
+///    non-zero exit captures into `op_exit` via `|| op_exit=$?`.
+/// 4. Wipe `_work/` contents except `_actions/`, `_tool/`, and
+///    `_PipelineMapping/`. Path baked at apply time from
+///    `spec.runner_version`; rebaked on every `ghars apply` so a
+///    runner version bump rotates this with the bin dir.
+///    `find ... -exec rm -rf -- {} +` plus `2>/dev/null || true`
+///    so a transient `rm` failure (busy mount, EACCES on a file
+///    the runner doesn't own — e.g. workflows that drop
+///    root-owned files via rootful `docker run --rm -v $PWD:/work`)
+///    never kills the job.
+/// 5. Wipe ghars's runner-private TMPDIR
+///    (`/var/lib/ghars/<TZ>/ghars-<NAME>/tmp/*`, set at
+///    `units.rs:963-967`). Workflow steps that respect `$TMPDIR`
+///    (Python `tempfile`, `mktemp`, bash temp ops) write THERE,
+///    NOT to `/tmp` — this is the bulk of accumulated temp data
+///    on disk-full runners.
+/// 6. Wipe the unit's `PrivateTmp=`-namespaced `/tmp`. The runner
+///    template (`templates.rs:117`) sets `PrivateTmp=yes`, so this
+///    `/tmp` is invisible to other units and to the host —
+///    wiping cannot disturb anything outside this runner. Workflow
+///    steps that hardcode `/tmp` (legacy shell scripts that ignore
+///    `$TMPDIR`) land here.
+/// 7. Exit with `$op_exit` (operator's hook exit, or 0).
+///
+/// Preserved subtrees under `_work/`:
+/// - `_actions/` — downloaded action cache (per-runner shared
+///   across jobs; wiping would force re-download of every action
+///   on every job).
+/// - `_tool/` — toolcache populated by `actions/setup-*` actions
+///   (wiping would force re-install of every toolchain on every
+///   job).
+/// - `_PipelineMapping/` — the runner's per-repo pipeline-dir
+///   tracking (actions/runner `Constants.cs:241` /
+///   `PipelineDirectoryManager.cs:41`; wiping forces every
+///   subsequent job to re-initialize its pipeline directory and
+///   re-establish tracking).
+pub(crate) fn render_cleanup_script(spec: &EffectiveRunnerSpec) -> Result<String> {
+    // When `[hooks].cleanup_workdir = false`, ghars does NOT wire
+    // `ghars-cleanup.sh` into the runner (render_hooks routes
+    // `JOB_COMPLETED` directly to the operator post_job, or omits
+    // it). Return an empty body so apply layer can skip the write
+    // (and remove a stale script if the operator flipped from
+    // enabled to disabled).
+    if !cleanup_workdir_enabled(spec) {
+        return Ok(String::new());
+    }
+
+    // Defense-in-depth: trust_zone and name are baked into the
+    // script body. They pass the validators at config-load
+    // (`validate_runner_name`, `validate_trust_zone`) but the
+    // identity-field gate here closes the direct-construct
+    // (test fixture / future programmatic spec builder) escape.
+    check_identity_field("trust_zone", &spec.trust_zone)?;
+    check_identity_field("runner.name", &spec.name)?;
+    let version = spec.runner_version.as_deref().unwrap_or("latest");
+    check_identity_field("runner.runner_version", version)?;
+
+    let user_post_job = spec.hooks.as_ref().and_then(|h| h.post_job.as_ref());
+    if let Some(p) = user_post_job {
+        check_identity_field("hooks.post_job", p.as_str())?;
+    }
+
+    let post_job_block = match user_post_job {
+        Some(p) => format!(
+            "# (3) chain operator-supplied [hooks].post_job. Extension\n\
+             #     dispatch mirrors actions/runner's\n\
+             #     HostContext.GetDefaultShellForScript (.ps1 → pwsh;\n\
+             #     .js unsupported by the chain wrapper — set\n\
+             #     [hooks].cleanup_workdir = false to restore direct\n\
+             #     ACTIONS_RUNNER_HOOK_JOB_COMPLETED wiring; else →\n\
+             #     bash -e, matching the JobHookProvider non-action\n\
+             #     argFormat at ScriptHandler.cs L213-216).\n\
+             user_post_job={quoted}\n\
+             case \"$user_post_job\" in\n\
+                 *.ps1)\n\
+                     pwsh -command \". '$user_post_job'\" || op_exit=$?\n\
+                     ;;\n\
+                 *.js)\n\
+                     echo \"ghars-cleanup.sh: .js post_job hooks are not supported by the chain wrapper; set [hooks].cleanup_workdir = false to restore direct ACTIONS_RUNNER_HOOK_JOB_COMPLETED wiring\" >&2\n\
+                     op_exit=1\n\
+                     ;;\n\
+                 *)\n\
+                     bash -e \"$user_post_job\" || op_exit=$?\n\
+                     ;;\n\
+             esac\n",
+            quoted = bash_single_quote(p.as_str())
+        ),
+        None => "# (3) no operator [hooks].post_job configured — nothing to chain\n: \n"
+            .to_string(),
+    };
+
+    let work_root = format!(
+        "/var/lib/ghars/{}/ghars-{}/bin.{}/_work",
+        spec.trust_zone, spec.name, version
+    );
+    let tmpdir = format!(
+        "/var/lib/ghars/{}/ghars-{}/tmp",
+        spec.trust_zone, spec.name
+    );
+
+    Ok(format!(
+        "#!/bin/bash\n\
+         # ghars per-job cleanup hook (ACTIONS_RUNNER_HOOK_JOB_COMPLETED).\n\
+         # Generated by `ghars apply`; do NOT edit — the next apply\n\
+         # overwrites this file.\n\
+         #\n\
+         # actions/runner invokes this via `bash -e <path>` after every\n\
+         # job (ScriptHandler.cs L213-216 selects `sh` argFormat `-e {{0}}`\n\
+         # for .sh on the JobHookProvider non-action path). The script\n\
+         # bounds disk growth on long-lived (non-`--ephemeral`) runners\n\
+         # by wiping per-job state between jobs.\n\
+         #\n\
+         # Order:\n\
+         #   1. set -u and zero op_exit (no top-level set -e — we add\n\
+         #      it selectively so cleanup failures stay non-fatal).\n\
+         #   2. cd / so the wipe under _work/ doesn't unlink our own\n\
+         #      cwd (hook cwd is $GITHUB_WORKSPACE inside _work/).\n\
+         #   3. operator-supplied [hooks].post_job (chained if set;\n\
+         #      sees _work/ populated, exits before cleanup runs).\n\
+         #   4. wipe _work/ contents EXCEPT _actions/ (action cache),\n\
+         #      _tool/ (toolcache), _PipelineMapping/ (runner's\n\
+         #      per-repo pipeline-dir tracking — actions/runner\n\
+         #      Constants.cs:241 / PipelineDirectoryManager.cs:41).\n\
+         #   5. wipe ghars's runner-private TMPDIR\n\
+         #      (units.rs:963-967 — the bulk of accumulated temp).\n\
+         #   6. wipe the unit's PrivateTmp=-namespaced /tmp\n\
+         #      (templates.rs:117).\n\
+         #\n\
+         # Cleanup never fails the job: cleanup `rm` errors are\n\
+         # swallowed via `2>/dev/null || true`; the script's exit\n\
+         # code propagates from the operator's post_job (if any),\n\
+         # else 0.\n\
+         set -u\n\
+         op_exit=0\n\
+         \n\
+         # (2) move cwd outside _work/ before we wipe it. Hook cwd is\n\
+         #     $GITHUB_WORKSPACE inside _work/<pipeline>/<workspace>/\n\
+         #     (ScriptHandler.cs L167-168); wiping the running shell's\n\
+         #     cwd directory has inconsistent semantics across kernels.\n\
+         cd /\n\
+         \n\
+         {post_job_block}\
+         \n\
+         # (4) wipe per-job artifacts under _work/ (preserve action +\n\
+         #     tool caches + pipeline-dir tracking). Path baked at\n\
+         #     apply time; rebaked on every `ghars apply` so a runner\n\
+         #     version bump rotates this with the bin dir.\n\
+         work_root='{work_root}'\n\
+         if [[ -d \"$work_root\" ]]; then\n\
+             find \"$work_root\" -mindepth 1 -maxdepth 1 \\\n\
+                 ! -name '_actions' ! -name '_tool' ! -name '_PipelineMapping' \\\n\
+                 -exec rm -rf -- {{}} + 2>/dev/null || true\n\
+         fi\n\
+         \n\
+         # (5) wipe ghars's runner-private TMPDIR. Workflow steps that\n\
+         #     respect $TMPDIR (Python tempfile, mktemp, bash) write\n\
+         #     here, NOT to /tmp — this is the bulk of accumulated\n\
+         #     temp data on disk-full runners.\n\
+         tmpdir='{tmpdir}'\n\
+         if [[ -d \"$tmpdir\" ]]; then\n\
+             find \"$tmpdir\" -mindepth 1 -maxdepth 1 \\\n\
+                 -exec rm -rf -- {{}} + 2>/dev/null || true\n\
+         fi\n\
+         \n\
+         # (6) wipe the unit's PrivateTmp= namespaced /tmp. Runner\n\
+         #     template sets PrivateTmp=yes, so this /tmp is invisible\n\
+         #     to other units and to the host. Workflow steps that\n\
+         #     hardcode /tmp (legacy shell scripts that ignore $TMPDIR)\n\
+         #     land here.\n\
+         find /tmp -mindepth 1 -maxdepth 1 \\\n\
+             -exec rm -rf -- {{}} + 2>/dev/null || true\n\
+         \n\
+         exit \"$op_exit\"\n"
+    ))
 }
 
 fn render_lognamespace(spec: &EffectiveRunnerSpec) -> String {

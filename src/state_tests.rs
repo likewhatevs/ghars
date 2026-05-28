@@ -312,6 +312,7 @@ fn render_runner_unit_basenames_are_all_in_managed_list() {
         hooks: Some(HooksSpec {
             pre_job: Some(Utf8PathBuf::from("/usr/local/lib/ghars/pre.sh")),
             post_job: None,
+            cleanup_workdir: None,
         }),
         hardening: Hardening {
             kvm: Some(true),

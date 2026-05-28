@@ -892,6 +892,52 @@ pub(super) fn execute_create_runner(
         false,
     )?;
 
+    // 5c-bis) Write the per-runner job-completed cleanup script
+    // (when enabled). actions/runner invokes this via
+    // `Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED=` (wired by
+    // `70-hooks.conf` when `[hooks].cleanup_workdir` is enabled —
+    // the default). The script body chains the operator's
+    // `[hooks].post_job` first if configured, then wipes per-job
+    // disk state.
+    //
+    // Lives in `runner_home/ghars-cleanup.sh` (not under the
+    // versioned `bin.X.Y.Z/` subtree) so it survives runner version
+    // upgrades without rewrites — `Paths::runner_cleanup_script`
+    // documents the same rationale. The script body itself bakes
+    // the version-specific `_work/` path, so it IS regenerated on
+    // every apply; the location just stays stable.
+    //
+    // `write_record_undo` writes via `write_root_owned` which sets
+    // mode 0o644 (root:root). `chmod_record_undo` to 0o755 makes
+    // it world-executable so the runner's DynamicUser-allocated UID
+    // can exec it. Both writes land before
+    // `chown_and_tighten_runner_state` (which only touches the
+    // narrow writable set — runner_home, runner_tmp, .ktstr,
+    // .ccache, bin_dir, _diag, credentials), so the cleanup script
+    // stays root:root after apply. World-x is sufficient for the
+    // DynamicUser to invoke it; root ownership keeps the runner
+    // from rewriting the script under itself.
+    //
+    // When `cleanup_workdir = false`, `rendered.cleanup_script` is
+    // empty (per `render_cleanup_script`'s early-return). Skip the
+    // write — `render_hooks` wires `JOB_COMPLETED` directly to the
+    // operator post_job (or omits it), so there's no script to
+    // write.
+    if !rendered.cleanup_script.is_empty() {
+        let cleanup_script_path = paths.runner_cleanup_script(&spec.trust_zone, &spec.name);
+        write_record_undo(
+            &cleanup_script_path,
+            rendered.cleanup_script.as_bytes(),
+            log,
+        )?;
+        chmod_record_undo(
+            &cleanup_script_path,
+            0o755,
+            "ghars-cleanup.sh",
+            log,
+        )?;
+    }
+
     // 5d) Normalize post-`config.sh` file modes to DynamicUser-READ.
     // Upstream `actions/runner` writes three files in `runner_home`:
     //   - `.runner` — runner identity JSON (`IOUtil.SaveObject` ->

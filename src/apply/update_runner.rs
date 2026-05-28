@@ -20,6 +20,7 @@ use super::runners::{
 };
 use super::undo::{Deps, UndoLog, UndoStep};
 use super::writes::{read_prior, read_then_write_if_changed};
+use std::os::unix::fs::PermissionsExt;
 
 pub(super) fn execute_update_runner(
     delta: &RunnerDelta,
@@ -316,6 +317,74 @@ pub(super) fn execute_update_runner(
         log,
         true,
     )?;
+
+    // Rewrite the per-runner cleanup script. Symmetric with
+    // `execute_create_runner`'s write — the in-place update path needs
+    // to refresh the script whenever its bytes drift (e.g. operator
+    // added/removed `[hooks].post_job`, flipped
+    // `[hooks].cleanup_workdir`, or a runner version bump rebakes
+    // the `_work/` root path). Three states:
+    //
+    //   1. Empty rendered body (`cleanup_workdir = false`) AND
+    //      script exists on disk → unlink it. The operator flipped
+    //      cleanup off, so the now-orphan script (no longer wired
+    //      from `70-hooks.conf`) is dead bytes; remove for hygiene.
+    //   2. Empty rendered body AND script absent → no-op.
+    //   3. Non-empty rendered body → `read_then_write_if_changed`
+    //      byte-compares and no-ops when content matches.
+    //      `chmod_record_undo` to 0o755 brings a partially-wrong
+    //      mode back to the executable+root-owned posture
+    //      (no-op on byte-match).
+    //
+    // `files_changed` is NOT bumped for any of these mutations.
+    // `files_changed` gates `daemon-reload` + `stop_unit` +
+    // `start_unit` at the bottom of this fn — those are the cost
+    // of reloading systemd unit-file bytes and restarting the
+    // runner process. The cleanup script is invoked per-job by
+    // actions/runner (`bash -e <path>`), NOT loaded into the
+    // running runner process at unit start, so a body / mode /
+    // existence change does not require a runner restart — the
+    // next `ACTIONS_RUNNER_HOOK_JOB_COMPLETED` invocation reads
+    // whatever bytes the file holds at that moment. Wiring
+    // changes (the env var pointing at the script) live in
+    // `70-hooks.conf` which IS in the drop-in loop above and DOES
+    // bump `files_changed` correctly. Excluding cleanup-script
+    // mutations here avoids a spurious daemon-reload + restart
+    // bounce when the only edit is `[hooks].post_job` flipping.
+    let cleanup_script_path = paths
+        .runner_cleanup_script(&delta.identity.trust_zone, &delta.identity.name);
+    if delta.after.cleanup_script.is_empty() {
+        if cleanup_script_path.as_std_path().exists() {
+            let prior = read_prior(&cleanup_script_path);
+            fs::remove_file(cleanup_script_path.as_std_path())?;
+            if let Some(content) = prior {
+                log.push(UndoStep::RemoveFile {
+                    path: cleanup_script_path.clone(),
+                    content,
+                });
+            }
+        }
+    } else {
+        let _ = read_then_write_if_changed(
+            &cleanup_script_path,
+            delta.after.cleanup_script.as_bytes(),
+            log,
+        )?;
+        if cleanup_script_path.as_std_path().exists() {
+            let current_mode = fs::metadata(cleanup_script_path.as_std_path())?
+                .permissions()
+                .mode()
+                & 0o7777;
+            if current_mode != 0o755 {
+                chmod_record_undo(
+                    &cleanup_script_path,
+                    0o755,
+                    "ghars-cleanup.sh",
+                    log,
+                )?;
+            }
+        }
+    }
 
     // Skip `daemon-reload` + stop + start when nothing on disk
     // changed AND the caches-list diff was empty. A non-empty

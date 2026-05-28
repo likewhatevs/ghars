@@ -723,6 +723,7 @@ fn render_action_line_uses_sigil_per_kind() {
         drop_ins: std::collections::BTreeMap::new(),
         env_file: String::new(),
         path_file: String::new(),
+        cleanup_script: String::new(),
         spec_hash: "sha256:0".into(),
     });
     let line = render_action_line(&create, ColorMode { enabled: false }, false);

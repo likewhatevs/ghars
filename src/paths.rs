@@ -106,6 +106,19 @@ impl Paths {
         self.state_dir.join(trust_zone)
     }
 
+    /// `<runner_home>/ghars-cleanup.sh` — per-runner job-completion
+    /// cleanup script wired into the runner unit via
+    /// `Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED=` in
+    /// `70-hooks.conf`. Lives in the runner home (not the versioned
+    /// `bin.X.Y.Z/` subtree) so it survives runner version upgrades
+    /// without rewrites and so a stale path baked into a still-running
+    /// runner process keeps resolving to the same script after `ghars
+    /// apply` rotates the bin dir.
+    #[must_use]
+    pub fn runner_cleanup_script(&self, trust_zone: &str, name: &str) -> Utf8PathBuf {
+        self.runner_home(trust_zone, name).join("ghars-cleanup.sh")
+    }
+
     /// `<unit_dir>/ghars-runner@<name>.service` — runner unit file.
     #[must_use]
     pub fn unit_file(&self, name: &str) -> Utf8PathBuf {
@@ -260,6 +273,19 @@ mod tests {
         let p = Paths::default();
         assert_eq!(p.trust_zone_home("default"), "/var/lib/ghars/default");
         assert_eq!(p.trust_zone_home("audited"), "/var/lib/ghars/audited");
+    }
+
+    #[test]
+    fn runner_cleanup_script_lives_in_runner_home() {
+        let p = Paths::default();
+        assert_eq!(
+            p.runner_cleanup_script("default", "buckos"),
+            "/var/lib/ghars/default/ghars-buckos/ghars-cleanup.sh"
+        );
+        assert_eq!(
+            p.runner_cleanup_script("ci", "ktstr-1"),
+            "/var/lib/ghars/ci/ghars-ktstr-1/ghars-cleanup.sh"
+        );
     }
 
     #[test]

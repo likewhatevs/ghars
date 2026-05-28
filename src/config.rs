@@ -782,27 +782,69 @@ pub struct CaCertBinding {
     pub path: Utf8PathBuf,
 }
 
-/// Job hooks. Maps to `ACTIONS_RUNNER_HOOK_JOB_STARTED` and
-/// `ACTIONS_RUNNER_HOOK_JOB_COMPLETED` env vars on the runner.
+/// Job hooks. Drives `Environment=ACTIONS_RUNNER_HOOK_JOB_STARTED=`
+/// (when `pre_job` is set) and the runner's between-jobs cleanup
+/// wiring on the `Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED=`
+/// slot:
+///
+/// - When `cleanup_workdir` is `Some(true)` or `None` (the default):
+///   `JOB_COMPLETED` points at a ghars-generated `ghars-cleanup.sh`
+///   script in the runner home. That script chains
+///   `post_job` (if set) FIRST, then wipes `_work/` contents
+///   (except `_actions/`, `_tool/`, `_PipelineMapping/`), then
+///   wipes ghars's runner-private `$TMPDIR`, then wipes the unit's
+///   `PrivateTmp=`-namespaced `/tmp`. The operator's `post_job`
+///   exit code is propagated so an operator hook failure still
+///   fails the job; cleanup errors are swallowed so cleanup never
+///   fails an otherwise-successful job. Bounds disk growth on
+///   long-lived (non-`--ephemeral`) runners — the only mechanism
+///   the runner exposes for between-jobs work (`ExecStopPost=`
+///   fires only on unit stop).
+/// - When `cleanup_workdir` is `Some(false)`: `JOB_COMPLETED` is
+///   set directly to `post_job` (if any), or omitted entirely
+///   (matching the pre-cleanup contract). Use this to preserve
+///   `_work/` contents between jobs (custom toolchain caches
+///   under `_work/<pipeline>/...`, debugging workflow failures,
+///   etc.) — the operator takes responsibility for disk growth.
+///
+/// `pre_job` is unaffected by `cleanup_workdir` — ghars has no
+/// pre-job work to inject, so the pre-job slot stays operator-only.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct HooksSpec {
-    /// Path to a host-readable script run before each job.
+    /// Path to a host-readable script run before each job. Wired
+    /// directly into `Environment=ACTIONS_RUNNER_HOOK_JOB_STARTED=`.
     pub pre_job: Option<Utf8PathBuf>,
-    /// Path to a host-readable script run after each job.
+    /// Path to a host-readable script run after each job. When
+    /// `cleanup_workdir` is `Some(false)`, wired directly into
+    /// `Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED=`. Otherwise
+    /// invoked from inside the ghars-generated `ghars-cleanup.sh`
+    /// chain (operator hook runs FIRST so it sees `_work/`
+    /// populated; its exit code propagates).
     pub post_job: Option<Utf8PathBuf>,
+    /// Opt-out for the default between-jobs `_work/` + `$TMPDIR`
+    /// + `/tmp` cleanup. `None` (the default) means cleanup is
+    /// enabled. `Some(false)` disables cleanup and restores
+    /// pre-cleanup-feature wiring (`post_job` goes directly into
+    /// `JOB_COMPLETED`); `Some(true)` is equivalent to `None`.
+    /// Setting `false` requires the operator to manage disk
+    /// growth themselves (e.g. via their own `post_job` script).
+    pub cleanup_workdir: Option<bool>,
 }
 
 impl HooksSpec {
-    /// Whether both hook fields are unset. An empty `HooksSpec`
-    /// produces no `ACTIONS_RUNNER_HOOK_JOB_*` env vars —
-    /// `render_hooks` returns `Ok(None)` for both `None` and
-    /// `Some(empty)`. Collapsing `Some(empty)` to `None` at the
-    /// lowering boundary (`lower_to_effective` in `compute.rs`)
-    /// eliminates the parallel `spec_hash` dark input.
+    /// Whether all hook fields are unset. An empty `HooksSpec`
+    /// is the canonical "operator has no hook config" shape —
+    /// `cleanup_workdir = None` falls back to the default
+    /// (cleanup enabled), so emptiness depends only on the
+    /// operator-supplied `pre_job` / `post_job` / explicit
+    /// `cleanup_workdir`. Collapsing `Some(empty)` to `None` at
+    /// the lowering boundary (`lower_to_effective` in
+    /// `compute.rs`) eliminates the parallel `spec_hash` dark
+    /// input.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.pre_job.is_none() && self.post_job.is_none()
+        self.pre_job.is_none() && self.post_job.is_none() && self.cleanup_workdir.is_none()
     }
 }
 

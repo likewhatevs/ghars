@@ -3,5 +3,5 @@ source: tests/python_parity_unit_snapshots.rs
 expression: "dropin(&r.drop_ins, \"70-hooks.conf\")"
 ---
 [Service]
-Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/opt/gha-hooks/post-job.sh
+Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/var/lib/ghars/default/ghars-buckos/ghars-cleanup.sh
 BindReadOnlyPaths=/opt/gha-hooks

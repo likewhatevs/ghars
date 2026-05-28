@@ -1201,6 +1201,7 @@ fn render_hooks_rejects_root_parent_pre_job_path() {
     spec.hooks = Some(crate::config::HooksSpec {
         pre_job: Some(camino::Utf8PathBuf::from("/foo.sh")),
         post_job: None,
+        cleanup_workdir: None,
     });
     let err = render_runner_unit(&spec).unwrap_err();
     assert!(
@@ -1238,6 +1239,7 @@ fn render_hooks_rejects_parent_dir_climb_root_pre_job_path() {
     spec.hooks = Some(crate::config::HooksSpec {
         pre_job: Some(camino::Utf8PathBuf::from("/foo/../bar.sh")),
         post_job: None,
+        cleanup_workdir: None,
     });
     let err = render_runner_unit(&spec).unwrap_err();
     assert!(matches!(err, GharsError::Validation(_, _)));
@@ -1266,6 +1268,7 @@ fn render_hooks_rejects_newline_in_pre_job_path() {
             "/etc/ghars/hooks/pre.sh\nINJECTED=1",
         )),
         post_job: None,
+        cleanup_workdir: None,
     });
     let err = render_runner_unit(&spec).unwrap_err();
     assert!(

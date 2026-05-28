@@ -95,6 +95,17 @@ pub struct RunnerPlan {
     /// across exec by every worker / workflow-step subprocess. The
     /// next unit stop+start picks up changes.
     pub path_file: String,
+    /// Body of `<runner_home>/ghars-cleanup.sh`. Per-runner cleanup
+    /// script wired into the runner via
+    /// `Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED=` (always
+    /// emitted in `70-hooks.conf`). actions/runner invokes it after
+    /// every job; the script wipes `_work/` contents (except
+    /// `_actions/` and `_tool/` caches) and the unit's
+    /// PrivateTmp=-namespaced `/tmp`, then exits with the operator
+    /// `[hooks].post_job` exit code (chained inside the script body
+    /// when configured) or 0. Bounds disk growth on long-lived
+    /// (non-`--ephemeral`) runners between jobs.
+    pub cleanup_script: String,
     /// `sha256:HEX` of the spec; emitted into the 00-ghars.conf
     /// X-Ghars-Spec-Hash annotation.
     pub spec_hash: String,

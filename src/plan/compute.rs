@@ -533,6 +533,7 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                         drop_ins: rendered.drop_ins,
                         env_file: rendered.env_file,
                         path_file: rendered.path_file,
+                        cleanup_script: rendered.cleanup_script,
                     };
 
                     // Recreate path collapses drop-in diff (the path
@@ -787,6 +788,7 @@ pub(super) fn into_runner_plan(
         drop_ins: rendered.drop_ins,
         env_file: rendered.env_file,
         path_file: rendered.path_file,
+        cleanup_script: rendered.cleanup_script,
     })
 }
 

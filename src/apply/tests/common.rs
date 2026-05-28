@@ -438,6 +438,7 @@ pub(super) fn make_runner_plan(name: &str, prefix: &Utf8Path) -> RunnerPlan {
     // helper output diverged from real renderer output.
     let env_file = crate::systemd::render_runner_env_file(&spec).unwrap();
     let path_file = crate::systemd::render_runner_path_file(&spec).unwrap();
+    let cleanup_script = crate::systemd::render_cleanup_script(&spec).unwrap();
     RunnerPlan {
         spec,
         resolved_release: Some(make_release()),
@@ -445,6 +446,7 @@ pub(super) fn make_runner_plan(name: &str, prefix: &Utf8Path) -> RunnerPlan {
         drop_ins,
         env_file,
         path_file,
+        cleanup_script,
         spec_hash: "sha256:dead".into(),
     }
 }

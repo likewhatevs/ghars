@@ -4,5 +4,5 @@ expression: "dropin(&r.drop_ins, \"70-hooks.conf\")"
 ---
 [Service]
 Environment=ACTIONS_RUNNER_HOOK_JOB_STARTED=/opt/gha-pre-hooks/pre.sh
-Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/opt/gha-post-hooks/post.sh
+Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/var/lib/ghars/default/ghars-buckos/ghars-cleanup.sh
 BindReadOnlyPaths=/opt/gha-pre-hooks /opt/gha-post-hooks

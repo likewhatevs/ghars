@@ -1141,6 +1141,7 @@ fn dropin_70_hooks_snapshot() {
     spec.hooks = Some(HooksSpec {
         pre_job: Some(Utf8PathBuf::from("/opt/gha-hooks/pre-job.sh")),
         post_job: Some(Utf8PathBuf::from("/opt/gha-hooks/post-job.sh")),
+        cleanup_workdir: None,
     });
     let r = render_runner_unit(&spec).unwrap();
     insta::assert_snapshot!("dropin_70_hooks", dropin(&r.drop_ins, "70-hooks.conf"));
@@ -1158,6 +1159,7 @@ fn dropin_70_hooks_pre_only_snapshot() {
     spec.hooks = Some(HooksSpec {
         pre_job: Some(Utf8PathBuf::from("/opt/gha-hooks/pre-job.sh")),
         post_job: None,
+        cleanup_workdir: None,
     });
     let r = render_runner_unit(&spec).unwrap();
     insta::assert_snapshot!(
@@ -1175,6 +1177,7 @@ fn dropin_70_hooks_post_only_snapshot() {
     spec.hooks = Some(HooksSpec {
         pre_job: None,
         post_job: Some(Utf8PathBuf::from("/opt/gha-hooks/post-job.sh")),
+        cleanup_workdir: None,
     });
     let r = render_runner_unit(&spec).unwrap();
     insta::assert_snapshot!(
@@ -1204,6 +1207,7 @@ fn dropin_70_hooks_different_parents_snapshot() {
     spec.hooks = Some(HooksSpec {
         pre_job: Some(Utf8PathBuf::from("/opt/gha-pre-hooks/pre.sh")),
         post_job: Some(Utf8PathBuf::from("/opt/gha-post-hooks/post.sh")),
+        cleanup_workdir: None,
     });
     let r = render_runner_unit(&spec).unwrap();
     insta::assert_snapshot!(

@@ -60,7 +60,7 @@ order, each behind a "is the operator using this feature?" gate:
 | `40-network.conf`       | Netns mode, OR Open mode with any of `ip_allow` / `ip_deny` / `restrict_address_families` | Netns: `NetworkNamespacePath=/var/run/netns/ghars-<name>` + `Requires=ghars-net@%i.service` + cgroup-BPF directives. Open: cgroup-BPF directives only (`IPAddressAllow=` / `IPAddressDeny=` / `RestrictAddressFamilies=`), no `[Unit]` section |
 | `50-numa.conf`          | when `allowed_cpus` or `allowed_memory_nodes` set | `AllowedCPUs=` / `AllowedMemoryNodes=`                       |
 | `60-proxy.conf`         | when `[proxy]` resolved                  | dual-case `Environment=HTTP_PROXY=...`/`http_proxy=...`, `HTTPS_PROXY=...`/`https_proxy=...`, `NO_PROXY=...`/`no_proxy=...` + CA-trust env vars |
-| `70-hooks.conf`         | when `[hooks]` resolved                  | `Environment=ACTIONS_RUNNER_HOOK_JOB_STARTED=...` + `BindReadOnlyPaths` for hook script |
+| `70-hooks.conf`         | always (when `cleanup_workdir` enabled — default) OR when `[hooks].pre_job`/`post_job` is set | `Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED=<runner_home>/ghars-cleanup.sh` (default wiring to the per-runner cleanup script); plus `Environment=ACTIONS_RUNNER_HOOK_JOB_STARTED=...` when `pre_job` set; plus `BindReadOnlyPaths` for operator hook script parent dirs. `cleanup_workdir = false` routes `JOB_COMPLETED` directly to operator `post_job` (or omits it). |
 | `80-lognamespace.conf`  | yes                                      | `LogNamespace=ghars-<name>` (per-runner journal isolation)           |
 
 The `00-ghars.conf` `X-Ghars-*` annotations are the load-bearing
@@ -245,8 +245,19 @@ systemd drop-in's `ExecStart=` invokes it from there directly:
 │   │   └── ...
 │   └── ...
 ├── bin.2.333.1/                 # rollback target retained
+├── ghars-cleanup.sh             # per-runner JOB_COMPLETED hook (mode 0o755 root:root) — bounded disk growth
 └── ...                          # config.sh outputs (.runner, .credentials, etc.)
 ```
+
+`ghars-cleanup.sh` lives at the runner-home top level (NOT under
+the versioned `bin.X.Y.Z/` subtree) so it survives runner version
+upgrades without rewrites — the script body bakes the
+version-specific `_work/` path and is regenerated on every
+`ghars apply`, but its location stays stable across version bumps.
+See [`[hooks].cleanup_workdir`](./configuration.md#hooks-singleton)
+for the script's behavior (chains operator `post_job` if set, then
+wipes `_work/` contents except `_actions/`/`_tool/`/`_PipelineMapping/`,
+then wipes `$TMPDIR` and `/tmp`).
 
 The `bin.X.Y.Z/` directory is published atomically via
 `renameat2(RENAME_EXCHANGE)` swapping the freshly-extracted

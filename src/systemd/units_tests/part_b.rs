@@ -47,7 +47,18 @@ fn render_skips_optional_drop_ins_when_absent() {
     assert!(!r.drop_ins.contains_key("40-network.conf"));
     assert!(!r.drop_ins.contains_key("50-numa.conf"));
     assert!(!r.drop_ins.contains_key("60-proxy.conf"));
-    assert!(!r.drop_ins.contains_key("70-hooks.conf"));
+    // 70-hooks.conf IS always present when ghars's default between-jobs
+    // cleanup is enabled (the default). It wires
+    // ACTIONS_RUNNER_HOOK_JOB_COMPLETED to the per-runner
+    // ghars-cleanup.sh script so disk growth stays bounded on
+    // long-lived (non-`--ephemeral`) runners.
+    assert!(r.drop_ins.contains_key("70-hooks.conf"));
+    let hooks = r.drop_ins.get("70-hooks.conf").unwrap();
+    assert!(
+        hooks.contains("ACTIONS_RUNNER_HOOK_JOB_COMPLETED=")
+            && hooks.contains("ghars-cleanup.sh"),
+        "70-hooks.conf must wire JOB_COMPLETED to ghars-cleanup.sh, got:\n{hooks}"
+    );
     // 15-resolv.conf IS always present; verified separately.
 }
 
@@ -1102,13 +1113,263 @@ fn render_emits_hooks() {
     spec.hooks = Some(HooksSpec {
         pre_job: Some(Utf8PathBuf::from("/opt/gha/pre-job.sh")),
         post_job: Some(Utf8PathBuf::from("/opt/gha/post-job.sh")),
+        cleanup_workdir: None,
     });
     let r = render_runner_unit(&spec).unwrap();
     let h = r.drop_ins.get("70-hooks.conf").unwrap();
     assert!(h.contains("Environment=ACTIONS_RUNNER_HOOK_JOB_STARTED=/opt/gha/pre-job.sh"));
-    assert!(h.contains("Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/opt/gha/post-job.sh"));
-    // Parent dir deduped.
+    // JOB_COMPLETED points at the per-runner ghars-cleanup.sh
+    // (default `cleanup_workdir` enabled). The operator post_job is
+    // chained from INSIDE that script, not wired directly here.
+    assert!(h.contains(
+        "Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/var/lib/ghars/default/ghars-buckos/ghars-cleanup.sh"
+    ));
+    // Operator post_job path is NOT wired directly — its parent dir IS
+    // bound so the cleanup script can reach it from inside the sandbox.
+    assert!(!h.contains("Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/opt/gha/post-job.sh"));
+    // Parent dir deduped across operator pre/post.
     assert!(h.contains("BindReadOnlyPaths=/opt/gha"));
+    // The cleanup script body is also rendered onto the unit struct;
+    // its content is exercised in render_cleanup_script tests.
+    assert!(
+        !r.cleanup_script.is_empty(),
+        "cleanup script body must be non-empty when cleanup_workdir is enabled"
+    );
+    assert!(r.cleanup_script.contains("ACTIONS_RUNNER_HOOK_JOB_COMPLETED"));
+    assert!(r.cleanup_script.contains("/opt/gha/post-job.sh"));
+}
+
+/// `cleanup_workdir = Some(false)` opts out of the cleanup chain.
+/// `JOB_COMPLETED` falls back to the operator's `post_job` directly
+/// (matching the pre-cleanup-feature contract); `ghars-cleanup.sh`
+/// is not wired, and the cleanup script body is empty so the apply
+/// layer skips writing the script to disk.
+#[test]
+fn render_hooks_opt_out_wires_user_post_job_directly() {
+    let mut spec = minimal_spec();
+    spec.hooks = Some(HooksSpec {
+        pre_job: None,
+        post_job: Some(Utf8PathBuf::from("/opt/gha/post-job.sh")),
+        cleanup_workdir: Some(false),
+    });
+    let r = render_runner_unit(&spec).unwrap();
+    let h = r.drop_ins.get("70-hooks.conf").unwrap();
+    assert!(h.contains("Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/opt/gha/post-job.sh"));
+    assert!(!h.contains("ghars-cleanup.sh"));
+    assert!(
+        r.cleanup_script.is_empty(),
+        "cleanup script body must be empty when cleanup_workdir = false"
+    );
+}
+
+/// `cleanup_workdir = Some(false)` with no operator hooks ⇒ no
+/// `70-hooks.conf` at all (matches the pre-cleanup empty-`HooksSpec`
+/// contract). Apply layer skips both the drop-in write and the
+/// cleanup-script write.
+#[test]
+fn render_hooks_opt_out_with_no_user_hooks_skips_drop_in() {
+    let mut spec = minimal_spec();
+    spec.hooks = Some(HooksSpec {
+        pre_job: None,
+        post_job: None,
+        cleanup_workdir: Some(false),
+    });
+    let r = render_runner_unit(&spec).unwrap();
+    assert!(!r.drop_ins.contains_key("70-hooks.conf"));
+    assert!(r.cleanup_script.is_empty());
+}
+
+// --- render_cleanup_script body tests ---------------------------
+
+/// Default-on cleanup script: shebang, `cd /`, `_work` wipe with
+/// `_actions`/`_tool`/`_PipelineMapping` preservation, `$TMPDIR`
+/// wipe, `/tmp` wipe, exit propagation, no operator chain.
+#[test]
+fn render_cleanup_script_default_on_no_user_post_job() {
+    let spec = minimal_spec();
+    let r = render_runner_unit(&spec).unwrap();
+    let body = &r.cleanup_script;
+    assert!(body.starts_with("#!/bin/bash"));
+    // cd / before the wipes — hook cwd is $GITHUB_WORKSPACE inside
+    // _work, wiping the running shell's cwd has inconsistent
+    // semantics (actions/runner ScriptHandler.cs L167-168).
+    assert!(body.contains("\ncd /\n"), "must `cd /` before cleanup: {body}");
+    // Per-runner _work root baked in absolutely.
+    assert!(body.contains(
+        "work_root='/var/lib/ghars/default/ghars-buckos/bin.2.334.0/_work'"
+    ));
+    // All three caches/tracking dirs preserved.
+    assert!(body.contains("! -name '_actions'"));
+    assert!(body.contains("! -name '_tool'"));
+    assert!(body.contains("! -name '_PipelineMapping'"));
+    // TMPDIR (the actual disk hog — workflow steps that respect
+    // $TMPDIR write here, NOT to /tmp) is wiped.
+    assert!(body.contains("tmpdir='/var/lib/ghars/default/ghars-buckos/tmp'"));
+    // PrivateTmp-namespaced /tmp also wiped.
+    assert!(body.contains("find /tmp -mindepth 1 -maxdepth 1"));
+    // No operator chain when post_job is unset.
+    assert!(!body.contains("user_post_job="));
+    assert!(body.contains("no operator [hooks].post_job configured"));
+    // Always exits with the (zero) op_exit code.
+    assert!(body.contains("\nexit \"$op_exit\"\n"));
+}
+
+/// User-supplied `.sh` `post_job` chained via `bash -e` (matches
+/// actions/runner's `JobHookProvider` non-action argFormat).
+#[test]
+fn render_cleanup_script_chains_user_sh_post_job() {
+    let mut spec = minimal_spec();
+    spec.hooks = Some(HooksSpec {
+        pre_job: None,
+        post_job: Some(Utf8PathBuf::from("/opt/gha-hooks/post.sh")),
+        cleanup_workdir: None,
+    });
+    let r = render_runner_unit(&spec).unwrap();
+    let body = &r.cleanup_script;
+    // Path baked as single-quoted bash literal.
+    assert!(body.contains("user_post_job='/opt/gha-hooks/post.sh'"));
+    // Extension dispatch present.
+    assert!(body.contains("case \"$user_post_job\" in"));
+    assert!(body.contains("*.ps1)"));
+    assert!(body.contains("*.js)"));
+    // Default arm: bash -e mirrors upstream.
+    assert!(body.contains("bash -e \"$user_post_job\" || op_exit=$?"));
+    // pwsh arm present for .ps1 paths.
+    assert!(body.contains("pwsh -command \". '$user_post_job'\" || op_exit=$?"));
+}
+
+/// Path with single quote is escaped via the `'\''` close-escape-
+/// open form (canonical bash single-quote-string escape). The
+/// validator does not block single quotes in hook paths, so the
+/// renderer must.
+#[test]
+fn render_cleanup_script_escapes_single_quotes_in_post_job_path() {
+    let mut spec = minimal_spec();
+    spec.hooks = Some(HooksSpec {
+        pre_job: None,
+        post_job: Some(Utf8PathBuf::from("/opt/'qu'oted/post.sh")),
+        cleanup_workdir: None,
+    });
+    let r = render_runner_unit(&spec).unwrap();
+    let body = &r.cleanup_script;
+    // 4 single quotes in the path → 4 close-escape-open expansions.
+    assert!(
+        body.contains("user_post_job='/opt/'\\''qu'\\''oted/post.sh'"),
+        "single-quoted bash literal must escape `'` as `'\\''`: {body}"
+    );
+}
+
+/// `cleanup_workdir = Some(false)` makes the renderer return an
+/// empty body — apply layer uses the empty body to know to skip
+/// the on-disk write (or unlink any stale script on the update
+/// path).
+#[test]
+fn render_cleanup_script_opt_out_returns_empty() {
+    let mut spec = minimal_spec();
+    spec.hooks = Some(HooksSpec {
+        pre_job: None,
+        post_job: None,
+        cleanup_workdir: Some(false),
+    });
+    let r = render_runner_unit(&spec).unwrap();
+    assert!(r.cleanup_script.is_empty());
+}
+
+/// The rendered script must pass through `validate_drop_in` (the
+/// reset-on-empty validator) when written into the 70-hooks.conf
+/// path. Strictly speaking the validator applies to drop-in BODIES
+/// not to the cleanup script body, but exercising the full
+/// `render_runner_unit` pipeline implicitly runs the validator on
+/// the new 70-hooks.conf shape with `post_job = None`. Pin the
+/// no-error contract for that path so a future regression in the
+/// empty-BindReadOnlyPaths branch surfaces.
+#[test]
+fn render_runner_unit_no_user_hooks_passes_validate_drop_in() {
+    let spec = minimal_spec();
+    // Renders without panic / error. The internal `validate_drop_in`
+    // call at the end of `render_runner_unit` would surface as
+    // Err here if the new always-emit body produced a malformed
+    // 70-hooks.conf.
+    let _ = render_runner_unit(&spec).unwrap();
+}
+
+/// `cleanup_script_path` and `Paths::runner_cleanup_script` agree
+/// on the same on-disk location. The renderer can't depend on a
+/// `Paths` value (it stays path-only), so the two derivations
+/// must produce byte-identical strings for the same `(trust_zone,
+/// name)` pair.
+#[test]
+fn cleanup_script_path_matches_paths_helper() {
+    let spec = minimal_spec();
+    let r = render_runner_unit(&spec).unwrap();
+    let h = r.drop_ins.get("70-hooks.conf").unwrap();
+    let paths_helper = crate::paths::Paths::default();
+    let expected = paths_helper
+        .runner_cleanup_script(&spec.trust_zone, &spec.name)
+        .to_string();
+    assert!(
+        h.contains(&format!("Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED={expected}")),
+        "renderer + Paths::runner_cleanup_script must agree on the absolute path; got hook:\n{h}"
+    );
+}
+
+/// The rendered cleanup script body must parse cleanly under
+/// `bash -n` (syntax check, no execution). Regression guard
+/// against future renderer edits that emit syntactically-invalid
+/// bash — actions/runner invokes the script via `bash -e <path>`
+/// and a parse error fails the job (per
+/// ScriptHandler.cs L344-356 `exitCode != 0` → `TaskResult.Failed`).
+/// Runs both the no-user-post_job and with-user-post_job paths
+/// (each emits a different chunk between `cd /` and the wipes).
+#[test]
+fn rendered_cleanup_script_passes_bash_syntax_check() {
+    fn assert_bash_syntax_ok(body: &str, label: &str) {
+        use std::io::Write;
+        let mut child = std::process::Command::new("bash")
+            .arg("-n")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn bash -n");
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(body.as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "bash -n rejected {label}; stderr:\n{}\n\nbody:\n{body}",
+            String::from_utf8_lossy(&out.stderr),
+        );
+    }
+
+    let no_post = render_runner_unit(&minimal_spec()).unwrap().cleanup_script;
+    assert_bash_syntax_ok(&no_post, "no-user-post_job script");
+
+    let mut with_post_spec = minimal_spec();
+    with_post_spec.hooks = Some(HooksSpec {
+        pre_job: None,
+        post_job: Some(Utf8PathBuf::from("/opt/gha-hooks/post.sh")),
+        cleanup_workdir: None,
+    });
+    let with_post = render_runner_unit(&with_post_spec)
+        .unwrap()
+        .cleanup_script;
+    assert_bash_syntax_ok(&with_post, "with-user-post_job script");
+
+    let mut quoted_post_spec = minimal_spec();
+    quoted_post_spec.hooks = Some(HooksSpec {
+        pre_job: None,
+        post_job: Some(Utf8PathBuf::from("/opt/'qu'oted/post.sh")),
+        cleanup_workdir: None,
+    });
+    let quoted_post = render_runner_unit(&quoted_post_spec)
+        .unwrap()
+        .cleanup_script;
+    assert_bash_syntax_ok(&quoted_post, "single-quote-in-path script");
 }
 
 // Drop-in interaction tests. systemd treats list-typed
@@ -1328,6 +1589,7 @@ fn bind_readonly_paths_composes_across_hardening_proxy_hooks() {
     spec.hooks = Some(HooksSpec {
         pre_job: Some(Utf8PathBuf::from("/opt/gha-hooks/pre-job.sh")),
         post_job: Some(Utf8PathBuf::from("/opt/gha-hooks/post-job.sh")),
+        cleanup_workdir: None,
     });
     let r = render_runner_unit(&spec).unwrap();
     let h = r

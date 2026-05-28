@@ -345,6 +345,7 @@ fn make_runner_plan(name: &str, prefix: &Utf8Path) -> RunnerPlan {
         drop_ins,
         env_file: rendered.env_file,
         path_file: rendered.path_file,
+        cleanup_script: rendered.cleanup_script,
         spec_hash: "sha256:dead".into(),
     }
 }

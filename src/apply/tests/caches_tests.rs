@@ -47,6 +47,7 @@ pub(super) fn make_caches_delta(
         drop_ins: rendered.drop_ins,
         env_file: rendered.env_file,
         path_file: rendered.path_file,
+        cleanup_script: rendered.cleanup_script,
     };
     RunnerDelta {
         identity: RunnerIdentity {
@@ -354,6 +355,7 @@ pub(super) fn delta_with_all_preserved_drop_ins(paths: &Paths) -> RunnerDelta {
         drop_ins: rendered.drop_ins,
         env_file: rendered.env_file,
         path_file: rendered.path_file,
+        cleanup_script: rendered.cleanup_script,
     };
     RunnerDelta {
         identity: RunnerIdentity {
@@ -412,6 +414,34 @@ pub(super) fn prepopulate_on_disk(paths: &Paths, delta: &RunnerDelta) {
         )
         .unwrap();
     }
+    // Pre-stage runner_home/ghars-cleanup.sh with byte-identical body
+    // so the in-place skip path's cleanup-script write short-circuits
+    // (read_then_write_if_changed returns false, files_changed stays
+    // at 0). Skip when the rendered body is empty (cleanup_workdir =
+    // false) — the in-place path only deletes a pre-existing script
+    // in that case, which the skip test fixtures never create.
+    if !delta.after.cleanup_script.is_empty() {
+        let runner_home = paths.runner_home(&delta.identity.trust_zone, &delta.identity.name);
+        std::fs::create_dir_all(runner_home.as_std_path()).unwrap();
+        let cleanup_path = paths.runner_cleanup_script(
+            &delta.identity.trust_zone,
+            &delta.identity.name,
+        );
+        std::fs::write(
+            cleanup_path.as_std_path(),
+            delta.after.cleanup_script.as_bytes(),
+        )
+        .unwrap();
+        // 0o755 mode matches what execute_update_runner enforces post-
+        // write; without it the chmod_record_undo arm fires, bumps
+        // files_changed, and breaks the InPlaceSkipped assertion.
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            cleanup_path.as_std_path(),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
 }
 
 /// When every managed file on disk byte-matches what we would
@@ -449,6 +479,71 @@ fn execute_update_runner_in_place_skips_restart_when_bytes_match() {
         log.is_empty(),
         "skip path must not push any UndoStep; got len={}",
         log.len(),
+    );
+}
+
+/// A cleanup-script-body-only drift (everything else byte-matches)
+/// MUST surface as `InPlaceSkipped` with no `daemon-reload` +
+/// `stop_unit` + `start_unit` calls. The cleanup script is invoked
+/// per-job by actions/runner (`bash -e <path>`) — not loaded into
+/// the running runner process at unit start — so a body change
+/// does not require a runner restart; the next `JOB_COMPLETED`
+/// hook invocation reads whatever bytes the script holds at that
+/// moment.
+///
+/// Real-world scenario: ghars binary upgrade adds a comment to
+/// the script template (cleanup script body bytes change) while
+/// every other rendered artifact stays byte-identical. Without
+/// the gate that excludes cleanup-script writes from
+/// `files_changed`, every such upgrade would bounce every runner.
+#[test]
+fn execute_update_runner_in_place_cleanup_script_only_drift_skips_restart() {
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = make_paths(&tmp);
+    let systemd = MockSystemd::default();
+    let tarball = MockTarball::default();
+    let config_shell = MockConfigShell::default();
+    let auth_map: HashMap<String, Box<dyn TokenSource>> = HashMap::new();
+    let deps = Deps {
+        systemd: &systemd,
+        auth: &auth_map,
+        tarball: &tarball,
+        config_shell: &config_shell,
+    };
+    let delta = delta_with_all_preserved_drop_ins(&paths);
+    prepopulate_on_disk(&paths, &delta);
+    // Tamper with the on-disk cleanup script so its bytes no
+    // longer match `delta.after.cleanup_script`. Everything else
+    // (unit file, drop-ins, .env, .path) still byte-matches.
+    let cleanup_path = paths.runner_cleanup_script(
+        &delta.identity.trust_zone,
+        &delta.identity.name,
+    );
+    std::fs::write(
+        cleanup_path.as_std_path(),
+        b"#!/bin/bash\n# stale cleanup script body from a prior ghars version\nexit 0\n",
+    )
+    .unwrap();
+    let mut log = UndoLog::new();
+    let outcome = execute_update_runner(&delta, &deps, &paths, &mut log, 2, false).unwrap();
+    // Cleanup script drift alone MUST NOT trigger a restart.
+    assert_eq!(
+        outcome,
+        ApplyOutcome::InPlaceSkipped,
+        "cleanup-script-only drift must surface as InPlaceSkipped",
+    );
+    let calls = systemd.calls_snapshot();
+    assert!(
+        calls.is_empty(),
+        "cleanup-script-only drift must NOT call systemd; got: {calls:?}",
+    );
+    // The on-disk script WAS rewritten to the canonical body —
+    // the write is just not gated through the restart machinery.
+    let on_disk = std::fs::read_to_string(cleanup_path.as_std_path()).unwrap();
+    assert_eq!(
+        on_disk, delta.after.cleanup_script,
+        "cleanup script body must be rewritten to match the rendered output \
+         even though restart is skipped",
     );
 }
 
