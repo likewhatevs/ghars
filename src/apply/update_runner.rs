@@ -351,8 +351,8 @@ pub(super) fn execute_update_runner(
     // bump `files_changed` correctly. Excluding cleanup-script
     // mutations here avoids a spurious daemon-reload + restart
     // bounce when the only edit is `[hooks].post_job` flipping.
-    let cleanup_script_path = paths
-        .runner_cleanup_script(&delta.identity.trust_zone, &delta.identity.name);
+    let cleanup_script_path =
+        paths.runner_cleanup_script(&delta.identity.trust_zone, &delta.identity.name);
     if delta.after.cleanup_script.is_empty() {
         if cleanup_script_path.as_std_path().exists() {
             let prior = read_prior(&cleanup_script_path);
@@ -376,12 +376,7 @@ pub(super) fn execute_update_runner(
                 .mode()
                 & 0o7777;
             if current_mode != 0o755 {
-                chmod_record_undo(
-                    &cleanup_script_path,
-                    0o755,
-                    "ghars-cleanup.sh",
-                    log,
-                )?;
+                chmod_record_undo(&cleanup_script_path, 0o755, "ghars-cleanup.sh", log)?;
             }
         }
     }

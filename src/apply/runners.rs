@@ -930,12 +930,7 @@ pub(super) fn execute_create_runner(
             rendered.cleanup_script.as_bytes(),
             log,
         )?;
-        chmod_record_undo(
-            &cleanup_script_path,
-            0o755,
-            "ghars-cleanup.sh",
-            log,
-        )?;
+        chmod_record_undo(&cleanup_script_path, 0o755, "ghars-cleanup.sh", log)?;
     }
 
     // 5d) Normalize post-`config.sh` file modes to DynamicUser-READ.

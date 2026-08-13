@@ -1778,7 +1778,10 @@ fn render_hooks(spec: &EffectiveRunnerSpec) -> Result<Option<String>> {
     //     omit if no operator post_job — pre-cleanup behavior).
     if cleanup_enabled {
         let cleanup_path = cleanup_script_path(spec);
-        let _ = writeln!(s, "Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED={cleanup_path}");
+        let _ = writeln!(
+            s,
+            "Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED={cleanup_path}"
+        );
     } else if let Some(p) = user_post_job {
         let _ = writeln!(s, "Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED={p}");
     }
@@ -2004,18 +2007,16 @@ pub(crate) fn render_cleanup_script(spec: &EffectiveRunnerSpec) -> Result<String
              esac\n",
             quoted = bash_single_quote(p.as_str())
         ),
-        None => "# (3) no operator [hooks].post_job configured — nothing to chain\n: \n"
-            .to_string(),
+        None => {
+            "# (3) no operator [hooks].post_job configured — nothing to chain\n: \n".to_string()
+        }
     };
 
     let work_root = format!(
         "/var/lib/ghars/{}/ghars-{}/bin.{}/_work",
         spec.trust_zone, spec.name, version
     );
-    let tmpdir = format!(
-        "/var/lib/ghars/{}/ghars-{}/tmp",
-        spec.trust_zone, spec.name
-    );
+    let tmpdir = format!("/var/lib/ghars/{}/ghars-{}/tmp", spec.trust_zone, spec.name);
 
     Ok(format!(
         "#!/bin/bash\n\

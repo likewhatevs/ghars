@@ -55,8 +55,7 @@ fn render_skips_optional_drop_ins_when_absent() {
     assert!(r.drop_ins.contains_key("70-hooks.conf"));
     let hooks = r.drop_ins.get("70-hooks.conf").unwrap();
     assert!(
-        hooks.contains("ACTIONS_RUNNER_HOOK_JOB_COMPLETED=")
-            && hooks.contains("ghars-cleanup.sh"),
+        hooks.contains("ACTIONS_RUNNER_HOOK_JOB_COMPLETED=") && hooks.contains("ghars-cleanup.sh"),
         "70-hooks.conf must wire JOB_COMPLETED to ghars-cleanup.sh, got:\n{hooks}"
     );
     // 15-resolv.conf IS always present; verified separately.
@@ -1135,7 +1134,10 @@ fn render_emits_hooks() {
         !r.cleanup_script.is_empty(),
         "cleanup script body must be non-empty when cleanup_workdir is enabled"
     );
-    assert!(r.cleanup_script.contains("ACTIONS_RUNNER_HOOK_JOB_COMPLETED"));
+    assert!(
+        r.cleanup_script
+            .contains("ACTIONS_RUNNER_HOOK_JOB_COMPLETED")
+    );
     assert!(r.cleanup_script.contains("/opt/gha/post-job.sh"));
 }
 
@@ -1193,11 +1195,12 @@ fn render_cleanup_script_default_on_no_user_post_job() {
     // cd / before the wipes — hook cwd is $GITHUB_WORKSPACE inside
     // _work, wiping the running shell's cwd has inconsistent
     // semantics (actions/runner ScriptHandler.cs L167-168).
-    assert!(body.contains("\ncd /\n"), "must `cd /` before cleanup: {body}");
+    assert!(
+        body.contains("\ncd /\n"),
+        "must `cd /` before cleanup: {body}"
+    );
     // Per-runner _work root baked in absolutely.
-    assert!(body.contains(
-        "work_root='/var/lib/ghars/default/ghars-buckos/bin.2.334.0/_work'"
-    ));
+    assert!(body.contains("work_root='/var/lib/ghars/default/ghars-buckos/bin.2.334.0/_work'"));
     // All three caches/tracking dirs preserved.
     assert!(body.contains("! -name '_actions'"));
     assert!(body.contains("! -name '_tool'"));
@@ -1308,7 +1311,9 @@ fn cleanup_script_path_matches_paths_helper() {
         .runner_cleanup_script(&spec.trust_zone, &spec.name)
         .to_string();
     assert!(
-        h.contains(&format!("Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED={expected}")),
+        h.contains(&format!(
+            "Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED={expected}"
+        )),
         "renderer + Paths::runner_cleanup_script must agree on the absolute path; got hook:\n{h}"
     );
 }
@@ -1355,9 +1360,7 @@ fn rendered_cleanup_script_passes_bash_syntax_check() {
         post_job: Some(Utf8PathBuf::from("/opt/gha-hooks/post.sh")),
         cleanup_workdir: None,
     });
-    let with_post = render_runner_unit(&with_post_spec)
-        .unwrap()
-        .cleanup_script;
+    let with_post = render_runner_unit(&with_post_spec).unwrap().cleanup_script;
     assert_bash_syntax_ok(&with_post, "with-user-post_job script");
 
     let mut quoted_post_spec = minimal_spec();

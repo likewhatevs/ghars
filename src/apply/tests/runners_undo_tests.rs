@@ -1012,7 +1012,11 @@ fn update_runner_in_place_does_not_rewrite_env_when_content_matches() {
     // body + 0o755 mode so the in-place cleanup-script write +
     // chmod both short-circuit.
     let cleanup_path = paths.runner_cleanup_script("default", "a");
-    std::fs::write(cleanup_path.as_std_path(), rendered.cleanup_script.as_bytes()).unwrap();
+    std::fs::write(
+        cleanup_path.as_std_path(),
+        rendered.cleanup_script.as_bytes(),
+    )
+    .unwrap();
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(
@@ -1265,7 +1269,11 @@ fn update_runner_in_place_byte_match_returns_skipped_regardless_of_no_restart() 
     // chmod both short-circuit (otherwise files_changed bumps and
     // the InPlaceSkipped path doesn't fire).
     let cleanup_path = paths.runner_cleanup_script("default", "a");
-    std::fs::write(cleanup_path.as_std_path(), rendered.cleanup_script.as_bytes()).unwrap();
+    std::fs::write(
+        cleanup_path.as_std_path(),
+        rendered.cleanup_script.as_bytes(),
+    )
+    .unwrap();
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(

@@ -423,10 +423,8 @@ pub(super) fn prepopulate_on_disk(paths: &Paths, delta: &RunnerDelta) {
     if !delta.after.cleanup_script.is_empty() {
         let runner_home = paths.runner_home(&delta.identity.trust_zone, &delta.identity.name);
         std::fs::create_dir_all(runner_home.as_std_path()).unwrap();
-        let cleanup_path = paths.runner_cleanup_script(
-            &delta.identity.trust_zone,
-            &delta.identity.name,
-        );
+        let cleanup_path =
+            paths.runner_cleanup_script(&delta.identity.trust_zone, &delta.identity.name);
         std::fs::write(
             cleanup_path.as_std_path(),
             delta.after.cleanup_script.as_bytes(),
@@ -515,10 +513,8 @@ fn execute_update_runner_in_place_cleanup_script_only_drift_skips_restart() {
     // Tamper with the on-disk cleanup script so its bytes no
     // longer match `delta.after.cleanup_script`. Everything else
     // (unit file, drop-ins, .env, .path) still byte-matches.
-    let cleanup_path = paths.runner_cleanup_script(
-        &delta.identity.trust_zone,
-        &delta.identity.name,
-    );
+    let cleanup_path =
+        paths.runner_cleanup_script(&delta.identity.trust_zone, &delta.identity.name);
     std::fs::write(
         cleanup_path.as_std_path(),
         b"#!/bin/bash\n# stale cleanup script body from a prior ghars version\nexit 0\n",
