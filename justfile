@@ -68,12 +68,21 @@ ci-coverage:
         --fail-under-lines 70
 
 # Musl static build + link assertion for the ghars binary
-ci-musl:
+ci-musl: (release-musl "x86_64-unknown-linux-musl")
+
+# Musl static release build + link assertion for an explicit target
+# triple (release workflow assets). Points cc/linker at musl-gcc so
+# ring's C sources build on hosts whose distro ships only the
+# unprefixed musl-gcc wrapper (Ubuntu musl-tools, Fedora musl-gcc).
+release-musl target:
     #!/usr/bin/env bash
     set -euo pipefail
-    rustup target add x86_64-unknown-linux-musl
-    cargo build --release --target x86_64-unknown-linux-musl
-    P="target/x86_64-unknown-linux-musl/release/ghars"
+    rustup target add {{ target }}
+    tu="$(echo {{ target }} | tr '-' '_')"
+    export "CC_${tu}=musl-gcc"
+    export "CARGO_TARGET_$(echo "${tu}" | tr '[:lower:]' '[:upper:]')_LINKER=musl-gcc"
+    cargo build --release --target {{ target }}
+    P="target/{{ target }}/release/ghars"
     file "$P"
     file "$P" | grep -qE "statically linked|static-pie linked"
 

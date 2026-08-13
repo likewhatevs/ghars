@@ -1,0 +1,89 @@
+# ghars release: tag-push (v*) driven build + GitHub release.
+#
+# Same conventions as ci.yml: the build command lives in the justfile
+# (`just release-musl TARGET`) so it is runnable locally; the YAML
+# handles checkout, toolchain, cache, artifact plumbing, and the
+# release call. Static musl binaries are built per arch on native
+# runners (public-repo arm64 runners; no cross toolchain), then the
+# release job attaches them to a GitHub release for the pushed tag.
+#
+# GITHUB_TOKEN gets contents:write on the release job only; every
+# other job runs with an empty permission set.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            asset: ghars-x86_64-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            asset: ghars-aarch64-linux-musl
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.91
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@just
+      - name: Install musl-tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+      - name: just release-musl
+        run: just release-musl ${{ matrix.target }}
+      - name: Stage asset
+        run: install -D "target/${{ matrix.target }}/release/ghars" "dist/${{ matrix.asset }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    name: create GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Hand-written notes are looked up per tag under
+        # .github/release-notes/; a tag without one falls back to
+        # GitHub's auto-generated notes rather than failing.
+        run: |
+          set -eu
+          notes=".github/release-notes/${GITHUB_REF_NAME}.md"
+          if [ -f "$notes" ]; then
+            notes_flag="--notes-file"
+            notes_arg="$notes"
+          else
+            notes_flag="--generate-notes"
+            notes_arg=""
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --title "ghars $GITHUB_REF_NAME" \
+            --verify-tag \
+            "$notes_flag" ${notes_arg:+"$notes_arg"} \
+            dist/*
