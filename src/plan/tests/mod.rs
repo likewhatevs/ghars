@@ -29,14 +29,14 @@ pub(super) use super::classify::{
 };
 pub(super) use super::compute::{
     NETNS_POOL_SLOTS, host_arch, into_cache_pool_plan, into_runner_plan, lower_to_effective,
-    netns_subnet_for_slot, plan_from, with_hash,
+    netns_subnet_for_slot, plan_from, plan_from_with_latest, with_hash,
 };
 pub(super) use super::expand::{MAX_COUNT, expand_counts};
 pub(super) use super::hash::{cache_pool_hash, spec_hash};
 pub(super) use super::merge::{merge_defaults, merge_hardening};
 pub(super) use super::types::{
     CachePoolDelta, CachePoolPlan, DriftCause, DropInChange, DropInChangeKind, FieldChange,
-    FieldValue, Plan, RunnerDelta, RunnerIdentity, RunnerPlan,
+    FieldValue, LatestReleases, Plan, RunnerDelta, RunnerIdentity, RunnerPlan,
 };
 
 mod part1a;

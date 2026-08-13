@@ -60,6 +60,12 @@ pub(super) fn execute_create_cache_pool(
         name: unit_name.clone(),
     });
     deps.systemd.daemon_reload()?;
+    // Best-effort start-limit-hit reset — same rationale as the
+    // execute_create_runner pre-start guard; a flapped cache unit
+    // blocks every runner that `Requires=` it.
+    if let Err(e) = deps.systemd.reset_failed_unit(&unit_name) {
+        tracing::debug!(unit = %unit_name, error = %e, "pre-start ResetFailedUnit skipped");
+    }
     deps.systemd.start_unit(&unit_name)?;
     log.push(UndoStep::StartUnit {
         name: unit_name.clone(),
@@ -137,6 +143,11 @@ pub(super) fn execute_update_cache_pool(
     log.push(UndoStep::StopUnit {
         name: unit_name.clone(),
     });
+    // Best-effort start-limit-hit reset — same rationale as the
+    // pool-create pre-start guard above.
+    if let Err(e) = deps.systemd.reset_failed_unit(&unit_name) {
+        tracing::debug!(unit = %unit_name, error = %e, "pre-start ResetFailedUnit skipped");
+    }
     deps.systemd.start_unit(&unit_name)?;
     log.push(UndoStep::StartUnit {
         name: unit_name.clone(),

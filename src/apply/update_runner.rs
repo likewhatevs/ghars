@@ -434,6 +434,12 @@ pub(super) fn execute_update_runner(
     log.push(UndoStep::StopUnit {
         name: unit_name.clone(),
     });
+    // Best-effort start-limit-hit reset — same rationale as the
+    // execute_create_runner pre-start guard: an in-place update must
+    // be able to revive a unit that flapped into `failed` state.
+    if let Err(e) = deps.systemd.reset_failed_unit(&unit_name) {
+        tracing::debug!(unit = %unit_name, error = %e, "pre-start ResetFailedUnit skipped");
+    }
     deps.systemd.start_unit(&unit_name)?;
     log.push(UndoStep::StartUnit {
         name: unit_name.clone(),

@@ -7,10 +7,58 @@
 
 use std::collections::BTreeMap;
 
-use crate::config::{EffectiveCacheBinding, EffectiveRunnerSpec};
+use crate::config::{Arch, EffectiveCacheBinding, EffectiveRunnerSpec};
 use crate::github::Release;
 
 use super::action::{Action, Disruption};
+
+/// Latest published actions/runner release per arch, resolved once per
+/// CLI invocation and threaded into `plan_from_with_latest` so
+/// implicit-latest runners (no `runner_version` in TOML) track the
+/// current release instead of freezing at whatever version was
+/// installed at create time. Runners register with `--disableupdate`,
+/// so ghars is the ONLY upgrade path — a frozen fleet eventually hits
+/// GitHub's runner-version deprecation floor and every listener exits
+/// with "deprecated and cannot receive messages" while plan keeps
+/// reporting "in sync". Threading the latest release into the planner
+/// turns that drift into an ordinary recreate-class version change.
+///
+/// A `None` arch slot means resolution was skipped (no unpinned runner
+/// of that arch) or failed; `warnings` carries the failure text for
+/// `Plan.warnings`. Empty (`default()`) preserves the offline
+/// fallback: unpinned runners inherit their installed version from the
+/// `X-Ghars-Effective-Version` annotation, exactly the pre-track-latest
+/// behavior.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LatestReleases {
+    /// Latest release resolved for `x86_64`, when needed and reachable.
+    pub x86_64: Option<Release>,
+    /// Latest release resolved for `aarch64`, when needed and reachable.
+    pub aarch64: Option<Release>,
+    /// Resolution failures (network / rate-limit / decode), surfaced
+    /// into `Plan.warnings` so the operator sees that version drift
+    /// was undetectable this run.
+    pub warnings: Vec<String>,
+}
+
+impl LatestReleases {
+    /// The resolved latest release for `arch`, if any.
+    #[must_use]
+    pub fn release_for(&self, arch: Arch) -> Option<&Release> {
+        match arch {
+            Arch::X86_64 => self.x86_64.as_ref(),
+            Arch::Aarch64 => self.aarch64.as_ref(),
+        }
+    }
+
+    /// Store the resolved latest release for `arch`.
+    pub fn set(&mut self, arch: Arch, release: Release) {
+        match arch {
+            Arch::X86_64 => self.x86_64 = Some(release),
+            Arch::Aarch64 => self.aarch64 = Some(release),
+        }
+    }
+}
 
 /// Result of `plan_from`: ordered actions + non-fatal warnings to surface
 /// at the CLI layer.

@@ -72,7 +72,19 @@ keep_versions  = 2                   # bin.X.Y.Z retention; default 2
 Fields in `Defaults`:
 
 - `runner_version` (`Option<String>`) — default GitHub Actions
-  runner version (e.g. `"2.334.0"`).
+  runner version (e.g. `"2.334.0"`). Unset means **track latest**:
+  every `plan` / `apply` resolves the latest actions/runner release
+  and classifies runners installed at anything older as a
+  recreate-class `runner_version` change. Runners register with
+  `--disableupdate`, so ghars is their only upgrade path — a version
+  left frozen eventually crosses GitHub's deprecation floor and the
+  listener exits with "deprecated and cannot receive messages" on
+  every start. Pin a version only when you want to hold the fleet at
+  it deliberately (and plan to bump it before GitHub deprecates it).
+  When the releases API is unreachable, plan degrades gracefully:
+  unpinned runners are classified against their installed versions
+  (from the `X-Ghars-Effective-Version` annotation) and the plan
+  carries a warning that version drift was undetectable.
 - `runner_sha256` (`Option<String>`) — default tarball SHA-256 (64
   hex). Only meaningful with `runner_version`. Empty string is
   normalized to None at merge time: equivalent to omitting the

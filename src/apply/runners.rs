@@ -1071,6 +1071,15 @@ pub(super) fn execute_create_runner(
         fs::create_dir_all(pool_dir.as_std_path())?;
     }
 
+    // Best-effort failed-state reset before start: a previous
+    // incarnation of this unit name may sit in `start-limit-hit`
+    // (e.g. a runner that flapped after GitHub deprecated its
+    // installed version), which refuses StartUnit until the rate-limit
+    // window elapses. NoSuchUnit errors are normal for first-time
+    // creates; a real start problem surfaces from start_unit below.
+    if let Err(e) = deps.systemd.reset_failed_unit(&unit_name) {
+        tracing::debug!(unit = %unit_name, error = %e, "pre-start ResetFailedUnit skipped");
+    }
     deps.systemd.start_unit(&unit_name)?;
     log.push(UndoStep::StartUnit {
         name: unit_name.clone(),

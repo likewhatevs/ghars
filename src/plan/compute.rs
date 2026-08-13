@@ -28,8 +28,8 @@ use super::expand::expand_counts;
 use super::hash::{cache_pool_hash, spec_hash};
 use super::merge::merge_defaults;
 use super::types::{
-    CachePoolDelta, CachePoolPlan, DriftCause, DropInChange, DropInChangeKind, FieldChange, Plan,
-    RunnerDelta, RunnerIdentity, RunnerPlan,
+    CachePoolDelta, CachePoolPlan, DriftCause, DropInChange, DropInChangeKind, FieldChange,
+    LatestReleases, Plan, RunnerDelta, RunnerIdentity, RunnerPlan,
 };
 
 /// First octet of the default netns subnet pool. The full pool is
@@ -85,11 +85,15 @@ pub(super) fn netns_subnet_for_slot(slot_idx: usize, runner_name: &str) -> Resul
 /// 2. Defaults-merge — runs in [`lower_to_effective`]. Cross-reference
 ///    resolution for auth, caches, network is validated and threaded
 ///    through.
-/// 3. Release lookup — NOT done here; the unit-text generator
-///    is responsible for resolving `runner_version` against the
-///    releases API. Plan emits the spec with whatever
-///    `runner_version` is pinned in config; if unset it stays
-///    `None` and the generator decides.
+/// 3. Release lookup — the caller resolves the latest actions/runner
+///    release per arch (network) and threads it in via `latest`;
+///    specs without a pinned `runner_version` adopt that version so
+///    installed-version drift classifies as an ordinary
+///    recreate-class change. When `latest` has no entry for a spec's
+///    arch (offline resolution failure, or the [`plan_from`]
+///    wrapper), unpinned specs keep `runner_version = None` and the
+///    intersection arm falls back to inheriting the installed
+///    version from the `X-Ghars-Effective-Version` annotation.
 /// 4. Spec hash (Part 8 step 4) — computed via [`spec_hash`].
 /// 5/6. Set diff against `actual`:
 ///    - desired - actual ⇒ `CreateRunner`.
@@ -136,8 +140,23 @@ pub(super) fn netns_subnet_for_slot(slot_idx: usize, runner_name: &str) -> Resul
 /// - a runner references an unknown cache pool;
 /// - a runner references an unknown network;
 /// - a runner's `trust_zone` doesn't match a referenced cache pool's.
-#[allow(clippy::expect_used)]
 pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result<Plan> {
+    plan_from_with_latest(config, actual, paths, &LatestReleases::default())
+}
+
+/// [`plan_from`] with the latest actions/runner releases threaded in.
+/// The CLI's `compute_plan` resolves `latest` from the releases API
+/// so every `plan` / `apply` sees implicit-latest runners against the
+/// current release; [`plan_from`] passes an empty `LatestReleases`
+/// (offline callers: `ghars validate`, tests) which degrades to the
+/// installed-version fallback described in the doc above.
+#[allow(clippy::expect_used)]
+pub fn plan_from_with_latest(
+    config: &Config,
+    actual: &ActualState,
+    paths: &Paths,
+    latest: &LatestReleases,
+) -> Result<Plan> {
     let host_arch = host_arch();
     let config_source = paths.config_dir.join("ghars.toml").to_string();
     // Defense-in-depth: reject control chars in `config_source`
@@ -178,9 +197,30 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
     // use a subnet.
     let mut desired: BTreeMap<String, EffectiveRunnerSpec> = BTreeMap::new();
     let mut warnings: Vec<String> = Vec::new();
+    // Surface latest-release resolution failures (network / rate
+    // limit) before any per-runner work: the operator must know that
+    // implicit-latest runners were classified against their installed
+    // versions this run, not against the current release.
+    warnings.extend(latest.warnings.iter().cloned());
     for (slot_idx, runner) in expanded.iter().enumerate() {
-        let effective =
+        let mut effective =
             lower_to_effective(runner, config, host_arch, config_source.clone(), slot_idx)?;
+        // Track-latest: an unpinned runner adopts the resolved latest
+        // release version as if the operator had pinned it. Downstream
+        // this makes installed-version drift (X-Ghars-Effective-Version
+        // annotation ≠ latest) an ordinary recreate-class
+        // `runner_version` change instead of an invisible freeze —
+        // runners register with `--disableupdate`, so a frozen version
+        // eventually crosses GitHub's deprecation floor and the fleet
+        // dies while reporting "in sync". `runner_tarball` specs are
+        // excluded: their version is operator-pinned by validation
+        // (tarball+no-version is rejected at `lower_to_effective`).
+        if effective.runner_version.is_none()
+            && effective.runner_tarball.is_none()
+            && let Some(release) = latest.release_for(effective.arch)
+        {
+            effective.runner_version = Some(release.version.clone());
+        }
         desired.insert(effective.name.clone(), effective);
     }
 
@@ -221,25 +261,32 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
                     .get(name)
                     .expect("name was in desired_names")
                     .clone();
-                // In-place version inheritance from the discovered
-                // X-Ghars-Effective-Version annotation. Required for the
-                // post-RENDERER_SCHEMA-bump cascade: every binary upgrade
-                // flips spec_hash for every runner, so the in-place arm
-                // fires on every managed runner. If the operator's TOML
-                // doesn't pin runner_version (the "implicit latest"
-                // pattern), the runner is already installed at a specific
-                // version on disk — the annotation captured that version
-                // at the last apply. Without this fill, the in-place
-                // apply path hard-errors at runners.rs:646 trying to
-                // locate the bin dir for the .env/.path rewrite.
+                // Fallback in-place version inheritance from the
+                // discovered X-Ghars-Effective-Version annotation.
+                // Reached only when the desired-loop's track-latest
+                // fill left `runner_version = None` — i.e. the operator
+                // did not pin AND no latest release was resolved for
+                // this arch (offline `plan_from` callers: `ghars
+                // validate`, tests; or a failed releases-API lookup,
+                // already surfaced via `latest.warnings`). In that
+                // degraded mode the runner is already installed at a
+                // specific version on disk — the annotation captured
+                // that version at the last apply — and inheriting it
+                // keeps the runner classifiable: without the fill, the
+                // in-place apply path hard-errors at runners.rs:646
+                // trying to locate the bin dir for the .env/.path
+                // rewrite (the post-RENDERER_SCHEMA-bump cascade makes
+                // the in-place arm fire on every managed runner after a
+                // binary upgrade).
                 //
                 // Gates:
-                //   1. `candidate.runner_version.is_none()` — operator-
-                //      pinned runner_version takes precedence. Without
-                //      this, an operator who deliberately bumped
-                //      runner_version in TOML would have the bump
-                //      silently overwritten by the discovered annotation
-                //      and the recreate-class change wouldn't fire.
+                //   1. `candidate.runner_version.is_none()` — an
+                //      operator-pinned runner_version, or a version
+                //      adopted from the resolved latest release in the
+                //      desired-loop, takes precedence. Without this,
+                //      a deliberate version bump would be silently
+                //      overwritten by the discovered annotation and the
+                //      recreate-class change wouldn't fire.
                 //   2. `!v.is_empty()` — legacy runners applied with
                 //      runner_version=None emit `X-Ghars-Effective-
                 //      Version=` (empty rvalue per the pre-fix renderer
@@ -743,6 +790,27 @@ pub fn plan_from(config: &Config, actual: &ActualState, paths: &Paths) -> Result
         .keep_versions
         .unwrap_or(crate::config::DEFAULT_KEEP_VERSIONS)
         .max(1);
+
+    // Prefill `resolved_release` on create / recreate actions whose
+    // version came from (or matches) the resolved latest release, so
+    // apply's `resolve_plan_releases` short-circuits instead of
+    // re-fetching the same release metadata per runner — one latest
+    // lookup covers a fleet-wide version bump. Version-pinned runners
+    // that don't match latest still resolve per-version at apply.
+    for action in &mut actions {
+        let runner_plan = match action {
+            Action::CreateRunner(p) => p,
+            Action::UpdateRunner(d) if d.requires_recreate => &mut d.after,
+            _ => continue,
+        };
+        if runner_plan.resolved_release.is_none()
+            && runner_plan.spec.runner_tarball.is_none()
+            && let Some(release) = latest.release_for(runner_plan.spec.arch)
+            && runner_plan.spec.runner_version.as_deref() == Some(release.version.as_str())
+        {
+            runner_plan.resolved_release = Some(release.clone());
+        }
+    }
 
     Ok(Plan {
         actions,
@@ -1499,8 +1567,10 @@ pub(super) fn lower_to_effective(
     ))
 }
 
-pub(super) fn host_arch() -> Arch {
-    // Fallback when defaults.arch and runner.arch are both unset.
+/// Host CPU arch, the fallback when `defaults.arch` and `runner.arch`
+/// are both unset. Public so the CLI's latest-release resolver mirrors
+/// the same per-runner arch precedence the merge applies.
+pub fn host_arch() -> Arch {
     // x86_64 is the reference arch; aarch64 hosts override on
     // [defaults] per Part 4 example.
     if cfg!(target_arch = "aarch64") {
@@ -1510,14 +1580,16 @@ pub(super) fn host_arch() -> Arch {
     }
 }
 
-/// In-place `runner_version` inheritance from the discovered
-/// X-Ghars-Effective-Version annotation. Required for the post-
-/// `RENDERER_SCHEMA`-bump cascade: every binary upgrade flips
-/// `spec_hash` for every runner, so the in-place arm fires on every
-/// managed runner. If the operator's TOML doesn't pin
-/// `runner_version` (the "implicit latest" pattern), the runner is
-/// already installed at a specific version on disk — the annotation
-/// captured that version at the last apply.
+/// Fallback in-place `runner_version` inheritance from the discovered
+/// X-Ghars-Effective-Version annotation, for candidates the
+/// track-latest fill left unresolved (operator did not pin AND no
+/// latest release was resolved for the arch — offline callers or a
+/// failed releases-API lookup). The runner is already installed at a
+/// specific version on disk — the annotation captured that version at
+/// the last apply — and inheriting it keeps the post-
+/// `RENDERER_SCHEMA`-bump cascade applyable: every binary upgrade
+/// flips `spec_hash` for every runner, so the in-place arm fires on
+/// every managed runner.
 ///
 /// Gates: (1) operator-pinned `runner_version` wins; (2) empty
 /// annotation is treated as None; (3) annotation must pass

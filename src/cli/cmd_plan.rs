@@ -6,14 +6,16 @@ use std::io::{self, Write};
 use camino::Utf8Path;
 
 use crate::Result;
-use crate::config::Config;
+use crate::config::{Arch, Config};
 use crate::error::GharsError;
+use crate::github;
 use crate::paths::Paths;
 use crate::plan::{self, Action, Plan};
 use crate::state;
 use crate::systemd::DbusSystemd;
 
 use super::args::{ColorMode, PlanArgs, ValidateArgs};
+use super::cmd_apply::pat_for_auth_name;
 use super::exit_codes::dry_run_exit_code;
 use super::load::{build_auth_registry, load_config};
 use super::render::render_plan;
@@ -137,10 +139,79 @@ pub(super) fn open_dbus() -> Result<DbusSystemd> {
     })
 }
 
+/// Resolve the latest actions/runner release for every arch that has
+/// at least one implicit-latest runner (no pinned `runner_version` on
+/// the runner or in `[defaults]`, no `runner_tarball`) in `cfg`. One
+/// authenticated releases-API call per distinct arch. Failures degrade
+/// to warnings inside the returned value rather than erroring: plan /
+/// apply must keep working offline, where unpinned runners classify
+/// against their installed versions (see `plan_from_with_latest`).
+pub(super) fn resolve_latest_releases(cfg: &Config) -> plan::LatestReleases {
+    let mut latest = plan::LatestReleases::default();
+    let host = plan::host_arch();
+    // One (arch, auth) probe per distinct arch, taking the first
+    // unpinned runner's auth for the PAT — the releases repo is
+    // public, so auth is only a rate-limit upgrade (60 → 5000 req/hr).
+    let mut wanted: Vec<(Arch, Option<String>)> = Vec::new();
+    for runner in &cfg.runners {
+        if runner.runner_tarball.is_some()
+            || runner.runner_version.is_some()
+            || cfg.defaults.runner_version.is_some()
+        {
+            continue;
+        }
+        let arch = runner.arch.or(cfg.defaults.arch).unwrap_or(host);
+        if wanted.iter().any(|(a, _)| *a == arch) {
+            continue;
+        }
+        let auth = runner.auth.clone().or_else(|| cfg.defaults.auth.clone());
+        wanted.push((arch, auth));
+    }
+    if wanted.is_empty() {
+        return latest;
+    }
+    let client = match github::build_blocking_client(cfg.proxy.as_ref()) {
+        Ok(c) => c,
+        Err(e) => {
+            latest.warnings.push(format!(
+                "latest actions/runner release lookup skipped ({e}); unpinned \
+                 runners keep their installed versions this run — stale or \
+                 deprecated runner versions cannot be detected"
+            ));
+            return latest;
+        }
+    };
+    for (arch, auth) in wanted {
+        let arch_name = match arch {
+            Arch::X86_64 => "x86_64",
+            Arch::Aarch64 => "aarch64",
+        };
+        let pat = auth
+            .as_deref()
+            .and_then(|name| pat_for_auth_name(cfg, name));
+        match github::fetch_latest_release_authenticated(&client, arch, pat.as_deref()) {
+            Ok(release) => latest.set(arch, release),
+            Err(e) => latest.warnings.push(format!(
+                "latest actions/runner release lookup failed for {arch_name} \
+                 ({e}); unpinned {arch_name} runners keep their installed \
+                 versions this run — stale or deprecated runner versions \
+                 cannot be detected"
+            )),
+        }
+    }
+    latest
+}
+
 pub(super) fn compute_plan(cfg: &Config, paths: &Paths, only: &[String]) -> Result<Plan> {
     let systemd = open_dbus()?;
     let actual = state::discover(&systemd, paths)?;
-    let mut plan = plan::plan_from(cfg, &actual, paths)?;
+    // Track-latest: resolve the current actions/runner release(s) so
+    // implicit-latest runners are planned against the live release
+    // rather than frozen at their installed version (which, with
+    // `--disableupdate` registration, would eventually cross GitHub's
+    // deprecation floor and kill the fleet while reporting in-sync).
+    let latest = resolve_latest_releases(cfg);
+    let mut plan = plan::plan_from_with_latest(cfg, &actual, paths, &latest)?;
     if !only.is_empty() {
         plan.actions.retain(|a| action_matches_filter(a, only));
     }

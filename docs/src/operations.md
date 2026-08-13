@@ -377,7 +377,19 @@ leaving the host half-cleaned.
 
 ## Upgrades
 
-Rolling a runner version:
+With `runner_version` unset (the default), no manual rolling is
+needed: every `plan` / `apply` resolves the latest actions/runner
+release and recreates any runner installed at an older version.
+Run `ghars apply` on whatever cadence you already use; the fleet
+follows the release stream. This matters because ghars registers
+runners with `--disableupdate` — a fleet that never upgrades
+eventually crosses GitHub's runner-version deprecation floor, at
+which point every listener exits at startup with "Runner version
+vX.Y.Z is deprecated and cannot receive messages", the service
+flaps into `start-limit-hit`, and jobs queue forever. Track-latest
+turns that cliff into an ordinary recreate.
+
+Rolling a *pinned* runner version:
 
 1. Edit `defaults.runner_version` (or per-runner
    `runner_version`) in `ghars.toml`.
@@ -565,30 +577,26 @@ When to bump `RENDERER_SCHEMA`:
   `runsvc.sh` / `Runner.Listener` reads from the rendered files
   do.
 
-### "Implicit-latest" runners stick to the first-apply version
+### "Implicit-latest" runners track the latest release
 
 A runner deployed without a pinned `runner_version` (on the
-runner or in `[defaults]`) takes its version from the release
-API at first apply. That version is captured in the on-disk
-`X-Ghars-Effective-Version` annotation in `00-ghars.conf`.
-The next plan inherits the captured version from that
-annotation so the in-place rewrite path knows where the runner
-is installed — apply rewrites the drop-ins for the SAME
-version, not the latest.
+runner or in `[defaults]`) tracks the latest actions/runner
+release: every `plan` / `apply` resolves the current latest and
+classifies a runner installed at anything older as a
+recreate-class `runner_version` change. The installed version is
+read from the on-disk `X-Ghars-Effective-Version` annotation in
+`00-ghars.conf`.
 
-The implication: clearing `runner_version` from the TOML does
-NOT shift the fleet to a newer release. To upgrade an
-implicit-latest runner, either:
-
-- Pin `runner_version = "X.Y.Z"` explicitly on the runner (or
-  in `[defaults]`) to the new version. Plan classifies the change
-  as recreate-class (Stage 1 typed `runner_version` reason);
-  apply unregisters, re-installs the new version, and
-  re-registers with GitHub.
-
-- Recreate the runner by removing it from the TOML, running
-  `ghars apply` to drop it, then re-adding it. The fresh
-  CreateRunner fetches the current latest from the release API.
+When the releases API is unreachable at plan time, the plan
+carries a warning and unpinned runners are classified against
+their installed (annotation) versions — the pre-track-latest
+behavior — so offline plans neither error nor recreate blind.
+Do not leave the fleet in that degraded mode indefinitely:
+runners register with `--disableupdate`, and a version left
+frozen eventually crosses GitHub's deprecation floor ("Runner
+version vX.Y.Z is deprecated and cannot receive messages" on
+every listener start, service flaps to `start-limit-hit`, jobs
+queue forever).
 
 Tarball-pinned runners (`runner_tarball` set) MUST pin
 `runner_version` — `ghars plan` rejects them at validation time

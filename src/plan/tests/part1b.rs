@@ -1818,3 +1818,267 @@ proptest::proptest! {
         proptest::prop_assert_eq!(eff.trust_zone, "default");
     }
 }
+
+// ---------------------------------------------------------------
+// Track-latest: implicit-latest runners follow the resolved latest
+// actions/runner release instead of freezing at their installed
+// version. Runners register with `--disableupdate`, so ghars is the
+// only upgrade path — the pre-track-latest behavior (annotation
+// inheritance making every plan report "in sync" forever) let
+// fleets sit on a version until GitHub's deprecation floor killed
+// every listener with "deprecated and cannot receive messages".
+// ---------------------------------------------------------------
+
+fn fake_release(version: &str) -> crate::github::Release {
+    crate::github::Release {
+        version: version.into(),
+        sha256: "0".repeat(64),
+        tarball_url: format!("https://example.invalid/actions-runner-linux-x64-{version}.tar.gz"),
+        tarball_name: format!("actions-runner-linux-x64-{version}.tar.gz"),
+    }
+}
+
+fn latest_with(arch: Arch, version: &str) -> LatestReleases {
+    let mut latest = LatestReleases::default();
+    latest.set(arch, fake_release(version));
+    latest
+}
+
+/// An unpinned runner whose installed version (per the discovered
+/// X-Ghars-Effective-Version annotation) trails the resolved latest
+/// release MUST classify as a recreate-class `runner_version` change
+/// carrying the latest version, with `resolved_release` prefilled so
+/// apply's `resolve_plan_releases` does not re-fetch per runner.
+#[test]
+fn plan_track_latest_recreates_runner_on_stale_installed_version() {
+    let cfg = config_with_runners(vec![minimal_runner("a")]);
+    let desired_spec = merge_defaults(
+        &cfg.runners[0],
+        &cfg.defaults,
+        "pat".into(),
+        vec![],
+        None,
+        None,
+        None,
+        host_arch(),
+        cfg_source_default(),
+    );
+    assert!(
+        desired_spec.runner_version.is_none(),
+        "fixture precondition: desired runner_version must be None"
+    );
+    let mut discovered_spec = desired_spec.clone();
+    discovered_spec.runner_version = Some("2.334.0".into());
+    discovered_spec.spec_hash = spec_hash(&discovered_spec);
+    let mut actual = empty_actual();
+    actual.runners.insert(
+        "a".into(),
+        discovered_for("a", &discovered_spec, Drift::InSync),
+    );
+
+    let latest = latest_with(host_arch(), "2.336.0");
+    let plan = plan_from_with_latest(&cfg, &actual, &Paths::default(), &latest)
+        .expect("plan must succeed");
+    let updates: Vec<&RunnerDelta> = plan
+        .actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::UpdateRunner(d) => Some(d),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        updates.len(),
+        1,
+        "expected one UpdateRunner for the stale version; got: {:?}",
+        plan.actions
+    );
+    assert!(
+        updates[0].requires_recreate,
+        "version change is identity-bound and must recreate; reasons: {:?}",
+        updates[0].recreate_reasons
+    );
+    assert!(
+        updates[0].recreate_reasons.contains(&"runner_version"),
+        "recreate must be attributed to runner_version; got: {:?}",
+        updates[0].recreate_reasons
+    );
+    assert_eq!(
+        updates[0].after.spec.runner_version.as_deref(),
+        Some("2.336.0"),
+        "unpinned runner must adopt the resolved latest version"
+    );
+    assert_eq!(
+        updates[0]
+            .after
+            .resolved_release
+            .as_ref()
+            .map(|r| r.version.as_str()),
+        Some("2.336.0"),
+        "resolved_release must be prefilled from the latest lookup"
+    );
+}
+
+/// An unpinned runner already installed at the resolved latest
+/// version stays `NoOp` — track-latest only recreates on real drift.
+#[test]
+fn plan_track_latest_noop_when_installed_matches_latest() {
+    let cfg = config_with_runners(vec![minimal_runner("a")]);
+    let desired_spec = merge_defaults(
+        &cfg.runners[0],
+        &cfg.defaults,
+        "pat".into(),
+        vec![],
+        None,
+        None,
+        None,
+        host_arch(),
+        cfg_source_default(),
+    );
+    let mut discovered_spec = desired_spec.clone();
+    discovered_spec.runner_version = Some("2.336.0".into());
+    discovered_spec.spec_hash = spec_hash(&discovered_spec);
+    let mut actual = empty_actual();
+    actual.runners.insert(
+        "a".into(),
+        discovered_for("a", &discovered_spec, Drift::InSync),
+    );
+
+    let latest = latest_with(host_arch(), "2.336.0");
+    let plan = plan_from_with_latest(&cfg, &actual, &Paths::default(), &latest)
+        .expect("plan must succeed");
+    assert!(
+        plan.actions.iter().all(|a| matches!(a, Action::NoOp(_))),
+        "installed == latest must be in sync; got: {:?}",
+        plan.actions
+    );
+}
+
+/// An operator-pinned `runner_version` is authoritative: a newer
+/// latest release must NOT override the pin.
+#[test]
+fn plan_track_latest_operator_pin_wins_over_latest() {
+    let cfg = config_with_runners(vec![{
+        let mut r = minimal_runner("a");
+        r.runner_version = Some("2.335.1".into());
+        r
+    }]);
+    let desired_spec = merge_defaults(
+        &cfg.runners[0],
+        &cfg.defaults,
+        "pat".into(),
+        vec![],
+        None,
+        None,
+        None,
+        host_arch(),
+        cfg_source_default(),
+    );
+    let mut discovered_spec = desired_spec.clone();
+    discovered_spec.spec_hash = spec_hash(&discovered_spec);
+    let mut actual = empty_actual();
+    actual.runners.insert(
+        "a".into(),
+        discovered_for("a", &discovered_spec, Drift::InSync),
+    );
+
+    let latest = latest_with(host_arch(), "2.336.0");
+    let plan = plan_from_with_latest(&cfg, &actual, &Paths::default(), &latest)
+        .expect("plan must succeed");
+    assert!(
+        plan.actions.iter().all(|a| matches!(a, Action::NoOp(_))),
+        "pinned version installed at the pin must stay in sync even \
+         when a newer release exists; got: {:?}",
+        plan.actions
+    );
+}
+
+/// When latest resolution failed (empty `LatestReleases` carrying a
+/// warning), the planner must (a) surface the warning on the Plan and
+/// (b) fall back to annotation inheritance so the runner stays in
+/// sync rather than erroring or recreating blind.
+#[test]
+fn plan_track_latest_resolution_failure_warns_and_falls_back() {
+    let cfg = config_with_runners(vec![minimal_runner("a")]);
+    let desired_spec = merge_defaults(
+        &cfg.runners[0],
+        &cfg.defaults,
+        "pat".into(),
+        vec![],
+        None,
+        None,
+        None,
+        host_arch(),
+        cfg_source_default(),
+    );
+    let mut discovered_spec = desired_spec.clone();
+    discovered_spec.runner_version = Some("2.334.0".into());
+    discovered_spec.spec_hash = spec_hash(&discovered_spec);
+    let mut actual = empty_actual();
+    actual.runners.insert(
+        "a".into(),
+        discovered_for("a", &discovered_spec, Drift::InSync),
+    );
+
+    // Annotation-inheritance disk gate: the named bin dir must exist.
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = paths_at_tempdir(tmp.path());
+    let runner_home = paths.runner_home(&desired_spec.trust_zone, "a");
+    let runsvc_dir = runner_home.join("bin.2.334.0").join("bin");
+    std::fs::create_dir_all(runsvc_dir.as_std_path()).unwrap();
+    std::fs::write(runsvc_dir.join("runsvc.sh").as_std_path(), b"#!/bin/bash\n").unwrap();
+
+    let latest = LatestReleases {
+        warnings: vec!["latest actions/runner release lookup failed".into()],
+        ..LatestReleases::default()
+    };
+    let plan = plan_from_with_latest(&cfg, &actual, &paths, &latest)
+        .expect("plan must succeed in degraded mode");
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|w| w.contains("release lookup failed")),
+        "resolution failure must surface in Plan.warnings; got: {:?}",
+        plan.warnings
+    );
+    assert!(
+        plan.actions.iter().all(|a| matches!(a, Action::NoOp(_))),
+        "degraded mode must fall back to installed-version inheritance \
+         (pre-track-latest behavior); got: {:?}",
+        plan.actions
+    );
+}
+
+/// Create arm: an unpinned runner with no discovered counterpart
+/// adopts the resolved latest version at plan time (no more
+/// plan-preview `bin.latest` placeholder when the lookup succeeded)
+/// and carries the prefilled `resolved_release`.
+#[test]
+fn plan_track_latest_fills_version_and_release_on_create() {
+    let cfg = config_with_runners(vec![minimal_runner("a")]);
+    let latest = latest_with(host_arch(), "2.336.0");
+    let plan = plan_from_with_latest(&cfg, &empty_actual(), &Paths::default(), &latest)
+        .expect("plan must succeed");
+    let creates: Vec<&RunnerPlan> = plan
+        .actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::CreateRunner(p) => Some(p),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(creates.len(), 1, "got: {:?}", plan.actions);
+    assert_eq!(
+        creates[0].spec.runner_version.as_deref(),
+        Some("2.336.0"),
+        "create must adopt the resolved latest version at plan time"
+    );
+    assert_eq!(
+        creates[0]
+            .resolved_release
+            .as_ref()
+            .map(|r| r.version.as_str()),
+        Some("2.336.0"),
+        "resolved_release must be prefilled from the latest lookup"
+    );
+}

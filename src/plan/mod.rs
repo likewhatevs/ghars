@@ -37,13 +37,13 @@ mod types;
 mod tests;
 
 pub use action::{Action, Disruption};
-pub use compute::plan_from;
+pub use compute::{host_arch, plan_from, plan_from_with_latest};
 pub use expand::{MAX_COUNT, expand_counts};
 pub use hash::spec_hash;
 pub use merge::merge_defaults;
 pub use types::{
     CachePoolDelta, CachePoolPlan, DriftCause, DropInChange, DropInChangeKind, FieldChange,
-    FieldValue, Plan, RunnerDelta, RunnerIdentity, RunnerPlan,
+    FieldValue, LatestReleases, Plan, RunnerDelta, RunnerIdentity, RunnerPlan,
 };
 
 /// Default trust zone — keeps the merge in lock-step with config.rs's

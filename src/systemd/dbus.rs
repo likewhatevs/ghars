@@ -49,6 +49,28 @@ pub trait Systemd {
     /// Returns `GharsError::Systemd` if the call fails.
     fn stop_unit(&self, unit: &str) -> Result<()>;
 
+    /// `Manager.ResetFailedUnit(name)`. Clears a unit's `failed` state,
+    /// including start-rate-limiter residue: a unit that hit
+    /// `start-limit-hit` (e.g. a runner flapping because GitHub
+    /// deprecated its installed version) refuses `StartUnit` until the
+    /// `StartLimitIntervalSec` window elapses or the failed state is
+    /// reset. Apply calls this best-effort before starting units so a
+    /// recreate can revive a flapped fleet immediately.
+    ///
+    /// The default implementation is a no-op so test doubles that
+    /// don't care about failed-state bookkeeping need no override.
+    ///
+    /// # Errors
+    ///
+    /// Returns `GharsError::Systemd` if the D-Bus call fails. Callers
+    /// treat errors as non-fatal (`NoSuchUnit` is normal for
+    /// first-time creates); the subsequent `StartUnit` error is the
+    /// meaningful signal.
+    fn reset_failed_unit(&self, unit: &str) -> Result<()> {
+        let _ = unit;
+        Ok(())
+    }
+
     /// `Manager.EnableUnitFiles(files, runtime=false, force=false)`.
     /// Links the unit into the appropriate `*.target.wants/` directory.
     ///
@@ -380,6 +402,20 @@ impl Systemd for DbusSystemd {
                 )
             })?;
         Ok(())
+    }
+
+    fn reset_failed_unit(&self, unit: &str) -> Result<()> {
+        let proxy = self.manager_proxy()?;
+        // ResetFailedUnit returns no body; () matches the empty
+        // signature.
+        proxy
+            .call::<_, _, ()>("ResetFailedUnit", &(unit,))
+            .map_err(|e| {
+                GharsError::Systemd(
+                    format!("Manager.ResetFailedUnit({unit}): {e}"),
+                    "inspect `systemctl status UNIT` and the unit's journal".into(),
+                )
+            })
     }
 
     fn enable_unit(&self, unit: &str) -> Result<()> {
